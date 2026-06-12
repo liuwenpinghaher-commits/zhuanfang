@@ -28,6 +28,9 @@ import {
   createSessionDraft,
   finalizeSession,
   generatePodcastEpisode,
+  generatePodcastEpisodeFromKnowledgeDebt,
+  generatePodcastEpisodeFromSearchBrief,
+  generatePodcastEpisodeFromTheme,
   markMemoryCorrection,
   receiveUserTurn,
   searchProductAssets,
@@ -709,6 +712,9 @@ export default function App() {
     setInterviewInput("");
     setActiveSearchBriefId(undefined);
     setPodcastNoteId("");
+    setPodcastSourceType("note");
+    setPodcastSourceId("");
+    setPodcastEditingScript("");
     setCorpusMediaType("text");
     setCorpusSourceUrl("");
     setNotice(buildNotice("warning", "演示数据已重置", "当前浏览器状态已恢复为初始样例。"));
@@ -886,9 +892,16 @@ export default function App() {
             state={productState}
             noteId={podcastNoteId}
             voice={podcastVoice}
+            sourceType={podcastSourceType}
+            sourceId={podcastSourceId}
+            editingScript={podcastEditingScript}
             onNoteId={setPodcastNoteId}
             onVoice={setPodcastVoice}
-            onGenerate={createPodcast}
+            onSourceType={setPodcastSourceType}
+            onSourceId={setPodcastSourceId}
+            onEditingScript={setPodcastEditingScript}
+            onGenerateScript={generatePodcastScript}
+            onSynthesizeSpeech={synthesizePodcastSpeech}
             onDeleteEpisode={removePodcastEpisode}
             onSaveDefaultVoice={saveDefaultPodcastVoice}
           />

@@ -59,9 +59,16 @@ describe("PodcastStudioView", () => {
           state={state}
           noteId={state.notes[0]?.id ?? ""}
           voice="calm-host"
+          sourceType="note"
+          sourceId=""
+          editingScript=""
           onNoteId={vi.fn()}
           onVoice={vi.fn()}
-          onGenerate={vi.fn()}
+          onSourceType={vi.fn()}
+          onSourceId={vi.fn()}
+          onEditingScript={vi.fn()}
+          onGenerateScript={vi.fn()}
+          onSynthesizeSpeech={vi.fn()}
           onDeleteEpisode={vi.fn()}
           onSaveDefaultVoice={vi.fn()}
         />

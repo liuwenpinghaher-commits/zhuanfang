@@ -1,15 +1,22 @@
-import { ClipboardList, Headphones, Trash2, Volume2 } from "lucide-react";
+import { ClipboardList, Headphones, Mic, Play, Trash2, Volume2 } from "lucide-react";
 import { HeaderBlock } from "../../components/HeaderBlock";
-import type { ProductState } from "../../domain/types";
+import type { PodcastEpisode, PodcastSourceType, ProductState } from "../../domain/types";
 import { formatPodcastTimestamp, podcastProductionSections } from "../../ui";
 
 interface PodcastStudioViewProps {
   state: ProductState;
   noteId: string;
   voice: string;
+  sourceType: PodcastSourceType;
+  sourceId: string;
+  editingScript: string;
   onNoteId: (value: string) => void;
   onVoice: (value: string) => void;
-  onGenerate: () => void;
+  onSourceType: (value: PodcastSourceType) => void;
+  onSourceId: (value: string) => void;
+  onEditingScript: (value: string) => void;
+  onGenerateScript: () => void;
+  onSynthesizeSpeech: (episodeId: string) => void;
   onDeleteEpisode: (episodeId: string) => void;
   onSaveDefaultVoice: () => void;
 }
@@ -18,9 +25,16 @@ export function PodcastStudioView({
   state,
   noteId,
   voice,
+  sourceType,
+  sourceId,
+  editingScript,
   onNoteId,
   onVoice,
-  onGenerate,
+  onSourceType,
+  onSourceId,
+  onEditingScript,
+  onGenerateScript,
+  onSynthesizeSpeech,
   onDeleteEpisode,
   onSaveDefaultVoice
 }: PodcastStudioViewProps) {
@@ -30,6 +44,28 @@ export function PodcastStudioView({
     solo: "单人旁白",
     "host-guest": "主持对谈"
   };
+
+  const sourceOptions: Array<{ value: PodcastSourceType; label: string }> = [
+    { value: "note", label: "双轨笔记" },
+    { value: "search-brief", label: "搜索简报" },
+    { value: "theme", label: "长期主题" },
+    { value: "knowledge-debt", label: "知识债" }
+  ];
+
+  const sourceItems = (() => {
+    switch (sourceType) {
+      case "search-brief":
+        return state.searchBriefs.map((item) => ({ id: item.id, label: item.topic }));
+      case "theme":
+        return state.themes.map((item) => ({ id: item.id, label: item.name }));
+      case "knowledge-debt":
+        return state.debts.map((item) => ({ id: item.id, label: item.concept }));
+      default:
+        return state.notes.map((item) => ({ id: item.id, label: item.title }));
+    }
+  })();
+
+  const selectedSourceId = sourceId || sourceItems[0]?.id || "";
 
   return (
     <section className="view-stack">
@@ -51,10 +87,33 @@ export function PodcastStudioView({
             ))}
           </div>
           <div className="input-row three">
-            <label className="field-stack" htmlFor="podcast-note">
-              <span className="field-label">来源笔记</span>
-              <select id="podcast-note" value={selectedNoteId} onChange={(event) => onNoteId(event.target.value)}>
-                {state.notes.map((note) => <option value={note.id} key={note.id}>{note.title}</option>)}
+            <label className="field-stack" htmlFor="podcast-source-type">
+              <span className="field-label">来源类型</span>
+              <select
+                id="podcast-source-type"
+                value={sourceType}
+                onChange={(event) => onSourceType(event.target.value as PodcastSourceType)}
+              >
+                {sourceOptions.map((option) => (
+                  <option value={option.value} key={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </label>
+            <label className="field-stack" htmlFor="podcast-source">
+              <span className="field-label">来源内容</span>
+              <select
+                id="podcast-source"
+                value={selectedSourceId}
+                onChange={(event) => {
+                  if (sourceType === "note") {
+                    onNoteId(event.target.value);
+                  }
+                  onSourceId(event.target.value);
+                }}
+              >
+                {sourceItems.map((item) => (
+                  <option value={item.id} key={item.id}>{item.label}</option>
+                ))}
               </select>
             </label>
             <label className="field-stack" htmlFor="podcast-voice">
@@ -62,24 +121,60 @@ export function PodcastStudioView({
               <input id="podcast-voice" value={voice} onChange={(event) => onVoice(event.target.value)} placeholder="声音配置" />
               <span className="field-help">可填写 CosyVoice voice id；常用默认值会由服务端映射到系统声音。</span>
             </label>
-            <button className="primary-action" type="button" onClick={onGenerate} disabled={!selectedNote}>
-              <Volume2 size={18} />生成音频播客
+          </div>
+          <div className="input-row">
+            <button className="primary-action" type="button" onClick={onGenerateScript} disabled={!selectedSourceId}>
+              <Mic size={18} />生成脚本
             </button>
             <button className="secondary-action" type="button" onClick={onSaveDefaultVoice}>
               保存为默认声音
             </button>
           </div>
-          {selectedNote ? (
+          {editingScript && (
+            <div className="script-editor">
+              <div className="section-heading">
+                <span className="label">编辑脚本</span>
+                <strong>确认后合成语音</strong>
+              </div>
+              <textarea
+                className="script-textarea"
+                value={editingScript}
+                onChange={(event) => onEditingScript(event.target.value)}
+                rows={12}
+                placeholder="编辑或确认播客脚本..."
+              />
+              <button
+                className="primary-action"
+                type="button"
+                onClick={() => {
+                  const latest = state.podcastEpisodes[0];
+                  if (latest) {
+                    onSynthesizeSpeech(latest.id);
+                  }
+                }}
+                disabled={!editingScript.trim()}
+              >
+                <Volume2 size={18} />合成语音
+              </button>
+            </div>
+          )}
+          {selectedNote && sourceType === "note" ? (
             <article className="podcast-source-card">
               <span className="label">当前来源</span>
               <h3>{selectedNote.title}</h3>
               <p>{selectedNote.summary}</p>
-              <blockquote>“{selectedNote.keyQuote}”</blockquote>
+              <blockquote>"{selectedNote.keyQuote}"</blockquote>
+            </article>
+          ) : selectedSourceId && sourceType !== "note" ? (
+            <article className="podcast-source-card">
+              <span className="label">当前来源</span>
+              <h3>{sourceItems.find((item) => item.id === selectedSourceId)?.label ?? "—"}</h3>
+              <p>来源类型：{sourceOptions.find((o) => o.value === sourceType)?.label ?? "—"}</p>
             </article>
           ) : (
             <div className="empty-module">
               <ClipboardList size={22} />
-              <p>还没有可生成播客的双轨笔记。先完成一次专访并生成档案。</p>
+              <p>还没有可生成播客的内容。先完成一次专访并生成档案。</p>
             </div>
           )}
         </section>
