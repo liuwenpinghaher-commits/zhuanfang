@@ -22,6 +22,7 @@ import { registerCorpusRoutes } from "./routes/corpus";
 import { registerGeneratedArtifactRoutes } from "./routes/generated-artifacts";
 import { registerHealthRoutes } from "./routes/health";
 import { registerInterviewSessionRoutes } from "./routes/interview-sessions";
+import { registerMastraRoutes } from "./routes/mastra";
 import { registerMemoryCandidateRoutes } from "./routes/memory-candidates";
 import { registerMemoryCorrectionRoutes } from "./routes/memory-corrections";
 import { registerMemoryRecordRoutes } from "./routes/memory-records";
@@ -130,6 +131,9 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   });
   void server.register(async (registeredServer) => {
     await registerPlaybookPatchRoutes(registeredServer, productStateRepository);
+  });
+  void server.register(async (registeredServer) => {
+    await registerMastraRoutes(registeredServer, productStateRepository);
   });
   void server.register(async (registeredServer) => {
     await registerProductConfigRoutes(registeredServer, productStateRepository);
