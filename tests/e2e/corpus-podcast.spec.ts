@@ -99,12 +99,14 @@ test("generates and deletes a podcast episode from the first note", async ({ pag
   await openView(page, "播客工作台", "把一次专访生成可收听的语音节目");
 
   await page.getByLabel("声音配置").fill(voice);
-  await page.getByRole("button", { name: "生成音频播客" }).click();
+  await page.getByRole("button", { name: "生成脚本" }).click();
+  await expect(page.getByText("播客脚本已生成")).toBeVisible();
+  await page.getByRole("button", { name: "合成语音" }).click();
 
-  await expect(page.getByText("播客已生成")).toBeVisible();
+  await expect(page.getByText("语音合成")).toBeVisible();
   const podcastEpisode = page.locator("article.podcast-episode").filter({ hasText: voice });
   await expect(podcastEpisode).toHaveCount(1);
-  await expect(podcastEpisode.getByText(`draft · ${voice}`)).toBeVisible();
+  await expect(podcastEpisode.getByText(`ready · ${voice}`)).toBeVisible();
   await expect(podcastEpisode.getByText("本地占位", { exact: true })).toBeVisible();
   await expectNoHorizontalOverflow(page);
 

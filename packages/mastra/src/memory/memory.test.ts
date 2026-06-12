@@ -1,11 +1,16 @@
 import { describe, it, expect, vi } from "vitest";
 
-vi.mock("@mastra/memory", () => ({
-  Memory: vi.fn().mockImplementation((config: any) => ({
-    config,
-    id: "mock-memory",
-  })),
-}));
+vi.mock("@mastra/memory", () => {
+  class MockMemory {
+    config: any;
+    id: string;
+    constructor(config: any) {
+      this.config = config;
+      this.id = "mock-memory";
+    }
+  }
+  return { Memory: MockMemory };
+});
 
 describe("memory config", () => {
   it("workingMemory is defined", async () => {
