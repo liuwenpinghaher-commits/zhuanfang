@@ -20,6 +20,7 @@ import {
   buildInterviewCard,
   buildMonthlyReview,
   buildRealtimeTurnState,
+  buildSearchBrief,
   createSearchBriefFromInput,
   buildSystemStatus,
   buildYearlyReview,
@@ -57,6 +58,7 @@ import type {
   InterviewControlAction,
   InterviewMode,
   InterviewSession,
+  PodcastSourceType,
   ProductState,
   SearchBriefInput,
   SearchProviderId,
@@ -119,6 +121,9 @@ export default function App() {
   const [searchTask, setSearchTask] = useState(() => createIdleCapabilityTask<SearchBriefInput>("联网搜索"));
   const [podcastNoteId, setPodcastNoteId] = useState(() => productState.notes[0]?.id ?? "");
   const [podcastVoice, setPodcastVoice] = useState(productState.systemConfig.voice.podcastVoice);
+  const [podcastSourceType, setPodcastSourceType] = useState<PodcastSourceType>("note");
+  const [podcastSourceId, setPodcastSourceId] = useState("");
+  const [podcastEditingScript, setPodcastEditingScript] = useState("");
   const [corpusMediaType, setCorpusMediaType] = useState<CorpusImportInput["mediaType"]>("text");
   const [corpusTitle, setCorpusTitle] = useState("优秀专访样本");
   const [corpusSourceUrl, setCorpusSourceUrl] = useState("");
@@ -340,36 +345,122 @@ export default function App() {
     setNotice(buildNotice("success", "默认搜索 Provider 已更新", `当前默认 provider：${provider}`));
   }
 
-  async function createPodcast() {
-    const noteId = podcastNoteId || productState.notes[0]?.id;
-    if (!noteId) {
+  async function autoBrief(themeId?: string, debtId?: string) {
+    setView("search");
+
+    try {
+      const response = await productApiClient.createAutoBrief({ themeId, debtId });
+      setProductState(response.state);
+      setApiPersistenceEnabled(true);
+      setActiveSearchBriefId(response.brief.id);
+      setNotice(buildNotice("success", "自动简报已生成", `已选中「${response.brief.topic}」，可以带入下一次专访。`));
+      return;
+    } catch {
+      setApiPersistenceEnabled(false);
+    }
+
+    const { brief, nextState } = buildSearchBrief(productState, "本周值得讨论的 AI 产品变化", productState.systemConfig.search.activeProvider);
+    setProductState(nextState);
+    setActiveSearchBriefId(brief.id);
+    setNotice(buildNotice("success", "自动简报已生成（本地）", `已选中「${brief.topic}」，可以带入下一次专访。`));
+  }
+
+  async function generatePodcastScript() {
+    const effectiveSourceId =
+      podcastSourceType === "note"
+        ? podcastNoteId || productState.notes[0]?.id
+        : podcastSourceId || "";
+    if (!effectiveSourceId) {
       return;
     }
 
     try {
       const apiRun = await productApiClient.generatePodcastEpisode({
-        noteId,
+        noteId: podcastSourceType === "note" ? effectiveSourceId : undefined,
+        sourceType: podcastSourceType,
+        sourceId: effectiveSourceId,
         format: "solo",
         voice: podcastVoice
-      });
+      } as any);
       setProductState(apiRun.state);
       setApiPersistenceEnabled(true);
-      setPodcastNoteId(noteId);
-      setNotice(buildNotice("success", "播客已生成", `使用声音配置：${apiRun.episode.voice}`));
+      setPodcastNoteId(effectiveSourceId);
+      setPodcastEditingScript(apiRun.episode.script);
+      setNotice(buildNotice("success", "播客脚本已生成", `使用声音配置：${apiRun.episode.voice}`));
       setView("podcast");
       return;
     } catch {
       setApiPersistenceEnabled(false);
     }
 
-    const { nextState } = generatePodcastEpisode(productState, noteId, {
-      format: "solo",
-      voice: podcastVoice
-    });
-    setProductState(nextState);
-    setPodcastNoteId(noteId);
-    setNotice(buildNotice("success", "播客已生成", `使用声音配置：${podcastVoice}`));
+    let result: { episode: any; nextState: ProductState };
+    if (podcastSourceType === "search-brief") {
+      result = generatePodcastEpisodeFromSearchBrief(productState, effectiveSourceId, {
+        format: "solo",
+        voice: podcastVoice
+      });
+    } else if (podcastSourceType === "theme") {
+      result = generatePodcastEpisodeFromTheme(productState, effectiveSourceId, {
+        format: "solo",
+        voice: podcastVoice
+      });
+    } else if (podcastSourceType === "knowledge-debt") {
+      result = generatePodcastEpisodeFromKnowledgeDebt(productState, effectiveSourceId, {
+        format: "solo",
+        voice: podcastVoice
+      });
+    } else {
+      result = generatePodcastEpisode(productState, effectiveSourceId, {
+        format: "solo",
+        voice: podcastVoice
+      });
+    }
+    setProductState(result.nextState);
+    setPodcastNoteId(effectiveSourceId);
+    setPodcastEditingScript(result.episode.script);
+    setNotice(buildNotice("success", "播客脚本已生成", `使用声音配置：${podcastVoice}`));
     setView("podcast");
+  }
+
+  async function synthesizePodcastSpeech(episodeId: string) {
+    const episode = productState.podcastEpisodes.find((ep) => ep.id === episodeId);
+    if (!episode) {
+      return;
+    }
+
+    const updatedEpisode = {
+      ...episode,
+      script: podcastEditingScript,
+      scriptReviewStatus: "用户确认" as const,
+      status: "ready" as const
+    };
+    const updatedState = {
+      ...productState,
+      podcastEpisodes: productState.podcastEpisodes.map((ep) =>
+        ep.id === episodeId ? updatedEpisode : ep
+      )
+    };
+
+    try {
+      const apiRun = await productApiClient.generatePodcastEpisode({
+        noteId: episode.noteId,
+        sourceType: episode.sourceType,
+        sourceId: episode.sourceId,
+        format: episode.format,
+        voice: podcastVoice
+      } as any);
+      setProductState(apiRun.state);
+      setApiPersistenceEnabled(true);
+      setPodcastEditingScript("");
+      setNotice(buildNotice("success", "语音合成已提交", `播客 "${episode.title}" 正在渲染音频。`));
+      return;
+    } catch {
+      setApiPersistenceEnabled(false);
+    }
+
+    setProductState(updatedState);
+    setPodcastEditingScript("");
+    setNotice(buildNotice("success", "语音合成已确认", `播客 "${episode.title}" 脚本已确认，等待 TTS 渲染。`));
   }
 
   function removePodcastEpisode(episodeId: string) {
@@ -769,6 +860,7 @@ export default function App() {
             onUseBrief={startFromBrief}
             onDeleteBrief={removeSearchBrief}
             onSetDefaultProvider={setDefaultSearchProvider}
+            onAutoBrief={autoBrief}
           />
         )}
         {view === "corpus" && (

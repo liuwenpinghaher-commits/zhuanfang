@@ -1,4 +1,4 @@
-import { Database, Globe2, Mic, Search, Sparkles, Trash2 } from "lucide-react";
+import { Database, Globe2, Mic, Search, Sparkles, Trash2, Wand2 } from "lucide-react";
 import type { CapabilityTask } from "../../capabilities/task";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { ProductState, SearchBriefInput, SearchProviderId } from "../../domain/types";
@@ -15,6 +15,7 @@ interface SearchIntelligenceViewProps {
   onUseBrief: (briefId: string) => void;
   onDeleteBrief: (briefId: string) => void;
   onSetDefaultProvider: (provider: SearchProviderId) => void;
+  onAutoBrief: (themeId?: string, debtId?: string) => void | Promise<void>;
 }
 
 export function SearchIntelligenceView({
@@ -27,7 +28,8 @@ export function SearchIntelligenceView({
   onRetry,
   onUseBrief,
   onDeleteBrief,
-  onSetDefaultProvider
+  onSetDefaultProvider,
+  onAutoBrief
 }: SearchIntelligenceViewProps) {
   const isRunning = task.status === "running";
   const providerActions: Array<{ id: SearchProviderId; label: string; icon: "sparkles" | "search" | "database" }> = [
@@ -35,6 +37,8 @@ export function SearchIntelligenceView({
     { id: "anysearch", label: "AnySearch", icon: "search" },
     { id: "local-demo", label: "本地演示", icon: "database" }
   ];
+
+  const allProviders: SearchProviderId[] = ["local-demo", "bailian", "anysearch", "tavily", "exa", "brave"];
 
   return (
     <section className="view-stack">
@@ -84,6 +88,52 @@ export function SearchIntelligenceView({
                 设为默认：{provider.label}
               </button>
             ))}
+          </div>
+        </div>
+        <div className="auto-brief-section">
+          <div className="field-stack">
+            <span className="field-label">搜索提供商</span>
+            <select
+              id="search-provider"
+              value={state.systemConfig.search.activeProvider}
+              onChange={(event) => onSetDefaultProvider(event.target.value as SearchProviderId)}
+            >
+              {allProviders.map((provider) => (
+                <option key={provider} value={provider}>
+                  {provider}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="auto-brief-actions">
+            <button
+              className="secondary-action"
+              type="button"
+              onClick={() => onAutoBrief()}
+              disabled={isRunning}
+            >
+              <Wand2 size={16} />自动生成
+            </button>
+            {state.themes.length > 0 && (
+              <button
+                className="secondary-action"
+                type="button"
+                onClick={() => onAutoBrief(state.themes[0].id, undefined)}
+                disabled={isRunning}
+              >
+                <Wand2 size={16} />从主题：{state.themes[0].name}
+              </button>
+            )}
+            {state.debts.length > 0 && (
+              <button
+                className="secondary-action"
+                type="button"
+                onClick={() => onAutoBrief(undefined, state.debts[0].id)}
+                disabled={isRunning}
+              >
+                <Wand2 size={16} />从知识债：{state.debts[0].concept}
+              </button>
+            )}
           </div>
         </div>
         {task.status !== "idle" && (

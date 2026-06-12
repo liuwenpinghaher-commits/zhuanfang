@@ -28,6 +28,7 @@ export interface ProductApiClient {
   saveState(state: ProductState): Promise<ProductState>;
   resetState(): Promise<ProductState>;
   createSearchBrief(input: CreateSearchBriefRequest): Promise<CreateSearchBriefResponse>;
+  createAutoBrief(input: CreateAutoBriefRequest): Promise<CreateAutoBriefResponse>;
   createInterviewSession(input: CreateInterviewSessionRequest): Promise<InterviewSessionResponse>;
   sendInterviewTurn(sessionId: string, input: SendInterviewTurnRequest): Promise<InterviewSessionResponse>;
   applyInterviewControl(sessionId: string, input: ApplyInterviewControlRequest): Promise<InterviewSessionResponse>;
@@ -114,6 +115,16 @@ export interface CreateSearchBriefResponse {
   brief: SearchBrief;
   state: ProductState;
   task: CapabilityTask<SearchBriefInput>;
+}
+
+export interface CreateAutoBriefRequest {
+  themeId?: string;
+  debtId?: string;
+}
+
+export interface CreateAutoBriefResponse {
+  brief: SearchBrief;
+  state: ProductState;
 }
 
 export interface CreateInterviewSessionRequest {
@@ -268,6 +279,18 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input)
       })) as CreateSearchBriefResponse;
+
+      return {
+        ...response,
+        state: normalizeProductState(response.state)
+      };
+    },
+    async createAutoBrief(input) {
+      const response = (await requestJson("/api/search/auto-briefs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input)
+      })) as CreateAutoBriefResponse;
 
       return {
         ...response,

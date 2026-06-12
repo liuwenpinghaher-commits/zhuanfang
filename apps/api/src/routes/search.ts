@@ -8,7 +8,7 @@ import {
   failCapabilityTask,
   startCapabilityTask
 } from "../../../../src/capabilities/task";
-import { createSearchBriefFromInput } from "../../../../src/domain/engine";
+import { buildSearchBrief, createSearchBriefFromInput } from "../../../../src/domain/engine";
 import type { SearchProviderId } from "../../../../src/domain/types";
 import type { ProductStateRepository } from "../product-state-repository";
 
@@ -63,6 +63,28 @@ export async function registerSearchRoutes(
     const { brief, nextState } = createSearchBriefFromInput(state, run.result);
     repository.replaceState(nextState);
     return { brief, state: nextState, task: run.task };
+  });
+
+  server.post("/api/search/auto-briefs", async (request, reply) => {
+    const state = repository.getState();
+    const { themeId, debtId } = (request.body ?? {}) as { themeId?: string; debtId?: string };
+
+    let topic = "";
+    if (themeId) {
+      const theme = state.themes.find((t) => t.id === themeId);
+      topic = theme ? theme.name : "";
+    } else if (debtId) {
+      const debt = state.debts.find((d) => d.id === debtId);
+      topic = debt ? debt.concept : "";
+    }
+
+    if (!topic) {
+      return reply.code(400).send({ error: "No topic found" });
+    }
+
+    const { brief, nextState } = buildSearchBrief(state, topic, state.systemConfig.search.activeProvider);
+    repository.replaceState(nextState);
+    return { brief, state: nextState };
   });
 }
 
