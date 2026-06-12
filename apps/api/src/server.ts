@@ -109,7 +109,7 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     await registerPodcastRoutes(registeredServer, productStateRepository, providerClients);
   });
   void server.register(async (registeredServer) => {
-    await registerRealtimeVoiceRoutes(registeredServer, providerClients);
+    await registerRealtimeVoiceRoutes(registeredServer, { bailianRealtimeVoiceClient: providerClients.bailianRealtimeVoiceClient, stateRepo: productStateRepository });
   });
   void server.register(async (registeredServer) => {
     await registerCorpusRoutes(registeredServer, productStateRepository, providerClients);

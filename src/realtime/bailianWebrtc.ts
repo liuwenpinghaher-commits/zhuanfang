@@ -1,5 +1,62 @@
 import type { ProductApiClient, RealtimeVoiceSessionResponse } from "../api/productApi";
 
+export type TurnPhase = "idle" | "user_speaking" | "short_pause" | "long_pause" | "assistant_speaking" | "interrupted";
+
+export interface TurnState {
+  phase: TurnPhase;
+  silenceMs: number;
+  isUserSpeaking: boolean;
+  isAssistantSpeaking: boolean;
+  shouldInterrupt: boolean;
+  backchannel: string | null;
+}
+
+export function createTurnStateMachine(options: {
+  silenceThresholdMs: number;
+  longPauseThresholdMs: number;
+}): {
+  update(signal: { inputLevel: number; silenceMs: number }): TurnState;
+  getState(): TurnState;
+} {
+  let phase: TurnPhase = "idle";
+  let silenceMs = 0;
+  let isUserSpeaking = false;
+  let isAssistantSpeaking = false;
+
+  return {
+    update(signal) {
+      silenceMs = signal.silenceMs;
+      isUserSpeaking = signal.inputLevel > 0.1;
+
+      if (isUserSpeaking && isAssistantSpeaking) {
+        phase = "interrupted";
+      } else if (isUserSpeaking) {
+        phase = "user_speaking";
+      } else if (silenceMs < options.silenceThresholdMs) {
+        phase = "short_pause";
+      } else if (silenceMs < options.longPauseThresholdMs) {
+        phase = "long_pause";
+      } else if (isAssistantSpeaking) {
+        phase = "assistant_speaking";
+      } else {
+        phase = "idle";
+      }
+
+      return this.getState();
+    },
+    getState() {
+      return {
+        phase,
+        silenceMs,
+        isUserSpeaking,
+        isAssistantSpeaking,
+        shouldInterrupt: phase === "interrupted",
+        backchannel: phase === "short_pause" ? "嗯" : null,
+      };
+    },
+  };
+}
+
 interface MediaDevicesLike {
   getUserMedia(constraints: MediaStreamConstraints): Promise<MediaStreamLike>;
 }

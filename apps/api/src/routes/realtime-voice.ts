@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import type { BailianRealtimeVoiceClient } from "../providers/bailian";
+import type { ProductStateRepository } from "../product-state-repository";
 
 export interface RealtimeVoiceConfig {
   provider: "bailian";
@@ -18,6 +19,7 @@ export interface RealtimeVoiceConfig {
 
 interface RealtimeVoiceRouteOptions {
   bailianRealtimeVoiceClient?: BailianRealtimeVoiceClient;
+  stateRepo?: ProductStateRepository;
 }
 
 interface RealtimeVoiceSessionPayload {
@@ -84,6 +86,20 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       offerSdp
     });
     return reply.type("application/sdp").send(answerSdp);
+  });
+  server.post("/api/realtime-voice/sessions/:id/interrupt", async (request) => {
+    const { id } = request.params as { id: string };
+    return { interrupted: true, sessionId: id };
+  });
+  server.get("/api/realtime-voice/sessions/:id/memory-context", async (request) => {
+    const stateRepo = options.stateRepo;
+    if (!stateRepo) {
+      return { recentMemories: [], activeThemes: [] };
+    }
+    const state = stateRepo.getState();
+    const recentMemories = (state.memoryRecords || []).slice(-5);
+    const activeThemes = (state.themes || []).filter((t) => t.maturity !== "mature");
+    return { recentMemories, activeThemes };
   });
 }
 
