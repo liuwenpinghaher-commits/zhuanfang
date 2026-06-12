@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { markMemoryCorrection } from "../../../../zhuanfang/src/domain/engine";
-import type { ProductState } from "../../../../zhuanfang/src/domain/types";
+import { markMemoryCorrection } from "../../../../src/domain/engine";
+import type { ProductState } from "../../../../src/domain/types";
 import type { ProductStateRepository } from "../product-state-repository";
 
 interface CreateMemoryCorrectionPayload {

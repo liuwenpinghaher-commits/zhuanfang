@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { applySystemConfigChange, rollbackSystemConfigVersion } from "../../../../zhuanfang/src/domain/engine";
-import type { ConfigVersion, ProductState, SystemConfig } from "../../../../zhuanfang/src/domain/types";
+import { applySystemConfigChange, rollbackSystemConfigVersion } from "../../../../src/domain/engine";
+import type { ConfigVersion, ProductState, SystemConfig } from "../../../../src/domain/types";
 import type { ProductStateRepository } from "../product-state-repository";
 
 interface UpdateProductConfigPayload {

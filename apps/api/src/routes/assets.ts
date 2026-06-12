@@ -7,7 +7,7 @@ import {
   updatePointStatus,
   updateQuestionStatus,
   updateReadingAssetStatus
-} from "../../../../zhuanfang/src/domain/engine";
+} from "../../../../src/domain/engine";
 import type {
   AssetStatus,
   DecisionAsset,
@@ -16,7 +16,7 @@ import type {
   ProductState,
   QuestionAsset,
   ReadingAsset
-} from "../../../../zhuanfang/src/domain/types";
+} from "../../../../src/domain/types";
 import type { ProductStateRepository } from "../product-state-repository";
 
 interface UpdateAssetStatusPayload {

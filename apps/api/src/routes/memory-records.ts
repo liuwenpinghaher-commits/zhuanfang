@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { deleteMemoryRecord, deprecateMemoryRecord, updateMemoryRecordText } from "../../../../zhuanfang/src/domain/engine";
-import type { MemoryRecord, ProductState } from "../../../../zhuanfang/src/domain/types";
+import { deleteMemoryRecord, deprecateMemoryRecord, updateMemoryRecordText } from "../../../../src/domain/engine";
+import type { MemoryRecord, ProductState } from "../../../../src/domain/types";
 import type { ProductStateRepository } from "../product-state-repository";
 
 interface DeprecateMemoryRecordPayload {

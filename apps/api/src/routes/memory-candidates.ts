@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { approveMemoryCandidate, rejectMemoryCandidate, updateMemoryCandidateText } from "../../../../zhuanfang/src/domain/engine";
-import type { MemoryCandidate, ProductState } from "../../../../zhuanfang/src/domain/types";
+import { approveMemoryCandidate, rejectMemoryCandidate, updateMemoryCandidateText } from "../../../../src/domain/engine";
+import type { MemoryCandidate, ProductState } from "../../../../src/domain/types";
 import type { ProductStateRepository } from "../product-state-repository";
 
 interface RejectMemoryCandidatePayload {

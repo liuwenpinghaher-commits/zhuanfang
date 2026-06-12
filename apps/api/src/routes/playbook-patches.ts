@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { approvePlaybookPatch, revertPlaybookPatch } from "../../../../zhuanfang/src/domain/engine";
-import type { PlaybookPatch, ProductState } from "../../../../zhuanfang/src/domain/types";
+import { approvePlaybookPatch, revertPlaybookPatch } from "../../../../src/domain/engine";
+import type { PlaybookPatch, ProductState } from "../../../../src/domain/types";
 import type { ProductStateRepository } from "../product-state-repository";
 
 export async function registerPlaybookPatchRoutes(server: FastifyInstance, repository: ProductStateRepository) {

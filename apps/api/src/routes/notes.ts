@@ -1,12 +1,12 @@
 import type { FastifyInstance } from "fastify";
-import { createQuestionFromNote, submitInterviewFeedback } from "../../../../zhuanfang/src/domain/engine";
+import { createQuestionFromNote, submitInterviewFeedback } from "../../../../src/domain/engine";
 import type {
   DualTrackNote,
   InterviewFeedbackInput,
   InterviewFeedbackTag,
   ProductState,
   QuestionAsset
-} from "../../../../zhuanfang/src/domain/types";
+} from "../../../../src/domain/types";
 import type { ProductStateRepository } from "../product-state-repository";
 
 interface CreateQuestionFromNotePayload {
