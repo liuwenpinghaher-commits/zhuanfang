@@ -1,0 +1,93 @@
+import type {
+  MemoryCandidate,
+  MemoryCandidateStatus,
+  MemorySensitivity,
+  MemorySourceType
+} from "./types";
+
+type MemoryCandidateReviewInput = {
+  text?: string;
+  status?: MemoryCandidateStatus;
+  sourceType?: MemorySourceType;
+  evidenceQuote?: string;
+  reason?: string;
+  sensitivity?: MemorySensitivity;
+  reviewScore?: number;
+  reviewSignals?: string[];
+};
+
+const externalSourceTypes: MemorySourceType[] = ["search_brief", "import_source", "corpus_import"];
+const interviewSourceTypes: MemorySourceType[] = ["interview_session", "dual_track_note", "manual_correction"];
+
+export function scoreMemoryCandidate(candidate: MemoryCandidateReviewInput): Pick<MemoryCandidate, "reviewScore" | "reviewSignals"> {
+  const signals: string[] = [];
+  let score = 50;
+  const evidenceQuote = candidate.evidenceQuote?.trim() ?? "";
+  const reason = candidate.reason?.trim() ?? "";
+  const text = candidate.text?.trim() ?? "";
+
+  if (evidenceQuote.length >= 12) {
+    score += 14;
+    signals.push("有明确证据");
+  }
+
+  if (candidate.sourceType && interviewSourceTypes.includes(candidate.sourceType)) {
+    score += 14;
+    signals.push("来自专访原话");
+  }
+
+  if (candidate.status === "pending" || /确认|待审核|长期记忆/.test(reason)) {
+    score += 8;
+    signals.push("需用户确认");
+  }
+
+  if (candidate.sourceType && externalSourceTypes.includes(candidate.sourceType)) {
+    score -= 12;
+    signals.push("外部资料仅作候选");
+  }
+
+  if (candidate.sensitivity === "sensitive") {
+    score -= 15;
+    signals.push("敏感候选需谨慎");
+  }
+
+  if (/总是|一定|永远|所有|完全/.test(text)) {
+    score -= 6;
+    signals.push("含泛化表达");
+  }
+
+  return {
+    reviewScore: clampReviewScore(score),
+    reviewSignals: uniqueReviewSignals(signals.length > 0 ? signals : ["需人工复核"])
+  };
+}
+
+export function withMemoryCandidateReview<T extends MemoryCandidateReviewInput>(
+  candidate: T,
+  options: { legacyBackfill?: boolean; preserveExisting?: boolean } = {}
+): T & Pick<MemoryCandidate, "reviewScore" | "reviewSignals"> {
+  const computed = scoreMemoryCandidate(candidate);
+  const preserveExisting = options.preserveExisting ?? true;
+  const hasPersistedScore = preserveExisting && Number.isFinite(candidate.reviewScore);
+  const persistedSignals = preserveExisting && Array.isArray(candidate.reviewSignals)
+    ? candidate.reviewSignals.filter((signal): signal is string => typeof signal === "string" && signal.trim().length > 0)
+    : [];
+  const reviewSignals = uniqueReviewSignals([
+    ...(options.legacyBackfill ? ["旧数据已补齐评分"] : []),
+    ...(persistedSignals.length > 0 ? persistedSignals : computed.reviewSignals)
+  ]);
+
+  return {
+    ...candidate,
+    reviewScore: hasPersistedScore ? clampReviewScore(candidate.reviewScore ?? computed.reviewScore) : computed.reviewScore,
+    reviewSignals
+  };
+}
+
+function clampReviewScore(score: number) {
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function uniqueReviewSignals(signals: string[]) {
+  return Array.from(new Set(signals.map((signal) => signal.trim()).filter(Boolean)));
+}
