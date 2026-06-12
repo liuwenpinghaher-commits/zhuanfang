@@ -1,0 +1,35 @@
+{
+  "name": "interview-product-mvp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:api": "tsx watch apps/api/src/server.ts",
+    "dev:full": "node scripts/dev-full.mjs",
+    "build": "tsc -b && vite build",
+    "start:api": "tsx apps/api/src/server.ts",
+    "test": "vitest",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^5.1.1",
+    "drizzle-orm": "^0.45.2",
+    "fastify": "^5.8.5",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "jsdom": "^26.1.0",
+    "tsx": "^4.22.4",
+    "vitest": "^4.0.15"
+  }
+}

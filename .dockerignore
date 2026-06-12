@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.data/
+test-results/
+playwright-report/
+coverage/
+.git/
+.env
+.env.*
+!.env.example
+!.env.production.example
+*.local
+tsconfig.tsbuildinfo

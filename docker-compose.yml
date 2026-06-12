@@ -1,0 +1,52 @@
+services:
+  zhuanfang:
+    build:
+      context: .
+      args:
+        VITE_PRODUCT_API_BASE_URL: ${VITE_PRODUCT_API_BASE_URL:-}
+    image: zhuanfang:local
+    ports:
+      - "${PORT:-8787}:8787"
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 8787
+      DEPLOYMENT_PROFILE: ${DEPLOYMENT_PROFILE:-production}
+      PRODUCT_STATIC_DIR: /app/dist
+      PRODUCT_STATE_DB_PATH: /app/.data/product-state.sqlite
+      PRODUCT_BACKUP_STRATEGY: ${PRODUCT_BACKUP_STRATEGY:-manual-json-export}
+      PRODUCT_WEB_URL: ${PRODUCT_WEB_URL:-http://127.0.0.1:8787}
+      PRODUCT_WEB_ORIGINS: ${PRODUCT_WEB_ORIGINS:-http://127.0.0.1:8787,http://localhost:8787}
+      PRODUCT_API_HEALTH_URL: ${PRODUCT_API_HEALTH_URL:-http://127.0.0.1:8787/api/health}
+      CORPUS_UPLOAD_DIR: /app/.data/corpus-audio
+      CORPUS_AUDIO_PUBLIC_BASE_URL: ${CORPUS_AUDIO_PUBLIC_BASE_URL:-}
+      CORPUS_AUDIO_MAX_BYTES: ${CORPUS_AUDIO_MAX_BYTES:-52428800}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      BAILIAN_API_KEY: ${BAILIAN_API_KEY:-}
+      BAILIAN_BASE_URL: ${BAILIAN_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      BAILIAN_AUDIO_BASE_URL: ${BAILIAN_AUDIO_BASE_URL:-https://dashscope.aliyuncs.com}
+      BAILIAN_MODEL: ${BAILIAN_MODEL:-qwen3.7-plus}
+      BAILIAN_SEARCH_MODEL: ${BAILIAN_SEARCH_MODEL:-qwen3.7-plus}
+      BAILIAN_CHARACTER_MODEL: ${BAILIAN_CHARACTER_MODEL:-qwen-plus-character}
+      BAILIAN_REALTIME_WEBRTC_ENDPOINT: ${BAILIAN_REALTIME_WEBRTC_ENDPOINT:-}
+      BAILIAN_TTS_PROVIDER: ${BAILIAN_TTS_PROVIDER:-cosyvoice}
+      BAILIAN_TTS_MODEL: ${BAILIAN_TTS_MODEL:-cosyvoice-v3-plus}
+      BAILIAN_TTS_VOICE: ${BAILIAN_TTS_VOICE:-longyuan_v3}
+      ANYSEARCH_API_KEY: ${ANYSEARCH_API_KEY:-}
+      ANYSEARCH_BASE_URL: ${ANYSEARCH_BASE_URL:-https://api.anysearch.com}
+      ANYSEARCH_ALLOW_ANONYMOUS: ${ANYSEARCH_ALLOW_ANONYMOUS:-false}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      EXA_API_KEY: ${EXA_API_KEY:-}
+      BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
+      WORKFLOW_RUNTIME_PROVIDER: ${WORKFLOW_RUNTIME_PROVIDER:-local}
+      MASTRA_RUNTIME_ENDPOINT: ${MASTRA_RUNTIME_ENDPOINT:-}
+      MASTRA_RUNTIME_API_KEY: ${MASTRA_RUNTIME_API_KEY:-}
+      PROVIDER_SMOKE_TEST_TOPIC: ${PROVIDER_SMOKE_TEST_TOPIC:-AI 产品商业化热点 provider 冒烟}
+      PROVIDER_SMOKE_TEST_AUDIO_URL: ${PROVIDER_SMOKE_TEST_AUDIO_URL:-}
+      PROVIDER_SMOKE_TEST_WEBRTC_OFFER_SDP: ${PROVIDER_SMOKE_TEST_WEBRTC_OFFER_SDP:-}
+    volumes:
+      - zhuanfang-data:/app/.data
+    restart: unless-stopped
+
+volumes:
+  zhuanfang-data:
