@@ -1,0 +1,868 @@
+import {
+  Archive,
+  BookOpen,
+  Brain,
+  Compass,
+  Headphones,
+  Mic,
+  Search,
+  Settings,
+  ShieldCheck,
+  SlidersHorizontal,
+  Upload,
+  Volume2
+} from "lucide-react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import {
+  analyzeImportedInterview,
+  approvePlaybookPatch,
+  buildCognitiveRadar,
+  buildInterviewCard,
+  buildMonthlyReview,
+  buildRealtimeTurnState,
+  createSearchBriefFromInput,
+  buildSystemStatus,
+  buildYearlyReview,
+  createQuestionFromNote,
+  createSessionDraft,
+  finalizeSession,
+  generatePodcastEpisode,
+  markMemoryCorrection,
+  receiveUserTurn,
+  searchProductAssets,
+  toggleAssetImportance,
+  updateInterviewControl,
+  updateKnowledgeDebtStatus,
+  updatePointStatus,
+  updateQuestionStatus
+} from "./domain/engine";
+import { executeSearchProvider } from "./capabilities/search";
+import { createIdleCapabilityTask, startCapabilityTask } from "./capabilities/task";
+import { productApiClient } from "./api/productApi";
+import type { RealtimeVoiceSessionResponse, SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigUpdateRequest } from "./api/productApi";
+import {
+  connectBailianRealtimeWebrtc,
+  type BailianRealtimeWebrtcConnection
+} from "./realtime/bailianWebrtc";
+import {
+  dedupeGeneratedArtifacts,
+  deleteCorpusInsightBundle,
+  deletePodcastEpisode,
+  deleteSearchBrief
+} from "./domain/lifecycle";
+import { loadProductState, resetProductState, saveProductState } from "./domain/storage";
+import type {
+  AssetStatus,
+  CorpusImportInput,
+  InterviewControlAction,
+  InterviewMode,
+  InterviewSession,
+  ProductState,
+  SearchBriefInput,
+  SearchProviderId,
+  SystemConfig
+} from "./domain/types";
+import { AssetsView } from "./features/assets/AssetsView";
+import { ConfigView } from "./features/config/ConfigView";
+import { CorpusLearningView } from "./features/corpus/CorpusLearningView";
+import { HomeView } from "./features/home/HomeView";
+import { InterviewView } from "./features/interview/InterviewView";
+import { NotesView } from "./features/notes/NotesView";
+import { PodcastStudioView } from "./features/podcast/PodcastStudioView";
+import { ProfileView } from "./features/profile/ProfileView";
+import { SearchIntelligenceView } from "./features/search/SearchIntelligenceView";
+import { ThemesView } from "./features/themes/ThemesView";
+import {
+  buildNotice,
+  groupedNavigation,
+  interviewControlGroups,
+  type AssetFilter,
+  type ConfigSection,
+  type UiNotice,
+  type View
+} from "./ui";
+
+const navIconByView: Record<View, typeof Compass> = {
+  home: Compass,
+  interview: Mic,
+  search: Search,
+  corpus: Upload,
+  podcast: Headphones,
+  notes: BookOpen,
+  assets: Archive,
+  themes: Brain,
+  config: SlidersHorizontal,
+  profile: Settings
+};
+
+export default function App() {
+  const [productState, setProductState] = useState<ProductState>(() => loadProductState());
+  const [apiPersistenceEnabled, setApiPersistenceEnabled] = useState(false);
+  const [systemCapabilities, setSystemCapabilities] = useState<SystemCapabilitiesResponse | null>(null);
+  const [runtimeConfig, setRuntimeConfig] = useState<SystemConfigResponse | null>(null);
+  const [runtimeConfigSaving, setRuntimeConfigSaving] = useState(false);
+  const [view, setView] = useState<View>("home");
+  const [session, setSession] = useState<InterviewSession | null>(null);
+  const [pendingMode, setPendingMode] = useState<InterviewMode>("decision");
+  const [notice, setNotice] = useState<UiNotice | null>(null);
+  const [interviewInput, setInterviewInput] = useState("");
+  const [correctionText, setCorrectionText] = useState("");
+  const [assetQuery, setAssetQuery] = useState("");
+  const [assetFilter, setAssetFilter] = useState<AssetFilter>("all");
+  const [selectedAssetKey, setSelectedAssetKey] = useState<string | undefined>(undefined);
+  const [configSection, setConfigSection] = useState<ConfigSection>("overview");
+  const [recording, setRecording] = useState(false);
+  const [realtimeVoiceSession, setRealtimeVoiceSession] = useState<RealtimeVoiceSessionResponse | null>(null);
+  const [realtimeVoiceConnection, setRealtimeVoiceConnection] = useState<BailianRealtimeWebrtcConnection | null>(null);
+  const [searchTopic, setSearchTopic] = useState("AI 产品商业化热点");
+  const [activeSearchBriefId, setActiveSearchBriefId] = useState<string | undefined>(undefined);
+  const [searchTask, setSearchTask] = useState(() => createIdleCapabilityTask<SearchBriefInput>("联网搜索"));
+  const [podcastNoteId, setPodcastNoteId] = useState(() => productState.notes[0]?.id ?? "");
+  const [podcastVoice, setPodcastVoice] = useState(productState.systemConfig.voice.podcastVoice);
+  const [corpusMediaType, setCorpusMediaType] = useState<CorpusImportInput["mediaType"]>("text");
+  const [corpusTitle, setCorpusTitle] = useState("优秀专访样本");
+  const [corpusSourceUrl, setCorpusSourceUrl] = useState("");
+  const [corpusTranscribing, setCorpusTranscribing] = useState(false);
+  const [corpusContent, setCorpusContent] = useState(
+    "主持人：你刚才说增长很难，能不能讲一个具体时刻？\n被访者：真正困难是团队不敢暴露坏消息。\n主持人：如果反过来看，是不是机制奖励了报喜不报忧？"
+  );
+
+  useEffect(() => {
+    saveProductState(productState);
+  }, [productState]);
+
+  useEffect(() => {
+    if (!apiPersistenceEnabled) {
+      return;
+    }
+
+    let cancelled = false;
+    productApiClient.saveState(productState).catch(() => {
+      if (!cancelled) {
+        setApiPersistenceEnabled(false);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [apiPersistenceEnabled, productState]);
+
+  useEffect(() => {
+    if (view !== "config") {
+      return;
+    }
+
+    let cancelled = false;
+    productApiClient
+      .getSystemCapabilities()
+      .then((capabilities) => {
+        if (!cancelled) {
+          setSystemCapabilities(capabilities);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSystemCapabilities(null);
+        }
+      });
+    productApiClient
+      .getSystemConfig()
+      .then((config) => {
+        if (!cancelled) {
+          setRuntimeConfig(config);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setRuntimeConfig(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [view]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    productApiClient
+      .getState()
+      .then((remoteState) => {
+        if (!cancelled) {
+          setProductState(remoteState);
+          setApiPersistenceEnabled(true);
+        }
+      })
+      .catch(() => {
+        // The demo remains usable when the optional local API is not running.
+        if (!cancelled) {
+          setApiPersistenceEnabled(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const card = useMemo(() => buildInterviewCard(productState, activeSearchBriefId), [activeSearchBriefId, productState]);
+  const monthlyReview = useMemo(() => buildMonthlyReview(productState), [productState]);
+  const yearlyReview = useMemo(() => buildYearlyReview(productState), [productState]);
+  const radar = useMemo(() => buildCognitiveRadar(productState), [productState]);
+  const assetResults = useMemo(() => searchProductAssets(productState, assetQuery), [productState, assetQuery]);
+  const systemStatus = useMemo(() => buildSystemStatus(productState), [productState]);
+  const realtimeState = useMemo(
+    () =>
+      session
+        ? buildRealtimeTurnState(session, {
+            inputLevel: recording ? 0.72 : 0.02,
+            silenceMs: recording ? 0 : 900,
+            isUserSpeaking: recording
+          })
+        : null,
+    [recording, session]
+  );
+
+  function closeRealtimeVoiceSession() {
+    realtimeVoiceConnection?.close();
+    setRealtimeVoiceConnection(null);
+    setRealtimeVoiceSession(null);
+    setRecording(false);
+  }
+
+  function prepareInterview(mode: InterviewMode = "decision", searchBriefId = activeSearchBriefId) {
+    setPendingMode(mode);
+    setActiveSearchBriefId(searchBriefId);
+    setSession(null);
+    closeRealtimeVoiceSession();
+    setView("interview");
+  }
+
+  async function startInterview(mode: InterviewMode = pendingMode, searchBriefId = activeSearchBriefId) {
+    try {
+      const apiRun = await productApiClient.createInterviewSession({
+        mode,
+        strength: productState.profile.preferredStrength,
+        ...(searchBriefId ? { searchBriefId } : {})
+      });
+      setSession(apiRun.session);
+      setProductState(apiRun.state);
+      closeRealtimeVoiceSession();
+      setApiPersistenceEnabled(true);
+      setView("interview");
+      return;
+    } catch {
+      setApiPersistenceEnabled(false);
+    }
+
+    setSession(createSessionDraft(productState, mode, productState.profile.preferredStrength, { searchBriefId }));
+    closeRealtimeVoiceSession();
+    setView("interview");
+  }
+
+  async function createSearchMaterial(provider: SearchProviderId = productState.systemConfig.search.activeProvider) {
+    const runningTask = startCapabilityTask(searchTask, provider);
+    setSearchTask(runningTask);
+    setView("search");
+
+    const searchRequest = {
+      topic: searchTopic,
+      providerId: provider,
+      maxSources: productState.systemConfig.search.maxSources,
+      recencyDays: productState.systemConfig.search.recencyDays
+    };
+
+    try {
+      const apiRun = await productApiClient.createSearchBrief(searchRequest);
+      setSearchTask(apiRun.task);
+      setProductState(apiRun.state);
+      setApiPersistenceEnabled(true);
+      setActiveSearchBriefId(apiRun.brief.id);
+      setSearchTopic(apiRun.brief.topic);
+      setNotice(
+        apiRun.task.status === "degraded"
+          ? buildNotice("warning", "搜索已降级完成", apiRun.task.degradedReason)
+          : buildNotice("success", "搜索简报已生成", `已选中「${apiRun.brief.topic}」，可以带入下一次专访。`)
+      );
+      return;
+    } catch {
+      setApiPersistenceEnabled(false);
+    }
+
+    const run = await executeSearchProvider(searchRequest);
+    setSearchTask(run.task);
+
+    if (run.task.status === "failed") {
+      setNotice(buildNotice("danger", "搜索 provider 调用失败", run.task.error ?? "请检查配置后重试。"));
+      return;
+    }
+
+    const { brief, nextState } = createSearchBriefFromInput(productState, run.result);
+    setProductState(nextState);
+    setActiveSearchBriefId(brief.id);
+    setSearchTopic(brief.topic);
+    setNotice(
+      run.task.status === "degraded"
+        ? buildNotice("warning", "搜索已降级完成", run.task.degradedReason)
+        : buildNotice("success", "搜索简报已生成", `已选中「${brief.topic}」，可以带入下一次专访。`)
+    );
+  }
+
+  function retrySearchMaterial() {
+    return createSearchMaterial((searchTask.providerId as SearchProviderId | undefined) ?? productState.systemConfig.search.activeProvider);
+  }
+
+  function startFromBrief(briefId: string) {
+    prepareInterview("learning", briefId);
+  }
+
+  function removeSearchBrief(briefId: string) {
+    if (typeof window !== "undefined" && !window.confirm("确定要删除这份搜索简报吗？已生成的访谈和资产不会被删除。")) {
+      return;
+    }
+    setProductState(deleteSearchBrief(productState, briefId));
+    setActiveSearchBriefId((current) => (current === briefId ? undefined : current));
+    setNotice(buildNotice("warning", "搜索简报已删除", "历史访谈和资产保持不变。"));
+  }
+
+  function setDefaultSearchProvider(provider: SearchProviderId) {
+    const nextConfig = {
+      ...productState.systemConfig,
+      search: { ...productState.systemConfig.search, activeProvider: provider }
+    };
+    const nextState = {
+      ...productState,
+      systemConfig: nextConfig
+    };
+    setProductState(nextState);
+    setNotice(buildNotice("success", "默认搜索 Provider 已更新", `当前默认 provider：${provider}`));
+  }
+
+  async function createPodcast() {
+    const noteId = podcastNoteId || productState.notes[0]?.id;
+    if (!noteId) {
+      return;
+    }
+
+    try {
+      const apiRun = await productApiClient.generatePodcastEpisode({
+        noteId,
+        format: "solo",
+        voice: podcastVoice
+      });
+      setProductState(apiRun.state);
+      setApiPersistenceEnabled(true);
+      setPodcastNoteId(noteId);
+      setNotice(buildNotice("success", "播客已生成", `使用声音配置：${apiRun.episode.voice}`));
+      setView("podcast");
+      return;
+    } catch {
+      setApiPersistenceEnabled(false);
+    }
+
+    const { nextState } = generatePodcastEpisode(productState, noteId, {
+      format: "solo",
+      voice: podcastVoice
+    });
+    setProductState(nextState);
+    setPodcastNoteId(noteId);
+    setNotice(buildNotice("success", "播客已生成", `使用声音配置：${podcastVoice}`));
+    setView("podcast");
+  }
+
+  function removePodcastEpisode(episodeId: string) {
+    if (typeof window !== "undefined" && !window.confirm("确定要删除这条播客生成结果吗？来源笔记不会被删除。")) {
+      return;
+    }
+    setProductState(deletePodcastEpisode(productState, episodeId));
+    setNotice(buildNotice("warning", "播客生成结果已删除", "来源笔记和认知资产保持不变。"));
+  }
+
+  async function analyzeCorpus() {
+    if (!corpusContent.trim()) {
+      return;
+    }
+    const input = {
+      title: corpusTitle.trim() || "未命名专访样本",
+      mediaType: corpusMediaType,
+      content: corpusContent.trim(),
+      ...(corpusSourceUrl.trim() ? { sourceUrl: corpusSourceUrl.trim() } : {})
+    };
+
+    try {
+      const apiRun = await productApiClient.analyzeCorpusImport(input);
+      setProductState(apiRun.state);
+      setApiPersistenceEnabled(true);
+      setNotice(buildNotice("success", "语料分析已完成", "已生成可确认的访谈策略补丁。"));
+      setView("corpus");
+      return;
+    } catch {
+      setApiPersistenceEnabled(false);
+    }
+
+    const { nextState } = analyzeImportedInterview(productState, {
+      title: input.title,
+      mediaType: input.mediaType,
+      content: input.content,
+      sourceUrl: input.sourceUrl
+    });
+    setProductState(nextState);
+    setNotice(buildNotice("success", "语料分析已完成", "已生成可确认的访谈策略补丁。"));
+    setView("corpus");
+  }
+
+  async function transcribeCorpusAudio() {
+    const sourceUrl = corpusSourceUrl.trim();
+    if (!sourceUrl) {
+      setNotice(buildNotice("warning", "需要音频 URL", "请先填写可公网访问的音频文件地址。"));
+      return;
+    }
+
+    const title = corpusTitle.trim() || "未命名音频专访样本";
+    setCorpusMediaType("audio");
+    setCorpusTranscribing(true);
+
+    try {
+      const apiRun = await productApiClient.transcribeCorpusAudio({
+        title,
+        sourceUrl,
+        languageHint: "zh"
+      });
+      setCorpusContent(apiRun.transcription.text);
+      setNotice(
+        apiRun.transcription.status === "ready"
+          ? buildNotice("success", "音频转写已完成", `已生成 ${apiRun.transcription.model} 转写稿，可继续分析。`)
+          : buildNotice("warning", "音频转写已降级", apiRun.transcription.degradedReason)
+      );
+      return;
+    } catch {
+      setApiPersistenceEnabled(false);
+      setCorpusContent(buildLocalAudioTranscriptionDraft(sourceUrl));
+      setNotice(buildNotice("warning", "音频转写暂不可用", "Product API 未连接，已生成可编辑的手工转写模板。"));
+    } finally {
+      setCorpusTranscribing(false);
+    }
+  }
+
+  function removeCorpusInsight(insightId: string) {
+    if (typeof window !== "undefined" && !window.confirm("确定要删除这次语料分析吗？已应用的 PlaybookPatch 会保留为历史记录。")) {
+      return;
+    }
+    setProductState(deleteCorpusInsightBundle(productState, insightId));
+    setNotice(buildNotice("warning", "语料分析已删除", "已应用的引擎补丁仍会保留。"));
+  }
+
+  function applyPlaybookPatch(patchId: string) {
+    setProductState(approvePlaybookPatch(productState, patchId));
+    setNotice(buildNotice("success", "PlaybookPatch 已应用", "系统配置已记录新的访谈策略版本。"));
+    setView("config");
+  }
+
+  function cleanupGeneratedArtifacts() {
+    const result = dedupeGeneratedArtifacts(productState);
+    const removedTotal = result.removed.searchBriefs + result.removed.podcastEpisodes + result.removed.corpusInsights;
+    setProductState(result.nextState);
+    setNotice(
+      removedTotal > 0
+        ? buildNotice(
+            "warning",
+            "重复生成物已清理",
+            `删除 ${result.removed.searchBriefs} 份搜索简报、${result.removed.podcastEpisodes} 条播客、${result.removed.corpusInsights} 次语料分析。`
+          )
+        : buildNotice("info", "没有发现重复生成物", "搜索简报、播客和语料分析都已保持唯一。")
+    );
+  }
+
+  async function saveRuntimeConfig(updates: SystemConfigUpdateRequest) {
+    setRuntimeConfigSaving(true);
+    try {
+      const result = await productApiClient.updateSystemConfig(updates);
+      const capabilities = await productApiClient.getSystemCapabilities();
+      setRuntimeConfig(result.config);
+      setSystemCapabilities(capabilities);
+      setNotice(buildNotice("success", "运行配置已保存", `已更新 ${result.settingsUpdated.length} 项服务端配置。`));
+    } catch {
+      setNotice(buildNotice("danger", "运行配置保存失败", "请确认 Product API 正在运行，且本地 env 文件可写。"));
+    } finally {
+      setRuntimeConfigSaving(false);
+    }
+  }
+
+  function saveProductConfig(nextConfig: SystemConfig) {
+    const nextState = {
+      ...productState,
+      systemConfig: nextConfig
+    };
+    setProductState(nextState);
+    setPodcastVoice(nextConfig.voice.podcastVoice);
+    setNotice(buildNotice("success", "产品策略已保存", "搜索、语音和访谈策略会影响后续生成流程。"));
+  }
+
+  function saveDefaultPodcastVoice() {
+    const nextConfig = {
+      ...productState.systemConfig,
+      voice: { ...productState.systemConfig.voice, podcastVoice }
+    };
+    const nextState = {
+      ...productState,
+      systemConfig: nextConfig
+    };
+    setProductState(nextState);
+    setNotice(buildNotice("success", "播客默认声音已更新", `默认声音已设为：${podcastVoice}`));
+  }
+
+  async function submitTurn(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session || !interviewInput.trim()) {
+      return;
+    }
+    const content = interviewInput;
+    setInterviewInput("");
+
+    try {
+      const apiRun = await productApiClient.sendInterviewTurn(session.id, { content });
+      setSession(apiRun.session);
+      setProductState(apiRun.state);
+      setApiPersistenceEnabled(true);
+      return;
+    } catch {
+      setApiPersistenceEnabled(false);
+    }
+
+    setSession(receiveUserTurn(session, content));
+    setInterviewInput("");
+  }
+
+  async function finishInterview() {
+    if (!session || session.turns.length === 0) {
+      return;
+    }
+
+    try {
+      const apiRun = await productApiClient.endInterviewSession(session.id);
+      setProductState(apiRun.state);
+      setApiPersistenceEnabled(true);
+      setSession(null);
+      closeRealtimeVoiceSession();
+      setNotice(buildNotice("success", "专访档案已生成", "双轨笔记和认知资产已更新。"));
+      setView("notes");
+      return;
+    } catch {
+      setApiPersistenceEnabled(false);
+    }
+
+    const result = finalizeSession(productState, session);
+    setProductState(result.nextState);
+    setSession(null);
+    closeRealtimeVoiceSession();
+    setNotice(buildNotice("success", "专访档案已生成", "双轨笔记和认知资产已更新。"));
+    setView("notes");
+  }
+
+  async function applyInterviewControl(action: InterviewControlAction) {
+    if (!session) {
+      return;
+    }
+    const controlLabel =
+      interviewControlGroups.flatMap((group) => group.actions).find((option) => option.id === action)?.label ?? "访谈控制";
+
+    try {
+      const apiRun = await productApiClient.applyInterviewControl(session.id, { action });
+      setSession(apiRun.session);
+      setProductState(apiRun.state);
+      setApiPersistenceEnabled(true);
+      setNotice(buildNotice("info", "访谈控制已应用", `下一轮会按「${controlLabel}」调整。`));
+      return;
+    } catch {
+      setApiPersistenceEnabled(false);
+    }
+
+    setSession(updateInterviewControl(session, action));
+    setNotice(buildNotice("info", "访谈控制已应用", `下一轮会按「${controlLabel}」调整。`));
+  }
+
+  function saveNoteQuestion(noteId: string, index: number) {
+    setProductState(createQuestionFromNote(productState, noteId, index));
+    setNotice(buildNotice("success", "问题已保存到资产库", "你可以在问题资产中继续标记状态。"));
+    setView("assets");
+  }
+
+  function addCorrection() {
+    if (!correctionText.trim()) {
+      return;
+    }
+    setProductState(markMemoryCorrection(productState, correctionText.trim()));
+    setNotice(buildNotice("success", "记忆修正已保存", "后续访谈会参考这条边界。"));
+    setCorrectionText("");
+  }
+
+  async function resetData() {
+    if (typeof window !== "undefined" && !window.confirm("确定要重置本地演示数据吗？这会清空当前浏览器里的访谈和资产状态。")) {
+      return;
+    }
+    let nextState: ProductState;
+    try {
+      nextState = await productApiClient.resetState();
+      setApiPersistenceEnabled(true);
+      saveProductState(nextState);
+    } catch {
+      setApiPersistenceEnabled(false);
+      nextState = resetProductState();
+    }
+    setProductState(nextState);
+    setSession(null);
+    closeRealtimeVoiceSession();
+    setPendingMode("decision");
+    setInterviewInput("");
+    setActiveSearchBriefId(undefined);
+    setPodcastNoteId("");
+    setCorpusMediaType("text");
+    setCorpusSourceUrl("");
+    setNotice(buildNotice("warning", "演示数据已重置", "当前浏览器状态已恢复为初始样例。"));
+    setView("home");
+  }
+
+  async function toggleRealtimeRecording() {
+    if (recording) {
+      closeRealtimeVoiceSession();
+      return;
+    }
+
+    try {
+      const voiceSession = await productApiClient.createRealtimeVoiceSession({
+        ...(session ? { interviewSessionId: session.id } : {}),
+        instructions: buildRealtimeVoiceInstructions(session, card)
+      });
+      setRealtimeVoiceSession(voiceSession);
+      setApiPersistenceEnabled(true);
+
+      if (voiceSession.status === "ready") {
+        setNotice(
+          buildNotice(
+            "success",
+            "实时语音会话已就绪",
+            `${voiceSession.model} · ${voiceSession.transport === "webrtc" ? "WebRTC" : "WebSocket"}`
+          )
+        );
+        try {
+          const connection = await connectBailianRealtimeWebrtc(voiceSession, { productApiClient });
+          setRealtimeVoiceConnection(connection);
+          setRecording(true);
+          setNotice(
+            buildNotice(
+              "success",
+              "实时语音会话已就绪",
+              `${voiceSession.model} · ${voiceSession.transport === "webrtc" ? "WebRTC" : "WebSocket"} 已连接`
+            )
+          );
+        } catch {
+          setRealtimeVoiceConnection(null);
+          setRecording(false);
+          setNotice(
+            buildNotice(
+              "warning",
+              "实时语音会话已就绪",
+              `${voiceSession.model} · ${voiceSession.transport === "webrtc" ? "WebRTC" : "WebSocket"}；浏览器未完成音频连接，已保留文本专访。`
+            )
+          );
+        }
+      } else {
+        setRecording(false);
+        setNotice(
+          buildNotice(
+            "warning",
+            "实时语音未完全配置",
+            voiceSession.status === "needs-webrtc-endpoint"
+              ? "缺少百炼 WebRTC 白名单 Endpoint，已保留文本专访。"
+              : "缺少百炼 API Key，已保留文本专访。"
+          )
+        );
+      }
+      return;
+    } catch {
+      setApiPersistenceEnabled(false);
+    }
+
+    setRecording(true);
+    setRealtimeVoiceSession(null);
+    setNotice(buildNotice("warning", "实时语音已降级", "Product API 不可用，当前仅模拟录音节奏。"));
+  }
+
+  return (
+    <>
+    <a className="skip-link" href="#main-content">跳到主内容</a>
+    <div className="app-shell">
+      <aside className="sidebar" aria-label="主导航">
+        <div className="brand">
+          <div className="brand-mark"><Volume2 size={20} /></div>
+          <div>
+            <strong>私人专访编辑</strong>
+            <span>认知资产工作台</span>
+          </div>
+        </div>
+        <nav className="nav-list">
+          {groupedNavigation.map((group) => (
+            <section className="nav-group" key={group.label} aria-label={`${group.label}导航`}>
+              <span className="nav-group-label">{group.label}</span>
+              <div className="nav-group-items">
+                {group.items.map((item) => {
+                  const Icon = navIconByView[item.id];
+                  return (
+                    <button
+                      key={item.id}
+                      className={view === item.id ? "nav-item active" : "nav-item"}
+                      type="button"
+                      onClick={() => setView(item.id)}
+                    >
+                      <Icon size={18} />
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          ))}
+        </nav>
+        <div className="sidebar-status">
+          <ShieldCheck size={18} />
+          <span>本地演示数据，用户可随时重置和修正记忆。</span>
+        </div>
+      </aside>
+
+      <main id="main-content" className="main-area">
+        {notice && (
+          <section className={`notice ${notice.kind}`} aria-live="polite" aria-atomic="true">
+            <strong>{notice.message}</strong>
+            {notice.detail && <span>{notice.detail}</span>}
+          </section>
+        )}
+        {view === "home" && (
+          <HomeView state={productState} card={card} monthlyReview={monthlyReview} onStart={prepareInterview} />
+        )}
+        {view === "interview" && (
+          <InterviewView
+            card={card}
+            session={session}
+            pendingMode={pendingMode}
+            input={interviewInput}
+            recording={recording}
+            realtimeState={realtimeState}
+            onInput={setInterviewInput}
+            onStart={startInterview}
+            onSubmit={submitTurn}
+            onFinish={finishInterview}
+            onControl={applyInterviewControl}
+            onToggleRecording={toggleRealtimeRecording}
+          />
+        )}
+        {view === "search" && (
+          <SearchIntelligenceView
+            state={productState}
+            topic={searchTopic}
+            activeBriefId={activeSearchBriefId}
+            task={searchTask}
+            onTopic={setSearchTopic}
+            onCreate={createSearchMaterial}
+            onRetry={retrySearchMaterial}
+            onUseBrief={startFromBrief}
+            onDeleteBrief={removeSearchBrief}
+            onSetDefaultProvider={setDefaultSearchProvider}
+          />
+        )}
+        {view === "corpus" && (
+          <CorpusLearningView
+            state={productState}
+            mediaType={corpusMediaType}
+            title={corpusTitle}
+            sourceUrl={corpusSourceUrl}
+            content={corpusContent}
+            transcribing={corpusTranscribing}
+            onMediaType={setCorpusMediaType}
+            onTitle={setCorpusTitle}
+            onSourceUrl={setCorpusSourceUrl}
+            onContent={setCorpusContent}
+            onTranscribeAudio={transcribeCorpusAudio}
+            onAnalyze={analyzeCorpus}
+            onApprovePatch={applyPlaybookPatch}
+            onDeleteInsight={removeCorpusInsight}
+          />
+        )}
+        {view === "podcast" && (
+          <PodcastStudioView
+            state={productState}
+            noteId={podcastNoteId}
+            voice={podcastVoice}
+            onNoteId={setPodcastNoteId}
+            onVoice={setPodcastVoice}
+            onGenerate={createPodcast}
+            onDeleteEpisode={removePodcastEpisode}
+            onSaveDefaultVoice={saveDefaultPodcastVoice}
+          />
+        )}
+        {view === "notes" && <NotesView state={productState} onStart={prepareInterview} onSaveQuestion={saveNoteQuestion} />}
+        {view === "assets" && (
+          <AssetsView
+            query={assetQuery}
+            results={assetResults}
+            filter={assetFilter}
+            selectedAssetKey={selectedAssetKey}
+            onQuery={setAssetQuery}
+            onFilter={setAssetFilter}
+            onSelectAsset={setSelectedAssetKey}
+            onToggleImportant={(assetId) => setProductState(toggleAssetImportance(productState, assetId))}
+            onPointStatus={(assetId, status) => setProductState(updatePointStatus(productState, assetId, status))}
+            onQuestionStatus={(assetId, status) => setProductState(updateQuestionStatus(productState, assetId, status))}
+            onDebtStatus={(assetId, status) => setProductState(updateKnowledgeDebtStatus(productState, assetId, status))}
+          />
+        )}
+        {view === "themes" && <ThemesView state={productState} review={monthlyReview} yearlyReview={yearlyReview} radar={radar} onStart={prepareInterview} />}
+        {view === "config" && (
+          <ConfigView
+            state={productState}
+            status={systemStatus}
+            systemCapabilities={systemCapabilities}
+            runtimeConfig={runtimeConfig}
+            runtimeConfigSaving={runtimeConfigSaving}
+            section={configSection}
+            onSection={setConfigSection}
+            onApprovePatch={applyPlaybookPatch}
+            onCleanupGeneratedArtifacts={cleanupGeneratedArtifacts}
+            onSaveRuntimeConfig={saveRuntimeConfig}
+            onSaveProductConfig={saveProductConfig}
+          />
+        )}
+        {view === "profile" && (
+          <ProfileView
+            state={productState}
+            correctionText={correctionText}
+            onCorrectionText={setCorrectionText}
+            onAddCorrection={addCorrection}
+            onReset={resetData}
+          />
+        )}
+      </main>
+    </div>
+    </>
+  );
+}
+
+function buildRealtimeVoiceInstructions(session: InterviewSession | null, card: ReturnType<typeof buildInterviewCard>) {
+  return [
+    "你是一个真正的私人专访主持人。",
+    "每次只问一个核心问题，优先追具体事件、真实张力和可验证假设。",
+    `本次主题：${session?.title ?? card.title}`,
+    `为什么现在聊：${card.whyNow}`,
+    `建议开场：${card.suggestedOpening}`,
+    "不要长篇输出，不要替用户下结论，不要像客服。"
+  ].join("\n");
+}
+
+function buildLocalAudioTranscriptionDraft(sourceUrl: string) {
+  return [
+    `主持人：这段音频来自 ${sourceUrl}，当前还没有完成自动转写。`,
+    "被访者：请在这里补充被访者的关键原话、停顿和情绪变化。",
+    "主持人：补齐后我会分析这段专访如何索要具体时刻、推进反方观点和控制节奏。"
+  ].join("\n");
+}

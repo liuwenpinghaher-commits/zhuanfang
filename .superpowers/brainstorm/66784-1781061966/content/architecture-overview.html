@@ -1,0 +1,79 @@
+<h2>语音专访式日记工具：重构总览</h2>
+<p class="subtitle">基于当前两份 Markdown 方案整理：先确认目标架构和实施边界，再进入详细规格。</p>
+
+<div class="section">
+  <div class="label">Current Signal</div>
+  <div class="split">
+    <div class="mockup">
+      <div class="mockup-header">当前 demo 材料</div>
+      <div class="mockup-body">
+        <div style="display:grid;gap:12px">
+          <div class="placeholder">产品定位：私人商业专访搭档，而不是普通语音日记</div>
+          <div class="placeholder">核心壁垒：实时语音 + 人格引擎 + 记忆/知识 + 多学科视角</div>
+          <div class="placeholder">现有风险：大文件职责混杂、配置重复、DB 串行锁、测试缺口</div>
+        </div>
+      </div>
+    </div>
+    <div class="mockup">
+      <div class="mockup-header">推荐目标结构</div>
+      <div class="mockup-body">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div class="placeholder">Session Orchestrator<br>会话生命周期</div>
+          <div class="placeholder">Realtime Gateway<br>音频/ASR/TTS</div>
+          <div class="placeholder">Interview Brain<br>策略/深度/视角</div>
+          <div class="placeholder">Context Layer<br>记忆/知识/引导稿</div>
+          <div class="placeholder">Persistence<br>SQLite + 事件日志</div>
+          <div class="placeholder">Experience UI<br>对话 + 透明化 + 雷达</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="label">Recommended Refactor Path</div>
+  <div class="options">
+    <div class="option" data-choice="core-first" onclick="toggleSelect(this)">
+      <div class="letter">A</div>
+      <div class="content">
+        <h3>核心引擎优先</h3>
+        <p>先把策略、Operator、InterviewGuide 做成可测试纯逻辑，再接入实时语音和前端。推荐路径。</p>
+      </div>
+    </div>
+    <div class="option" data-choice="vertical-slice" onclick="toggleSelect(this)">
+      <div class="letter">B</div>
+      <div class="content">
+        <h3>端到端薄切片</h3>
+        <p>先跑通一次完整语音会话，再逐步替换策略与后处理。适合必须快速演示。</p>
+      </div>
+    </div>
+    <div class="option" data-choice="full-platform" onclick="toggleSelect(this)">
+      <div class="letter">C</div>
+      <div class="content">
+        <h3>全平台重建</h3>
+        <p>一次性重写后端、前端、配置、存储和评测。风险最高，只适合已有明确上线时间表和充足测试预算。</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="label">Proposed Module Boundary</div>
+  <div class="mockup">
+    <div class="mockup-header">数据流：用户声音到双轨知识资产</div>
+    <div class="mockup-body">
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;align-items:stretch;text-align:center">
+        <div class="placeholder">Audio WS</div>
+        <div class="placeholder">Realtime<br>VAD/ASR/TTS</div>
+        <div class="placeholder">Strategy<br>decide + prompt</div>
+        <div class="placeholder">Character<br>reply + style lint</div>
+        <div class="placeholder">Notes<br>memory + debts</div>
+      </div>
+      <div style="margin-top:12px;display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center">
+        <div class="placeholder">Guide cache: 3s timeout</div>
+        <div class="placeholder">Event log: replayable</div>
+        <div class="placeholder">Eval gate: session quality</div>
+      </div>
+    </div>
+  </div>
+</div>

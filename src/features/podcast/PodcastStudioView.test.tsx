@@ -63,6 +63,7 @@ describe("PodcastStudioView", () => {
           onVoice={vi.fn()}
           onGenerate={vi.fn()}
           onDeleteEpisode={vi.fn()}
+          onSaveDefaultVoice={vi.fn()}
         />
       );
     });
