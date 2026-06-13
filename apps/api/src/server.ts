@@ -37,8 +37,6 @@ import { registerSearchRoutes } from "./routes/search";
 import { registerStateRoutes } from "./routes/state";
 import { registerSystemRoutes } from "./routes/system";
 
-loadLocalEnvFile();
-
 interface BuildApiServerOptions {
   productStateRepository?: ProductStateRepository;
   productStateDbPath?: string;
@@ -191,6 +189,7 @@ function createDefaultProductStateRepository(dbPath = process.env.PRODUCT_STATE_
 }
 
 export async function startServer() {
+  loadLocalEnvFile();
   const server = buildApiServer();
   const port = Number(process.env.PORT ?? 8787);
   const host = process.env.HOST ?? "127.0.0.1";
