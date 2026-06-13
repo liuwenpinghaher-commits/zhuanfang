@@ -1,36 +1,114 @@
 import type { FastifyInstance } from "fastify";
+import { scorers } from "../../../../packages/mastra/src/evals/scorers";
 import type { ProductStateRepository } from "../product-state-repository";
 
+type ScorerName = keyof typeof scorers;
+
+interface ScoreRequestBody {
+  scorerName?: unknown;
+  input?: unknown;
+  reference?: unknown;
+  previousTopics?: unknown;
+  memories?: unknown;
+  candidate?: unknown;
+  pack?: unknown;
+  sessionTopic?: unknown;
+  claim?: unknown;
+  source?: unknown;
+  feedbacks?: unknown;
+}
+
+const SCORER_NAMES: ReadonlySet<ScorerName> = new Set([
+  "interviewNaturalness",
+  "followupRelevance",
+  "memoryCitation",
+  "memoryCandidatePrecision",
+  "sensitiveLeakage",
+  "contextPackRelevance",
+  "sourceFaithfulness",
+  "interviewFeedback"
+]);
+
+function isScorerName(value: unknown): value is ScorerName {
+  return typeof value === "string" && SCORER_NAMES.has(value as ScorerName);
+}
+
+function asString(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : fallback;
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
 export function registerQualityRoutes(app: FastifyInstance, stateRepo: ProductStateRepository) {
-  app.post("/api/quality/score", async (request) => {
-    const { scorerName, input, reference } = request.body as {
-      scorerName: string;
-      input: string;
-      reference?: string;
-    };
+  app.post("/api/quality/score", async (request, reply) => {
+    const body = (request.body ?? {}) as ScoreRequestBody;
+    if (!isScorerName(body.scorerName)) {
+      return reply.code(400).send({
+        error: `Unknown scorer. Expected one of: ${Array.from(SCORER_NAMES).join(", ")}`
+      });
+    }
 
-    const rules: Record<string, (input: string, ref?: string) => { score: number; feedback: string }> = {
-      sensitiveLeakage: (text) => {
-        const patterns = [/\b\d{11}\b/, /\b\d{18}\b/, /\b(password|secret|token|key)\b/i];
-        const leaks = patterns.filter((p) => p.test(text));
-        return { score: leaks.length === 0 ? 1 : 0, feedback: leaks.length === 0 ? "Clean" : `${leaks.length} potential leaks` };
-      },
-      interviewNaturalness: (text) => {
-        const questions = (text.match(/\?/g) || []).length;
-        return { score: Math.min(questions / 5, 1), feedback: `${questions} questions found` };
-      },
-      memoryCandidatePrecision: (text, ref) => {
-        if (!ref) return { score: 0.5, feedback: "No reference" };
-        const overlap = text.split(/\s+/).filter((w) => ref.includes(w)).length;
-        return { score: Math.min(overlap / 5, 1), feedback: `${overlap} overlapping words` };
-      },
-    };
+    const scorerName = body.scorerName;
 
-    const scorer = rules[scorerName];
-    if (!scorer) return { error: `Unknown scorer: ${scorerName}` };
-
-    return { scorerName, ...scorer(input, reference) };
+    switch (scorerName) {
+      case "interviewNaturalness": {
+        const result = scorers.interviewNaturalness(asString(body.input));
+        return { scorerName, ...result };
+      }
+      case "followupRelevance": {
+        const transcript = asString(body.input);
+        const previousTopics = asStringArray(body.previousTopics);
+        const result = scorers.followupRelevance(transcript, previousTopics);
+        return { scorerName, ...result };
+      }
+      case "memoryCitation": {
+        const response = asString(body.input);
+        const memories = asStringArray(body.memories);
+        const result = scorers.memoryCitation(response, memories);
+        return { scorerName, ...result };
+      }
+      case "memoryCandidatePrecision": {
+        const candidate = body.candidate as { text?: unknown; evidenceQuote?: unknown } | undefined;
+        const result = scorers.memoryCandidatePrecision({
+          text: asString(candidate?.text),
+          evidenceQuote: asString(candidate?.evidenceQuote)
+        });
+        return { scorerName, ...result };
+      }
+      case "sensitiveLeakage": {
+        const result = scorers.sensitiveLeakage(asString(body.input));
+        return { scorerName, ...result };
+      }
+      case "contextPackRelevance": {
+        const result = scorers.contextPackRelevance(body.pack ?? {}, asString(body.sessionTopic));
+        return { scorerName, ...result };
+      }
+      case "sourceFaithfulness": {
+        const result = scorers.sourceFaithfulness(asString(body.claim ?? body.input), asString(body.source ?? body.reference));
+        return { scorerName, ...result };
+      }
+      case "interviewFeedback": {
+        const feedbacks = Array.isArray(body.feedbacks)
+          ? body.feedbacks.filter(
+              (item): item is { rating: number } =>
+                Boolean(item && typeof item === "object" && typeof (item as { rating?: unknown }).rating === "number")
+            )
+          : [];
+        const result = scorers.interviewFeedback(feedbacks);
+        return { scorerName, ...result };
+      }
+      default: {
+        const exhaustiveCheck: never = scorerName;
+        return reply.code(400).send({ error: `Unhandled scorer: ${String(exhaustiveCheck)}` });
+      }
+    }
   });
+
+  app.get("/api/quality/scorers", async () => ({
+    scorers: Array.from(SCORER_NAMES)
+  }));
 
   app.get("/api/quality/report", async () => {
     const state = await stateRepo.getState();
@@ -44,10 +122,10 @@ export function registerQualityRoutes(app: FastifyInstance, stateRepo: ProductSt
         totalSessions: sessionCount,
         totalMemories: memoryCount,
         totalAuditEvents: auditCount,
-        totalAiRuns: aiRunCount,
+        totalAiRuns: aiRunCount
       },
       recentAuditEvents: (state.auditEvents || []).slice(0, 20),
-      recentAiRuns: (state.aiRunEvents || []).slice(0, 20),
+      recentAiRuns: (state.aiRunEvents || []).slice(0, 20)
     };
   });
 }
