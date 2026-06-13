@@ -3,6 +3,8 @@ dist/
 test-results/
 playwright-report/
 tsconfig.tsbuildinfo
+.codegraph/
+.data/
 .env
 .env.local
 .env.*.local
