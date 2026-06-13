@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { RealtimeVoiceSessionResponse } from "../api/productApi";
-import { connectBailianRealtimeWebrtc } from "./bailianWebrtc";
+import { connectBailianRealtimeWebrtc, createTurnStateMachine } from "./bailianWebrtc";
 
 describe("bailian realtime WebRTC connector", () => {
   it("opens microphone, sends session.update over the data channel, and exchanges SDP through the Product API", async () => {
@@ -149,3 +149,45 @@ function createRealtimeSession(): RealtimeVoiceSessionResponse {
     expiresAt: "2026-06-10T00:10:00.000Z"
   };
 }
+
+describe("createTurnStateMachine", () => {
+  function makeMachine() {
+    return createTurnStateMachine({ silenceThresholdMs: 300, longPauseThresholdMs: 1500 });
+  }
+
+  it("starts idle", () => {
+    const machine = makeMachine();
+    expect(machine.getState().phase).toBe("idle");
+  });
+
+  it("transitions to user_speaking when input level rises above the gate", () => {
+    const machine = makeMachine();
+    const next = machine.update({ inputLevel: 0.5, silenceMs: 0 });
+    expect(next.phase).toBe("user_speaking");
+    expect(next.isUserSpeaking).toBe(true);
+    expect(next.shouldInterrupt).toBe(false);
+  });
+
+  it("emits a backchannel during a short pause", () => {
+    const machine = makeMachine();
+    machine.update({ inputLevel: 0.5, silenceMs: 0 });
+    const next = machine.update({ inputLevel: 0.05, silenceMs: 100 });
+    expect(next.phase).toBe("short_pause");
+    expect(next.backchannel).toBe("嗯");
+  });
+
+  it("escalates to long_pause once silence exceeds the short threshold", () => {
+    const machine = makeMachine();
+    machine.update({ inputLevel: 0.5, silenceMs: 0 });
+    const next = machine.update({ inputLevel: 0.05, silenceMs: 500 });
+    expect(next.phase).toBe("long_pause");
+    expect(next.backchannel).toBeNull();
+  });
+
+  it("returns to idle when silence exceeds the long threshold", () => {
+    const machine = makeMachine();
+    machine.update({ inputLevel: 0.5, silenceMs: 0 });
+    const next = machine.update({ inputLevel: 0.05, silenceMs: 2000 });
+    expect(next.phase).toBe("idle");
+  });
+});
