@@ -67,8 +67,9 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   const providerClients: ProviderClients = {};
   const refreshProviderClients = () => refreshRuntimeProviderClients(providerClients, runtimeEnv, options);
   refreshProviderClients();
+  const effectiveDbPath = options.productStateDbPath ?? runtimeEnv.PRODUCT_STATE_DB_PATH;
   const stateStore: "memory" | "sqlite" =
-    options.productStateDbPath ?? runtimeEnv.PRODUCT_STATE_DB_PATH ? "sqlite" : "memory";
+    effectiveDbPath && !isInMemoryDbPath(effectiveDbPath) ? "sqlite" : "memory";
   const envFilePath = options.envFilePath ?? join(process.cwd(), ".env.local");
 
   void server.register(registerHealthRoutes);
@@ -182,10 +183,15 @@ function registerCors(server: ReturnType<typeof Fastify>) {
 }
 
 function createDefaultProductStateRepository(dbPath = process.env.PRODUCT_STATE_DB_PATH) {
-  if (dbPath) {
+  if (dbPath && !isInMemoryDbPath(dbPath)) {
     return createSqliteProductStateRepository({ dbPath });
   }
   return createInMemoryProductStateRepository();
+}
+
+function isInMemoryDbPath(dbPath: string) {
+  const normalized = dbPath.trim().toLowerCase();
+  return normalized === "memory" || normalized === ":memory:" || normalized === "in-memory";
 }
 
 export async function startServer() {
