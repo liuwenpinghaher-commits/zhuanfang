@@ -222,9 +222,10 @@ React UI
 
 ## 验证状态
 
-最近一次已通过：
+最近一次已通过（2026-06-13）：
 
-- `npm test -- --run`
-- `npm run build`
-- `npm run test:e2e`
+- `npx tsc --noEmit`（零错误）
+- `npx vitest run`（33 文件 / 188 用例 全部通过）
+- `npx playwright test`（14 用例 全部通过）
+- `npm run build`（dist 产物生成）
 - `git diff --check`
