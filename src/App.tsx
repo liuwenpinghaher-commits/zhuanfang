@@ -445,17 +445,11 @@ export default function App() {
     };
 
     try {
-      const apiRun = await productApiClient.generatePodcastEpisode({
-        noteId: episode.noteId,
-        sourceType: episode.sourceType,
-        sourceId: episode.sourceId,
-        format: episode.format,
-        voice: podcastVoice
-      } as any);
-      setProductState(apiRun.state);
+      const persisted = await productApiClient.saveState(updatedState);
+      setProductState(persisted);
       setApiPersistenceEnabled(true);
       setPodcastEditingScript("");
-      setNotice(buildNotice("success", "语音合成已提交", `播客 "${episode.title}" 正在渲染音频。`));
+      setNotice(buildNotice("success", "语音合成已确认", `播客 "${episode.title}" 脚本已确认，等待 TTS 渲染。`));
       return;
     } catch {
       setApiPersistenceEnabled(false);
