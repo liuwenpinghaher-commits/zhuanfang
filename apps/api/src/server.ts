@@ -171,7 +171,7 @@ function registerCors(server: ReturnType<typeof Fastify>) {
       origin === "http://127.0.0.1:5173" || origin === "http://localhost:5173" ? origin : "http://127.0.0.1:5173";
 
     reply.header("access-control-allow-origin", allowedOrigin);
-    reply.header("access-control-allow-methods", "GET,POST,PUT,DELETE,OPTIONS");
+    reply.header("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
     reply.header("access-control-allow-headers", "content-type,authorization");
     reply.header("access-control-max-age", "86400");
 
