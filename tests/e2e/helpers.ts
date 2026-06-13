@@ -1,6 +1,11 @@
 import { expect, type Page } from "@playwright/test";
 
 export async function resetDemoState(page: Page) {
+  try {
+    await page.request.post("http://127.0.0.1:8787/api/state/reset");
+  } catch {
+    // API may be unavailable; the legacy localStorage-only path below still works for demo flows.
+  }
   await page.goto("/");
   await page.evaluate(() => window.localStorage.clear());
   await page.reload();
