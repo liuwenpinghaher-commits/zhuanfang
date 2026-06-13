@@ -1,7 +1,20 @@
 import type { FastifyInstance } from "fastify";
+import type { IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
+import { WebSocketServer, WebSocket } from "ws";
 import type { BailianRealtimeVoiceClient } from "../providers/bailian";
 import type { ProductStateRepository } from "../product-state-repository";
+import {
+  appendRealtimeSignalTrace,
+  truncateAssistantTurn
+} from "../../../../src/domain/engine";
+import type {
+  AiRunEvent,
+  InterviewSession,
+  ProductState,
+  RealtimeSignal,
+  RealtimeTurnState
+} from "../../../../src/domain/types";
 
 export interface RealtimeVoiceConfig {
   provider: "bailian";
@@ -87,9 +100,88 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     });
     return reply.type("application/sdp").send(answerSdp);
   });
-  server.post("/api/realtime-voice/sessions/:id/interrupt", async (request) => {
-    const { id } = request.params as { id: string };
-    return { interrupted: true, sessionId: id };
+  server.post("/api/realtime-voice/sessions/:id/interrupt", async (request, reply) => {
+    const sessionId = getSessionId(request.params);
+    if (!sessionId) {
+      return reply.code(400).send({ error: "sessionId is required." });
+    }
+    const record = sessions.get(sessionId);
+    const body = normalizeObject<InterruptPayload>(request.body);
+    const spokenTextSoFar = typeof body.spokenTextSoFar === "string" ? body.spokenTextSoFar : "";
+    const interruptedAtMs =
+      typeof body.interruptedAtMs === "number" && Number.isFinite(body.interruptedAtMs)
+        ? Math.max(0, Math.round(body.interruptedAtMs))
+        : undefined;
+    const assistantTurnId = normalizeOptionalString(body.assistantTurnId);
+    const providerTurnId = normalizeOptionalString(body.providerTurnId);
+    const reason: "user_interrupt" | "provider_error" =
+      body.reason === "provider_error" ? "provider_error" : "user_interrupt";
+
+    const interviewSessionId = record?.interviewSessionId;
+    const stateRepo = options.stateRepo;
+
+    let truncated = false;
+    let spokenChars = spokenTextSoFar.length;
+    let originalChars = spokenTextSoFar.length;
+    let resolvedAssistantTurnId: string | undefined = assistantTurnId;
+
+    if (stateRepo && interviewSessionId) {
+      const state = stateRepo.getState();
+      const session = state.sessions.find((entry) => entry.id === interviewSessionId);
+      if (session) {
+        const truncationResult = truncateAssistantTurn(session, {
+          turnId: assistantTurnId,
+          providerTurnId,
+          spokenTextSoFar,
+          reason
+        });
+        if (truncationResult.changed && truncationResult.truncatedTurn) {
+          truncated = true;
+          spokenChars = truncationResult.truncatedTurn.truncated?.spokenChars ?? spokenChars;
+          originalChars = truncationResult.truncatedTurn.truncated?.originalChars ?? originalChars;
+          resolvedAssistantTurnId = truncationResult.truncatedTurn.id;
+        } else if (truncationResult.truncatedTurn) {
+          resolvedAssistantTurnId = truncationResult.truncatedTurn.id;
+          originalChars = truncationResult.truncatedTurn.content.length;
+        }
+        const sessionWithTrace = appendInterruptionSignal(
+          truncationResult.session,
+          {
+            spokenTextSoFar,
+            interruptedAtMs,
+            assistantTurnId: resolvedAssistantTurnId,
+            originalChars,
+            spokenChars,
+            providerTurnId,
+            reason
+          }
+        );
+        const nextState = withRealtimeInterruptAiRunEvent(
+          replaceSession(state, sessionWithTrace),
+          {
+            session: sessionWithTrace,
+            assistantTurnId: resolvedAssistantTurnId,
+            providerTurnId,
+            spokenChars,
+            originalChars,
+            interruptedAtMs,
+            truncated,
+            reason
+          }
+        );
+        stateRepo.replaceState(nextState);
+      }
+    }
+
+    return {
+      interrupted: true,
+      sessionId,
+      truncated,
+      spokenChars,
+      originalChars,
+      assistantTurnId: resolvedAssistantTurnId,
+      providerTurnId
+    };
   });
   server.get("/api/realtime-voice/sessions/:id/memory-context", async (request) => {
     const stateRepo = options.stateRepo;
@@ -101,20 +193,110 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     const activeThemes = (state.themes || []).filter((t) => t.maturity !== "mature");
     return { recentMemories, activeThemes };
   });
+
+  const wss = new WebSocketServer({ noServer: true });
+
+  server.server.on("upgrade", (request: IncomingMessage, socket, head) => {
+    const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
+    const match = url.pathname.match(/^\/api\/realtime-voice\/ws\/(.+)$/);
+    if (!match) return;
+
+    const sessionId = match[1];
+    const record = sessions.get(sessionId);
+    if (!record) {
+      socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
+    wss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
+      const apiKey = process.env.DASHSCOPE_API_KEY ?? process.env.BAILIAN_API_KEY;
+      if (!apiKey) {
+        ws.close(4001, "API key not configured");
+        return;
+      }
+
+      const model = record.model;
+      const dashscopeUrl = `wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=${encodeURIComponent(model)}`;
+
+      let dashscopeWs: WebSocket | null = null;
+      let closed = false;
+
+      function cleanup() {
+        if (closed) return;
+        closed = true;
+        if (dashscopeWs && dashscopeWs.readyState === WebSocket.OPEN) {
+          dashscopeWs.close(1000, "client disconnected");
+        }
+      }
+
+      try {
+        dashscopeWs = new WebSocket(dashscopeUrl, {
+          headers: { Authorization: `Bearer ${apiKey}` }
+        });
+
+        dashscopeWs.on("open", () => {
+          if (closed) return;
+          ws.send(JSON.stringify({ type: "proxy.connected" }));
+        });
+
+        dashscopeWs.on("message", (data: Buffer) => {
+          if (closed) return;
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(data.toString());
+          }
+        });
+
+        dashscopeWs.on("error", (err: Error) => {
+          if (closed) return;
+          ws.send(JSON.stringify({
+            type: "error",
+            error: { type: "proxy_error", message: err.message }
+          }));
+          cleanup();
+        });
+
+        dashscopeWs.on("close", (code: number, reason: Buffer) => {
+          if (closed) return;
+          ws.close(1000, reason.toString() || "dashscope closed");
+          cleanup();
+        });
+
+        ws.on("message", (data: Buffer) => {
+          if (closed) return;
+          if (dashscopeWs && dashscopeWs.readyState === WebSocket.OPEN) {
+            dashscopeWs.send(data.toString());
+          }
+        });
+
+        ws.on("close", () => {
+          cleanup();
+        });
+
+        ws.on("error", () => {
+          cleanup();
+        });
+      } catch (err) {
+        ws.close(4002, `Failed to connect to DashScope: ${err instanceof Error ? err.message : "unknown"}`);
+      }
+    });
+  });
 }
 
 function buildRealtimeVoiceConfig(): RealtimeVoiceConfig {
   const apiKeyConfigured = Boolean(process.env.DASHSCOPE_API_KEY ?? process.env.BAILIAN_API_KEY);
   const webrtcEndpointConfigured = Boolean(process.env.BAILIAN_REALTIME_WEBRTC_ENDPOINT);
+  const transport = normalizeTransport(process.env.BAILIAN_REALTIME_TRANSPORT);
+  const configured = apiKeyConfigured && (transport === "websocket" || webrtcEndpointConfigured);
   return {
     provider: "bailian",
     model: process.env.BAILIAN_REALTIME_MODEL ?? "qwen3.5-omni-plus-realtime",
     fallbackModel: process.env.BAILIAN_REALTIME_FALLBACK_MODEL ?? "qwen3.5-omni-flash-realtime",
-    transport: normalizeTransport(process.env.BAILIAN_REALTIME_TRANSPORT),
+    transport,
     fallbackTransport: "websocket",
     vad: normalizeVad(process.env.BAILIAN_REALTIME_VAD),
     enableSearch: process.env.BAILIAN_REALTIME_ENABLE_SEARCH === "true",
-    configured: apiKeyConfigured,
+    configured,
     apiKeyConfigured,
     webrtcEndpointConfigured,
     requiresServerSession: true
@@ -122,7 +304,7 @@ function buildRealtimeVoiceConfig(): RealtimeVoiceConfig {
 }
 
 function normalizeTransport(value: string | undefined): RealtimeVoiceConfig["transport"] {
-  return value === "websocket" ? "websocket" : "webrtc";
+  return value === "webrtc" ? "webrtc" : "websocket";
 }
 
 function normalizeVad(value: string | undefined): RealtimeVoiceConfig["vad"] {
@@ -140,7 +322,11 @@ function createRealtimeVoiceSession(
 
   return {
     ...config,
-    status: realtimeClient ? "ready" : config.apiKeyConfigured ? "needs-webrtc-endpoint" : "not-configured",
+    status: config.configured
+      ? "ready"
+      : config.apiKeyConfigured
+        ? (config.transport === "webrtc" ? "needs-webrtc-endpoint" : "ready")
+        : "not-configured",
     sessionId,
     signaling: {
       method: "POST",
@@ -187,4 +373,100 @@ function getSessionId(params: unknown) {
 
 function normalizeObject<T>(value: unknown): Partial<T> {
   return value && typeof value === "object" ? (value as Partial<T>) : {};
+}
+
+interface InterruptPayload {
+  spokenTextSoFar?: unknown;
+  interruptedAtMs?: unknown;
+  assistantTurnId?: unknown;
+  providerTurnId?: unknown;
+  reason?: unknown;
+}
+
+interface AppendInterruptionSignalInput {
+  spokenTextSoFar: string;
+  interruptedAtMs?: number;
+  assistantTurnId?: string;
+  providerTurnId?: string;
+  originalChars: number;
+  spokenChars: number;
+  reason: "user_interrupt" | "provider_error";
+}
+
+function appendInterruptionSignal(session: InterviewSession, input: AppendInterruptionSignalInput): InterviewSession {
+  const realtimeState: RealtimeTurnState = {
+    phase: "listening",
+    nextAction: "等待用户继续",
+    shouldInterrupt: true,
+    confidence: 0.9
+  };
+  const signal: RealtimeSignal = {
+    inputLevel: 0,
+    silenceMs: 0,
+    isUserSpeaking: false,
+    isAssistantSpeaking: false
+  };
+  const next = appendRealtimeSignalTrace(session, signal, realtimeState, {
+    transcript: input.spokenTextSoFar
+  });
+  const traces = next.realtimeSignals ?? [];
+  if (traces.length === 0) return next;
+  const lastIndex = traces.length - 1;
+  const lastTrace = {
+    ...traces[lastIndex],
+    eventType: "agent_speech_interrupted" as const,
+    spokenTextSoFar: input.spokenTextSoFar,
+    truncatedFromChars: input.originalChars,
+    assistantTurnId: input.assistantTurnId ?? traces[lastIndex].assistantTurnId,
+    metrics: {
+      interruptedAtMs: input.interruptedAtMs,
+      spokenCharsBeforeInterrupt: input.spokenChars
+    }
+  };
+  const nextTraces = [...traces];
+  nextTraces[lastIndex] = lastTrace;
+  return { ...next, realtimeSignals: nextTraces };
+}
+
+function replaceSession(state: ProductState, session: InterviewSession): ProductState {
+  return {
+    ...state,
+    sessions: state.sessions.map((entry) => (entry.id === session.id ? session : entry))
+  };
+}
+
+interface InterruptAiRunEventInput {
+  session: InterviewSession;
+  assistantTurnId?: string;
+  providerTurnId?: string;
+  spokenChars: number;
+  originalChars: number;
+  interruptedAtMs?: number;
+  truncated: boolean;
+  reason: "user_interrupt" | "provider_error";
+}
+
+function withRealtimeInterruptAiRunEvent(state: ProductState, input: InterruptAiRunEventInput): ProductState {
+  const event: AiRunEvent = {
+    id: `ai-run-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    workflow: "interview_turn_generation",
+    providerId: "bailian-realtime",
+    status: input.truncated ? "succeeded" : "degraded",
+    entityType: "interview_session",
+    entityId: input.session.id,
+    inputSummary: `实时打断回填：spokenChars=${input.spokenChars} reason=${input.reason}`,
+    outputSummary: input.truncated
+      ? `assistant turn 已截断为 ${input.spokenChars}/${input.originalChars} 字`
+      : "未找到匹配的 assistant turn 或无须截断",
+    degradedReason: input.truncated ? undefined : "未匹配到 assistant turn 或 spokenTextSoFar 为空",
+    metrics: {
+      interruptedAtMs: input.interruptedAtMs,
+      spokenCharsBeforeInterrupt: input.spokenChars
+    },
+    createdAt: new Date().toISOString()
+  };
+  return {
+    ...state,
+    aiRunEvents: [event, ...(state.aiRunEvents ?? [])]
+  };
 }

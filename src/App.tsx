@@ -49,6 +49,10 @@ import {
   type BailianRealtimeWebrtcConnection
 } from "./realtime/bailianWebrtc";
 import {
+  connectBailianRealtimeWebsocket,
+  type BailianRealtimeWebsocketConnection
+} from "./realtime/bailianWebsocket";
+import {
   dedupeGeneratedArtifacts,
   deleteCorpusInsightBundle,
   deletePodcastEpisode,
@@ -118,7 +122,7 @@ export default function App() {
   const [configSection, setConfigSection] = useState<ConfigSection>("overview");
   const [recording, setRecording] = useState(false);
   const [realtimeVoiceSession, setRealtimeVoiceSession] = useState<RealtimeVoiceSessionResponse | null>(null);
-  const [realtimeVoiceConnection, setRealtimeVoiceConnection] = useState<BailianRealtimeWebrtcConnection | null>(null);
+  const [realtimeVoiceConnection, setRealtimeVoiceConnection] = useState<BailianRealtimeWebrtcConnection | BailianRealtimeWebsocketConnection | null>(null);
   const [searchTopic, setSearchTopic] = useState("AI 产品商业化热点");
   const [activeSearchBriefId, setActiveSearchBriefId] = useState<string | undefined>(undefined);
   const [searchTask, setSearchTask] = useState(() => createIdleCapabilityTask<SearchBriefInput>("联网搜索"));
@@ -738,7 +742,11 @@ export default function App() {
           )
         );
         try {
-          const connection = await connectBailianRealtimeWebrtc(voiceSession, { productApiClient });
+          const connection = voiceSession.transport === "websocket"
+            ? await connectBailianRealtimeWebsocket(voiceSession, {
+                productApiBaseUrl: "ws://127.0.0.1:8787"
+              })
+            : await connectBailianRealtimeWebrtc(voiceSession, { productApiClient });
           setRealtimeVoiceConnection(connection);
           setRecording(true);
           setNotice(
@@ -766,7 +774,7 @@ export default function App() {
             "warning",
             "实时语音未完全配置",
             voiceSession.status === "needs-webrtc-endpoint"
-              ? "缺少百炼 WebRTC 白名单 Endpoint，已保留文本专访。"
+              ? "缺少百炼 WebRTC 白名单 Endpoint，可设置 BAILIAN_REALTIME_TRANSPORT=websocket 使用 WebSocket 通道。"
               : "缺少百炼 API Key，已保留文本专访。"
           )
         );

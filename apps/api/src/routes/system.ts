@@ -318,6 +318,7 @@ export async function registerSystemRoutes(
     const anySearchKeyConfigured = Boolean(env.ANYSEARCH_API_KEY);
     const anySearchAnonymous = env.ANYSEARCH_ALLOW_ANONYMOUS === "true";
     const realtimeEndpointConfigured = Boolean(env.BAILIAN_REALTIME_WEBRTC_ENDPOINT);
+    const realtimeTransport = env.BAILIAN_REALTIME_TRANSPORT === "webrtc" ? "webrtc" : "websocket";
 
     const capabilities: SystemCapability[] = [
       {
@@ -411,16 +412,16 @@ export async function registerSystemRoutes(
         id: "bailian-realtime",
         kind: "voice",
         label: "百炼 Qwen-Omni Realtime",
-        status: options.bailianRealtimeVoiceClient
-          ? "ready"
-          : dashscopeKeyConfigured
-            ? realtimeEndpointConfigured
-              ? "disabled"
-              : "needs-endpoint"
-            : "needs-key",
+        status: dashscopeKeyConfigured
+          ? (realtimeTransport === "websocket" || realtimeEndpointConfigured)
+            ? "ready"
+            : "needs-endpoint"
+          : "needs-key",
         active: state.systemConfig.voice.realtimeEnabled,
-        detail: buildRealtimeDetail(Boolean(options.bailianRealtimeVoiceClient), dashscopeKeyConfigured, realtimeEndpointConfigured),
-        requiredEnv: ["DASHSCOPE_API_KEY", "BAILIAN_REALTIME_WEBRTC_ENDPOINT"],
+        detail: buildRealtimeDetail(dashscopeKeyConfigured, realtimeEndpointConfigured, realtimeTransport),
+        requiredEnv: realtimeTransport === "websocket"
+          ? ["DASHSCOPE_API_KEY"]
+          : ["DASHSCOPE_API_KEY", "BAILIAN_REALTIME_WEBRTC_ENDPOINT"],
         model: env.BAILIAN_REALTIME_MODEL ?? BAILIAN_REALTIME_MODEL,
         transport: env.BAILIAN_REALTIME_TRANSPORT ?? "webrtc",
         lastCheckedAt: generatedAt
@@ -521,15 +522,15 @@ function maskSecretValue(value: string | undefined) {
   return `已配置（末 4 位 ${suffix}）`;
 }
 
-function buildRealtimeDetail(clientReady: boolean, keyConfigured: boolean, endpointConfigured: boolean) {
-  if (clientReady) {
-    return "服务端已配置 WebRTC SDP 代理，浏览器可通过 Product API 建立实时语音会话。";
-  }
+function buildRealtimeDetail(keyConfigured: boolean, endpointConfigured: boolean, transport: string) {
   if (!keyConfigured) {
     return "缺少 DASHSCOPE_API_KEY 或 BAILIAN_API_KEY，实时语音不会连接百炼。";
   }
-  if (!endpointConfigured) {
-    return "缺少 BAILIAN_REALTIME_WEBRTC_ENDPOINT，需要百炼白名单 Endpoint 才能完成 WebRTC SDP 交换。";
+  if (transport === "websocket") {
+    return "服务端已配置 WebSocket 代理，浏览器可通过 Product API 建立实时语音会话。";
   }
-  return "实时语音配置不完整，当前不会启用。";
+  if (!endpointConfigured) {
+    return "缺少 BAILIAN_REALTIME_WEBRTC_ENDPOINT，WebRTC 需要白名单 Endpoint。可设置 BAILIAN_REALTIME_TRANSPORT=websocket 使用 WebSocket 通道。";
+  }
+  return "服务端已配置 WebRTC SDP 代理，浏览器可通过 Product API 建立实时语音会话。";
 }
