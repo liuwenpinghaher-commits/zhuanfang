@@ -157,8 +157,13 @@ function normalizeVoiceConfig(systemConfig: Partial<SystemConfig>, fallbackConfi
     ...systemConfig.voice
   };
 
+  // Migration: the legacy "s2s" realtime path was removed in Phase 3 (commit
+  // eb5e4011). Force any persisted s2s config to the only remaining mode.
+  const realtimeMode = voiceConfig.realtimeMode === "s2s" ? "livekit" : voiceConfig.realtimeMode;
+
   return {
     ...voiceConfig,
+    realtimeMode,
     podcastFormat: voiceConfig.podcastFormat || fallbackConfig.voice.podcastFormat,
     ttsProvider: voiceConfig.ttsProvider === "local-demo" ? fallbackConfig.voice.ttsProvider : voiceConfig.ttsProvider
   };

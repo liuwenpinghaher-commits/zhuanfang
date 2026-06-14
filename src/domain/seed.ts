@@ -200,8 +200,8 @@ export const initialProductState: ProductState = {
       defaultVoice: "warm-interviewer",
       podcastVoice: "calm-host",
       podcastFormat: "solo",
-      realtimeEnabled: false,
-      realtimeMode: "s2s"
+      realtimeEnabled: true,
+      realtimeMode: "livekit"
     },
     models: {
       planningModel: "qwen3.7-plus",

@@ -108,4 +108,36 @@ describe("product state storage", () => {
       interviewAngles: ["旧讨论主题"]
     });
   });
+
+  it("migrates legacy s2s realtimeMode to livekit (s2s pipeline removed in Phase 3)", () => {
+    const state = createInitialProductState();
+    const normalized = normalizeProductState({
+      ...state,
+      systemConfig: {
+        ...state.systemConfig,
+        voice: {
+          ...state.systemConfig.voice,
+          realtimeMode: "s2s",
+        },
+      },
+    });
+
+    expect(normalized.systemConfig.voice.realtimeMode).toBe("livekit");
+  });
+
+  it("preserves an existing livekit realtimeMode", () => {
+    const state = createInitialProductState();
+    const normalized = normalizeProductState({
+      ...state,
+      systemConfig: {
+        ...state.systemConfig,
+        voice: {
+          ...state.systemConfig.voice,
+          realtimeMode: "livekit",
+        },
+      },
+    });
+
+    expect(normalized.systemConfig.voice.realtimeMode).toBe("livekit");
+  });
 });
