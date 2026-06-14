@@ -1,4 +1,5 @@
 import os
+import json as _json
 from dotenv import load_dotenv
 from livekit.agents import (
     Agent,
@@ -11,6 +12,30 @@ from livekit.plugins import aliyun
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 load_dotenv()
+
+# ----------------------------------------------------------------------------
+# Bug fix: livekit-plugins-aliyun==1.2.9's chat-context serializer pre-dates the
+# AgentConfigUpdate / AgentHandoff item types added in livekit-agents 1.5+.
+# Its _to_chat_item falls off the end and returns None for those items, which
+# DashScope rejects with the misleading error: "message must be json_object."
+#
+# Strip the unsupported item types before the plugin sees them. They carry
+# only internal agent state (instructions diffs, agent handoff metadata) and
+# should not be sent to the LLM as chat messages.
+# ----------------------------------------------------------------------------
+from livekit.plugins.aliyun import utils as _aliyun_utils
+_orig_to_chat_ctx = _aliyun_utils.to_chat_ctx
+_SUPPORTED_ITEM_TYPES = {"message", "function_call", "function_call_output"}
+
+def _patched_to_chat_ctx(chat_ctx, cache_key):
+    filtered = chat_ctx.copy()
+    filtered.items = [it for it in filtered.items if it.type in _SUPPORTED_ITEM_TYPES]
+    return _orig_to_chat_ctx(filtered, cache_key)
+
+_aliyun_utils.to_chat_ctx = _patched_to_chat_ctx
+# also patch the symbol that llm.py imported by name
+import livekit.plugins.aliyun.llm as _aliyun_llm
+_aliyun_llm.to_chat_ctx = _patched_to_chat_ctx
 
 class InterviewAgent(Agent):
     def __init__(self):
