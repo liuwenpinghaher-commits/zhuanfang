@@ -1,3 +1,6 @@
+// OpenTelemetry must be initialized before any other imports
+import "./telemetry";
+
 import Fastify from "fastify";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
