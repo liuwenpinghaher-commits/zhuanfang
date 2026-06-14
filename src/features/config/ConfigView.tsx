@@ -1,6 +1,6 @@
-import { Archive, CheckCircle2, ClipboardList, Cpu, Database, Mic, RefreshCcw, Search, ShieldCheck, Volume2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import type { SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigSetting, SystemConfigUpdateRequest } from "../../api/productApi";
+import { Archive, CheckCircle2, ClipboardList, Cpu, Database, Mic, RefreshCcw, Search, ShieldCheck, Upload, Volume2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigSetting, SystemConfigUpdateRequest, VoiceInfo } from "../../api/productApi";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import { Metric } from "../../components/Metric";
 import type { buildSystemStatus } from "../../domain/engine";
@@ -19,6 +19,10 @@ interface ConfigViewProps {
   onCleanupGeneratedArtifacts: () => void;
   onSaveRuntimeConfig: (updates: SystemConfigUpdateRequest) => void;
   onSaveProductConfig: (config: SystemConfig) => void;
+  voices: VoiceInfo[];
+  voicesLoading: boolean;
+  onUploadVoice: (audioBase64: string, name: string) => Promise<void>;
+  onDeleteVoice: (voiceId: string) => Promise<void>;
 }
 
 export function ConfigView({
@@ -32,7 +36,11 @@ export function ConfigView({
   onApprovePatch,
   onCleanupGeneratedArtifacts,
   onSaveRuntimeConfig,
-  onSaveProductConfig
+  onSaveProductConfig,
+  voices,
+  voicesLoading,
+  onUploadVoice,
+  onDeleteVoice
 }: ConfigViewProps) {
   const [runtimeDraft, setRuntimeDraft] = useState<Record<string, string>>({});
   const [runtimeDirty, setRuntimeDirty] = useState<Record<string, boolean>>({});
@@ -302,6 +310,14 @@ export function ConfigView({
               </dl>
             </section>
           </div>
+
+          <VoiceCloningPanel
+            voices={voices}
+            loading={voicesLoading}
+            onUpload={onUploadVoice}
+            onDelete={onDeleteVoice}
+          />
+
           <section className="panel">
             <div className="panel-title"><Cpu size={18} /><h2>产品策略配置</h2></div>
             <div className="runtime-config-sections">
@@ -393,34 +409,59 @@ export function ConfigView({
                 <div className="runtime-setting-grid">
                   <label className="field-stack runtime-setting-field" htmlFor="product-default-voice">
                     <span className="field-label">默认访谈声音</span>
-                    <input
+                    <select
                       id="product-default-voice"
                       name="voice.defaultVoice"
                       value={productDraft.voice.defaultVoice}
-                      onInput={(event) => {
-                        const nextValue = event.currentTarget.value;
+                      onChange={(event) => {
+                        const nextValue = event.target.value;
                         updateProductConfig((config) => ({
                           ...config,
                           voice: { ...config.voice, defaultVoice: nextValue }
                         }));
                       }}
-                    />
+                    >
+                      {voices.map((v) => (
+                        <option key={v.voice} value={v.voice}>{v.name} ({v.voice})</option>
+                      ))}
+                    </select>
                     <span className="field-help">实时专访或默认语音入口使用的声音配置。</span>
                   </label>
                   <label className="field-stack runtime-setting-field" htmlFor="product-podcast-voice">
                     <span className="field-label">播客默认声音</span>
-                    <input
+                    <select
                       id="product-podcast-voice"
                       name="voice.podcastVoice"
                       value={productDraft.voice.podcastVoice}
-                      onInput={(event) => {
-                        const nextValue = event.currentTarget.value;
+                      onChange={(event) => {
+                        const nextValue = event.target.value;
                         updateProductConfig((config) => ({
                           ...config,
                           voice: { ...config.voice, podcastVoice: nextValue }
                         }));
                       }}
-                    />
+                    >
+                      <option value="longyuan_v3">龙媛 (longyuan_v3)</option>
+                      <option value="longxiaochun_v2">龙小春 (longxiaochun_v2)</option>
+                      <option value="longxiaoxia_v2">龙小夏 (longxiaoxia_v2)</option>
+                      <option value="longxiaobai_v2">龙小白 (longxiaobai_v2)</option>
+                      <option value="longlaotie_v2">龙老铁 (longlaotie_v2)</option>
+                      <option value="longshu_v2">龙书 (longshu_v2)</option>
+                      <option value="longyu_v2">龙雨 (longyu_v2)</option>
+                      <option value="longyuer_v2">龙悦儿 (longyuer_v2)</option>
+                      <option value="longjing_v2">龙婧 (longjing_v2)</option>
+                      <option value="longmiao_v2">龙妙 (longmiao_v2)</option>
+                      <option value="longchen_v2">龙晨 (longchen_v2)</option>
+                      <option value="longda_v2">龙达 (longda_v2)</option>
+                      <option value="longye_v2">龙野 (longye_v2)</option>
+                      <option value="longtong_v2">龙彤 (longtong_v2)</option>
+                      <option value="longfei_v2">龙飞 (longfei_v2)</option>
+                      <option value="longjie_v2">龙杰 (longjie_v2)</option>
+                      <option value="longyan_v2">龙颜 (longyan_v2)</option>
+                      <option value="longhua_v2">龙华 (longhua_v2)</option>
+                      <option value="longxiang_v2">龙翔 (longxiang_v2)</option>
+                      <option value="longbo_v2">龙波 (longbo_v2)</option>
+                    </select>
                     <span className="field-help">影响播客工作台新建节目时的默认 voice。</span>
                   </label>
                   <label className="field-stack runtime-setting-field" htmlFor="product-realtime-enabled">
@@ -584,6 +625,109 @@ function RuntimeSettingField({
         {setting.secret && setting.configured ? ` 当前：${setting.maskedValue}` : ""}
       </span>
     </label>
+  );
+}
+
+function VoiceCloningPanel({
+  voices,
+  loading,
+  onUpload,
+  onDelete
+}: {
+  voices: VoiceInfo[];
+  loading: boolean;
+  onUpload: (audioBase64: string, name: string) => Promise<void>;
+  onDelete: (voiceId: string) => Promise<void>;
+}) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [voiceName, setVoiceName] = useState("");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [error, setError] = useState("");
+
+  const customVoices = voices.filter((v) => v.createdAt);
+
+  async function handleUpload() {
+    if (!selectedFile) return;
+    setUploading(true);
+    setError("");
+    try {
+      const reader = new FileReader();
+      const base64 = await new Promise<string>((resolve, reject) => {
+        reader.onload = () => {
+          const result = reader.result as string;
+          const commaIdx = result.indexOf(",");
+          resolve(commaIdx >= 0 ? result.slice(commaIdx + 1) : result);
+        };
+        reader.onerror = () => reject(new Error("File read failed"));
+        reader.readAsDataURL(selectedFile);
+      });
+      await onUpload(base64, voiceName || selectedFile.name.replace(/\.[^.]+$/, ""));
+      setSelectedFile(null);
+      setVoiceName("");
+      if (fileRef.current) fileRef.current.value = "";
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "上传失败");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  return (
+    <section className="panel voice-cloning-panel">
+      <div className="panel-title"><Upload size={18} /><h2>声音复刻</h2></div>
+      <p className="voice-cloning-hint">
+        上传 10-20 秒的清晰录音（WAV/MP3/M4A），无需训练即可复刻你的声音。
+        要求：单声道、无背景音、正常说话。
+      </p>
+
+      <div className="voice-cloning-upload">
+        <input
+          ref={fileRef}
+          type="file"
+          accept="audio/wav,audio/mp3,audio/m4a,.wav,.mp3,.m4a"
+          onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)}
+        />
+        <input
+          type="text"
+          placeholder="音色名称（可选）"
+          value={voiceName}
+          onChange={(e) => setVoiceName(e.target.value)}
+          className="voice-name-input"
+        />
+        <button
+          type="button"
+          className="primary-action"
+          disabled={!selectedFile || uploading}
+          onClick={handleUpload}
+        >
+          {uploading ? "创建中…" : "创建音色"}
+        </button>
+      </div>
+
+      {error && <p className="voice-cloning-error">{error}</p>}
+
+      {customVoices.length > 0 && (
+        <div className="voice-cloning-list">
+          <span className="label">我的音色</span>
+          {customVoices.map((v) => (
+            <div key={v.voice} className="voice-cloning-item">
+              <span>{v.name}</span>
+              <small>{v.voice}</small>
+              <button
+                type="button"
+                className="text-button danger-button"
+                onClick={() => onDelete(v.voice)}
+              >
+                删除
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {loading && <p className="voice-cloning-loading">加载音色列表…</p>}
+    </section>
   );
 }
 

@@ -11,11 +11,13 @@ import {
   createBailianPodcastAudioClientFromEnv,
   createBailianRealtimeVoiceClientFromEnv,
   createBailianSearchClientFromEnv,
+  createBailianVoiceEnrollmentClientFromEnv,
   type BailianAudioTranscriptionClient,
   type BailianCharacterInterviewClient,
   type BailianPodcastAudioClient,
   type BailianRealtimeVoiceClient,
-  type BailianSearchClient
+  type BailianSearchClient,
+  type BailianVoiceEnrollmentClient
 } from "./providers/bailian";
 import { registerAssetRoutes } from "./routes/assets";
 import { registerCorpusRoutes } from "./routes/corpus";
@@ -56,6 +58,7 @@ interface ProviderClients {
   bailianPodcastAudioClient?: BailianPodcastAudioClient;
   bailianInterviewClient?: BailianCharacterInterviewClient;
   bailianRealtimeVoiceClient?: BailianRealtimeVoiceClient;
+  voiceEnrollmentClient?: BailianVoiceEnrollmentClient;
   bailianTranscriptionClient?: BailianAudioTranscriptionClient;
 }
 
@@ -110,7 +113,7 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     await registerPodcastRoutes(registeredServer, productStateRepository, providerClients);
   });
   void server.register(async (registeredServer) => {
-    await registerRealtimeVoiceRoutes(registeredServer, { bailianRealtimeVoiceClient: providerClients.bailianRealtimeVoiceClient, stateRepo: productStateRepository });
+    await registerRealtimeVoiceRoutes(registeredServer, { bailianRealtimeVoiceClient: providerClients.bailianRealtimeVoiceClient, voiceEnrollmentClient: providerClients.voiceEnrollmentClient, stateRepo: productStateRepository });
   });
   void server.register(async (registeredServer) => {
     await registerCorpusRoutes(registeredServer, productStateRepository, providerClients);
@@ -161,6 +164,7 @@ function refreshRuntimeProviderClients(
   providerClients.bailianPodcastAudioClient = options.bailianPodcastAudioClient ?? createBailianPodcastAudioClientFromEnv(env);
   providerClients.bailianInterviewClient = options.bailianInterviewClient ?? createBailianCharacterInterviewClientFromEnv(env);
   providerClients.bailianRealtimeVoiceClient = options.bailianRealtimeVoiceClient ?? createBailianRealtimeVoiceClientFromEnv(env);
+  providerClients.voiceEnrollmentClient = createBailianVoiceEnrollmentClientFromEnv(env);
   providerClients.bailianTranscriptionClient =
     options.bailianTranscriptionClient ?? createBailianAudioTranscriptionClientFromEnv(env);
 }

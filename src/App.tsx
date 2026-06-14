@@ -42,7 +42,7 @@ import {
 } from "./domain/engine";
 import { executeSearchProvider } from "./capabilities/search";
 import { createIdleCapabilityTask, startCapabilityTask } from "./capabilities/task";
-import { productApiClient } from "./api/productApi";
+import { productApiClient, getProductApiBaseUrl } from "./api/productApi";
 import type { RealtimeVoiceSessionResponse, SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigUpdateRequest, VoiceInfo } from "./api/productApi";
 import {
   connectBailianRealtimeWebrtc,
@@ -803,7 +803,7 @@ export default function App() {
             const sessionId = voiceSession.sessionId;
             const interviewId = session?.id ?? "";
             const tokenResp = await fetch(
-              `http://127.0.0.1:8787/api/realtime-voice/livekit-token?sessionId=${sessionId}&interviewSessionId=${interviewId}`
+              `${getProductApiBaseUrl()}/api/realtime-voice/livekit-token?sessionId=${sessionId}&interviewSessionId=${interviewId}`
             );
             if (!tokenResp.ok) {
               throw new Error(`Token endpoint returned ${tokenResp.status}`);

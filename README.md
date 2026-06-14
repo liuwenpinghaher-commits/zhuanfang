@@ -216,7 +216,8 @@ React UI
   -> local fallback engine
 ```
 
-文本专访和实时语音转写现在共用 `interview-turn-runner`：优先走百炼角色扮演 provider，失败或未配置时降级到本地规则引擎，并统一记录 AI 运行事件。实时语音的留白、打断和语音追问信号会写入会话 `realtimeSignals`，进入“实时轮替”质量门，并在系统配置的透明追踪里展示。
+文本专访和实时语音转写现在共用 `interview-turn-runner`：优先走百炼角色扮演 provider，失败或未配置时降级到本地规则引擎，并统一记录 AI 运行事件。实时语音的留白、打断和语音追问信号会写入会话 `realtimeSignals`，进入"实时轮替"质量门，并在系统配置的透明追踪里展示。
+实时打断现在支持回填：浏览器侧 `bailianWebrtc.ts` 通过 `markAssistantSpeaking` 累积已合成的字符与音频时长，触发打断时调用 `POST /api/realtime-voice/sessions/:id/interrupt`，服务端通过 `truncateAssistantTurn` 把对应 assistant turn 的 `content` 截断为 `spokenTextSoFar`，并写入 `realtimeSignals`（`eventType=agent_speech_interrupted`）和 `aiRunEvents.metrics`，避免后续轮次基于"模型完整输出"做出错乱的追问。Turn 判定通过 `src/realtime/turnDetectors/` 抽象，默认实现是 silence VAD（行为零变化），可在未来插入语义判定。详见 [docs/realtime-improvement-plan.md](docs/realtime-improvement-plan.md)。
 系统配置里的“默认访谈声音”会在创建 Realtime session 时传给 Product API；`BAILIAN_REALTIME_VOICE` 作为服务端默认/回退音色保留。
 系统配置页的质量区会显示最近 workflow runs 和质量修复动作；Product API 提供 `/api/system/workflows/:workflowId/run`，用于触发 ContextPack、导入摄取、记忆投影等工作流的可观测运行记录。默认 `WORKFLOW_RUNTIME_PROVIDER=local`，使用当前确定性 runtime；配置 `WORKFLOW_RUNTIME_PROVIDER=mastra` 和 `MASTRA_RUNTIME_ENDPOINT` 后，会把 `{ input, state }` POST 到 `/api/workflows/:workflowId/run`，接收外部 Mastra-compatible runtime 返回的 `{ run, nextState }`。`context_pack_build` 会读取当前 ProductState 并输出主题、确认记忆、候选、修正和来源数量；`memory_projection` 会统计待审候选、敏感候选、确认长期记忆和模型上下文记录，不会自动确认候选；`search_brief_generation`、`podcast_generation`、`import_ingestion` 会分别输出来源/事实/讨论主题、章节/Shownotes/声音、转写轮次/分析维度/PlaybookPatch 等业务指标。质量修复动作会把记忆修正、质量门低分、实时轮替失败、候选记忆精度、来源忠实度和 provider 降级转成下一场专访的 `qualityGuardrails`。
 

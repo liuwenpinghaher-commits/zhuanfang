@@ -35,9 +35,16 @@ export interface ProductApiClient {
   endInterviewSession(sessionId: string): Promise<EndInterviewSessionResponse>;
   createRealtimeVoiceSession(input: CreateRealtimeVoiceSessionRequest): Promise<RealtimeVoiceSessionResponse>;
   exchangeRealtimeVoiceSdp(signalingPath: string, offerSdp: string): Promise<string>;
+  interruptRealtimeVoiceSession(
+    sessionId: string,
+    input: InterruptRealtimeVoiceSessionRequest
+  ): Promise<InterruptRealtimeVoiceSessionResponse>;
   generatePodcastEpisode(input: GeneratePodcastEpisodeRequest): Promise<GeneratePodcastEpisodeResponse>;
   transcribeCorpusAudio(input: AudioTranscriptionInput): Promise<TranscribeCorpusAudioResponse>;
   analyzeCorpusImport(input: CorpusImportInput): Promise<AnalyzeCorpusImportResponse>;
+  listVoices(): Promise<VoiceListResponse>;
+  createVoice(input: CreateVoiceRequest): Promise<VoiceInfo>;
+  deleteVoice(voiceId: string): Promise<void>;
 }
 
 export type SystemCapabilityStatus = "ready" | "degraded" | "needs-key" | "needs-endpoint" | "disabled";
@@ -153,6 +160,7 @@ export interface EndInterviewSessionResponse extends InterviewSessionResponse {
 export interface CreateRealtimeVoiceSessionRequest {
   instructions?: string;
   interviewSessionId?: string;
+  voice?: string;
 }
 
 export interface RealtimeVoiceSessionResponse {
@@ -193,6 +201,24 @@ export interface RealtimeVoiceSessionResponse {
   expiresAt: string;
 }
 
+export interface InterruptRealtimeVoiceSessionRequest {
+  spokenTextSoFar?: string;
+  interruptedAtMs?: number;
+  assistantTurnId?: string;
+  providerTurnId?: string;
+  reason?: "user_interrupt" | "provider_error";
+}
+
+export interface InterruptRealtimeVoiceSessionResponse {
+  interrupted: boolean;
+  sessionId: string;
+  truncated: boolean;
+  spokenChars: number;
+  originalChars: number;
+  assistantTurnId?: string;
+  providerTurnId?: string;
+}
+
 export interface GeneratePodcastEpisodeRequest {
   noteId: string;
   format: PodcastEpisode["format"];
@@ -211,6 +237,24 @@ export interface TranscribeCorpusAudioResponse {
 export interface AnalyzeCorpusImportResponse {
   insight: CorpusInsight;
   state: ProductState;
+}
+
+export interface VoiceInfo {
+  voice: string;
+  name: string;
+  description: string;
+  targetModel?: string;
+  createdAt?: string;
+}
+
+export interface VoiceListResponse {
+  preset: VoiceInfo[];
+  custom: VoiceInfo[];
+}
+
+export interface CreateVoiceRequest {
+  audioBase64: string;
+  preferredName?: string;
 }
 
 export function getProductApiBaseUrl() {
@@ -357,6 +401,13 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         body: offerSdp
       });
     },
+    async interruptRealtimeVoiceSession(sessionId, input) {
+      return (await requestJson(`/api/realtime-voice/sessions/${sessionId}/interrupt`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input)
+      })) as InterruptRealtimeVoiceSessionResponse;
+    },
     async generatePodcastEpisode(input) {
       const response = (await requestJson("/api/podcast/episodes", {
         method: "POST",
@@ -387,6 +438,21 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         ...response,
         state: normalizeProductState(response.state)
       };
+    },
+    async listVoices() {
+      return (await requestJson("/api/realtime-voice/voices", { method: "GET" })) as VoiceListResponse;
+    },
+    async createVoice(input) {
+      return (await requestJson("/api/realtime-voice/voices", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input)
+      })) as VoiceInfo;
+    },
+    async deleteVoice(voiceId) {
+      await fetchImpl(`${normalizedBaseUrl}/api/realtime-voice/voices/${encodeURIComponent(voiceId)}`, {
+        method: "DELETE"
+      });
     }
   };
 }

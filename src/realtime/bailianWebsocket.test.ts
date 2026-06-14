@@ -112,7 +112,8 @@ describe("connectBailianRealtimeWebsocket", () => {
       constructor() { return audioContext; }
     };
 
-    const onTranscript = vi.fn();
+    const onUserTranscript = vi.fn();
+    const onAssistantTranscript = vi.fn();
     const onSpeechStart = vi.fn();
     const onSpeechEnd = vi.fn();
 
@@ -121,7 +122,8 @@ describe("connectBailianRealtimeWebsocket", () => {
       {
         mediaDevices: mediaDevices as unknown as { getUserMedia(constraints: MediaStreamConstraints): Promise<MediaStream> },
         productApiBaseUrl: "ws://127.0.0.1:8787",
-        onTranscript,
+        onUserTranscript,
+        onAssistantTranscript,
         onSpeechStart,
         onSpeechEnd
       }
@@ -155,12 +157,12 @@ describe("connectBailianRealtimeWebsocket", () => {
     wsOnMessage?.(new MessageEvent("message", {
       data: JSON.stringify({ type: "response.audio_transcript.delta", delta: "你好" })
     }));
-    expect(onTranscript).toHaveBeenCalledWith("你好", false);
+    expect(onAssistantTranscript).toHaveBeenCalledWith("你好", false);
 
     wsOnMessage?.(new MessageEvent("message", {
       data: JSON.stringify({ type: "response.audio_transcript.done", transcript: "你好，请问" })
     }));
-    expect(onTranscript).toHaveBeenCalledWith("你好，请问", true);
+    expect(onAssistantTranscript).toHaveBeenCalledWith("你好，请问", true);
 
     connection.close();
     expect(wsClose).toHaveBeenCalled();

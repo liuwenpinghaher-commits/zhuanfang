@@ -754,3 +754,131 @@ function delay(ms: number) {
     setTimeout(resolve, ms);
   });
 }
+
+export interface BailianVoiceInfo {
+  voice: string;
+  name: string;
+  description: string;
+  targetModel?: string;
+  createdAt?: string;
+}
+
+export interface BailianVoiceEnrollmentClient {
+  listVoices(): Promise<BailianVoiceInfo[]>;
+  createVoice(input: { audioBase64: string; preferredName?: string }): Promise<BailianVoiceInfo>;
+  deleteVoice(voiceId: string): Promise<void>;
+}
+
+export function createBailianVoiceEnrollmentClient(options: {
+  apiKey: string;
+  audioBaseUrl?: string;
+  fetchImpl?: FetchLike;
+}): BailianVoiceEnrollmentClient {
+  const audioBaseUrl = (options.audioBaseUrl ?? BAILIAN_DEFAULT_AUDIO_BASE_URL).replace(/\/$/, "");
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const customizationUrl = `${audioBaseUrl}/api/v1/services/audio/tts/customization`;
+
+  return {
+    async listVoices() {
+      const response = await fetchImpl(customizationUrl, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${options.apiKey}`,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "qwen-voice-enrollment",
+          input: {
+            action: "list",
+            page_size: 100,
+            page_index: 0
+          }
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Bailian voice list failed: ${response.status}`);
+      }
+
+      const payload = (await response.json()) as {
+        output?: { voice_list?: Array<{ voice: string; target_model?: string; gmt_create?: string; preferred_name?: string }> };
+      };
+
+      return (payload.output?.voice_list ?? []).map((item) => ({
+        voice: item.voice,
+        name: item.preferred_name ?? item.voice,
+        description: "",
+        targetModel: item.target_model,
+        createdAt: item.gmt_create
+      }));
+    },
+
+    async createVoice(input) {
+      const response = await fetchImpl(customizationUrl, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${options.apiKey}`,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "qwen-voice-enrollment",
+          input: {
+            action: "create",
+            audio: input.audioBase64,
+            target_model: "qwen3.5-omni-plus-realtime",
+            ...(input.preferredName ? { preferred_name: input.preferredName } : {})
+          }
+        })
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "");
+        throw new Error(`Bailian voice create failed: ${response.status} ${errorText}`);
+      }
+
+      const payload = (await response.json()) as {
+        output?: { voice?: string; gmt_create?: string };
+      };
+
+      return {
+        voice: payload.output?.voice ?? "",
+        name: input.preferredName ?? payload.output?.voice ?? "",
+        description: "",
+        createdAt: payload.output?.gmt_create
+      };
+    },
+
+    async deleteVoice(voiceId) {
+      const response = await fetchImpl(customizationUrl, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${options.apiKey}`,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "qwen-voice-enrollment",
+          input: {
+            action: "delete",
+            voice: voiceId
+          }
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Bailian voice delete failed: ${response.status}`);
+      }
+    }
+  };
+}
+
+export function createBailianVoiceEnrollmentClientFromEnv(
+  env: Record<string, string | undefined> = process.env
+): BailianVoiceEnrollmentClient | undefined {
+  const apiKey = env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY;
+  if (!apiKey) return undefined;
+
+  return createBailianVoiceEnrollmentClient({
+    apiKey,
+    audioBaseUrl: env.BAILIAN_AUDIO_BASE_URL
+  });
+}

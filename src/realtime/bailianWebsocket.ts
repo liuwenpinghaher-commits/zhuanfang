@@ -4,6 +4,8 @@ import type {
   InterruptAssistantOptions,
   InterruptAssistantResult
 } from "./bailianWebrtc";
+import type { InterruptionScene } from "../domain/engine";
+import { buildInterruptionContext, getInterruptionScene } from "../domain/engine";
 
 export type { AssistantSpeechProgress, InterruptAssistantOptions, InterruptAssistantResult };
 
@@ -14,6 +16,7 @@ interface MediaDevicesLike {
 export interface BailianRealtimeWebsocketConnection {
   session: RealtimeVoiceSessionResponse;
   stream: MediaStream;
+  setStrategy(strategy: string | undefined): void;
   beginAssistantTurn(input: { turnId?: string; providerTurnId?: string }): void;
   markAssistantSpeaking(input: { text: string; audioMs?: number }): void;
   completeAssistantTurn(): AssistantSpeechProgress | null;
@@ -25,7 +28,8 @@ export interface BailianRealtimeWebsocketConnection {
 export interface ConnectBailianRealtimeWebsocketOptions {
   mediaDevices?: MediaDevicesLike;
   productApiBaseUrl?: string;
-  onTranscript?: (text: string, isFinal: boolean) => void;
+  onUserTranscript?: (text: string, isFinal: boolean) => void;
+  onAssistantTranscript?: (text: string, isFinal: boolean) => void;
   onAudioLevel?: (level: number) => void;
   onSpeechStart?: () => void;
   onSpeechEnd?: () => void;
@@ -66,6 +70,10 @@ export async function connectBailianRealtimeWebsocket(
   let closed = false;
   let audioQueue: Float32Array[] = [];
   let playbackNode: AudioBufferSourceNode | null = null;
+  let currentStrategy: string | undefined;
+  let fullAssistantTranscript = "";
+  let pendingInterruptionContext: string | null = null;
+  let interruptionScene: InterruptionScene = "perspective_shift";
 
   function ensureProgress(input: { turnId?: string; providerTurnId?: string } = {}) {
     if (!progress || progress.completed) {
@@ -129,6 +137,44 @@ export async function connectBailianRealtimeWebsocket(
     audioQueue = [];
   }
 
+  function cancelAndSaveContext() {
+    const spoken = fullAssistantTranscript;
+    const unspoken = progress && !progress.completed
+      ? progress.chunks.slice(
+          Math.floor(progress.chunks.length * (spoken.length / Math.max(1, progress.totalChars)))
+        ).map(c => c.text).join("")
+      : "";
+
+    stopPlayback();
+    ws.send(JSON.stringify({ type: "response.cancel" }));
+
+    if (interruptionScene === "anchor_probe" || interruptionScene === "perspective_shift") {
+      pendingInterruptionContext = buildInterruptionContext({
+        spokenSoFar: spoken,
+        unspokenContent: unspoken,
+        strategy: currentStrategy,
+        userInput: ""
+      });
+    }
+  }
+
+  function injectContextAndRespond(userInput: string) {
+    if (!pendingInterruptionContext) return;
+
+    const context = pendingInterruptionContext.replace("用户说：\"\"", `用户说："${userInput}"`);
+    pendingInterruptionContext = null;
+
+    ws.send(JSON.stringify({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: context }]
+      }
+    }));
+    ws.send(JSON.stringify({ type: "response.create" }));
+  }
+
   return new Promise((resolve, reject) => {
     ws.onopen = () => {
       ws.send(JSON.stringify(session.sessionUpdate));
@@ -185,13 +231,20 @@ export async function connectBailianRealtimeWebsocket(
           resolve({
             session,
             stream,
+            setStrategy(strategy) {
+              currentStrategy = strategy;
+              interruptionScene = getInterruptionScene(strategy);
+            },
             beginAssistantTurn(input) {
+              fullAssistantTranscript = "";
+              pendingInterruptionContext = null;
               ensureProgress(input);
             },
             markAssistantSpeaking(input) {
               const current = ensureProgress();
               const text = input.text ?? "";
               if (!text) return;
+              fullAssistantTranscript += text;
               current.chunks.push({
                 text,
                 audioMs: input.audioMs,
@@ -215,15 +268,17 @@ export async function connectBailianRealtimeWebsocket(
               const reason = opts.reason ?? "user_interrupt";
               const spokenTextSoFar = progress.chunks.map((c) => c.text).join("");
               const interruptedAtMs = opts.interruptedAtMs ?? progress.totalAudioMs;
-              stopPlayback();
-              ws.send(JSON.stringify({
-                type: "response.cancel"
-              }));
+
+              if (interruptionScene === "key_insight") {
+                await new Promise(r => setTimeout(r, 500));
+              }
+
+              cancelAndSaveContext();
               progress.completed = true;
               return {
                 truncated: true,
                 spokenChars: spokenTextSoFar.length,
-                originalChars: spokenTextSoFar.length,
+                originalChars: fullAssistantTranscript.length,
                 spokenTextSoFar,
                 reason
               };
@@ -255,7 +310,7 @@ export async function connectBailianRealtimeWebsocket(
           const delta = msg.delta as string | undefined;
           if (delta) {
             ensureProgress();
-            options.onTranscript?.(delta, false);
+            options.onAssistantTranscript?.(delta, false);
           }
           break;
         }
@@ -263,7 +318,7 @@ export async function connectBailianRealtimeWebsocket(
         case "response.audio_transcript.done": {
           const transcript = msg.transcript as string | undefined;
           if (transcript) {
-            options.onTranscript?.(transcript, true);
+            options.onAssistantTranscript?.(transcript, true);
           }
           break;
         }
@@ -272,7 +327,7 @@ export async function connectBailianRealtimeWebsocket(
           const delta = msg.delta as string | undefined;
           if (delta) {
             ensureProgress();
-            options.onTranscript?.(delta, false);
+            options.onAssistantTranscript?.(delta, false);
           }
           break;
         }
@@ -280,13 +335,28 @@ export async function connectBailianRealtimeWebsocket(
         case "response.text.done": {
           const text = msg.text as string | undefined;
           if (text) {
-            options.onTranscript?.(text, true);
+            options.onAssistantTranscript?.(text, true);
+          }
+          break;
+        }
+
+        case "response.created": {
+          if (pendingInterruptionContext) {
+            ws.send(JSON.stringify({ type: "response.cancel" }));
+          }
+          break;
+        }
+
+        case "response.done": {
+          if (pendingInterruptionContext) {
+            const userText = (msg as Record<string, unknown>).transcript as string ?? "";
+            injectContextAndRespond(userText);
           }
           break;
         }
 
         case "input_audio_buffer.speech_started": {
-          stopPlayback();
+          cancelAndSaveContext();
           options.onSpeechStart?.();
           break;
         }
@@ -298,13 +368,21 @@ export async function connectBailianRealtimeWebsocket(
 
         case "conversation.item.input_audio_transcription.delta": {
           const text = (msg.text as string ?? "") + (msg.stash as string ?? "");
-          if (text) options.onTranscript?.(text, false);
+          if (text) options.onUserTranscript?.(text, false);
           break;
         }
 
         case "conversation.item.input_audio_transcription.completed": {
           const transcript = msg.transcript as string | undefined;
-          if (transcript) options.onTranscript?.(transcript, true);
+          if (transcript) {
+            if (pendingInterruptionContext) {
+              pendingInterruptionContext = pendingInterruptionContext.replace(
+                /用户说：".*"/,
+                `用户说："${transcript}"`
+              );
+            }
+            options.onUserTranscript?.(transcript, true);
+          }
           break;
         }
 

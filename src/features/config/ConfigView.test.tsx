@@ -150,7 +150,7 @@ describe("ConfigView", () => {
     const recencyInput = container?.querySelector<HTMLInputElement>('input[name="search.recencyDays"]');
     const maxSourcesInput = container?.querySelector<HTMLInputElement>('input[name="search.maxSources"]');
     const webInInterviewSelect = container?.querySelector<HTMLSelectElement>('select[name="search.allowWebInInterview"]');
-    const podcastVoiceInput = container?.querySelector<HTMLInputElement>('input[name="voice.podcastVoice"]');
+    const podcastVoiceSelect = container?.querySelector<HTMLSelectElement>('select[name="voice.podcastVoice"]');
     const realtimeSelect = container?.querySelector<HTMLSelectElement>('select[name="voice.realtimeEnabled"]');
     const silenceInput = container?.querySelector<HTMLInputElement>('input[name="interview.silenceHoldMs"]');
     const followUpInput = container?.querySelector<HTMLInputElement>('input[name="interview.maxFollowUpDepth"]');
@@ -168,8 +168,8 @@ describe("ConfigView", () => {
       maxSourcesInput!.dispatchEvent(new Event("input", { bubbles: true }));
       webInInterviewSelect!.value = "false";
       webInInterviewSelect!.dispatchEvent(new Event("change", { bubbles: true }));
-      podcastVoiceInput!.value = "longyuan_v3";
-      podcastVoiceInput!.dispatchEvent(new Event("input", { bubbles: true }));
+      podcastVoiceSelect!.value = "longyuan_v3";
+      podcastVoiceSelect!.dispatchEvent(new Event("change", { bubbles: true }));
       realtimeSelect!.value = "true";
       realtimeSelect!.dispatchEvent(new Event("change", { bubbles: true }));
       silenceInput!.value = "1600";
@@ -223,6 +223,10 @@ describe("ConfigView", () => {
           onCleanupGeneratedArtifacts={vi.fn()}
           onSaveRuntimeConfig={vi.fn()}
           onSaveProductConfig={vi.fn()}
+          voices={[]}
+          voicesLoading={false}
+          onUploadVoice={vi.fn()}
+          onDeleteVoice={vi.fn()}
           {...overrides}
         />
       );

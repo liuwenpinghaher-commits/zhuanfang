@@ -3,7 +3,12 @@ import {
   receiveUserTurn,
   receiveUserTurnWithAssistant
 } from "../../../src/domain/engine";
-import type { AiRunEvent, InterviewSession, ProductState } from "../../../src/domain/types";
+import type {
+  AiRunEvent,
+  AiRunEventMetrics,
+  InterviewSession,
+  ProductState
+} from "../../../src/domain/types";
 import { formatProviderErrorMessage } from "./provider-error";
 import type { BailianCharacterInterviewClient } from "./providers/bailian";
 
@@ -35,6 +40,7 @@ export async function runInterviewTurn(
 
   try {
     const assistant = await bailianInterviewClient.createAssistantTurn({ session, userText: content });
+    const latencyMs = Date.now() - startedAt;
     const strategyDecision = decideInterviewStrategy(session, content);
     const updatedSession = receiveUserTurnWithAssistant(session, content, {
       content: assistant.content,
@@ -48,7 +54,8 @@ export async function runInterviewTurn(
         status: "succeeded",
         inputText: content,
         outputText: assistant.content,
-        latencyMs: Date.now() - startedAt
+        latencyMs,
+        metrics: { timeToFirstTokenMs: latencyMs }
       })
     };
   } catch (error) {
@@ -100,6 +107,7 @@ function buildInterviewTurnAiRunEvent(
     outputText: string;
     latencyMs: number;
     degradedReason?: string;
+    metrics?: AiRunEventMetrics;
   }
 ): Omit<AiRunEvent, "id" | "createdAt"> {
   return {
@@ -115,7 +123,8 @@ function buildInterviewTurnAiRunEvent(
         : `本地规则追问：${summarizeForAiRun(input.outputText)}`,
     latencyMs: input.latencyMs,
     estimatedTokens: estimateTokens(input.inputText, input.outputText),
-    degradedReason: input.degradedReason
+    degradedReason: input.degradedReason,
+    metrics: input.metrics
   };
 }
 

@@ -1,4 +1,6 @@
 import type { ProductApiClient, RealtimeVoiceSessionResponse } from "../api/productApi";
+import type { TurnDetector, TurnDetectorContext, TurnDetectorDecision } from "./turnDetectors";
+import { createSilenceVadDetector, SILENCE_VAD_DETECTOR_ID } from "./turnDetectors";
 
 export type TurnPhase = "idle" | "user_speaking" | "short_pause" | "long_pause" | "assistant_speaking" | "interrupted";
 
@@ -9,24 +11,76 @@ export interface TurnState {
   isAssistantSpeaking: boolean;
   shouldInterrupt: boolean;
   backchannel: string | null;
+  detectorId?: string;
+  detectorReason?: string;
+  detectorConfidence?: number;
+  detectorDecision?: TurnDetectorDecision["decision"];
 }
 
-export function createTurnStateMachine(options: {
+export interface TurnStateMachineUpdate {
+  inputLevel: number;
+  silenceMs: number;
+  isAssistantSpeaking?: boolean;
+  transcript?: string;
+}
+
+export interface TurnStateMachineOptions {
   silenceThresholdMs: number;
   longPauseThresholdMs: number;
-}): {
-  update(signal: { inputLevel: number; silenceMs: number }): TurnState;
+  detector?: TurnDetector;
+}
+
+export interface TurnStateMachine {
+  update(signal: TurnStateMachineUpdate): TurnState;
   getState(): TurnState;
-} {
+  setAssistantSpeaking(value: boolean): void;
+}
+
+export function createTurnStateMachine(options: TurnStateMachineOptions): TurnStateMachine {
+  const detector =
+    options.detector ??
+    createSilenceVadDetector({
+      silenceThresholdMs: options.silenceThresholdMs,
+      longPauseThresholdMs: options.longPauseThresholdMs
+    });
+
   let phase: TurnPhase = "idle";
   let silenceMs = 0;
   let isUserSpeaking = false;
   let isAssistantSpeaking = false;
+  let lastDecision: TurnDetectorDecision | null = null;
+
+  function buildState(): TurnState {
+    return {
+      phase,
+      silenceMs,
+      isUserSpeaking,
+      isAssistantSpeaking,
+      shouldInterrupt: phase === "interrupted",
+      backchannel: phase === "short_pause" ? "嗯" : null,
+      detectorId: detector.id,
+      detectorReason: lastDecision?.reason,
+      detectorConfidence: lastDecision?.confidence,
+      detectorDecision: lastDecision?.decision
+    };
+  }
 
   return {
     update(signal) {
       silenceMs = signal.silenceMs;
       isUserSpeaking = signal.inputLevel > 0.1;
+      if (typeof signal.isAssistantSpeaking === "boolean") {
+        isAssistantSpeaking = signal.isAssistantSpeaking;
+      }
+
+      const ctx: TurnDetectorContext = {
+        inputLevel: signal.inputLevel,
+        silenceMs: signal.silenceMs,
+        isUserSpeaking,
+        isAssistantSpeaking,
+        transcript: signal.transcript
+      };
+      lastDecision = detector.evaluate(ctx);
 
       if (isUserSpeaking && isAssistantSpeaking) {
         phase = "interrupted";
@@ -42,20 +96,19 @@ export function createTurnStateMachine(options: {
         phase = "idle";
       }
 
-      return this.getState();
+      return buildState();
     },
     getState() {
-      return {
-        phase,
-        silenceMs,
-        isUserSpeaking,
-        isAssistantSpeaking,
-        shouldInterrupt: phase === "interrupted",
-        backchannel: phase === "short_pause" ? "嗯" : null,
-      };
+      return buildState();
     },
+    setAssistantSpeaking(value: boolean) {
+      isAssistantSpeaking = value;
+    }
   };
 }
+
+export { SILENCE_VAD_DETECTOR_ID };
+export type { TurnDetector, TurnDetectorContext, TurnDetectorDecision } from "./turnDetectors";
 
 interface MediaDevicesLike {
   getUserMedia(constraints: MediaStreamConstraints): Promise<MediaStreamLike>;
@@ -89,7 +142,41 @@ interface PeerConnectionLike {
 interface ConnectBailianRealtimeWebrtcOptions {
   mediaDevices?: MediaDevicesLike;
   peerConnectionFactory?: () => PeerConnectionLike;
-  productApiClient: Pick<ProductApiClient, "exchangeRealtimeVoiceSdp">;
+  productApiClient: ProductApiClientForRealtime;
+}
+
+export interface ProductApiClientForRealtime {
+  exchangeRealtimeVoiceSdp: ProductApiClient["exchangeRealtimeVoiceSdp"];
+  interruptRealtimeVoiceSession?: ProductApiClient["interruptRealtimeVoiceSession"];
+}
+
+export interface AssistantSpeechChunk {
+  text: string;
+  audioMs?: number;
+  receivedAt: number;
+}
+
+export interface AssistantSpeechProgress {
+  turnId?: string;
+  providerTurnId?: string;
+  startedAt: number;
+  chunks: AssistantSpeechChunk[];
+  totalChars: number;
+  totalAudioMs: number;
+  completed: boolean;
+}
+
+export interface InterruptAssistantOptions {
+  reason?: "user_interrupt" | "provider_error";
+  interruptedAtMs?: number;
+}
+
+export interface InterruptAssistantResult {
+  truncated: boolean;
+  spokenChars: number;
+  originalChars: number;
+  spokenTextSoFar: string;
+  reason: "user_interrupt" | "provider_error";
 }
 
 export interface BailianRealtimeWebrtcConnection {
@@ -97,6 +184,11 @@ export interface BailianRealtimeWebrtcConnection {
   stream: MediaStreamLike;
   peerConnection: PeerConnectionLike;
   dataChannel: DataChannelLike;
+  beginAssistantTurn(input: { turnId?: string; providerTurnId?: string }): void;
+  markAssistantSpeaking(input: { text: string; audioMs?: number }): void;
+  completeAssistantTurn(): AssistantSpeechProgress | null;
+  getAssistantProgress(): AssistantSpeechProgress | null;
+  interruptAssistant(options?: InterruptAssistantOptions): Promise<InterruptAssistantResult | null>;
   close(): void;
 }
 
@@ -140,11 +232,82 @@ export async function connectBailianRealtimeWebrtc(
   await waitForDataChannelOpen(dataChannel);
   dataChannel.send(JSON.stringify(session.sessionUpdate));
 
+  let progress: AssistantSpeechProgress | null = null;
+
+  function ensureProgress(input: { turnId?: string; providerTurnId?: string } = {}) {
+    if (!progress || progress.completed) {
+      progress = {
+        turnId: input.turnId,
+        providerTurnId: input.providerTurnId,
+        startedAt: Date.now(),
+        chunks: [],
+        totalChars: 0,
+        totalAudioMs: 0,
+        completed: false
+      };
+    } else {
+      if (input.turnId && !progress.turnId) progress.turnId = input.turnId;
+      if (input.providerTurnId && !progress.providerTurnId) progress.providerTurnId = input.providerTurnId;
+    }
+    return progress;
+  }
+
   return {
     session,
     stream,
     peerConnection,
     dataChannel,
+    beginAssistantTurn(input) {
+      ensureProgress(input);
+    },
+    markAssistantSpeaking(input) {
+      const current = ensureProgress();
+      const text = input.text ?? "";
+      if (!text) return;
+      current.chunks.push({
+        text,
+        audioMs: input.audioMs,
+        receivedAt: Date.now()
+      });
+      current.totalChars += text.length;
+      if (typeof input.audioMs === "number" && input.audioMs > current.totalAudioMs) {
+        current.totalAudioMs = input.audioMs;
+      }
+    },
+    completeAssistantTurn() {
+      if (!progress) return null;
+      progress.completed = true;
+      return progress;
+    },
+    getAssistantProgress() {
+      return progress;
+    },
+    async interruptAssistant(opts = {}) {
+      if (!progress || progress.chunks.length === 0) {
+        return null;
+      }
+      const reason = opts.reason ?? "user_interrupt";
+      const spokenTextSoFar = progress.chunks.map((chunk) => chunk.text).join("");
+      const interruptedAtMs = opts.interruptedAtMs ?? progress.totalAudioMs;
+      let result: Awaited<ReturnType<NonNullable<ProductApiClientForRealtime["interruptRealtimeVoiceSession"]>>> | null = null;
+      if (typeof options.productApiClient.interruptRealtimeVoiceSession === "function") {
+        result = await options.productApiClient.interruptRealtimeVoiceSession(session.sessionId, {
+          spokenTextSoFar,
+          interruptedAtMs,
+          assistantTurnId: progress.turnId,
+          providerTurnId: progress.providerTurnId,
+          reason
+        });
+      }
+      progress.completed = true;
+      return {
+        truncated: result?.truncated ?? false,
+        spokenChars: result?.spokenChars ?? spokenTextSoFar.length,
+        originalChars: result?.originalChars ?? spokenTextSoFar.length,
+        spokenTextSoFar,
+        reason
+      };
+    },
     close() {
       dataChannel.close();
       peerConnection.close();

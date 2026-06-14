@@ -225,7 +225,8 @@ describe("Product API", () => {
   it("marks realtime voice as needing endpoint when the API key exists but WebRTC endpoint is missing", async () => {
     const server = buildApiServer({
       env: {
-        DASHSCOPE_API_KEY: "secret-dashscope-key"
+        DASHSCOPE_API_KEY: "secret-dashscope-key",
+        BAILIAN_REALTIME_TRANSPORT: "webrtc"
       }
     });
 
@@ -763,7 +764,7 @@ describe("Product API", () => {
       provider: "bailian",
       model: "qwen3.5-omni-plus-realtime",
       fallbackModel: "qwen3.5-omni-flash-realtime",
-      transport: "webrtc",
+      transport: "websocket",
       fallbackTransport: "websocket",
       vad: "server_vad",
       enableSearch: false,
@@ -779,6 +780,8 @@ describe("Product API", () => {
   });
 
   it("creates safe realtime voice sessions and proxies WebRTC SDP exchange", async () => {
+    const previousKey = process.env.DASHSCOPE_API_KEY;
+    process.env.DASHSCOPE_API_KEY = "test-key";
     const server = buildApiServer({
       bailianRealtimeVoiceClient: {
         async createWebrtcAnswer(input) {
@@ -804,7 +807,7 @@ describe("Product API", () => {
     expect(sessionResponse.json()).toMatchObject({
       provider: "bailian",
       model: "qwen3.5-omni-plus-realtime",
-      transport: "webrtc",
+      transport: "websocket",
       status: "ready",
       sessionUpdate: {
         type: "session.update",
@@ -838,5 +841,11 @@ describe("Product API", () => {
     expect(answerResponse.statusCode).toBe(200);
     expect(answerResponse.headers["content-type"]).toContain("application/sdp");
     expect(answerResponse.body).toBe("answer-sdp");
+
+    if (previousKey === undefined) {
+      delete process.env.DASHSCOPE_API_KEY;
+    } else {
+      process.env.DASHSCOPE_API_KEY = previousKey;
+    }
   });
 });

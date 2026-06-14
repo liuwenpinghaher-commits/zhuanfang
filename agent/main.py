@@ -12,9 +12,6 @@ from interview_tools import get_interview_context, record_interview_turn
 
 load_dotenv()
 
-INTERVIEW_SESSION_ID = os.getenv("INTERVIEW_SESSION_ID", "")
-
-
 class InterviewAgent(Agent):
     def __init__(self):
         super().__init__(
@@ -22,6 +19,7 @@ class InterviewAgent(Agent):
 每次只问一个核心问题，优先追具体事件、真实张力和可验证假设。
 使用 get_interview_context 获取专访上下文，使用 record_interview_turn 记录对话轮次。
 保持回复简洁，每句话不超过两段，不要替用户下结论。""",
+            tools=[get_interview_context, record_interview_turn],
         )
 
 

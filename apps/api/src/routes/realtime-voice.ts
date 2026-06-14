@@ -268,8 +268,24 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       ? `interview-${interviewSessionId}`
       : `session-${sessionId ?? randomUUID()}`;
 
+    const { AccessToken } = await import("livekit-server-sdk");
+    const token = new AccessToken(
+      process.env.LIVEKIT_API_KEY ?? "devkey",
+      process.env.LIVEKIT_API_SECRET ?? "secret",
+      {
+        identity: `user-${randomUUID().slice(0, 8)}`,
+        name: "Interview User",
+      }
+    );
+    token.addGrant({
+      room: roomName,
+      roomJoin: true,
+      canPublish: true,
+      canSubscribe: true,
+    });
+
     return {
-      token: `${roomName}-mock-token`,
+      token: await token.toJwt(),
       serverUrl: process.env.LIVEKIT_URL ?? "ws://127.0.0.1:7880",
       room: roomName,
     };
