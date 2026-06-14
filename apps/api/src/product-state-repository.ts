@@ -1,10 +1,11 @@
 import { createInitialProductState } from "../../../src/domain/engine";
-import type { ProductState } from "../../../src/domain/types";
+import type { ProductState, InterviewSession } from "../../../src/domain/types";
 
 export interface ProductStateRepository {
   getState(): ProductState;
   resetState(): ProductState;
   replaceState(state: ProductState): ProductState;
+  getInterviewSession(id: string): InterviewSession | null;
 }
 
 export function createInMemoryProductStateRepository(initialState: ProductState = createInitialProductState()): ProductStateRepository {
@@ -21,6 +22,9 @@ export function createInMemoryProductStateRepository(initialState: ProductState 
     replaceState(nextState) {
       state = nextState;
       return state;
+    },
+    getInterviewSession(id) {
+      return state.sessions.find(s => s.id === id) ?? null;
     }
   };
 }

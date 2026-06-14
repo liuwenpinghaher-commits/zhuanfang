@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
-import type { BailianRealtimeVoiceClient } from "../providers/bailian";
+import type { BailianRealtimeVoiceClient, BailianVoiceEnrollmentClient } from "../providers/bailian";
 import type { ProductStateRepository } from "../product-state-repository";
 import {
   appendRealtimeSignalTrace,
@@ -32,12 +32,14 @@ export interface RealtimeVoiceConfig {
 
 interface RealtimeVoiceRouteOptions {
   bailianRealtimeVoiceClient?: BailianRealtimeVoiceClient;
+  voiceEnrollmentClient?: BailianVoiceEnrollmentClient;
   stateRepo?: ProductStateRepository;
 }
 
 interface RealtimeVoiceSessionPayload {
   instructions?: unknown;
   interviewSessionId?: unknown;
+  voice?: unknown;
 }
 
 interface RealtimeVoiceSessionRecord extends RealtimeVoiceConfig {
@@ -71,6 +73,55 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
   const sessions = new Map<string, RealtimeVoiceSessionRecord>();
   server.addContentTypeParser("application/sdp", { parseAs: "string" }, (_request, body, done) => {
     done(null, body);
+  });
+
+  server.get("/api/realtime-voice/voices", async () => {
+    if (!options.voiceEnrollmentClient) {
+      return { preset: [], custom: [] };
+    }
+    try {
+      const voices = await options.voiceEnrollmentClient.listVoices();
+      const preset = voices.filter((v) => !v.targetModel || v.targetModel === "qwen3.5-omni-plus-realtime");
+      const custom = voices.filter((v) => v.targetModel && v.targetModel !== "qwen3.5-omni-plus-realtime");
+      return { preset, custom };
+    } catch {
+      return { preset: [], custom: [] };
+    }
+  });
+
+  server.post("/api/realtime-voice/voices", async (request, reply) => {
+    if (!options.voiceEnrollmentClient) {
+      return reply.code(503).send({ error: "Voice enrollment is not configured." });
+    }
+    const body = request.body as { audioBase64?: string; preferredName?: string } | undefined;
+    if (!body?.audioBase64) {
+      return reply.code(422).send({ error: "audioBase64 is required." });
+    }
+    try {
+      const voice = await options.voiceEnrollmentClient.createVoice({
+        audioBase64: body.audioBase64,
+        preferredName: body.preferredName
+      });
+      return voice;
+    } catch (err) {
+      return reply.code(500).send({ error: err instanceof Error ? err.message : "Voice creation failed." });
+    }
+  });
+
+  server.delete("/api/realtime-voice/voices/:voiceId", async (request, reply) => {
+    if (!options.voiceEnrollmentClient) {
+      return reply.code(503).send({ error: "Voice enrollment is not configured." });
+    }
+    const voiceId = (request.params as { voiceId?: string }).voiceId;
+    if (!voiceId) {
+      return reply.code(422).send({ error: "voiceId is required." });
+    }
+    try {
+      await options.voiceEnrollmentClient.deleteVoice(voiceId);
+      return { deleted: true };
+    } catch (err) {
+      return reply.code(500).send({ error: err instanceof Error ? err.message : "Voice deletion failed." });
+    }
   });
 
   server.get("/api/realtime-voice/config", async () => buildRealtimeVoiceConfig());
@@ -192,6 +243,20 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     const recentMemories = (state.memoryRecords || []).slice(-5);
     const activeThemes = (state.themes || []).filter((t) => t.maturity !== "mature");
     return { recentMemories, activeThemes };
+  });
+
+  server.get("/api/realtime-voice/agent-context/:interviewSessionId", async (request, reply) => {
+    const { interviewSessionId } = request.params as { interviewSessionId: string };
+    const stateRepo = options.stateRepo;
+    if (!stateRepo) {
+      return reply.status(503).send({ error: "state_repo_unavailable" });
+    }
+    const session = await stateRepo.getInterviewSession(interviewSessionId);
+    if (!session) {
+      return reply.status(404).send({ error: "session_not_found" });
+    }
+    const { buildInterviewAgentContext } = await import("../../../../src/domain/engine");
+    return buildInterviewAgentContext(session);
   });
 
   const wss = new WebSocketServer({ noServer: true });
@@ -337,7 +402,7 @@ function createRealtimeVoiceSession(
       type: "session.update",
       session: {
         modalities: ["text", "audio"],
-        voice: process.env.BAILIAN_REALTIME_VOICE ?? "Ethan",
+        voice: normalizeOptionalString(payload.voice) ?? process.env.BAILIAN_REALTIME_VOICE ?? "Ethan",
         input_audio_format: "pcm",
         output_audio_format: "pcm",
         instructions,

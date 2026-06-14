@@ -3469,6 +3469,81 @@ export function appendRealtimeSignalTrace(
   };
 }
 
+export interface TruncateAssistantTurnInput {
+  turnId?: string;
+  providerTurnId?: string;
+  spokenTextSoFar: string;
+  reason?: "user_interrupt" | "provider_error";
+  truncatedAt?: string;
+}
+
+export interface TruncateAssistantTurnResult {
+  session: InterviewSession;
+  truncatedTurn: InterviewTurn | null;
+  changed: boolean;
+}
+
+export function truncateAssistantTurn(
+  session: InterviewSession,
+  input: TruncateAssistantTurnInput
+): TruncateAssistantTurnResult {
+  const turns = session.turns ?? [];
+  const reason = input.reason ?? "user_interrupt";
+  const truncatedAt = input.truncatedAt ?? nowIso();
+
+  const targetIndex = (() => {
+    if (input.turnId) {
+      const byId = turns.findIndex((turn) => turn.id === input.turnId && turn.role === "assistant");
+      if (byId >= 0) return byId;
+    }
+    if (input.providerTurnId) {
+      const byProvider = turns.findIndex(
+        (turn) => turn.role === "assistant" && turn.providerTurnId === input.providerTurnId
+      );
+      if (byProvider >= 0) return byProvider;
+    }
+    for (let index = turns.length - 1; index >= 0; index -= 1) {
+      const turn = turns[index];
+      if (turn.role === "assistant" && !turn.truncated) {
+        return index;
+      }
+    }
+    return -1;
+  })();
+
+  if (targetIndex < 0) {
+    return { session, truncatedTurn: null, changed: false };
+  }
+
+  const target = turns[targetIndex];
+  const originalChars = target.content.length;
+  const spoken = input.spokenTextSoFar ?? "";
+  const spokenChars = Math.min(spoken.length, originalChars);
+
+  if (spokenChars === originalChars && !target.truncated) {
+    return { session, truncatedTurn: target, changed: false };
+  }
+
+  const nextContent = spokenChars > 0 ? spoken.slice(0, spokenChars) : "";
+  const nextTurn: InterviewTurn = {
+    ...target,
+    content: nextContent,
+    truncated: {
+      spokenChars,
+      originalChars,
+      reason,
+      truncatedAt
+    }
+  };
+  const nextTurns = [...turns];
+  nextTurns[targetIndex] = nextTurn;
+  return {
+    session: { ...session, turns: nextTurns },
+    truncatedTurn: nextTurn,
+    changed: true
+  };
+}
+
 function deriveRealtimeSignalEventType(
   realtimeState: RealtimeTurnState,
   assistantTurn: InterviewTurn | null
@@ -3490,12 +3565,21 @@ function formatRealtimeSignalTrace(signal: RealtimeSessionSignal) {
     listening: "持续聆听",
     hold: "留白",
     interruption: "打断",
-    assistant_response: "语音追问"
+    assistant_response: "语音追问",
+    user_started_speaking: "用户开口",
+    user_stopped_speaking: "用户停顿",
+    user_input_transcribed: "用户转写",
+    agent_state_changed: "Agent 状态切换",
+    agent_speech_committed: "语音追问完成",
+    agent_speech_interrupted: "语音追问被截断",
+    metrics_collected: "指标采集"
   };
   const transcript = signal.transcript ? `｜${signal.transcript}` : "";
   const assistantIntent = signal.assistantIntent ? `｜${signal.assistantIntent}` : "";
   const backchannel = signal.backchannel ? `｜${signal.backchannel}` : "";
-  return `${labels[signal.eventType]} · ${signal.phase} · ${signal.silenceMs}ms${backchannel}${assistantIntent}${transcript}`;
+  const spoken = signal.spokenTextSoFar ? `｜已说出 ${signal.spokenTextSoFar.length} 字` : "";
+  const label = labels[signal.eventType] ?? signal.eventType;
+  return `${label} · ${signal.phase} · ${signal.silenceMs}ms${backchannel}${assistantIntent}${transcript}${spoken}`;
 }
 
 function summarizeControlFeedback(content: string) {
@@ -5850,5 +5934,150 @@ export function buildYearlyReview(state: ProductState): YearlyReview {
     importantDecisions,
     missingPerspectives,
     nextYearFocus: "继续追踪控制感、授权机制和问题定义权之间的关系。"
+  };
+}
+
+export type InterruptionScene = "key_insight" | "anchor_probe" | "perspective_shift" | "transition" | "backchannel";
+
+export function getInterruptionScene(strategy?: string): InterruptionScene {
+  switch (strategy) {
+    case "blindspot_probe":
+    case "mechanism_reversal_probe":
+      return "key_insight";
+    case "concrete_example_probe":
+    case "debt_followup":
+      return "anchor_probe";
+    case "perspective_shift":
+    case "synthesis":
+      return "perspective_shift";
+    case "mirror":
+      return "transition";
+    default:
+      return "perspective_shift";
+  }
+}
+
+export function buildInterruptionContext(params: {
+  spokenSoFar: string;
+  unspokenContent: string;
+  strategy?: string;
+  userInput: string;
+}): string {
+  const scene = getInterruptionScene(params.strategy);
+  const spoken = params.spokenSoFar.trim();
+  const unspoken = params.unspokenContent.trim();
+  const user = params.userInput.trim();
+
+  switch (scene) {
+    case "key_insight":
+      return "";
+    case "anchor_probe":
+      return [
+        "【打断恢复 — 追问锚点】",
+        `你刚才追问的核心问题是："${spoken}"`,
+        unspoken ? `还没问完的部分："${unspoken}"` : "",
+        `用户说："${user}"`,
+        "请结合用户的新内容调整你的追问方式，但保持原问题的核心方向。先简短回应用户，再重新追问。"
+      ].filter(Boolean).join("\n");
+    case "perspective_shift":
+      return [
+        "【打断恢复 — 视角重构】",
+        `你刚才表达的观点是："${spoken}"`,
+        unspoken ? `还没说完的部分："${unspoken}"` : "",
+        `用户说："${user}"`,
+        "请先简短补充你之前未说完的观点（可以结合用户新说的内容调整表述），再回应当前问题。"
+      ].filter(Boolean).join("\n");
+    case "transition":
+      return "";
+    case "backchannel":
+      return "";
+    default:
+      return "";
+  }
+}
+
+const exportableId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+
+export function createInterviewSession(params: { id: string; title: string; createdAt: string }): InterviewSession {
+  return {
+    id: params.id,
+    mode: "daily",
+    strength: "standard",
+    status: "active",
+    title: params.title,
+    card: {
+      title: params.title,
+      whyNow: "",
+      suggestedOpening: "今天从什么开始？",
+      historyReferences: [],
+      potentialTension: "",
+      suggestedPerspectives: [],
+      likelyOutputs: []
+    },
+    guide: {
+      topicHint: params.title,
+      dailyBrief: { suggestedTopic: params.title, openingQuestion: "今天从什么开始？", contextNote: "" },
+      perspectiveCoverage: {},
+      missingPerspectives: [],
+      recommendedPerspectives: [],
+      perspectiveRationale: "",
+      relevantMemories: [],
+      graphReferences: [],
+      opinionEvolution: [],
+      statedPositions: [],
+      openDebts: [],
+      blindspotCandidates: [],
+      knowledgeFragments: [],
+      suggestedOpening: "今天从什么开始？",
+      strategyChecklist: []
+    },
+    turns: [],
+    startedAt: params.createdAt
+  };
+}
+
+export function addTurn(session: InterviewSession, input: { role: "user" | "assistant"; content: string; strategy?: string }): InterviewSession {
+  return {
+    ...session,
+    turns: [
+      ...session.turns,
+      {
+        id: exportableId("turn"),
+        role: input.role,
+        content: input.content,
+        intent: input.role === "user" ? "用户表达" : (input.strategy ?? "追问"),
+        timestamp: new Date().toISOString()
+      }
+    ]
+  };
+}
+
+export interface InterviewAgentContext {
+  instructions: string;
+  sessionTitle: string;
+  turnCount: number;
+  latestUserTurn: string | null;
+  history: Array<{ role: "user" | "assistant"; text: string }>;
+  activeStrategies: string[];
+}
+
+export function buildInterviewAgentContext(session: InterviewSession): InterviewAgentContext {
+  const instructions = buildRealtimeVoiceInstructions(session);
+  const history: Array<{ role: "user" | "assistant"; text: string }> = [];
+  for (const turn of session.turns) {
+    if (turn.role === "user" || turn.role === "assistant") {
+      history.push({ role: turn.role, text: turn.content });
+    }
+  }
+  const lastUserTurn = [...session.turns].reverse().find(t => t.role === "user");
+  const activeStrategies = session.enginePolicy?.appliedPlaybookRules?.slice(0, 5) ?? [];
+
+  return {
+    instructions,
+    sessionTitle: session.title,
+    turnCount: session.turns.length,
+    latestUserTurn: lastUserTurn?.content ?? null,
+    history: history.slice(-20),
+    activeStrategies
   };
 }
