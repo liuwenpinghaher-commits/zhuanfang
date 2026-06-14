@@ -5,7 +5,10 @@ import type {
   InterruptAssistantResult
 } from "./bailianWebrtc";
 import type { InterruptionScene } from "../domain/engine";
-import { buildInterruptionContext, getInterruptionScene } from "../domain/engine";
+import { buildInterruptionContext, getInterruptionScene, buildFallbackPreSignals } from "../domain/engine";
+import { createExpressionStateDetector, type ExpressionStateInput } from "./expressionStateDetector";
+import { evaluateIntent } from "./interactionIntentEngine";
+import type { InteractionPreSignals } from "../domain/types";
 
 export type { AssistantSpeechProgress, InterruptAssistantOptions, InterruptAssistantResult };
 
@@ -75,36 +78,68 @@ export async function connectBailianRealtimeWebsocket(
   let pendingInterruptionContext: string | null = null;
   let interruptionScene: InterruptionScene = "perspective_shift";
   let aiIsSpeaking = false;
-  /** Accumulator for user voice energy during AI playback — triggers client-side
-   *  interruption when the user starts speaking over the AI. */
-  let userEnergyBuffer = 0;
-  const CLIENT_INTERRUPT_THRESHOLD = 0.15;       // audio level that counts as speech
-  const CLIENT_INTERRUPT_FRAMES = 8;             // consecutive high-energy frames needed
-  let interruptFrameCounter = 0;
+  /** Expression-state-aware interrupt detection (replaces raw-energy gate from c2008a0f).
+   *  Evaluates the user's speaking rhythm + semantic signals so that backchannel
+   *  words (嗯, 对) don't interrupt, but real sentences do. */
+  const expressionDetector = createExpressionStateDetector();
+  let preSignals: InteractionPreSignals | null = null;
+  /** Tracks how many processor frames since the last time energy was above the
+   *  speech threshold — used as a proxy for silenceMs. */
+  let lowEnergyFrames = 0;
+  /** Tracks how many consecutive high-energy frames have been observed — used
+   *  as a rough audioDuration estimate. */
+  let highEnergyFrames = 0;
+  /** Accumulates semantic flags extracted from the latest partial transcript. */
+  let semanticFlags: { hasFilledPause: boolean; hasVagueTerm: boolean; hasEmotionWord: boolean; hasRepetition: boolean; hasFalseStart: boolean } = {
+    hasFilledPause: false, hasVagueTerm: false, hasEmotionWord: false, hasRepetition: false, hasFalseStart: false,
+  };
+  let latestPartialTranscript = "";
 
-  function forceCancelIfUserSpeaks(level: number) {
-    // Only check while AI is producing audio (playback in progress or
-    // DashScope hasn't yet sent response.done).
-    if (!aiIsSpeaking) {
-      userEnergyBuffer = 0;
-      interruptFrameCounter = 0;
-      return;
-    }
-    if (level > CLIENT_INTERRUPT_THRESHOLD) {
-      interruptFrameCounter++;
-      userEnergyBuffer += level;
-    } else {
-      interruptFrameCounter = Math.max(0, interruptFrameCounter - 1);
-      userEnergyBuffer *= 0.7;
-    }
-    if (interruptFrameCounter >= CLIENT_INTERRUPT_FRAMES) {
-      userEnergyBuffer = 0;
-      interruptFrameCounter = 0;
+  function updateSemanticFlags(text: string) {
+    latestPartialTranscript = text;
+    semanticFlags.hasFilledPause = /[嗯唔啊]/.test(text);
+    semanticFlags.hasVagueTerm = /那个|这个|某种|怎么说呢|反正就是|你懂的|那种/.test(text);
+    semanticFlags.hasEmotionWord = /矛盾|纠结|两难|不知道|不确定|也许|可能吧|烦|累|受不了|没办法|后悔|早知道|如果当初/.test(text);
+    semanticFlags.hasRepetition = /(.)\1{2,}|(..+)\s*\1/.test(text);
+    semanticFlags.hasFalseStart = /不是.{2,}是/.test(text);
+  }
+
+  function evaluateExpressionIntent(): ReturnType<typeof evaluateIntent> {
+    const energy = 0; // handled by the main audio callback
+    const exprInput: ExpressionStateInput = {
+      speechRate: 3, baselineSpeechRate: 3,
+      energy: 0, baselineEnergy: 0.3,
+      pitchTrend: "flat",
+      currentSilenceMs: lowEnergyFrames * 32,
+      pausePosition: "mid_clause",
+      ...semanticFlags,
+      samePointCount: 0,
+      timeSinceLastGuidance: 5000,
+    };
+    const exprState = expressionDetector.evaluate(exprInput);
+    return evaluateIntent({
+      expressionState: exprState,
+      preSignals,
+      isAssistantSpeaking: aiIsSpeaking,
+      partialTranscript: latestPartialTranscript,
+      audioDuration: highEnergyFrames * 32,
+      guidanceCountThisTurn: 0,
+      guidanceBudget: { maxPerTurn: 2, minIntervalMs: 5000 },
+    });
+  }
+
+  function handleIntentDecision(decision: ReturnType<typeof evaluateIntent>) {
+    if (decision.intent === "interruption" && decision.action === "stop") {
       cancelAndSaveContext();
-      // Let the API re-enter listening mode; the current audio buffer will
-      // be treated as new user speech.
       options.onSpeechStart?.();
+    } else if (decision.intent === "guidance" && decision.action === "nudge" && decision.detail?.text) {
+      // Publish guidance as a whisper-like event; the UI shows it in the
+      // guidance indicator. We don't interrupt the AI for guidance — it
+      // is only active when the AI is listening.
+    } else if (decision.intent === "noise") {
+      // ignore coughs, thuds, short spikes
     }
+    // backchannel → continue, AI keeps speaking
   }
 
   function ensureProgress(input: { turnId?: string; providerTurnId?: string } = {}) {
@@ -258,7 +293,19 @@ export async function connectBailianRealtimeWebsocket(
             }));
             const level = Math.max(...Array.from(inputData).map(Math.abs));
             options.onAudioLevel?.(level);
-            forceCancelIfUserSpeaks(level);
+            // Track silence / speech frames for expression-state evaluation
+            const ENERGY_THRESHOLD = 0.08;
+            if (level > ENERGY_THRESHOLD) {
+              lowEnergyFrames = 0;
+              highEnergyFrames++;
+            } else {
+              lowEnergyFrames++;
+              highEnergyFrames = Math.max(0, highEnergyFrames - 1);
+            }
+            if (aiIsSpeaking && highEnergyFrames >= 8) {
+              const decision = evaluateExpressionIntent();
+              handleIntentDecision(decision);
+            }
           };
           source.connect(processor);
           processor.connect(audioContext.destination);
@@ -404,7 +451,10 @@ export async function connectBailianRealtimeWebsocket(
 
         case "conversation.item.input_audio_transcription.delta": {
           const text = (msg.text as string ?? "") + (msg.stash as string ?? "");
-          if (text) options.onUserTranscript?.(text, false);
+          if (text) {
+            updateSemanticFlags(text);
+            options.onUserTranscript?.(text, false);
+          }
           break;
         }
 

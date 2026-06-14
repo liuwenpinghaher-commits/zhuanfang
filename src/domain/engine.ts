@@ -61,6 +61,7 @@ export {
 export {
   appendRealtimeSignalTrace, buildRealtimeTurnState, uniqueStrings,
   truncateAssistantTurn, buildInterruptionContext, getInterruptionScene,
+  buildFallbackPreSignals,
 } from "./signals";
 
 export type {

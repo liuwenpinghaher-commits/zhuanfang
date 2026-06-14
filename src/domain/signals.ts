@@ -1,4 +1,5 @@
 import type {
+  InteractionPreSignals,
   InterviewSession,
   InterviewTransparencyItem,
   InterviewTurn,
@@ -328,4 +329,26 @@ export function buildInterruptionContext(params: {
     default:
       return "";
   }
+}
+
+export function buildFallbackPreSignals(
+  guide: InterviewSession["guide"] | undefined
+): InteractionPreSignals | null {
+  const candidate = guide?.blindspotCandidates?.[0];
+  if (!candidate && (!guide || guide.openDebts.length === 0)) {
+    return null;
+  }
+
+  return {
+    depthDirection: candidate
+      ? {
+          concept: candidate.concept,
+          reason: candidate.reason,
+          guidance: `你刚才提到了${candidate.concept}，能具体说说吗？`,
+        }
+      : null,
+    backchannelWhitelist: ["嗯", "对", "是的", "好", "我明白"],
+    interruptTriggers: ["不对", "不是", "等一下", "我打断一下", "停"],
+    interruptSensitivity: "medium",
+  };
 }

@@ -513,6 +513,7 @@ export interface InterviewSession {
   completedAt?: string;
   askedAnchor?: string;
   doNotSave?: boolean;
+  interactionPreSignals?: InteractionPreSignals;
 }
 
 export interface InterviewAgentContext {
@@ -522,6 +523,40 @@ export interface InterviewAgentContext {
   latestUserTurn: string | null;
   history: Array<{ role: "user" | "assistant"; text: string }>;
   activeStrategies: string[];
+}
+
+export type ExpressionState =
+  | "fluent"
+  | "organizing"
+  | "hesitating"
+  | "circling"
+  | "emotional"
+  | "concluding";
+
+export interface DepthDirection {
+  concept: string;
+  reason: string;
+  guidance: string;
+}
+
+export interface InteractionPreSignals {
+  depthDirection: DepthDirection | null;
+  backchannelWhitelist: string[];
+  interruptTriggers: string[];
+  interruptSensitivity: "low" | "medium" | "high";
+}
+
+export type InteractionIntent = "backchannel" | "guidance" | "interruption" | "noise";
+
+export interface IntentDecision {
+  intent: InteractionIntent;
+  confidence: number;
+  action: "continue" | "nudge" | "stop" | "ignore";
+  detail?: {
+    kind?: GuidanceKind;
+    text?: string;
+    anchor?: string;
+  };
 }
 
 export interface DualTrackNote {
