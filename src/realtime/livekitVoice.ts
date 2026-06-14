@@ -1,8 +1,11 @@
 import {
   Room,
   type RemoteParticipant,
+  type RemoteTrack,
+  type RemoteTrackPublication,
   RoomEvent,
   type ConnectionState,
+  Track
 } from "livekit-client";
 
 export interface LivekitVoiceCallbacks {
@@ -41,13 +44,31 @@ export async function createLivekitVoiceSession(
   const { serverUrl, token, callbacks } = options;
   const room = new Room();
 
-  // Wire speaking indicators for already-joined remote participants
   for (const p of room.remoteParticipants.values()) {
     wireParticipantSpeaking(p, callbacks);
   }
 
   room.on(RoomEvent.ParticipantConnected, (participant: RemoteParticipant) => {
     wireParticipantSpeaking(participant, callbacks);
+  });
+
+  // Auto-attach remote audio tracks so the user hears the agent's TTS voice.
+  // Room.autoSubscribe only subscribes (receives data); .attach() must be
+  // called explicitly to create an <audio> element and start playback.
+  room.on(RoomEvent.TrackSubscribed, (
+    track: RemoteTrack,
+    _publication: RemoteTrackPublication,
+    participant: RemoteParticipant,
+  ) => {
+    if (track.kind === Track.Kind.Audio) {
+      try {
+        const el = track.attach();
+        el.setAttribute("autoplay", "true");
+        console.log("[voice] attached audio from", participant.identity);
+      } catch (err) {
+        callbacks.onError(err instanceof Error ? err : new Error(String(err)));
+      }
+    }
   });
 
   room.on(RoomEvent.Connected, () => {
@@ -60,16 +81,11 @@ export async function createLivekitVoiceSession(
 
   // Standard LiveKit TranscriptionSegment protocol — the Python agent
   // (livekit-agents 1.5+) publishes transcripts via publish_transcription()
-  // with participant_identity set to the represented-by user for STT output
-  // and to the agent's own identity for TTS output.
   room.on(RoomEvent.TranscriptionReceived, (
     segments,
     participant,
   ) => {
     if (!participant) return;
-    // The participant parameter maps to participant_identity in the proto:
-    // identity starting with "agent-" = agent TTS transcript,
-    // anything else (the browser user) = user STT transcript.
     const isAgent = participant.identity.startsWith("agent-");
     for (const seg of segments) {
       if (isAgent) {
