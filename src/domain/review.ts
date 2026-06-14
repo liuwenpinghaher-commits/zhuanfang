@@ -62,12 +62,12 @@ export function buildMonthlyReview(state: ProductState): MonthlyReview {
 function deriveChangedView(state: ProductState): string {
   const candidates = state.points
     .filter((point) => point.status === "已修正" || point.status === "被挑战中")
-    .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
   const top = candidates[0];
   if (top) {
     const verb = top.status === "已修正" ? "已修正" : "正在被挑战";
-    const summary = top.content?.trim() || top.title;
+    const summary = (top.content?.trim() || top.title).slice(0, 60);
     return `${verb}：${summary}`;
   }
 

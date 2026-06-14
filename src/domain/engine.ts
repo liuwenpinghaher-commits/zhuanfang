@@ -1423,9 +1423,11 @@ export function createInterviewSession(input: CreateInterviewSessionInput): Inte
     whyNow: "",
     suggestedOpening: "",
     historyReferences: [],
+    potentialTension: "",
     suggestedPerspectives: [],
+    likelyOutputs: [],
     sourceHighlights: [],
-  } as unknown as InterviewCard;
+  };
 
   const guide: InterviewGuide = {
     topicHint: "",
@@ -1467,14 +1469,33 @@ export interface AddTurnInput {
   referencedMemory?: string;
 }
 
+const VALID_STRATEGY_IDS: ReadonlySet<InterviewStrategyId> = new Set<InterviewStrategyId>([
+  "mechanism_probe",
+  "concrete_example_probe",
+  "mechanism_reversal_probe",
+  "debt_followup",
+  "perspective_shift",
+  "blindspot_probe",
+  "premise_challenge",
+  "counterexample_probe",
+  "learning_reflection",
+  "synthesis",
+]);
+
+function coerceStrategyId(value: string | undefined): InterviewStrategyId | undefined {
+  if (!value) return undefined;
+  return VALID_STRATEGY_IDS.has(value as InterviewStrategyId) ? (value as InterviewStrategyId) : undefined;
+}
+
 export function addTurn(session: InterviewSession, input: AddTurnInput): InterviewSession {
+  const strategy = coerceStrategyId(input.strategy);
   const turn: InterviewTurn = {
     id: makeId(`turn-${input.role}`),
     role: input.role,
     content: input.content,
     intent: input.intent ?? (input.role === "user" ? "用户表达" : "主持人发言"),
     timestamp: nowIso(),
-    ...(input.strategy ? { strategy: input.strategy as InterviewStrategyId } : {}),
+    ...(strategy ? { strategy } : {}),
     ...(input.referencedMemory ? { referencedMemory: input.referencedMemory } : {}),
   };
   return {

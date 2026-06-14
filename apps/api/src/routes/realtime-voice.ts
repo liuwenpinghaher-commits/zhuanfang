@@ -307,22 +307,10 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       return reply.status(404).send({ error: "session_not_found" });
     }
 
-    const { receiveUserTurn } = await import("../../../../src/domain/engine");
+    const { receiveUserTurn, addTurn } = await import("../../../../src/domain/engine");
     const updated = role === "user"
       ? receiveUserTurn(session, text)
-      : {
-          ...session,
-          turns: [
-            ...session.turns,
-            {
-              id: randomUUID(),
-              role: "assistant" as const,
-              content: text,
-              strategy: strategy ?? "",
-              createdAt: new Date().toISOString(),
-            },
-          ],
-        };
+      : addTurn(session, { role: "assistant", content: text, strategy });
 
     stateRepo.replaceState(replaceSession(stateRepo.getState(), updated));
     return { status: "recorded" };
