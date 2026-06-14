@@ -90,7 +90,9 @@ export function InterviewView({
       <HeaderBlock
         eyebrow="实时专访"
         title={session.title}
-        subtitle="文本输入和实时语音共用同一条专访流程；配置 WebRTC 后录音按钮会建立真实语音会话。"
+        subtitle={voiceTransport
+          ? `文本和语音共用同一条专访流程 · ${voiceTransport === "websocket" ? "WebSocket 实时语音" : voiceTransport === "webrtc" ? "WebRTC 实时语音" : "LiveKit 级联语音"}`
+          : "文本和语音共用同一条专访流程；点击语音按钮开始实时对话。"}
       />
 
       <section className="interview-layout">
@@ -150,25 +152,25 @@ export function InterviewView({
                   {voiceStatus === "idle" && <><span className="status-dot idle" />等待语音</>}
                 </div>
               </div>
+            </div>
+          )}
 
-              {liveUserTranscript && (
-                <div className="live-transcript">
-                  <span className="live-transcript-label">实时转写</span>
-                  <p>{liveUserTranscript}</p>
-                </div>
-              )}
-              {guidanceState?.active && guidanceState.text && (
-                <div className="guidance-indicator" aria-live="polite">
-                  <span className="guidance-badge">
-                    {guidanceState.kind === "anchor_probe" ? "追问锚点" :
-                     guidanceState.kind === "emotion_label" ? "情感标记" :
-                     guidanceState.kind === "contradiction" ? "发现矛盾" :
-                     guidanceState.kind === "nudge" ? "轻推" :
-                     guidanceState.kind === "echo" ? "回音" : "引导"}
-                  </span>
-                  <p className="guidance-text">{guidanceState.text}</p>
-                </div>
-              )}
+          {liveUserTranscript && (
+            <div className="live-transcript">
+              <span className="live-transcript-label">实时转写</span>
+              <p>{liveUserTranscript}</p>
+            </div>
+          )}
+          {guidanceState?.active && guidanceState.text && (
+            <div className="guidance-indicator" aria-live="polite">
+              <span className="guidance-badge">
+                {guidanceState.kind === "anchor_probe" ? "追问锚点" :
+                 guidanceState.kind === "emotion_label" ? "情感标记" :
+                 guidanceState.kind === "contradiction" ? "发现矛盾" :
+                 guidanceState.kind === "nudge" ? "轻推" :
+                 guidanceState.kind === "echo" ? "回音" : "引导"}
+              </span>
+              <p className="guidance-text">{guidanceState.text}</p>
             </div>
           )}
 
