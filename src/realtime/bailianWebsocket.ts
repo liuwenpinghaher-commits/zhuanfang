@@ -74,6 +74,38 @@ export async function connectBailianRealtimeWebsocket(
   let fullAssistantTranscript = "";
   let pendingInterruptionContext: string | null = null;
   let interruptionScene: InterruptionScene = "perspective_shift";
+  let aiIsSpeaking = false;
+  /** Accumulator for user voice energy during AI playback — triggers client-side
+   *  interruption when the user starts speaking over the AI. */
+  let userEnergyBuffer = 0;
+  const CLIENT_INTERRUPT_THRESHOLD = 0.15;       // audio level that counts as speech
+  const CLIENT_INTERRUPT_FRAMES = 8;             // consecutive high-energy frames needed
+  let interruptFrameCounter = 0;
+
+  function forceCancelIfUserSpeaks(level: number) {
+    // Only check while AI is producing audio (playback in progress or
+    // DashScope hasn't yet sent response.done).
+    if (!aiIsSpeaking) {
+      userEnergyBuffer = 0;
+      interruptFrameCounter = 0;
+      return;
+    }
+    if (level > CLIENT_INTERRUPT_THRESHOLD) {
+      interruptFrameCounter++;
+      userEnergyBuffer += level;
+    } else {
+      interruptFrameCounter = Math.max(0, interruptFrameCounter - 1);
+      userEnergyBuffer *= 0.7;
+    }
+    if (interruptFrameCounter >= CLIENT_INTERRUPT_FRAMES) {
+      userEnergyBuffer = 0;
+      interruptFrameCounter = 0;
+      cancelAndSaveContext();
+      // Let the API re-enter listening mode; the current audio buffer will
+      // be treated as new user speech.
+      options.onSpeechStart?.();
+    }
+  }
 
   function ensureProgress(input: { turnId?: string; providerTurnId?: string } = {}) {
     if (!progress || progress.completed) {
@@ -138,6 +170,7 @@ export async function connectBailianRealtimeWebsocket(
   }
 
   function cancelAndSaveContext() {
+    aiIsSpeaking = false;
     const spoken = fullAssistantTranscript;
     const unspoken = progress && !progress.completed
       ? progress.chunks.slice(
@@ -225,6 +258,7 @@ export async function connectBailianRealtimeWebsocket(
             }));
             const level = Math.max(...Array.from(inputData).map(Math.abs));
             options.onAudioLevel?.(level);
+            forceCancelIfUserSpeaks(level);
           };
           source.connect(processor);
           processor.connect(audioContext.destination);
@@ -341,6 +375,7 @@ export async function connectBailianRealtimeWebsocket(
         }
 
         case "response.created": {
+          aiIsSpeaking = true;
           if (pendingInterruptionContext) {
             ws.send(JSON.stringify({ type: "response.cancel" }));
           }
@@ -348,6 +383,7 @@ export async function connectBailianRealtimeWebsocket(
         }
 
         case "response.done": {
+          aiIsSpeaking = false;
           if (pendingInterruptionContext) {
             const userText = (msg as Record<string, unknown>).transcript as string ?? "";
             injectContextAndRespond(userText);
