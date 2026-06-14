@@ -44,7 +44,7 @@ describe("domain types", () => {
         version: "v1",
         providers: [],
         search: { activeProvider: "bailian", recencyDays: 30, maxSources: 10, allowWebInInterview: false },
-        voice: { ttsProvider: "bailian", defaultVoice: "default", podcastVoice: "default", podcastFormat: "solo", realtimeEnabled: false },
+        voice: { ttsProvider: "bailian", defaultVoice: "default", podcastVoice: "default", podcastFormat: "solo", realtimeEnabled: false, realtimeMode: "s2s" },
         models: { planningModel: "qwen", interviewModel: "qwen", synthesisModel: "qwen" },
         interview: { playbookVersion: "v1", launchMode: "immersive", silenceHoldMs: 2000, maxFollowUpDepth: 5 },
         memory: { includeSensitiveMemoriesInContext: false, includePendingCandidatesInContext: false, externalMaterialMemoryPolicy: "review-only" },

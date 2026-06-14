@@ -43,7 +43,7 @@ import {
 import { executeSearchProvider } from "./capabilities/search";
 import { createIdleCapabilityTask, startCapabilityTask } from "./capabilities/task";
 import { productApiClient } from "./api/productApi";
-import type { RealtimeVoiceSessionResponse, SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigUpdateRequest } from "./api/productApi";
+import type { RealtimeVoiceSessionResponse, SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigUpdateRequest, VoiceInfo } from "./api/productApi";
 import {
   connectBailianRealtimeWebrtc,
   type BailianRealtimeWebrtcConnection
@@ -52,6 +52,7 @@ import {
   connectBailianRealtimeWebsocket,
   type BailianRealtimeWebsocketConnection
 } from "./realtime/bailianWebsocket";
+import { createLivekitVoiceSession, type LivekitVoiceSession } from "./realtime/livekitVoice";
 import {
   dedupeGeneratedArtifacts,
   deleteCorpusInsightBundle,
@@ -123,6 +124,12 @@ export default function App() {
   const [recording, setRecording] = useState(false);
   const [realtimeVoiceSession, setRealtimeVoiceSession] = useState<RealtimeVoiceSessionResponse | null>(null);
   const [realtimeVoiceConnection, setRealtimeVoiceConnection] = useState<BailianRealtimeWebrtcConnection | BailianRealtimeWebsocketConnection | null>(null);
+  const [livekitVoiceSession, setLivekitVoiceSession] = useState<LivekitVoiceSession | null>(null);
+  const [audioLevel, setAudioLevel] = useState(0);
+  const [voiceStatus, setVoiceStatus] = useState<"idle" | "connecting" | "listening" | "speaking" | "interrupted">("idle");
+  const [liveUserTranscript, setLiveUserTranscript] = useState("");
+  const [voices, setVoices] = useState<VoiceInfo[]>([]);
+  const [voicesLoading, setVoicesLoading] = useState(false);
   const [searchTopic, setSearchTopic] = useState("AI 产品商业化热点");
   const [activeSearchBriefId, setActiveSearchBriefId] = useState<string | undefined>(undefined);
   const [searchTask, setSearchTask] = useState(() => createIdleCapabilityTask<SearchBriefInput>("联网搜索"));
@@ -238,10 +245,63 @@ export default function App() {
   );
 
   function closeRealtimeVoiceSession() {
+    if (livekitVoiceSession) {
+      livekitVoiceSession.close();
+      setLivekitVoiceSession(null);
+    }
     realtimeVoiceConnection?.close();
     setRealtimeVoiceConnection(null);
     setRealtimeVoiceSession(null);
     setRecording(false);
+    setAudioLevel(0);
+    setVoiceStatus("idle");
+    setLiveUserTranscript("");
+  }
+
+  useEffect(() => {
+    if (view !== "config") return;
+    let cancelled = false;
+    setVoicesLoading(true);
+    productApiClient.listVoices().then((result) => {
+      if (!cancelled) {
+        setVoices([...result.preset, ...result.custom]);
+        setVoicesLoading(false);
+      }
+    }).catch(() => {
+      if (!cancelled) setVoicesLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [view]);
+
+  async function uploadVoice(audioBase64: string, preferredName: string) {
+    const voice = await productApiClient.createVoice({ audioBase64, preferredName });
+    setVoices((prev) => [...prev, voice]);
+    setNotice(buildNotice("success", "音色创建成功", `音色 "${voice.name}" 已创建，可在音色列表中选择。`));
+  }
+
+  async function deleteVoice(voiceId: string) {
+    await productApiClient.deleteVoice(voiceId);
+    setVoices((prev) => prev.filter((v) => v.voice !== voiceId));
+    setNotice(buildNotice("warning", "音色已删除", `音色 "${voiceId}" 已移除。`));
+  }
+
+  async function interruptAssistant() {
+    if (livekitVoiceSession) {
+      livekitVoiceSession.interrupt();
+      setVoiceStatus("interrupted");
+      setTimeout(() => setVoiceStatus("listening"), 1500);
+      return;
+    }
+    if (!realtimeVoiceConnection) return;
+    try {
+      const result = await realtimeVoiceConnection.interruptAssistant();
+      if (result) {
+        setVoiceStatus("interrupted");
+        setTimeout(() => setVoiceStatus("listening"), 1500);
+      }
+    } catch {
+      // interrupt not supported or failed
+    }
   }
 
   function prepareInterview(mode: InterviewMode = "decision", searchBriefId = activeSearchBriefId) {
@@ -728,12 +788,82 @@ export default function App() {
     try {
       const voiceSession = await productApiClient.createRealtimeVoiceSession({
         ...(session ? { interviewSessionId: session.id } : {}),
-        instructions: buildRealtimeVoiceInstructions(session, card)
+        instructions: buildRealtimeVoiceInstructions(session, card),
+        voice: productState.systemConfig.voice.defaultVoice
       });
       setRealtimeVoiceSession(voiceSession);
       setApiPersistenceEnabled(true);
 
       if (voiceSession.status === "ready") {
+        // LiveKit cascaded mode
+        const voiceMode = productState.systemConfig.voice.realtimeMode ?? "s2s";
+        if (voiceMode === "livekit") {
+          try {
+            setVoiceStatus("connecting");
+            const sessionId = voiceSession.sessionId;
+            const interviewId = session?.id ?? "";
+            const tokenResp = await fetch(
+              `http://127.0.0.1:8787/api/realtime-voice/livekit-token?sessionId=${sessionId}&interviewSessionId=${interviewId}`
+            );
+            if (!tokenResp.ok) {
+              throw new Error(`Token endpoint returned ${tokenResp.status}`);
+            }
+            const { token, serverUrl } = await tokenResp.json();
+
+            const livekitSession = await createLivekitVoiceSession({
+              serverUrl: serverUrl ?? "ws://127.0.0.1:7880",
+              token,
+              interviewSessionId: interviewId,
+              callbacks: {
+                onStateChange: (state) => {
+                  if (state === "connected") setVoiceStatus("listening");
+                  if (state === "disconnected") { setRecording(false); setVoiceStatus("idle"); }
+                },
+                onUserTranscript: (text, isFinal) => {
+                  setLiveUserTranscript(isFinal ? "" : text);
+                  if (!isFinal || !text.trim()) return;
+                  setSession((prev) => {
+                    if (!prev) return prev;
+                    return receiveUserTurn(prev, text);
+                  });
+                },
+                onAssistantTranscript: (text, isFinal) => {
+                  if (!isFinal || !text.trim()) return;
+                  setVoiceStatus("speaking");
+                  setSession((prev) => {
+                    if (!prev) return prev;
+                    const turns = [...prev.turns];
+                    const lastIdx = turns.length - 1;
+                    if (lastIdx >= 0 && turns[lastIdx].role === "assistant") {
+                      turns[lastIdx] = { ...turns[lastIdx], content: text };
+                    }
+                    return { ...prev, turns };
+                  });
+                },
+                onAudioLevel: (level) => setAudioLevel(level),
+                onError: (err) => {
+                  setNotice(buildNotice("warning", "语音连接失败", err.message));
+                },
+              },
+            });
+
+            setLivekitVoiceSession(livekitSession);
+            setRecording(true);
+            setVoiceStatus("listening");
+            setNotice(
+              buildNotice(
+                "success",
+                "实时语音会话已就绪",
+                "LiveKit 级联 (Paraformer→Qwen→CosyVoice) 已连接"
+              )
+            );
+            return;
+          } catch {
+            setNotice(buildNotice("warning", "LiveKit 连接失败", "请确认 LiveKit Server 和 Python Agent 已启动"));
+            return;
+          }
+        }
+
         setNotice(
           buildNotice(
             "success",
@@ -742,13 +872,43 @@ export default function App() {
           )
         );
         try {
+          setVoiceStatus("connecting");
           const connection = voiceSession.transport === "websocket"
             ? await connectBailianRealtimeWebsocket(voiceSession, {
-                productApiBaseUrl: "ws://127.0.0.1:8787"
+                productApiBaseUrl: "ws://127.0.0.1:8787",
+                onAudioLevel: (level) => setAudioLevel(level),
+                onSpeechStart: () => setVoiceStatus("listening"),
+                onSpeechEnd: () => setVoiceStatus("speaking"),
+                onUserTranscript: (text, isFinal) => {
+                  setLiveUserTranscript(isFinal ? "" : text);
+                  if (!isFinal || !text.trim()) return;
+                  setSession((prev) => {
+                    if (!prev) return prev;
+                    const updated = receiveUserTurn(prev, text);
+                    const lastTurn = updated.turns[updated.turns.length - 1];
+                    if (lastTurn?.role === "assistant" && lastTurn.strategy) {
+                      connection.setStrategy(lastTurn.strategy);
+                    }
+                    return updated;
+                  });
+                },
+                onAssistantTranscript: (text, isFinal) => {
+                  if (!isFinal || !text.trim()) return;
+                  setSession((prev) => {
+                    if (!prev) return prev;
+                    const turns = [...prev.turns];
+                    const lastAssistantIdx = turns.length - 1;
+                    if (lastAssistantIdx >= 0 && turns[lastAssistantIdx].role === "assistant") {
+                      turns[lastAssistantIdx] = { ...turns[lastAssistantIdx], content: text };
+                    }
+                    return { ...prev, turns };
+                  });
+                }
               })
             : await connectBailianRealtimeWebrtc(voiceSession, { productApiClient });
           setRealtimeVoiceConnection(connection);
           setRecording(true);
+          setVoiceStatus("listening");
           setNotice(
             buildNotice(
               "success",
@@ -848,12 +1008,20 @@ export default function App() {
             input={interviewInput}
             recording={recording}
             realtimeState={realtimeState}
+            audioLevel={audioLevel}
+            voiceStatus={voiceStatus}
+            liveUserTranscript={liveUserTranscript}
+            voiceTransport={
+              livekitVoiceSession ? "livekit"
+              : realtimeVoiceSession?.transport ?? null
+            }
             onInput={setInterviewInput}
             onStart={startInterview}
             onSubmit={submitTurn}
             onFinish={finishInterview}
             onControl={applyInterviewControl}
             onToggleRecording={toggleRealtimeRecording}
+            onInterrupt={interruptAssistant}
           />
         )}
         {view === "search" && (
@@ -938,6 +1106,10 @@ export default function App() {
             onCleanupGeneratedArtifacts={cleanupGeneratedArtifacts}
             onSaveRuntimeConfig={saveRuntimeConfig}
             onSaveProductConfig={saveProductConfig}
+            voices={voices}
+            voicesLoading={voicesLoading}
+            onUploadVoice={uploadVoice}
+            onDeleteVoice={deleteVoice}
           />
         )}
         {view === "profile" && (

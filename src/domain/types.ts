@@ -39,6 +39,7 @@ export interface SystemConfig {
     podcastVoice: string;
     podcastFormat: "solo" | "host-guest";
     realtimeEnabled: boolean;
+    realtimeMode: "s2s" | "livekit";
   };
   models: {
     planningModel: string;
@@ -189,6 +190,15 @@ export interface InterviewTurn {
   referencedMemory?: string;
   strategy?: InterviewStrategyId;
   depth?: InterviewDepth;
+  truncated?: InterviewTurnTruncation;
+  providerTurnId?: string;
+}
+
+export interface InterviewTurnTruncation {
+  spokenChars: number;
+  originalChars: number;
+  reason: "user_interrupt" | "provider_error";
+  truncatedAt: string;
 }
 
 export type InterviewStrategyId =
@@ -312,7 +322,18 @@ export interface AiRunEvent {
   latencyMs?: number;
   estimatedTokens?: number;
   degradedReason?: string;
+  metrics?: AiRunEventMetrics;
   createdAt: string;
+}
+
+export interface AiRunEventMetrics {
+  timeToFirstTokenMs?: number;
+  timeToFirstAudioMs?: number;
+  endOfUtteranceDelayMs?: number;
+  turnDetectorConfidence?: number;
+  turnDetectorId?: string;
+  interruptedAtMs?: number;
+  spokenCharsBeforeInterrupt?: number;
 }
 
 export type WorkflowId =
@@ -994,7 +1015,7 @@ export interface RealtimeTurnState {
 
 export interface RealtimeSessionSignal {
   id: string;
-  eventType: "listening" | "hold" | "interruption" | "assistant_response";
+  eventType: RealtimeSessionEventType;
   phase: RealtimeTurnState["phase"];
   transcript?: string;
   inputLevel: number;
@@ -1005,6 +1026,36 @@ export interface RealtimeSessionSignal {
   assistantTurnId?: string;
   assistantIntent?: string;
   createdAt: string;
+  agentState?: RealtimeAgentState;
+  spokenTextSoFar?: string;
+  truncatedFromChars?: number;
+  metrics?: RealtimeSignalMetrics;
+  turnDetectorId?: string;
+  detectorReason?: string;
+  detectorConfidence?: number;
+}
+
+export type RealtimeSessionEventType =
+  | "listening"
+  | "hold"
+  | "interruption"
+  | "assistant_response"
+  | "user_started_speaking"
+  | "user_stopped_speaking"
+  | "user_input_transcribed"
+  | "agent_state_changed"
+  | "agent_speech_committed"
+  | "agent_speech_interrupted"
+  | "metrics_collected";
+
+export type RealtimeAgentState = "initializing" | "listening" | "thinking" | "speaking";
+
+export interface RealtimeSignalMetrics {
+  timeToFirstTokenMs?: number;
+  timeToFirstAudioMs?: number;
+  turnDetectorConfidence?: number;
+  interruptedAtMs?: number;
+  spokenCharsBeforeInterrupt?: number;
 }
 
 export interface SystemStatus {

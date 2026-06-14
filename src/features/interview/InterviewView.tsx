@@ -1,5 +1,5 @@
 import type { FormEvent } from "react";
-import { ChevronRight, Flag, Lightbulb, Mic, Pause, Play } from "lucide-react";
+import { ChevronRight, Flag, Lightbulb, Mic, MicOff, Pause, Play, Volume2 } from "lucide-react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { buildInterviewCard, buildRealtimeTurnState } from "../../domain/engine";
 import type { InterviewControlAction, InterviewMode, InterviewSession } from "../../domain/types";
@@ -12,12 +12,17 @@ interface InterviewViewProps {
   input: string;
   recording: boolean;
   realtimeState: ReturnType<typeof buildRealtimeTurnState> | null;
+  audioLevel: number;
+  voiceStatus: "idle" | "connecting" | "listening" | "speaking" | "interrupted";
+  liveUserTranscript: string;
+  voiceTransport: "webrtc" | "websocket" | "livekit" | null;
   onInput: (value: string) => void;
   onStart: (mode?: InterviewMode, searchBriefId?: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onFinish: () => void;
   onControl: (action: InterviewControlAction) => void;
   onToggleRecording: () => void | Promise<void>;
+  onInterrupt: () => void;
 }
 
 export function InterviewView({
@@ -27,12 +32,17 @@ export function InterviewView({
   input,
   recording,
   realtimeState,
+  audioLevel,
+  voiceStatus,
+  liveUserTranscript,
+  voiceTransport,
   onInput,
   onStart,
   onSubmit,
   onFinish,
   onControl,
-  onToggleRecording
+  onToggleRecording,
+  onInterrupt
 }: InterviewViewProps) {
   if (!session) {
     return (
@@ -83,11 +93,66 @@ export function InterviewView({
               <span className="label">当前状态</span>
               <strong>{realtimeState?.nextAction ?? (session.turns.length === 0 ? "等待用户开口" : "正在追问锚点")}</strong>
             </div>
-            <button className={recording ? "record-button active" : "record-button"} type="button" onClick={onToggleRecording}>
-              {recording ? <Pause size={17} /> : <Mic size={17} />}
-              {recording ? "录音中" : phaseLabel}
-            </button>
+            <div className="voice-controls">
+              {recording && voiceStatus === "speaking" && (
+                <button className="interrupt-button" type="button" onClick={onInterrupt} title="打断 AI">
+                  <Pause size={15} />打断
+                </button>
+              )}
+              <button
+                className={`record-button ${recording ? "active" : ""} ${voiceStatus}`}
+                type="button"
+                onClick={onToggleRecording}
+                aria-label={recording ? "停止录音" : "开始录音"}
+              >
+                <span className="record-icon">
+                  {recording ? <MicOff size={18} /> : <Mic size={18} />}
+                </span>
+                <span className="record-label">
+                  {recording ? "停止" : "语音"}
+                </span>
+                {voiceTransport && (
+                  <span className="transport-badge">{voiceTransport === "websocket" ? "WS" : voiceTransport === "livekit" ? "LK" : "RTC"}</span>
+                )}
+              </button>
+            </div>
           </div>
+
+          {recording && (
+            <div className="voice-panel" aria-live="polite">
+              <div className="waveform-container">
+                <div className={`waveform ${voiceStatus}`}>
+                  {Array.from({ length: 16 }).map((_, i) => (
+                    <span
+                      key={i}
+                      className="waveform-bar"
+                      style={{
+                        animationDelay: `${i * 0.06}s`,
+                        height: voiceStatus === "idle"
+                          ? "4px"
+                          : `${4 + audioLevel * 36 * (0.4 + 0.6 * Math.sin((i / 16) * Math.PI))}px`
+                      }}
+                    />
+                  ))}
+                </div>
+                <div className="voice-status-label">
+                  {voiceStatus === "connecting" && <><span className="status-dot connecting" />正在连接…</>}
+                  {voiceStatus === "listening" && <><span className="status-dot listening" />聆听中</>}
+                  {voiceStatus === "speaking" && <><span className="status-dot speaking" />AI 正在回应</>}
+                  {voiceStatus === "interrupted" && <><span className="status-dot interrupted" />已打断</>}
+                  {voiceStatus === "idle" && <><span className="status-dot idle" />等待语音</>}
+                </div>
+              </div>
+
+              {liveUserTranscript && (
+                <div className="live-transcript">
+                  <span className="live-transcript-label">实时转写</span>
+                  <p>{liveUserTranscript}</p>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="interview-rhythm" aria-live="polite">
             <div className="rhythm-main">
               <span className="label">会中节奏</span>
