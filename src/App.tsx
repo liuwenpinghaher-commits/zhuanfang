@@ -318,17 +318,6 @@ export default function App() {
       livekitVoiceSession.interrupt();
       setVoiceStatus("interrupted");
       setTimeout(() => setVoiceStatus("listening"), 1500);
-      return;
-    }
-    if (!realtimeVoiceConnection) return;
-    try {
-      const result = await realtimeVoiceConnection.interruptAssistant();
-      if (result) {
-        setVoiceStatus("interrupted");
-        setTimeout(() => setVoiceStatus("listening"), 1500);
-      }
-    } catch {
-      // interrupt not supported or failed
     }
   }
 
@@ -894,80 +883,22 @@ export default function App() {
 
         setNotice(
           buildNotice(
-            "success",
-            "实时语音会话已就绪",
-            `${voiceSession.model} · ${voiceSession.transport === "webrtc" ? "WebRTC" : "WebSocket"}`
+            "warning",
+            "实时语音未完全配置",
+            "请启用 LiveKit 模式 (realtimeMode=livekit) 使用语音专访。"
           )
         );
-        try {
-          setVoiceStatus("connecting");
-          const connection = voiceSession.transport === "websocket"
-            ? await connectBailianRealtimeWebsocket(voiceSession, {
-                productApiBaseUrl: "ws://127.0.0.1:8787",
-                onAudioLevel: (level) => setAudioLevel(level),
-                onSpeechStart: () => setVoiceStatus("listening"),
-                onSpeechEnd: () => setVoiceStatus("speaking"),
-                onUserTranscript: (text, isFinal) => {
-                  setLiveUserTranscript(isFinal ? "" : text);
-                  if (!isFinal || !text.trim()) return;
-                  setSession((prev) => {
-                    if (!prev) return prev;
-                    const updated = receiveUserTurn(prev, text);
-                    const lastTurn = updated.turns[updated.turns.length - 1];
-                    if (lastTurn?.role === "assistant" && lastTurn.strategy) {
-                      connection.setStrategy(lastTurn.strategy);
-                    }
-                    return updated;
-                  });
-                },
-                onAssistantTranscript: (text, isFinal) => {
-                  if (!isFinal || !text.trim()) return;
-                  setSession((prev) => {
-                    if (!prev) return prev;
-                    const turns = [...prev.turns];
-                    const lastAssistantIdx = turns.length - 1;
-                    if (lastAssistantIdx >= 0 && turns[lastAssistantIdx].role === "assistant") {
-                      turns[lastAssistantIdx] = { ...turns[lastAssistantIdx], content: text };
-                    }
-                    return { ...prev, turns };
-                  });
-                }
-              })
-            : await connectBailianRealtimeWebrtc(voiceSession, { productApiClient });
-          setRealtimeVoiceConnection(connection);
-          setRecording(true);
-          setVoiceStatus("listening");
-          setNotice(
-            buildNotice(
-              "success",
-              "实时语音会话已就绪",
-              `${voiceSession.model} · ${voiceSession.transport === "webrtc" ? "WebRTC" : "WebSocket"} 已连接`
-            )
-          );
-        } catch {
-          setRealtimeVoiceConnection(null);
-          setRecording(false);
-          setNotice(
-            buildNotice(
-              "warning",
-              "实时语音会话已就绪",
-              `${voiceSession.model} · ${voiceSession.transport === "webrtc" ? "WebRTC" : "WebSocket"}；浏览器未完成音频连接，已保留文本专访。`
-            )
-          );
-        }
       } else {
         setRecording(false);
         setNotice(
           buildNotice(
             "warning",
             "实时语音未完全配置",
-            voiceSession.status === "needs-webrtc-endpoint"
-              ? "缺少百炼 WebRTC 白名单 Endpoint，可设置 BAILIAN_REALTIME_TRANSPORT=websocket 使用 WebSocket 通道。"
-              : "缺少百炼 API Key，已保留文本专访。"
+            "请检查 API Key 配置。"
           )
         );
       }
-      return;
+      return;      return;
     } catch {
       setApiPersistenceEnabled(false);
     }
