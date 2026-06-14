@@ -259,6 +259,59 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     return buildInterviewAgentContext(session);
   });
 
+  server.get("/api/realtime-voice/livekit-token", async (request) => {
+    const { sessionId, interviewSessionId } = request.query as {
+      sessionId?: string;
+      interviewSessionId?: string;
+    };
+    const roomName = interviewSessionId
+      ? `interview-${interviewSessionId}`
+      : `session-${sessionId ?? randomUUID()}`;
+
+    return {
+      token: `${roomName}-mock-token`,
+      serverUrl: process.env.LIVEKIT_URL ?? "ws://127.0.0.1:7880",
+      room: roomName,
+    };
+  });
+
+  server.post("/api/realtime-voice/agent-turn/:interviewSessionId", async (request, reply) => {
+    const { interviewSessionId } = request.params as { interviewSessionId: string };
+    const { role, text, strategy } = request.body as {
+      role: string;
+      text: string;
+      strategy?: string;
+    };
+    const stateRepo = options.stateRepo;
+    if (!stateRepo) {
+      return reply.status(503).send({ error: "state_repo_unavailable" });
+    }
+    const session = await stateRepo.getInterviewSession(interviewSessionId);
+    if (!session) {
+      return reply.status(404).send({ error: "session_not_found" });
+    }
+
+    const { receiveUserTurn } = await import("../../../../src/domain/engine");
+    const updated = role === "user"
+      ? receiveUserTurn(session, text)
+      : {
+          ...session,
+          turns: [
+            ...session.turns,
+            {
+              id: randomUUID(),
+              role: "assistant" as const,
+              content: text,
+              strategy: strategy ?? "",
+              createdAt: new Date().toISOString(),
+            },
+          ],
+        };
+
+    stateRepo.replaceState(replaceSession(stateRepo.getState(), updated));
+    return { status: "recorded" };
+  });
+
   const wss = new WebSocketServer({ noServer: true });
 
   server.server.on("upgrade", (request: IncomingMessage, socket, head) => {

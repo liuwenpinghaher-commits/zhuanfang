@@ -237,3 +237,120 @@ describe("realtime-voice /agent-context route", () => {
     await lonelyApp.close();
   });
 });
+
+describe("realtime-voice /livekit-token route", () => {
+  let app: FastifyInstance;
+
+  beforeEach(async () => {
+    app = Fastify();
+    await registerRealtimeVoiceRoutes(app);
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it("returns token and room info", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/realtime-voice/livekit-token?sessionId=test&interviewSessionId=int-1"
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body).toHaveProperty("token");
+    expect(body).toHaveProperty("serverUrl");
+    expect(body).toHaveProperty("room");
+    expect(body.room).toBe("interview-int-1");
+  });
+
+  it("uses session-based room name when interviewSessionId is missing", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/realtime-voice/livekit-token?sessionId=abc"
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().room).toBe("session-abc");
+  });
+
+  it("generates random room name when no params provided", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/realtime-voice/livekit-token"
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().room).toMatch(/^session-/);
+  });
+});
+
+describe("realtime-voice /agent-turn route", () => {
+  let app: FastifyInstance;
+  let stateRepo: ProductStateRepository;
+
+  beforeEach(async () => {
+    app = Fastify();
+    const initial = createInitialProductState();
+    stateRepo = createInMemoryProductStateRepository(initial);
+    await registerRealtimeVoiceRoutes(app, { stateRepo });
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it("records a user turn", async () => {
+    const { createInterviewSession } = await import("../../../../src/domain/engine");
+    const { generateSessionId } = await import("../../../../src/domain/identifiers");
+    const sid = generateSessionId();
+    const session = createInterviewSession({ id: sid, title: "Test", createdAt: new Date().toISOString() });
+    stateRepo.replaceState({ ...stateRepo.getState(), sessions: [session] });
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/realtime-voice/agent-turn/${sid}`,
+      payload: { role: "user", text: "hello" }
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe("recorded");
+  });
+
+  it("records an assistant turn", async () => {
+    const { createInterviewSession } = await import("../../../../src/domain/engine");
+    const { generateSessionId } = await import("../../../../src/domain/identifiers");
+    const sid = generateSessionId();
+    const session = createInterviewSession({ id: sid, title: "Test", createdAt: new Date().toISOString() });
+    stateRepo.replaceState({ ...stateRepo.getState(), sessions: [session] });
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/realtime-voice/agent-turn/${sid}`,
+      payload: { role: "assistant", text: "hello back", strategy: "greeting" }
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe("recorded");
+  });
+
+  it("returns 404 for unknown session", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/realtime-voice/agent-turn/nonexistent",
+      payload: { role: "user", text: "hello" }
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("returns 503 when stateRepo is not configured", async () => {
+    const lonelyApp = Fastify();
+    await registerRealtimeVoiceRoutes(lonelyApp);
+    await lonelyApp.ready();
+    const res = await lonelyApp.inject({
+      method: "POST",
+      url: "/api/realtime-voice/agent-turn/any-id",
+      payload: { role: "user", text: "hello" }
+    });
+    expect(res.statusCode).toBe(503);
+    expect(res.json().error).toBe("state_repo_unavailable");
+    await lonelyApp.close();
+  });
+});
