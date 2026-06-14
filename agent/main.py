@@ -4,7 +4,6 @@ from livekit.agents import (
     Agent,
     AgentSession,
     JobContext,
-    TurnHandlingOptions,
     WorkerOptions,
     cli,
 )
@@ -38,21 +37,17 @@ async def entrypoint(ctx: JobContext):
         llm=aliyun.LLM(
             model="qwen-plus",
             temperature=0.7,
-            max_tokens=1500,
         ),
         tts=aliyun.TTS(
             model="cosyvoice-v2",
             voice="longcheng_v2",
             sample_rate=24000,
-            format="pcm",
         ),
-        turn_handling=TurnHandlingOptions(
-            turn_detection=MultilingualModel(),
-        ),
+        turn_detection=MultilingualModel(),
     )
 
-    await session.start(agent=agent, room=ctx.room)
     await ctx.connect()
+    await session.start(agent=agent, room=ctx.room)
 
     await session.generate_reply(
         instructions="向用户问好，说明你是他的私人专访主持人，邀请他开始提问或分享想聊的话题。"
