@@ -44,14 +44,6 @@ import { executeSearchProvider } from "./capabilities/search";
 import { createIdleCapabilityTask, startCapabilityTask } from "./capabilities/task";
 import { productApiClient, getProductApiBaseUrl } from "./api/productApi";
 import type { RealtimeVoiceSessionResponse, SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigUpdateRequest, VoiceInfo } from "./api/productApi";
-import {
-  connectBailianRealtimeWebrtc,
-  type BailianRealtimeWebrtcConnection
-} from "./realtime/bailianWebrtc";
-import {
-  connectBailianRealtimeWebsocket,
-  type BailianRealtimeWebsocketConnection
-} from "./realtime/bailianWebsocket";
 import { createLivekitVoiceSession, type LivekitVoiceSession } from "./realtime/livekitVoice";
 import {
   dedupeGeneratedArtifacts,
@@ -123,7 +115,7 @@ export default function App() {
   const [configSection, setConfigSection] = useState<ConfigSection>("overview");
   const [recording, setRecording] = useState(false);
   const [realtimeVoiceSession, setRealtimeVoiceSession] = useState<RealtimeVoiceSessionResponse | null>(null);
-  const [realtimeVoiceConnection, setRealtimeVoiceConnection] = useState<BailianRealtimeWebrtcConnection | BailianRealtimeWebsocketConnection | null>(null);
+  const [realtimeVoiceConnection, setRealtimeVoiceConnection] = useState<LivekitVoiceSession | null>(null);
   const [livekitVoiceSession, setLivekitVoiceSession] = useState<LivekitVoiceSession | null>(null);
   const [audioLevel, setAudioLevel] = useState(0);
   const [voiceStatus, setVoiceStatus] = useState<"idle" | "connecting" | "listening" | "speaking" | "interrupted">("idle");
@@ -285,7 +277,6 @@ export default function App() {
       livekitVoiceSession.close();
       setLivekitVoiceSession(null);
     }
-    realtimeVoiceConnection?.close();
     setRealtimeVoiceConnection(null);
     setRealtimeVoiceSession(null);
     setRecording(false);
