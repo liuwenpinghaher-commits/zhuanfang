@@ -24,15 +24,38 @@ function input(overrides: Partial<ExpressionStateInput> = {}): ExpressionStateIn
 describe("createExpressionStateDetector", () => {
   it("returns fluent with baseline-calibrated fast enough speech and short pauses", () => {
     const detector = createExpressionStateDetector();
-    const state = detector.evaluate(input());
+    const state = detector.evaluate(input({
+      speechRate: 3.5,
+      baselineSpeechRate: 3.5,
+      currentSilenceMs: 200,
+      pausePosition: "grammar_boundary",
+      hasRepetition: false,
+      hasFalseStart: false,
+    }));
     expect(state).toBe("fluent");
+  });
+
+  it("returns organizing when the fluent conditions are not all met after baseline", () => {
+    // After baseline, speech drops below 0.8× — fluent fails, organizing is fallback
+    const detector = createExpressionStateDetector();
+    detector.evaluate(input({ speechRate: 4, energy: 0.4, pausePosition: "grammar_boundary" }));
+    detector.evaluate(input({ speechRate: 4, energy: 0.4, pausePosition: "grammar_boundary" }));
+    detector.evaluate(input({ speechRate: 4, energy: 0.4, pausePosition: "grammar_boundary" }));
+    // Now baseline is ~4.0. Pass speechRate=2.0 (0.5× baseline) — fluent should fail.
+    const state = detector.evaluate(input({
+      speechRate: 2.0,
+      currentSilenceMs: 200,
+      pausePosition: "grammar_boundary",
+      hasRepetition: false,
+      hasFalseStart: false,
+    }));
+    expect(state).toBe("organizing");
   });
 
   it("returns organizing when there are filled pauses but no vague terms or repetition", () => {
     const detector = createExpressionStateDetector();
     const state = detector.evaluate(input({
       hasFilledPause: true,
-      pausePosition: "mid_clause",
       currentSilenceMs: 600,
     }));
     expect(state).toBe("organizing");

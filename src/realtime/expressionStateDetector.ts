@@ -64,15 +64,24 @@ export function createExpressionStateDetector(): ExpressionStateDetector {
         return "hesitating";
       }
 
+      // fluent: checked before organizing so that filled pauses at grammar
+      //         boundaries (natural in fluent speech) don't trigger organizing.
+      const rateOk = baselineCount === 0 || sr >= 0.8 * blSR;
+      const silenceOk = input.currentSilenceMs < 500;
+      const boundaryOk = input.pausePosition === "grammar_boundary";
+      const noDisfluency = !input.hasRepetition && !input.hasFalseStart;
+
+      if (rateOk && silenceOk && boundaryOk && noDisfluency) {
+        return "fluent";
+      }
+
       // organizing: filled pause + pause < 800ms + no vague terms + no repetition
-      //   but only when the pause is NOT at a grammar boundary (which would be fluent)
-      if (input.hasFilledPause && input.currentSilenceMs < 800 && !input.hasVagueTerm && !input.hasRepetition
-          && input.pausePosition !== "grammar_boundary") {
+      if (input.hasFilledPause && input.currentSilenceMs < 800 && !input.hasVagueTerm && !input.hasRepetition) {
         return "organizing";
       }
 
-      // fluent: default
-      return "fluent";
+      // Fell through — not fluent and not clearly organizing.
+      return "organizing";
     }
   };
 }

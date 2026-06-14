@@ -84,10 +84,11 @@ export async function registerInterviewSessionRoutes(
     }
 
     const updatedSession = await receiveTurn(session, content, options.bailianInterviewClient);
-    const nextState = upsertSession(state, updatedSession);
+    const { nextSession, preSignals } = updatedSession;
+    const nextState = upsertSession(state, nextSession);
 
     repository.replaceState(nextState);
-    return { session: updatedSession, state: nextState };
+    return { session: nextSession, state: nextState, ...(preSignals ? { preSignals } : {}) };
   });
 
   server.post("/api/interview-sessions/:id/control", async (request, reply) => {
@@ -170,18 +171,19 @@ async function receiveTurn(
   session: InterviewSession,
   content: string,
   bailianInterviewClient: BailianCharacterInterviewClient | undefined
-) {
+): Promise<{ nextSession: InterviewSession; preSignals?: import("../../../../src/domain/types").InteractionPreSignals }> {
   if (!bailianInterviewClient) {
-    return receiveUserTurn(session, content);
+    return { nextSession: receiveUserTurn(session, content) };
   }
 
   try {
     const assistant = await bailianInterviewClient.createAssistantTurn({ session, userText: content });
-    return receiveUserTurnWithAssistant(session, content, {
+    const nextSession = receiveUserTurnWithAssistant(session, content, {
       content: assistant.content,
       intent: assistant.intent
     });
+    return { nextSession: { ...nextSession, interactionPreSignals: assistant.preSignals }, preSignals: assistant.preSignals };
   } catch {
-    return receiveUserTurn(session, content);
+    return { nextSession: receiveUserTurn(session, content) };
   }
 }

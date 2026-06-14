@@ -1,4 +1,4 @@
-import type { InterviewSession, SearchBriefInput, SearchProviderId, SourceHighlight } from "../../../../src/domain/types";
+import type { InteractionPreSignals, InterviewSession, SearchBriefInput, SearchProviderId, SourceHighlight } from "../../../../src/domain/types";
 
 export const BAILIAN_DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 export const BAILIAN_DEFAULT_AUDIO_BASE_URL = "https://dashscope.aliyuncs.com";
@@ -44,6 +44,7 @@ export interface BailianCharacterInterviewResult {
   model: string;
   content: string;
   intent: "百炼角色扮演追问";
+  preSignals?: InteractionPreSignals;
 }
 
 export interface BailianRealtimeWebrtcRequest {
@@ -287,19 +288,85 @@ export function createBailianCharacterInterviewClient(
       }
 
       const payload = (await response.json()) as BailianChatCompletionOutput;
-      const content = payload.choices?.[0]?.message?.content;
-      if (typeof content !== "string" || !content.trim()) {
+      const rawContent = payload.choices?.[0]?.message?.content;
+      if (typeof rawContent !== "string" || !rawContent.trim()) {
         throw new Error("Bailian Character response did not include assistant content.");
       }
+
+      const { content, preSignals } = extractPreSignals(rawContent.trim());
 
       return {
         providerId: "bailian-character",
         model,
-        content: content.trim(),
-        intent: "百炼角色扮演追问"
+        content,
+        intent: "百炼角色扮演追问",
+        ...(preSignals ? { preSignals } : {}),
       };
     }
   };
+}
+
+function extractPreSignals(text: string): { content: string; preSignals?: InteractionPreSignals } {
+  const match = text.match(/<pre_signals>([\s\S]*?)<\/pre_signals>/);
+  if (!match) {
+    return { content: text };
+  }
+
+  const block = match[1];
+  const cleanContent = text.replace(match[0], "").trim();
+
+  // Parse each line into key-value pairs.  Use raw lines so we can
+  // detect indentation (sub-fields of depth_direction).
+  const rawLines = block.split("\n");
+  const entries: Record<string, string> = {};
+  let currentKey = "";
+
+  for (const rawLine of rawLines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    const kvMatch = line.match(/^([a-z_]+):\s*(.*)/);
+    if (!kvMatch) continue;
+
+    const key = kvMatch[1];
+    const value = kvMatch[2].trim();
+
+    // If the raw line starts with whitespace and we have a currentKey,
+    // this is a sub-field continuation (e.g. "  concept: X" under
+    // "depth_direction:").
+    if (rawLine.startsWith(" ") || rawLine.startsWith("\t")) {
+      if (currentKey) {
+        entries[`${currentKey}.${key}`] = value;
+      }
+    } else {
+      currentKey = key;
+      entries[key] = value;
+    }
+  }
+
+  // Parse depth_direction sub-fields
+  const concept = entries["depth_direction.concept"];
+  const reason = entries["depth_direction.reason"] || "";
+  const guidance = entries["depth_direction.guidance"] || "";
+
+  const result: InteractionPreSignals = {
+    depthDirection: concept ? { concept, reason, guidance } : null,
+    backchannelWhitelist: parseListEntry(entries["backchannel"], ["嗯", "对", "是的", "好"]),
+    interruptTriggers: parseListEntry(entries["interrupt"], ["不对", "不是", "等一下"]),
+    interruptSensitivity: (["low", "medium", "high"].includes(entries["sensitivity"] ?? "")
+      ? (entries["sensitivity"] as "low" | "medium" | "high")
+      : "medium"),
+  };
+
+  return { content: cleanContent, preSignals: result };
+}
+
+function parseListEntry(raw: string | undefined, fallback: string[]): string[] {
+  if (!raw) return fallback;
+  // Strip surrounding brackets, quotes, and whitespace
+  const cleaned = raw.replace(/^\[|\]$/g, "").replace(/"/g, "").replace(/'/g, "");
+  const items = cleaned.split(",").map((s) => s.trim()).filter(Boolean);
+  return items.length > 0 ? items : fallback;
 }
 
 export function createBailianRealtimeVoiceClient(options: BailianRealtimeVoiceClientOptions): BailianRealtimeVoiceClient {
@@ -617,7 +684,21 @@ function buildCharacterSystemPrompt(session: InterviewSession) {
     `潜在张力：${session.card.potentialTension}`,
     `建议视角：${session.card.suggestedPerspectives.join("、")}`,
     "语言要求：每次只问一个核心问题；不要做长篇总结；不要替用户下结论；可以短暂复述用户原话，但必须继续推进。",
-    "输出只返回主持人的下一句中文追问，不要 Markdown，不要 JSON。"
+    "输出只返回主持人的下一句中文追问，不要 Markdown，不要 JSON。",
+    "",
+    "在你的追问末尾，用 <pre_signals>...</pre_signals> 输出交互预判信号：",
+    "",
+    "<pre_signals>",
+    "depth_direction:",
+    "  concept: [基于盲区候选、知识债、策略追踪，判断下一轮最值得深挖的一个方向]",
+    "  reason: [为什么这个方向值得深挖]",
+    "  guidance: [一句邀请式引导话语，如'你刚才提到的X，能具体说说吗？']",
+    "backchannel: [用户说这些时不打断，逗号分隔，如：嗯,对,是的,好]",
+    "interrupt: [用户说这些时立即停止，逗号分隔，如：不对,等一下,我打断一下]",
+    "sensitivity: [low/medium/high，基于话题重要性]",
+    "</pre_signals>",
+    "",
+    "规则：depth_direction 只输出一条；guidance 必须是邀请式；sensitivity 根据话题重要性：盲区/知识债=low，闲聊=high；如果当前没有明确的深挖方向，depth_direction 可以为空。",
   ].join("\n");
 }
 

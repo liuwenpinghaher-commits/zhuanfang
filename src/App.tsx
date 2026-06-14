@@ -696,7 +696,9 @@ export default function App() {
 
     try {
       const apiRun = await productApiClient.sendInterviewTurn(session.id, { content });
-      setSession(apiRun.session);
+      setSession(apiRun.session.interactionPreSignals
+        ? { ...session, interactionPreSignals: apiRun.session.interactionPreSignals }
+        : apiRun.session);
       setProductState(apiRun.state);
       setApiPersistenceEnabled(true);
       return;
@@ -893,9 +895,25 @@ export default function App() {
             ? await connectBailianRealtimeWebrtc(voiceSession, { productApiClient })
             : await connectBailianRealtimeWebsocket(voiceSession, {
                 productApiBaseUrl: `ws://${location.hostname}:8787`,
+                preSignals: session?.interactionPreSignals,
                 onAudioLevel: (level) => setAudioLevel(level),
                 onSpeechStart: () => setVoiceStatus("listening"),
                 onSpeechEnd: () => setVoiceStatus("speaking"),
+                onGuidance: (text) => {
+                  // Inject guidance whisper via browser SpeechSynthesis.
+                  // Short utterances only — long guidance gets shown in UI.
+                  if (text.length < 40) {
+                    try {
+                      const utterance = new SpeechSynthesisUtterance(text);
+                      utterance.lang = "zh-CN";
+                      utterance.rate = 1.1;
+                      utterance.volume = 0.7;
+                      speechSynthesis.cancel();
+                      speechSynthesis.speak(utterance);
+                    } catch { /* SpeechSynthesis not available */ }
+                  }
+                  setNotice(buildNotice("info", "引导", text));
+                },
                 onUserTranscript: (text, isFinal) => {
                   setLiveUserTranscript(text);
                   if (!isFinal || !text.trim()) return;

@@ -285,12 +285,87 @@ describe("bailian provider client", () => {
       ])
     });
     expect(requestBody.messages[0].content).toContain("真正的专访主持人");
+    expect(requestBody.messages[0].content).toContain("<pre_signals>");
     expect(result).toEqual({
       providerId: "bailian-character",
       model: "qwen-plus-character",
       content: "你说怕失控。我们先落到一个具体项目：如果你不兜底，最坏会发生什么？",
       intent: "百炼角色扮演追问"
     });
+  });
+
+  it("parses pre_signals from LLM response when present", async () => {
+    const state = createInitialProductState();
+    const session = createSessionDraft(state, "decision");
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          output_text: null,
+          choices: [{
+            message: {
+              role: "assistant",
+              content: [
+                "我们先落到一个具体项目：最坏会发生什么？",
+                "",
+                "<pre_signals>",
+                "depth_direction:",
+                "  concept: 团队授权机制",
+                "  reason: 用户反复回到兜底与失控的张力",
+                "  guidance: 你刚提到的授权机制，能举一个最近的例子吗？",
+                "backchannel: 嗯,对,是的,好,我明白",
+                "interrupt: 不对,不是,等一下,打断一下",
+                "sensitivity: low",
+                "</pre_signals>"
+              ].join("\n")
+            }
+          }]
+        }),
+        { status: 200 }
+      )
+    );
+    const client = createBailianCharacterInterviewClient({
+      apiKey: "test-key",
+      fetchImpl
+    });
+
+    const result = await client.createAssistantTurn({
+      session,
+      userText: "我不想兜底但又怕失控。"
+    });
+
+    expect(result.content).toBe("我们先落到一个具体项目：最坏会发生什么？");
+    expect(result.preSignals).toBeDefined();
+    expect(result.preSignals!.depthDirection).toEqual({
+      concept: "团队授权机制",
+      reason: "用户反复回到兜底与失控的张力",
+      guidance: "你刚提到的授权机制，能举一个最近的例子吗？",
+    });
+    expect(result.preSignals!.backchannelWhitelist).toEqual(["嗯", "对", "是的", "好", "我明白"]);
+    expect(result.preSignals!.interruptTriggers).toEqual(["不对", "不是", "等一下", "打断一下"]);
+    expect(result.preSignals!.interruptSensitivity).toBe("low");
+  });
+
+  it("returns no preSignals when LLM response has no pre_signals block", async () => {
+    const state = createInitialProductState();
+    const session = createSessionDraft(state, "decision");
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          output_text: null,
+          choices: [{ message: { role: "assistant", content: "我们来聊聊具体项目。" } }]
+        }),
+        { status: 200 }
+      )
+    );
+    const client = createBailianCharacterInterviewClient({ apiKey: "test-key", fetchImpl });
+
+    const result = await client.createAssistantTurn({
+      session,
+      userText: "我不想兜底。"
+    });
+
+    expect(result.content).toBe("我们来聊聊具体项目。");
+    expect(result.preSignals).toBeUndefined();
   });
 
   it("proxies WebRTC SDP exchange for qwen omni realtime without exposing the API key", async () => {

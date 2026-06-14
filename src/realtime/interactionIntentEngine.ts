@@ -6,7 +6,12 @@ export interface IntentEngineInput {
   isAssistantSpeaking: boolean;
   partialTranscript: string;
   audioDuration: number;
+  /** Current audio energy level (0-1), used for noise detection. */
+  energy: number;
   guidanceCountThisTurn: number;
+  /** Ms since the last guidance was triggered. */
+  timeSinceLastGuidance: number;
+  guidanceEnabled: boolean;
   guidanceBudget: {
     maxPerTurn: number;
     minIntervalMs: number;
@@ -15,20 +20,28 @@ export interface IntentEngineInput {
 
 export function evaluateIntent(input: IntentEngineInput): IntentDecision {
   const { expressionState, preSignals, isAssistantSpeaking, partialTranscript,
-    audioDuration, guidanceCountThisTurn, guidanceBudget } = input;
+    audioDuration, energy, guidanceCountThisTurn, timeSinceLastGuidance,
+    guidanceEnabled, guidanceBudget } = input;
 
   if (isAssistantSpeaking) {
-    return evaluateDuringAssistant(expressionState, preSignals, partialTranscript, audioDuration);
+    return evaluateDuringAssistant(preSignals, partialTranscript, audioDuration, energy);
   }
-  return evaluateDuringUser(expressionState, preSignals, guidanceCountThisTurn, guidanceBudget);
+  return evaluateDuringUser(expressionState, preSignals, guidanceCountThisTurn,
+    timeSinceLastGuidance, guidanceEnabled, guidanceBudget);
 }
 
 function evaluateDuringUser(
   expressionState: ExpressionState,
   preSignals: InteractionPreSignals | null,
   guidanceCountThisTurn: number,
+  timeSinceLastGuidance: number,
+  guidanceEnabled: boolean,
   guidanceBudget: { maxPerTurn: number; minIntervalMs: number },
 ): IntentDecision {
+  const budgetExhausted = guidanceCountThisTurn >= guidanceBudget.maxPerTurn;
+  const tooSoon = timeSinceLastGuidance < guidanceBudget.minIntervalMs;
+  const canGuide = guidanceEnabled && !budgetExhausted && !tooSoon;
+
   // fluent / organizing / concluding → don't intervene
   if (expressionState === "fluent" || expressionState === "organizing" || expressionState === "concluding") {
     return { intent: "backchannel", confidence: 0.9, action: "continue" };
@@ -36,7 +49,7 @@ function evaluateDuringUser(
 
   // hesitating → check depth direction or use nudge
   if (expressionState === "hesitating") {
-    if (preSignals?.depthDirection) {
+    if (canGuide && preSignals?.depthDirection) {
       return {
         intent: "guidance",
         confidence: 0.82,
@@ -44,7 +57,7 @@ function evaluateDuringUser(
         detail: { text: preSignals.depthDirection.guidance },
       };
     }
-    if (guidanceCountThisTurn < guidanceBudget.maxPerTurn) {
+    if (canGuide) {
       return {
         intent: "guidance",
         confidence: 0.6,
@@ -57,35 +70,41 @@ function evaluateDuringUser(
 
   // circling → stage summary
   if (expressionState === "circling") {
-    return {
-      intent: "guidance",
-      confidence: 0.75,
-      action: "nudge",
-      detail: { text: "到目前为止，核心是..." },
-    };
+    if (canGuide) {
+      return {
+        intent: "guidance",
+        confidence: 0.75,
+        action: "nudge",
+        detail: { text: "到目前为止，核心是..." },
+      };
+    }
+    return { intent: "backchannel", confidence: 0.4, action: "continue" };
   }
 
   // emotional → empathy
   if (expressionState === "emotional") {
-    return {
-      intent: "guidance",
-      confidence: 0.75,
-      action: "nudge",
-      detail: { text: "这确实让人很疲惫" },
-    };
+    if (canGuide) {
+      return {
+        intent: "guidance",
+        confidence: 0.75,
+        action: "nudge",
+        detail: { text: "这确实让人很疲惫" },
+      };
+    }
+    return { intent: "backchannel", confidence: 0.4, action: "continue" };
   }
 
   return { intent: "backchannel", confidence: 0.7, action: "continue" };
 }
 
 function evaluateDuringAssistant(
-  _expressionState: ExpressionState,
   preSignals: InteractionPreSignals | null,
   partialTranscript: string,
   audioDuration: number,
+  energy: number,
 ): IntentDecision {
-  // noise: very short + low energy → ignore
-  if (audioDuration < 200) {
+  // noise: very short (< 200ms) AND low energy → ignore
+  if (audioDuration < 200 && energy < 0.1) {
     return { intent: "noise", confidence: 0.85, action: "ignore" };
   }
 

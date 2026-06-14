@@ -31,11 +31,13 @@ export interface BailianRealtimeWebsocketConnection {
 export interface ConnectBailianRealtimeWebsocketOptions {
   mediaDevices?: MediaDevicesLike;
   productApiBaseUrl?: string;
+  preSignals?: InteractionPreSignals | null;
   onUserTranscript?: (text: string, isFinal: boolean) => void;
   onAssistantTranscript?: (text: string, isFinal: boolean) => void;
   onAudioLevel?: (level: number) => void;
   onSpeechStart?: () => void;
   onSpeechEnd?: () => void;
+  onGuidance?: (text: string) => void;
   onError?: (error: Error) => void;
 }
 
@@ -82,7 +84,7 @@ export async function connectBailianRealtimeWebsocket(
    *  Evaluates the user's speaking rhythm + semantic signals so that backchannel
    *  words (嗯, 对) don't interrupt, but real sentences do. */
   const expressionDetector = createExpressionStateDetector();
-  let preSignals: InteractionPreSignals | null = null;
+  let preSignals: InteractionPreSignals | null = options.preSignals ?? null;
   /** Tracks how many processor frames since the last time energy was above the
    *  speech threshold — used as a proxy for silenceMs. */
   let lowEnergyFrames = 0;
@@ -104,11 +106,10 @@ export async function connectBailianRealtimeWebsocket(
     semanticFlags.hasFalseStart = /不是.{2,}是/.test(text);
   }
 
-  function evaluateExpressionIntent(): ReturnType<typeof evaluateIntent> {
-    const energy = 0; // handled by the main audio callback
+  function evaluateExpressionIntent(energy: number): ReturnType<typeof evaluateIntent> {
     const exprInput: ExpressionStateInput = {
       speechRate: 3, baselineSpeechRate: 3,
-      energy: 0, baselineEnergy: 0.3,
+      energy, baselineEnergy: 0.3,
       pitchTrend: "flat",
       currentSilenceMs: lowEnergyFrames * 32,
       pausePosition: "mid_clause",
@@ -123,7 +124,10 @@ export async function connectBailianRealtimeWebsocket(
       isAssistantSpeaking: aiIsSpeaking,
       partialTranscript: latestPartialTranscript,
       audioDuration: highEnergyFrames * 32,
+      energy,
       guidanceCountThisTurn: 0,
+      timeSinceLastGuidance: 5000,
+      guidanceEnabled: true,
       guidanceBudget: { maxPerTurn: 2, minIntervalMs: 5000 },
     });
   }
@@ -133,13 +137,10 @@ export async function connectBailianRealtimeWebsocket(
       cancelAndSaveContext();
       options.onSpeechStart?.();
     } else if (decision.intent === "guidance" && decision.action === "nudge" && decision.detail?.text) {
-      // Publish guidance as a whisper-like event; the UI shows it in the
-      // guidance indicator. We don't interrupt the AI for guidance — it
-      // is only active when the AI is listening.
+      options.onGuidance?.(decision.detail.text);
     } else if (decision.intent === "noise") {
-      // ignore coughs, thuds, short spikes
+      // ignore
     }
-    // backchannel → continue, AI keeps speaking
   }
 
   function ensureProgress(input: { turnId?: string; providerTurnId?: string } = {}) {
@@ -303,8 +304,16 @@ export async function connectBailianRealtimeWebsocket(
               highEnergyFrames = Math.max(0, highEnergyFrames - 1);
             }
             if (aiIsSpeaking && highEnergyFrames >= 8) {
-              const decision = evaluateExpressionIntent();
+              const decision = evaluateExpressionIntent(level);
               handleIntentDecision(decision);
+            } else if (!aiIsSpeaking && highEnergyFrames > 0 && highEnergyFrames % 15 === 0) {
+              // Periodically evaluate expression state while user is speaking
+              // (every ~480ms = 15 frames × 32ms) to detect guidance opportunities
+              // without overwhelming the system.
+              const decision = evaluateExpressionIntent(level);
+              if (decision.intent === "guidance" && decision.action === "nudge") {
+                handleIntentDecision(decision);
+              }
             }
           };
           source.connect(processor);

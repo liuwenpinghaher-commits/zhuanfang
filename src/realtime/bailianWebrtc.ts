@@ -2,7 +2,7 @@ import type { ProductApiClient, RealtimeVoiceSessionResponse } from "../api/prod
 import type { TurnDetector, TurnDetectorContext, TurnDetectorDecision } from "./turnDetectors";
 import { createSilenceVadDetector, SILENCE_VAD_DETECTOR_ID } from "./turnDetectors";
 
-export type TurnPhase = "idle" | "user_speaking" | "short_pause" | "long_pause" | "assistant_speaking" | "interrupted" | "guidance";
+export type TurnPhase = "idle" | "user_speaking" | "short_pause" | "long_pause" | "assistant_speaking" | "interrupted" | "guidance" | "backchannel";
 
 export interface TurnState {
   phase: TurnPhase;
