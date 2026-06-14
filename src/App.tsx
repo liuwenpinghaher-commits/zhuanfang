@@ -842,7 +842,7 @@ export default function App() {
                   if (state === "disconnected") { setRecording(false); setVoiceStatus("idle"); }
                 },
                 onUserTranscript: (text, isFinal) => {
-                  setLiveUserTranscript(isFinal ? "" : text);
+                  setLiveUserTranscript(text);
                   if (!isFinal || !text.trim()) return;
                   setSession((prev) => {
                     if (!prev) return prev;
@@ -898,7 +898,7 @@ export default function App() {
                 onSpeechStart: () => setVoiceStatus("listening"),
                 onSpeechEnd: () => setVoiceStatus("speaking"),
                 onUserTranscript: (text, isFinal) => {
-                  setLiveUserTranscript(isFinal ? "" : text);
+                  setLiveUserTranscript(text);
                   if (!isFinal || !text.trim()) return;
                   setSession((prev) => {
                     if (!prev) return prev;
