@@ -8,3 +8,8 @@ tsconfig.tsbuildinfo
 .env
 .env.local
 .env.*.local
+
+# Python agent
+agent/venv/
+agent/__pycache__/
+agent/*.pyc
