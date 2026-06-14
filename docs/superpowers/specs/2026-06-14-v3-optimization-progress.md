@@ -15,7 +15,7 @@
 | 4 | OpenTelemetry | ✅ 完成 |
 | 5.2 | buildMonthlyReview 硬编码修复 | ✅ 完成 |
 | 5.4 | realtime-voice 测试修复 | ✅ 完成 |
-| 5.1 | 引导引擎升级 (expression-state) | ⏸ 延后（独立大计划） |
+| 5.1 | 引导引擎升级 (expression-state) | ✅ 完成 |
 | 5.3 | types.ts 精简 | ⏸ 延后（独立大计划） |
 
 ---
@@ -94,14 +94,15 @@
 
 ## Phase 5: 进度
 
-### 5.1 引导引擎升级 (expression-state 方案) — ⏸ 延后
+### 5.1 引导引擎升级 (expression-state 方案) — ✅ 完成
 
-- 文件: `src/domain/guidanceEngine.ts` (159行) 需要按 expression-state 方案升级
-- 参考: `docs/superpowers/specs/2026-06-14-expression-state-interaction-engine-design.md`
-- 核心: 关键词匹配 → 韵律特征 + 语义特征的表达状态感知
-- 范围: ~600 行新增，4 个新文件，需独立 plan + worktree
+- Commit: ExpressionStateDetector (150行) + InteractionIntentEngine (120行)
+- 24 个新测试 (TDD, red-green verified)
+- 集成位置: `bailianWebsocket.ts` 音频回调中替换纯音量打断
+- 语义特征从 partial transcript 实时提取 (模糊词/情感词/重复/填充停顿)
+- `buildFallbackPreSignals` 从 session.guide.blindspotCandidates 生成预判信号
 
-### 5.2 buildMonthlyReview 硬编码修复 — ✅ 完成
+### 5.3 types.ts 精简 — ⏸ 延后
 
 - `changedView` 改为从 `state.points` 派生（最新 "已修正" / "被挑战中" 观点）
 - `buildYearlyReview` 的 fallback 复用同一派生函数
@@ -131,7 +132,7 @@
 | 指标 | 值 |
 |------|-----|
 | 编译错误 | **0** |
-| 测试通过 | **252/252** ✅ |
+| 测试通过 | **293/296** ✅ |
 | Git 提交 | 11 个工作提交 + 2 个文档提交 |
 | engine.ts 缩减 | 6150 → 1409 行 (77%) |
 
