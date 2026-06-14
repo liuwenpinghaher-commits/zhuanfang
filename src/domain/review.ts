@@ -1,4 +1,5 @@
 import type {
+  AssetStatus,
   CognitiveRadar,
   MonthlyReview,
   ProductState,
@@ -6,6 +7,10 @@ import type {
 } from "./types";
 
 import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent } from "./utils";
+
+const STATUS_CORRECTED: AssetStatus = "已修正";
+const STATUS_CHALLENGED: AssetStatus = "被挑战中";
+const STATUS_STABLE: AssetStatus = "稳定观点";
 
 export function buildCognitiveRadar(state: ProductState): CognitiveRadar {
   const noteText = state.notes.flatMap((note) => [note.summary, ...note.saidTrack, ...note.learnedTrack]).join(" ");
@@ -61,12 +66,12 @@ export function buildMonthlyReview(state: ProductState): MonthlyReview {
 
 function deriveChangedView(state: ProductState): string {
   const candidates = state.points
-    .filter((point) => point.status === "已修正" || point.status === "被挑战中")
+    .filter((point) => point.status === STATUS_CORRECTED || point.status === STATUS_CHALLENGED)
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
   const top = candidates[0];
   if (top) {
-    const verb = top.status === "已修正" ? "已修正" : "正在被挑战";
+    const verb = top.status === STATUS_CORRECTED ? "已修正" : "正在被挑战";
     const summary = (top.content?.trim() || top.title).slice(0, 60);
     return `${verb}：${summary}`;
   }
@@ -75,7 +80,7 @@ function deriveChangedView(state: ProductState): string {
     return "本月还没有形成正在变化的观点。";
   }
 
-  const stable = state.points.find((point) => point.status === "稳定观点");
+  const stable = state.points.find((point) => point.status === STATUS_STABLE);
   if (stable) {
     return `本月观点保持稳定：${stable.title}`;
   }
@@ -85,7 +90,7 @@ function deriveChangedView(state: ProductState): string {
 export function buildYearlyReview(state: ProductState): YearlyReview {
   const coreQuestions = state.questions.slice(0, 3).map((question) => question.question);
   const changedViews = state.points
-    .filter((point) => point.status === "已修正" || point.status === "被挑战中")
+    .filter((point) => point.status === STATUS_CORRECTED || point.status === STATUS_CHALLENGED)
     .slice(0, 3)
     .map((point) => point.title);
   const unresolvedPatterns = state.themes

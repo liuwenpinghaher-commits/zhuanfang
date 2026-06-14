@@ -515,6 +515,15 @@ export interface InterviewSession {
   doNotSave?: boolean;
 }
 
+export interface InterviewAgentContext {
+  instructions: string;
+  sessionTitle: string;
+  turnCount: number;
+  latestUserTurn: string | null;
+  history: Array<{ role: "user" | "assistant"; text: string }>;
+  activeStrategies: string[];
+}
+
 export interface DualTrackNote {
   id: string;
   sessionId: string;

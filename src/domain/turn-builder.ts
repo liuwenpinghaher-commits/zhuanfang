@@ -1,13 +1,19 @@
 import type {
+  InterviewAgentContext,
+  InterviewCard,
   InterviewControlAction,
+  InterviewGuide,
+  InterviewMode,
   InterviewSession,
   InterviewStrategyDecision,
+  InterviewStrategyId,
   InterviewStrength,
   InterviewTurn,
 } from "./types";
 
 import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, extractAnchor, isLongUserAnswer, buildMirroredFollowUp, findPendingControlAction, applyPendingControlToFollowUp } from "./utils";
 import { decideInterviewStrategy } from "./strategy";
+import { buildRealtimeVoiceInstructions } from "./voice-instructions";
 
 function buildAssistantTurn(session: InterviewSession, userText: string): InterviewTurn & { strategyDecision: InterviewStrategyDecision } {
   const decision = decideInterviewStrategy(session, userText);
@@ -193,5 +199,126 @@ export function updateInterviewControl(session: InterviewSession, action: Interv
         referencedMemory: session.card.historyReferences[0]
       }
     ]
+  };
+}
+
+// ============================================================================
+// LiveKit cascaded-pipeline helpers — minimal interview session lifecycle
+// for the Python agent (`/api/realtime-voice/agent-context|agent-turn`).
+// ============================================================================
+
+export interface CreateInterviewSessionInput {
+  id: string;
+  title: string;
+  createdAt?: string;
+  mode?: InterviewMode;
+  strength?: InterviewStrength;
+}
+
+export function createInterviewSession(input: CreateInterviewSessionInput): InterviewSession {
+  const card: InterviewCard = {
+    title: input.title,
+    whyNow: "",
+    suggestedOpening: "",
+    historyReferences: [],
+    potentialTension: "",
+    suggestedPerspectives: [],
+    likelyOutputs: [],
+    sourceHighlights: [],
+  };
+
+  const guide: InterviewGuide = {
+    topicHint: "",
+    dailyBrief: { suggestedTopic: "", openingQuestion: "", contextNote: "" },
+    perspectiveCoverage: {},
+    missingPerspectives: [],
+    recommendedPerspectives: [],
+    perspectiveRationale: "",
+    relevantMemories: [],
+    graphReferences: [],
+    opinionEvolution: [],
+    statedPositions: [],
+    openDebts: [],
+    blindspotCandidates: [],
+    knowledgeFragments: [],
+    suggestedOpening: "",
+    strategyChecklist: [],
+  };
+
+  return {
+    id: input.id,
+    mode: input.mode ?? "daily",
+    strength: input.strength ?? "standard",
+    status: "active",
+    title: input.title,
+    card,
+    guide,
+    turns: [],
+    realtimeSignals: [],
+    startedAt: input.createdAt ?? nowIso(),
+  };
+}
+
+export interface AddTurnInput {
+  role: "user" | "assistant";
+  content: string;
+  strategy?: string;
+  intent?: string;
+  referencedMemory?: string;
+}
+
+const VALID_STRATEGY_IDS: ReadonlySet<InterviewStrategyId> = new Set<InterviewStrategyId>([
+  "mechanism_probe",
+  "concrete_example_probe",
+  "mechanism_reversal_probe",
+  "debt_followup",
+  "perspective_shift",
+  "blindspot_probe",
+  "premise_challenge",
+  "counterexample_probe",
+  "learning_reflection",
+  "synthesis",
+]);
+
+function coerceStrategyId(value: string | undefined): InterviewStrategyId | undefined {
+  if (!value) return undefined;
+  return VALID_STRATEGY_IDS.has(value as InterviewStrategyId) ? (value as InterviewStrategyId) : undefined;
+}
+
+export function addTurn(session: InterviewSession, input: AddTurnInput): InterviewSession {
+  const strategy = coerceStrategyId(input.strategy);
+  const turn: InterviewTurn = {
+    id: makeId(`turn-${input.role}`),
+    role: input.role,
+    content: input.content,
+    intent: input.intent ?? (input.role === "user" ? "用户表达" : "主持人发言"),
+    timestamp: nowIso(),
+    ...(strategy ? { strategy } : {}),
+    ...(input.referencedMemory ? { referencedMemory: input.referencedMemory } : {}),
+  };
+  return {
+    ...session,
+    turns: [...session.turns, turn],
+  };
+}
+
+export function buildInterviewAgentContext(session: InterviewSession): InterviewAgentContext {
+  const instructions = buildRealtimeVoiceInstructions(session);
+  const history: Array<{ role: "user" | "assistant"; text: string }> = [];
+  for (const turn of session.turns) {
+    if (turn.role === "user" || turn.role === "assistant") {
+      history.push({ role: turn.role, text: turn.content });
+    }
+  }
+  const lastUserTurn = [...session.turns].reverse().find((turn) => turn.role === "user");
+  const activeStrategies = session.enginePolicy?.appliedPlaybookRules?.slice(0, 5) ?? [];
+
+  return {
+    instructions,
+    sessionTitle: session.title,
+    turnCount: session.turns.length,
+    latestUserTurn: lastUserTurn?.content ?? null,
+    history: history.slice(-20),
+    activeStrategies,
   };
 }
