@@ -39,7 +39,7 @@ export interface SystemConfig {
     podcastVoice: string;
     podcastFormat: "solo" | "host-guest";
     realtimeEnabled: boolean;
-    realtimeMode: "s2s" | "livekit";
+    realtimeMode: "bailian" | "livekit";
   };
   models: {
     planningModel: string;

@@ -109,7 +109,7 @@ describe("product state storage", () => {
     });
   });
 
-  it("migrates legacy s2s realtimeMode to livekit (s2s pipeline removed in Phase 3)", () => {
+  it("migrates legacy s2s realtimeMode to bailian (s2s pipeline removed in Phase 3)", () => {
     const state = createInitialProductState();
     const normalized = normalizeProductState({
       ...state,
@@ -122,7 +122,23 @@ describe("product state storage", () => {
       },
     });
 
-    expect(normalized.systemConfig.voice.realtimeMode).toBe("livekit");
+    expect(normalized.systemConfig.voice.realtimeMode).toBe("bailian");
+  });
+
+  it("preserves an existing bailian realtimeMode", () => {
+    const state = createInitialProductState();
+    const normalized = normalizeProductState({
+      ...state,
+      systemConfig: {
+        ...state.systemConfig,
+        voice: {
+          ...state.systemConfig.voice,
+          realtimeMode: "bailian",
+        },
+      },
+    });
+
+    expect(normalized.systemConfig.voice.realtimeMode).toBe("bailian");
   });
 
   it("preserves an existing livekit realtimeMode", () => {

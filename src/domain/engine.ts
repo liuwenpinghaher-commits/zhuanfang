@@ -60,12 +60,13 @@ export {
 
 export {
   appendRealtimeSignalTrace, buildRealtimeTurnState, uniqueStrings,
-  truncateAssistantTurn,
+  truncateAssistantTurn, buildInterruptionContext, getInterruptionScene,
 } from "./signals";
 
 export type {
   TruncateAssistantTurnInput,
   TruncateAssistantTurnResult,
+  InterruptionScene,
 } from "./signals";
 
 export {

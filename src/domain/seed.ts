@@ -201,7 +201,7 @@ export const initialProductState: ProductState = {
       podcastVoice: "calm-host",
       podcastFormat: "solo",
       realtimeEnabled: true,
-      realtimeMode: "livekit"
+      realtimeMode: "bailian"
     },
     models: {
       planningModel: "qwen3.7-plus",

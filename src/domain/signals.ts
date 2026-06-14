@@ -265,3 +265,67 @@ export function truncateAssistantTurn(
     changed: true
   };
 }
+
+// ============================================================================
+// Interruption context helpers — used by Bailian WebSocket client to frame
+// interrupt prompts sent to the realtime omni model.
+// ============================================================================
+
+export type InterruptionScene = "key_insight" | "anchor_probe" | "perspective_shift" | "transition" | "backchannel";
+
+export function getInterruptionScene(strategy?: string): InterruptionScene {
+  switch (strategy) {
+    case "blindspot_probe":
+    case "mechanism_reversal_probe":
+      return "key_insight";
+    case "concrete_example_probe":
+    case "debt_followup":
+      return "anchor_probe";
+    case "perspective_shift":
+    case "synthesis":
+      return "perspective_shift";
+    case "mirror":
+      return "transition";
+    default:
+      return "perspective_shift";
+  }
+}
+
+export function buildInterruptionContext(params: {
+  spokenSoFar: string;
+  unspokenContent: string;
+  strategy?: string;
+  userInput: string;
+}): string {
+  const scene = getInterruptionScene(params.strategy);
+  const spoken = params.spokenSoFar.trim();
+  const unspoken = params.unspokenContent.trim();
+  const user = params.userInput.trim();
+
+  switch (scene) {
+    case "key_insight":
+      return "";
+    case "anchor_probe":
+      return [
+        "【打断恢复 — 追问锚点】",
+        `你刚才追问的核心问题是："${spoken}"`,
+        unspoken ? `还没问完的部分："${unspoken}"` : "",
+        `用户说："${user}"`,
+        "请结合用户的新内容调整你的追问方式，但保持原问题的核心方向。先简短回应用户，再重新追问。"
+      ].filter(Boolean).join("\n");
+    case "perspective_shift":
+      return [
+        "【打断恢复 — 视角重构】",
+        `你刚才表达的观点是："${spoken}"`,
+        unspoken ? `还没说完的部分："${unspoken}"` : "",
+        `用户说："${user}"`,
+        "请先简短补充你之前未说完的观点（可以结合用户新说的内容调整表述），再回应当前问题。"
+      ].filter(Boolean).join("\n");
+    case "transition":
+      return "";
+    case "backchannel":
+      return "";
+    default:
+      return "";
+  }
+}

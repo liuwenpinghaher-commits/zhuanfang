@@ -44,6 +44,14 @@ import { executeSearchProvider } from "./capabilities/search";
 import { createIdleCapabilityTask, startCapabilityTask } from "./capabilities/task";
 import { productApiClient, getProductApiBaseUrl } from "./api/productApi";
 import type { RealtimeVoiceSessionResponse, SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigUpdateRequest, VoiceInfo } from "./api/productApi";
+import {
+  connectBailianRealtimeWebrtc,
+  type BailianRealtimeWebrtcConnection
+} from "./realtime/bailianWebrtc";
+import {
+  connectBailianRealtimeWebsocket,
+  type BailianRealtimeWebsocketConnection
+} from "./realtime/bailianWebsocket";
 import { createLivekitVoiceSession, type LivekitVoiceSession } from "./realtime/livekitVoice";
 import {
   dedupeGeneratedArtifacts,
@@ -115,7 +123,7 @@ export default function App() {
   const [configSection, setConfigSection] = useState<ConfigSection>("overview");
   const [recording, setRecording] = useState(false);
   const [realtimeVoiceSession, setRealtimeVoiceSession] = useState<RealtimeVoiceSessionResponse | null>(null);
-  const [realtimeVoiceConnection, setRealtimeVoiceConnection] = useState<LivekitVoiceSession | null>(null);
+  const [realtimeVoiceConnection, setRealtimeVoiceConnection] = useState<BailianRealtimeWebrtcConnection | BailianRealtimeWebsocketConnection | LivekitVoiceSession | null>(null);
   const [livekitVoiceSession, setLivekitVoiceSession] = useState<LivekitVoiceSession | null>(null);
   const [audioLevel, setAudioLevel] = useState(0);
   const [voiceStatus, setVoiceStatus] = useState<"idle" | "connecting" | "listening" | "speaking" | "interrupted">("idle");
@@ -273,6 +281,7 @@ export default function App() {
       livekitVoiceSession.close();
       setLivekitVoiceSession(null);
     }
+    realtimeVoiceConnection?.close();
     setRealtimeVoiceConnection(null);
     setRealtimeVoiceSession(null);
     setRecording(false);
@@ -808,9 +817,9 @@ export default function App() {
       setApiPersistenceEnabled(true);
 
       if (voiceSession.status === "ready") {
-        // LiveKit cascaded mode
-        const voiceMode = productState.systemConfig.voice.realtimeMode ?? "s2s";
+        const voiceMode = productState.systemConfig.voice.realtimeMode ?? "bailian";
         if (voiceMode === "livekit") {
+          // LiveKit cascaded pipeline (browser → LiveKit server → Python agent → DashScope)
           try {
             setVoiceStatus("connecting");
             const sessionId = voiceSession.sessionId;
@@ -877,13 +886,68 @@ export default function App() {
           }
         }
 
-        setNotice(
-          buildNotice(
-            "warning",
-            "实时语音未完全配置",
-            "请启用 LiveKit 模式 (realtimeMode=livekit) 使用语音专访。"
-          )
-        );
+        // Bailian mode (default): direct DashScope omni via WebSocket proxy
+        // or WebRTC — single hop, integrated STT+LLM+TTS with server VAD.
+        try {
+          setVoiceStatus("connecting");
+          const connection = voiceSession.transport === "webrtc"
+            ? await connectBailianRealtimeWebrtc(voiceSession, { productApiClient })
+            : await connectBailianRealtimeWebsocket(voiceSession, {
+                productApiBaseUrl: `ws://${location.hostname}:8787`,
+                onAudioLevel: (level) => setAudioLevel(level),
+                onSpeechStart: () => setVoiceStatus("listening"),
+                onSpeechEnd: () => setVoiceStatus("speaking"),
+                onUserTranscript: (text, isFinal) => {
+                  setLiveUserTranscript(isFinal ? "" : text);
+                  if (!isFinal || !text.trim()) return;
+                  setSession((prev) => {
+                    if (!prev) return prev;
+                    const updated = receiveUserTurn(prev, text);
+                    const lastTurn = updated.turns[updated.turns.length - 1];
+                    if (lastTurn?.role === "assistant" && lastTurn.strategy) {
+                      if ("setStrategy" in connection) connection.setStrategy(lastTurn.strategy);
+                    }
+                    return updated;
+                  });
+                },
+                onAssistantTranscript: (text, isFinal) => {
+                  if (!isFinal || !text.trim()) return;
+                  setSession((prev) => {
+                    if (!prev) return prev;
+                    const turns = [...prev.turns];
+                    const lastAssistantIdx = turns.length - 1;
+                    if (lastAssistantIdx >= 0 && turns[lastAssistantIdx].role === "assistant") {
+                      turns[lastAssistantIdx] = { ...turns[lastAssistantIdx], content: text };
+                    }
+                    return { ...prev, turns };
+                  });
+                },
+                onError: (err) => {
+                  setNotice(buildNotice("warning", "语音连接异常", err.message));
+                }
+              });
+          setRealtimeVoiceConnection(connection);
+          setRecording(true);
+          setVoiceStatus("listening");
+          setNotice(
+            buildNotice(
+              "success",
+              "实时语音会话已就绪",
+              `${voiceSession.model} · ${voiceSession.transport === "webrtc" ? "WebRTC" : "WebSocket"} 已连接`
+            )
+          );
+        } catch {
+          setNotice(
+            buildNotice(
+              "warning",
+              "语音连接失败",
+              voiceSession.transport === "webrtc"
+                ? "WebRTC 连接失败，可设置 BAILIAN_REALTIME_TRANSPORT=websocket 使用 WebSocket。"
+                : "百炼 WebSocket 连接失败。"
+            )
+          );
+          return;
+        }
       } else {
         setRecording(false);
         setNotice(
