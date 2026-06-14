@@ -1,4 +1,5 @@
 import type { FormEvent } from "react";
+import { useEffect, useRef } from "react";
 import { ChevronRight, Flag, Lightbulb, Mic, MicOff, Pause, Play, Volume2 } from "lucide-react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { buildInterviewCard, buildRealtimeTurnState } from "../../domain/engine";
@@ -84,6 +85,13 @@ export function InterviewView({
     sharp: "直接"
   }[session.strength];
   const historyReferences = session.card.historyReferences.length > 0 ? session.card.historyReferences : ["暂无明确历史引用"];
+  const turnListRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (turnListRef.current) {
+      turnListRef.current.scrollTop = turnListRef.current.scrollHeight;
+    }
+  }, [session?.turns.length]);
 
   return (
     <section className="view-stack">
@@ -208,7 +216,7 @@ export function InterviewView({
             ))}
           </div>
 
-          <div className="turn-list">
+          <div className="turn-list" ref={turnListRef}>
             {session.turns.length === 0 && (
               <div className="empty-state">
                 <Lightbulb size={24} />

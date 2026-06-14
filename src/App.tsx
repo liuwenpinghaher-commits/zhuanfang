@@ -287,7 +287,6 @@ export default function App() {
     setRecording(false);
     setAudioLevel(0);
     setVoiceStatus("idle");
-    setLiveUserTranscript("");
   }
 
   useEffect(() => {
