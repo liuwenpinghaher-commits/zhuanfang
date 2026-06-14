@@ -239,10 +239,6 @@ export default function App() {
             silenceMs: recording ? 0 : 900,
             isUserSpeaking: recording,
             isAssistantSpeaking: voiceStatus === "speaking"
-          }, {
-            partialTranscript: liveUserTranscript,
-            guidanceCountThisTurn: guidanceState.countThisTurn,
-            lastGuidanceTimestamp: guidanceState.lastTimestamp
           })
         : null,
     [recording, session, audioLevel, voiceStatus, liveUserTranscript, guidanceState]
