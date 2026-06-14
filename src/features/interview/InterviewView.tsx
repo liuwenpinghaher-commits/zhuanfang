@@ -23,6 +23,12 @@ interface InterviewViewProps {
   onControl: (action: InterviewControlAction) => void;
   onToggleRecording: () => void | Promise<void>;
   onInterrupt: () => void;
+  guidanceState?: {
+    active: boolean;
+    kind: string | null;
+    text: string | null;
+    countThisTurn: number;
+  };
 }
 
 export function InterviewView({
@@ -42,7 +48,8 @@ export function InterviewView({
   onFinish,
   onControl,
   onToggleRecording,
-  onInterrupt
+  onInterrupt,
+  guidanceState
 }: InterviewViewProps) {
   if (!session) {
     return (
@@ -148,6 +155,18 @@ export function InterviewView({
                 <div className="live-transcript">
                   <span className="live-transcript-label">实时转写</span>
                   <p>{liveUserTranscript}</p>
+                </div>
+              )}
+              {guidanceState?.active && guidanceState.text && (
+                <div className="guidance-indicator" aria-live="polite">
+                  <span className="guidance-badge">
+                    {guidanceState.kind === "anchor_probe" ? "追问锚点" :
+                     guidanceState.kind === "emotion_label" ? "情感标记" :
+                     guidanceState.kind === "contradiction" ? "发现矛盾" :
+                     guidanceState.kind === "nudge" ? "轻推" :
+                     guidanceState.kind === "echo" ? "回音" : "引导"}
+                  </span>
+                  <p className="guidance-text">{guidanceState.text}</p>
                 </div>
               )}
             </div>

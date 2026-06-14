@@ -520,6 +520,42 @@ export function ConfigView({
                       }}
                     />
                     <span className="field-help">用于控制同一主题最多连续推进的追问层级。</span>
+                  <label className="field-stack runtime-setting-field" htmlFor="product-guidance-enabled">
+                    <span className="field-label">主动引导</span>
+                    <select
+                      id="product-guidance-enabled"
+                      value={productDraft.interview.guidanceEnabled ? "on" : "off"}
+                      onChange={(event) => {
+                        updateProductConfig((config) => ({
+                          ...config,
+                          interview: { ...config.interview, guidanceEnabled: event.target.value === "on" }
+                        }));
+                      }}
+                    >
+                      <option value="on">启用</option>
+                      <option value="off">关闭</option>
+                    </select>
+                    <span className="field-help">在用户思考停顿时用简短话语轻推，帮助把问题说深。</span>
+                  </label>
+                  <label className="field-stack runtime-setting-field" htmlFor="product-guidance-frequency">
+                    <span className="field-label">引导频率</span>
+                    <select
+                      id="product-guidance-frequency"
+                      value={productDraft.interview.guidanceFrequency}
+                      onChange={(event) => {
+                        updateProductConfig((config) => ({
+                          ...config,
+                          interview: { ...config.interview, guidanceFrequency: event.target.value as "low" | "medium" | "high" }
+                        }));
+                      }}
+                    >
+                      <option value="low">低 — 仅在明显模糊或矛盾时介入</option>
+                      <option value="medium">中 — 在关键锚点和情感信号处介入</option>
+                      <option value="high">高 — 积极介入，发现锚点即追问</option>
+                    </select>
+                    <span className="field-help">控制引导的积极程度。低频率更克制，高频率更主动。</span>
+                  </label>
+
                   </label>
                 </div>
               </section>

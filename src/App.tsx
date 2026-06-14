@@ -128,6 +128,13 @@ export default function App() {
   const [audioLevel, setAudioLevel] = useState(0);
   const [voiceStatus, setVoiceStatus] = useState<"idle" | "connecting" | "listening" | "speaking" | "interrupted">("idle");
   const [liveUserTranscript, setLiveUserTranscript] = useState("");
+  const [guidanceState, setGuidanceState] = useState<{
+    active: boolean;
+    kind: string | null;
+    text: string | null;
+    countThisTurn: number;
+    lastTimestamp: string | null;
+  }>({ active: false, kind: null, text: null, countThisTurn: 0, lastTimestamp: null });
   const [voices, setVoices] = useState<VoiceInfo[]>([]);
   const [voicesLoading, setVoicesLoading] = useState(false);
   const [searchTopic, setSearchTopic] = useState("AI 产品商业化热点");
@@ -236,13 +243,42 @@ export default function App() {
     () =>
       session
         ? buildRealtimeTurnState(session, {
-            inputLevel: recording ? 0.72 : 0.02,
+            inputLevel: recording ? audioLevel : 0.02,
             silenceMs: recording ? 0 : 900,
-            isUserSpeaking: recording
+            isUserSpeaking: recording,
+            isAssistantSpeaking: voiceStatus === "speaking"
+          }, {
+            partialTranscript: liveUserTranscript,
+            guidanceCountThisTurn: guidanceState.countThisTurn,
+            lastGuidanceTimestamp: guidanceState.lastTimestamp
           })
         : null,
-    [recording, session]
+    [recording, session, audioLevel, voiceStatus, liveUserTranscript, guidanceState]
   );
+
+  // 引导触发时的副作用
+  useEffect(() => {
+    if (realtimeState?.guidance && !guidanceState.active) {
+      setGuidanceState(prev => ({
+        active: true,
+        kind: realtimeState.guidance!.kind,
+        text: realtimeState.guidance!.text,
+        countThisTurn: prev.countThisTurn + 1,
+        lastTimestamp: new Date().toISOString()
+      }));
+      const timer = setTimeout(() => {
+        setGuidanceState(prev => ({ ...prev, active: false }));
+      }, 2500);
+      return () => clearTimeout(timer);
+    }
+  }, [realtimeState?.guidance]);
+
+  // 用户开始新轮时重置引导计数
+  useEffect(() => {
+    if (voiceStatus === "listening" && !realtimeState?.shouldInterrupt) {
+      setGuidanceState(prev => ({ ...prev, countThisTurn: 0, active: false }));
+    }
+  }, [voiceStatus, realtimeState?.shouldInterrupt]);
 
   function closeRealtimeVoiceSession() {
     if (livekitVoiceSession) {
@@ -286,6 +322,7 @@ export default function App() {
   }
 
   async function interruptAssistant() {
+    setGuidanceState(prev => ({ ...prev, countThisTurn: 0, active: false }));
     if (livekitVoiceSession) {
       livekitVoiceSession.interrupt();
       setVoiceStatus("interrupted");
@@ -1022,6 +1059,7 @@ export default function App() {
             onControl={applyInterviewControl}
             onToggleRecording={toggleRealtimeRecording}
             onInterrupt={interruptAssistant}
+            guidanceState={guidanceState}
           />
         )}
         {view === "search" && (

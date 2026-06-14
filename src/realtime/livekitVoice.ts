@@ -67,11 +67,13 @@ export async function createLivekitVoiceSession(
     async startListening() {
       await room.localParticipant.setMicrophoneEnabled(true);
     },
-    interrupt() {
-      room.localParticipant.publishData(
-        new TextEncoder().encode(JSON.stringify({ type: "interrupt" })),
-        { reliable: true }
-      );
+    async interrupt() {
+      // Re-enable mic to trigger VAD barge-in
+      try {
+        await room.localParticipant.setMicrophoneEnabled(true);
+      } catch {
+        // mic might already be enabled
+      }
     },
     close() {
       room.disconnect();

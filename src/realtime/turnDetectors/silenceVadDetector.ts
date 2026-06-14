@@ -28,6 +28,17 @@ export function createSilenceVadDetector(options: SilenceVadDetectorOptions): Tu
           reason: "检测到用户正在说话"
         };
       }
+      if (ctx.silenceMs >= 400 && ctx.silenceMs < 800 && !ctx.isAssistantSpeaking) {
+        return {
+          decision: "guidance",
+          confidence: 0.55,
+          reason: `静默 ${ctx.silenceMs}ms 处于引导窗口，可轻推`,
+          guidance: {
+            kind: "nudge",
+            text: "嗯"
+          }
+        };
+      }
       if (ctx.silenceMs >= options.longPauseThresholdMs) {
         return {
           decision: "end_of_turn",

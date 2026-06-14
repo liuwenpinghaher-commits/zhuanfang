@@ -212,7 +212,12 @@ export const initialProductState: ProductState = {
       playbookVersion: "base-v1",
       launchMode: "immersive",
       silenceHoldMs: 1200,
-      maxFollowUpDepth: 4
+      maxFollowUpDepth: 4,
+      guidanceEnabled: true,
+      guidanceFrequency: "medium",
+      maxGuidancePerTurn: 2,
+      minGuidanceIntervalMs: 5000,
+      challengeBudgetPerSession: 3
     },
     memory: {
       includeSensitiveMemoriesInContext: false,

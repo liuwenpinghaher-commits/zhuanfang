@@ -2,7 +2,7 @@ import type { ProductApiClient, RealtimeVoiceSessionResponse } from "../api/prod
 import type { TurnDetector, TurnDetectorContext, TurnDetectorDecision } from "./turnDetectors";
 import { createSilenceVadDetector, SILENCE_VAD_DETECTOR_ID } from "./turnDetectors";
 
-export type TurnPhase = "idle" | "user_speaking" | "short_pause" | "long_pause" | "assistant_speaking" | "interrupted";
+export type TurnPhase = "idle" | "user_speaking" | "short_pause" | "long_pause" | "assistant_speaking" | "interrupted" | "guidance";
 
 export interface TurnState {
   phase: TurnPhase;
@@ -15,6 +15,7 @@ export interface TurnState {
   detectorReason?: string;
   detectorConfidence?: number;
   detectorDecision?: TurnDetectorDecision["decision"];
+  guidance?: { kind: string; text: string; anchor?: string };
 }
 
 export interface TurnStateMachineUpdate {
@@ -61,7 +62,8 @@ export function createTurnStateMachine(options: TurnStateMachineOptions): TurnSt
       detectorId: detector.id,
       detectorReason: lastDecision?.reason,
       detectorConfidence: lastDecision?.confidence,
-      detectorDecision: lastDecision?.decision
+      detectorDecision: lastDecision?.decision,
+      guidance: lastDecision?.guidance
     };
   }
 
@@ -82,7 +84,9 @@ export function createTurnStateMachine(options: TurnStateMachineOptions): TurnSt
       };
       lastDecision = detector.evaluate(ctx);
 
-      if (isUserSpeaking && isAssistantSpeaking) {
+      if (lastDecision?.decision === "guidance") {
+        phase = "guidance";
+      } else if (isUserSpeaking && isAssistantSpeaking) {
         phase = "interrupted";
       } else if (isUserSpeaking) {
         phase = "user_speaking";

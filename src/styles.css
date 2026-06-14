@@ -912,6 +912,46 @@ select:focus-visible {
   min-height: 20px;
 }
 
+
+/* 引导指示器 */
+.guidance-indicator {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: rgba(99, 102, 241, 0.08);
+  border-left: 3px solid #6366f1;
+  border-radius: 4px;
+  animation: guidanceFadeIn 0.3s ease-out;
+}
+
+.guidance-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6366f1;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.guidance-text {
+  margin: 4px 0 0;
+  font-size: 14px;
+  color: var(--text-primary);
+  font-style: italic;
+}
+
+.status-dot.guidance {
+  background: #6366f1;
+  animation: guidancePulse 1.5s ease-in-out infinite;
+}
+
+@keyframes guidanceFadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes guidancePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
 .voice-cloning-panel {
   margin-top: 0;
 }

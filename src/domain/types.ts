@@ -51,6 +51,11 @@ export interface SystemConfig {
     launchMode: "immersive";
     silenceHoldMs: number;
     maxFollowUpDepth: number;
+    guidanceEnabled: boolean;
+    guidanceFrequency: "low" | "medium" | "high";
+    maxGuidancePerTurn: number;
+    minGuidanceIntervalMs: number;
+    challengeBudgetPerSession: number;
   };
   memory: {
     includeSensitiveMemoriesInContext: boolean;
@@ -484,6 +489,11 @@ export interface InterviewEnginePolicy {
   appliedPlaybookRules: string[];
   qualityGuardrails: string[];
   memory: SystemConfig["memory"];
+  guidanceEnabled: boolean;
+  guidanceFrequency: "low" | "medium" | "high";
+  maxGuidancePerTurn: number;
+  minGuidanceIntervalMs: number;
+  challengeBudgetPerSession: number;
 }
 
 export interface InterviewSession {
@@ -1005,12 +1015,32 @@ export interface RealtimeSignal {
   isAssistantSpeaking?: boolean;
 }
 
+
+export type GuidanceKind =
+  | "nudge"
+  | "echo"
+  | "anchor_probe"
+  | "concretize"
+  | "emotion_label"
+  | "contradiction"
+  | "mini_summary"
+  | "mirror";
+
+export interface RealtimeGuidanceDecision {
+  kind: GuidanceKind;
+  text: string;
+  anchor?: string;
+  reason: string;
+  confidence: number;
+}
+
 export interface RealtimeTurnState {
   phase: "listening" | "holding" | "thinking" | "speaking";
   nextAction: string;
   backchannel?: string;
   shouldInterrupt: boolean;
   confidence: number;
+  guidance?: RealtimeGuidanceDecision;
 }
 
 export interface RealtimeSessionSignal {
@@ -1033,6 +1063,9 @@ export interface RealtimeSessionSignal {
   turnDetectorId?: string;
   detectorReason?: string;
   detectorConfidence?: number;
+  guidanceKind?: GuidanceKind;
+  guidanceText?: string;
+  guidanceAnchor?: string;
 }
 
 export type RealtimeSessionEventType =
@@ -1046,7 +1079,9 @@ export type RealtimeSessionEventType =
   | "agent_state_changed"
   | "agent_speech_committed"
   | "agent_speech_interrupted"
-  | "metrics_collected";
+  | "metrics_collected"
+  | "guidance_triggered"
+  | "guidance_delivered";
 
 export type RealtimeAgentState = "initializing" | "listening" | "thinking" | "speaking";
 

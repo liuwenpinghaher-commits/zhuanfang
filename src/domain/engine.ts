@@ -49,6 +49,8 @@ import type {
   ReadingAsset,
   QualityOperationsReport,
   ReferenceMaterialImportInput,
+  GuidanceKind,
+  RealtimeGuidanceDecision,
   RealtimeSignal,
   RealtimeSessionSignal,
   RealtimeTurnState,
@@ -67,6 +69,7 @@ import type {
   WorkflowRun,
   YearlyReview
 } from "./types";
+import { evaluateGuidance } from "./guidanceEngine";
 
 const modeLabels: Record<InterviewMode, string> = {
   daily: "日常复盘",
@@ -500,7 +503,12 @@ export function buildInterviewEnginePolicy(state: ProductState): InterviewEngine
     playbookVersion: state.systemConfig.interview.playbookVersion,
     appliedPlaybookRules: collectAppliedPlaybookRules(state),
     qualityGuardrails: buildQualityGuardrails(state),
-    memory: { ...state.systemConfig.memory }
+    memory: { ...state.systemConfig.memory },
+    guidanceEnabled: state.systemConfig.interview.guidanceEnabled ?? true,
+    guidanceFrequency: state.systemConfig.interview.guidanceFrequency ?? "medium",
+    maxGuidancePerTurn: state.systemConfig.interview.maxGuidancePerTurn ?? 2,
+    minGuidanceIntervalMs: state.systemConfig.interview.minGuidanceIntervalMs ?? 5000,
+    challengeBudgetPerSession: state.systemConfig.interview.challengeBudgetPerSession ?? 3
   };
 }
 
@@ -537,7 +545,15 @@ export function buildRealtimeVoiceInstructions(session: InterviewSession | null,
       : "",
     qualityGuardrails.length > 0 ? `质量修复护栏：${qualityGuardrails.join("；")}` : "",
     guide ? `策略清单：${guide.strategyChecklist.slice(0, 3).join("；")}` : "",
-    "不要长篇输出，不要替用户下结论，不要像客服。"
+    "不要长篇输出，不要替用户下结论，不要像客服。",
+    session?.enginePolicy?.guidanceEnabled !== false ? [
+      "主动引导规则：",
+      "- 用户在思考停顿时（400-1200ms），用简短话语轻推，如'嗯'、'然后呢？'",
+      "- 用户提到模糊概念时（'那个东西'、'这个决定'），追问具体含义",
+      "- 用户表达矛盾情绪时，先标记情感再追问",
+      "- 引导不等于打断：引导后用户应继续说，而非停止",
+      "- 每轮引导不超过2次，间隔不少于5秒"
+    ].join("\n") : ""
   ].filter(Boolean).join("\n");
 }
 
@@ -3460,6 +3476,11 @@ export function appendRealtimeSignalTrace(
     ...(realtimeState.backchannel ? { backchannel: realtimeState.backchannel } : {}),
     nextAction: realtimeState.nextAction,
     ...(assistantTurn ? { assistantTurnId: assistantTurn.id, assistantIntent: assistantTurn.intent } : {}),
+    ...(realtimeState.guidance ? {
+      guidanceKind: realtimeState.guidance.kind,
+      guidanceText: realtimeState.guidance.text,
+      guidanceAnchor: realtimeState.guidance.anchor,
+    } : {}),
     createdAt: options.createdAt ?? nowIso()
   };
 
@@ -3554,6 +3575,9 @@ function deriveRealtimeSignalEventType(
   if (realtimeState.shouldInterrupt) {
     return "interruption";
   }
+  if (realtimeState.guidance) {
+    return "guidance_triggered";
+  }
   if (realtimeState.phase === "holding") {
     return "hold";
   }
@@ -3572,7 +3596,9 @@ function formatRealtimeSignalTrace(signal: RealtimeSessionSignal) {
     agent_state_changed: "Agent 状态切换",
     agent_speech_committed: "语音追问完成",
     agent_speech_interrupted: "语音追问被截断",
-    metrics_collected: "指标采集"
+    metrics_collected: "指标采集",
+    guidance_triggered: "引导触发",
+    guidance_delivered: "引导送达"
   };
   const transcript = signal.transcript ? `｜${signal.transcript}` : "";
   const assistantIntent = signal.assistantIntent ? `｜${signal.assistantIntent}` : "";
@@ -5865,7 +5891,16 @@ function cloneConfig(config: SystemConfig): SystemConfig {
   return JSON.parse(JSON.stringify(config)) as SystemConfig;
 }
 
-export function buildRealtimeTurnState(session: InterviewSession, signal: RealtimeSignal): RealtimeTurnState {
+export function buildRealtimeTurnState(
+  session: InterviewSession,
+  signal: RealtimeSignal,
+  guidanceCtx?: {
+    partialTranscript?: string;
+    finalTranscript?: string;
+    guidanceCountThisTurn?: number;
+    lastGuidanceTimestamp?: string | null;
+  }
+): RealtimeTurnState {
   const silenceHoldMs = Math.max(300, session.enginePolicy?.silenceHoldMs ?? 1200);
   if (signal.isAssistantSpeaking && (signal.isUserSpeaking || signal.inputLevel > 0.2)) {
     return {
@@ -5886,6 +5921,38 @@ export function buildRealtimeTurnState(session: InterviewSession, signal: Realti
   }
 
   if (signal.silenceMs < silenceHoldMs) {
+    const guidanceEnabled = session.enginePolicy?.guidanceEnabled ?? true;
+    if (guidanceEnabled && guidanceCtx && signal.silenceMs >= 400 && signal.silenceMs < silenceHoldMs) {
+      const budget = {
+        maxPerTurn: session.enginePolicy?.maxGuidancePerTurn ?? 2,
+        minIntervalMs: session.enginePolicy?.minGuidanceIntervalMs ?? 5000,
+        challengeBudget: session.enginePolicy?.challengeBudgetPerSession ?? 3,
+        challengeUsed: 0
+      };
+      const guidance = evaluateGuidance({
+        partialTranscript: guidanceCtx.partialTranscript ?? "",
+        finalTranscript: guidanceCtx.finalTranscript ?? "",
+        silenceMs: signal.silenceMs,
+        isUserSpeaking: signal.isUserSpeaking,
+        isAssistantSpeaking: signal.isAssistantSpeaking ?? false,
+        turnCount: session.turns.length,
+        guidanceCountThisTurn: guidanceCtx.guidanceCountThisTurn ?? 0,
+        lastGuidanceTimestamp: guidanceCtx.lastGuidanceTimestamp ?? null,
+        blindspotCandidates: session.guide?.blindspotCandidates ?? [],
+        recentAnchorWords: [],
+        guidanceBudget: budget
+      });
+      if (guidance) {
+        return {
+          phase: "holding",
+          nextAction: guidance.text,
+          backchannel: guidance.text,
+          shouldInterrupt: false,
+          confidence: guidance.confidence,
+          guidance
+        };
+      }
+    }
     const shouldBackchannel = signal.silenceMs >= Math.min(700, Math.round(silenceHoldMs * 0.6));
     return {
       phase: "holding",

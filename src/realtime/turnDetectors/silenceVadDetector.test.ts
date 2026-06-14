@@ -7,7 +7,31 @@ describe("silenceVadDetector", () => {
   it("exposes a stable detector id", () => {
     const detector = createSilenceVadDetector(baseOptions);
     expect(detector.id).toBe(SILENCE_VAD_DETECTOR_ID);
+  
+  it("returns guidance in 400-800ms silence window when assistant is not speaking", () => {
+    const detector = createSilenceVadDetector(baseOptions);
+    const result = detector.evaluate({
+      inputLevel: 0.05,
+      silenceMs: 500,
+      isUserSpeaking: false,
+      isAssistantSpeaking: false
+    });
+    expect(result.decision).toBe("guidance");
+    expect(result.guidance?.kind).toBe("nudge");
+    expect(result.guidance?.text).toBe("嗯");
   });
+
+  it("does not return guidance when assistant is speaking", () => {
+    const detector = createSilenceVadDetector(baseOptions);
+    const result = detector.evaluate({
+      inputLevel: 0.05,
+      silenceMs: 500,
+      isUserSpeaking: false,
+      isAssistantSpeaking: true
+    });
+    expect(result.decision).not.toBe("guidance");
+  });
+});
 
   it("flags continue while user is actively speaking", () => {
     const detector = createSilenceVadDetector(baseOptions);
