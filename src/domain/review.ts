@@ -46,7 +46,7 @@ export function buildMonthlyReview(state: ProductState): MonthlyReview {
 
   return {
     topTheme: topTheme?.name ?? "暂无长期主题",
-    changedView: "你正在从“团队不主动”转向“机制是否让团队承担判断”。",
+    changedView: deriveChangedView(state),
     avoidedQuestion: openQuestion?.question ?? "还没有形成明确的回避问题。",
     recommendedNextInterview: topTheme?.nextQuestion ?? "从最近一条关键原话继续。",
     metrics: {
@@ -57,6 +57,30 @@ export function buildMonthlyReview(state: ProductState): MonthlyReview {
       themes: state.themes.length
     }
   };
+}
+
+function deriveChangedView(state: ProductState): string {
+  const candidates = state.points
+    .filter((point) => point.status === "已修正" || point.status === "被挑战中")
+    .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+
+  const top = candidates[0];
+  if (top) {
+    const verb = top.status === "已修正" ? "已修正" : "正在被挑战";
+    const summary = top.content?.trim() || top.title;
+    return `${verb}：${summary}`;
+  }
+
+  if (state.points.length === 0) {
+    return "本月还没有形成正在变化的观点。";
+  }
+
+  const stable = state.points.find((point) => point.status === "稳定观点");
+  if (stable) {
+    return `本月观点保持稳定：${stable.title}`;
+  }
+
+  return `本月共记录 ${state.points.length} 条观点，尚未触发修正或挑战。`;
 }
 export function buildYearlyReview(state: ProductState): YearlyReview {
   const coreQuestions = state.questions.slice(0, 3).map((question) => question.question);
@@ -74,7 +98,9 @@ export function buildYearlyReview(state: ProductState): YearlyReview {
 
   return {
     coreQuestions,
-    changedViews: changedViews.length > 0 ? changedViews : ["从“团队不主动”转向“机制是否让团队承担判断”。"],
+    changedViews: changedViews.length > 0
+      ? changedViews
+      : [deriveChangedView(state)],
     unresolvedPatterns,
     importantDecisions,
     missingPerspectives,
