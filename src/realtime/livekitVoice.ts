@@ -1,5 +1,6 @@
 import {
   Room,
+  type RemoteParticipant,
   RoomEvent,
   type ConnectionState,
 } from "livekit-client";
@@ -25,11 +26,29 @@ export interface CreateLivekitVoiceSessionOptions {
   callbacks: LivekitVoiceCallbacks;
 }
 
+function wireParticipantSpeaking(
+  participant: RemoteParticipant,
+  callbacks: LivekitVoiceCallbacks,
+) {
+  participant.on("isSpeakingChanged", (speaking: boolean) => {
+    callbacks.onAudioLevel(speaking ? 1.0 : 0.0);
+  });
+}
+
 export async function createLivekitVoiceSession(
   options: CreateLivekitVoiceSessionOptions
 ): Promise<LivekitVoiceSession> {
   const { serverUrl, token, callbacks } = options;
   const room = new Room();
+
+  // Wire speaking indicators for already-joined remote participants
+  for (const p of room.remoteParticipants.values()) {
+    wireParticipantSpeaking(p, callbacks);
+  }
+
+  room.on(RoomEvent.ParticipantConnected, (participant: RemoteParticipant) => {
+    wireParticipantSpeaking(participant, callbacks);
+  });
 
   room.on(RoomEvent.Connected, () => {
     callbacks.onStateChange("connected" as ConnectionState);
@@ -39,16 +58,25 @@ export async function createLivekitVoiceSession(
     callbacks.onStateChange("disconnected" as ConnectionState);
   });
 
-  room.on(RoomEvent.DataReceived, (payload: Uint8Array) => {
-    try {
-      const msg = JSON.parse(new TextDecoder().decode(payload));
-      if (msg.type === "user_transcript") {
-        callbacks.onUserTranscript(msg.text, msg.isFinal ?? false);
-      } else if (msg.type === "assistant_transcript") {
-        callbacks.onAssistantTranscript(msg.text, msg.isFinal ?? false);
+  // Standard LiveKit TranscriptionSegment protocol — the Python agent
+  // (livekit-agents 1.5+) publishes transcripts via publish_transcription()
+  // with participant_identity set to the represented-by user for STT output
+  // and to the agent's own identity for TTS output.
+  room.on(RoomEvent.TranscriptionReceived, (
+    segments,
+    participant,
+  ) => {
+    if (!participant) return;
+    // The participant parameter maps to participant_identity in the proto:
+    // identity starting with "agent-" = agent TTS transcript,
+    // anything else (the browser user) = user STT transcript.
+    const isAgent = participant.identity.startsWith("agent-");
+    for (const seg of segments) {
+      if (isAgent) {
+        callbacks.onAssistantTranscript(seg.text, seg.final);
+      } else {
+        callbacks.onUserTranscript(seg.text, seg.final);
       }
-    } catch {
-      // non-JSON data, ignore
     }
   });
 
@@ -68,7 +96,6 @@ export async function createLivekitVoiceSession(
       await room.localParticipant.setMicrophoneEnabled(true);
     },
     async interrupt() {
-      // Re-enable mic to trigger VAD barge-in
       try {
         await room.localParticipant.setMicrophoneEnabled(true);
       } catch {
