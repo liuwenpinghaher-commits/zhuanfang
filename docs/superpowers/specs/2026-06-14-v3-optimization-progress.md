@@ -131,16 +131,40 @@
 | 指标 | 值 |
 |------|-----|
 | 编译错误 | **0** |
-| 测试通过 | **230/230** ✅ |
-| Git 提交 | 9 个工作提交 + 1 个文档提交 |
-| engine.ts 缩减 | 6150 → 1404 行 (77%) |
+| 测试通过 | **252/252** ✅ |
+| Git 提交 | 11 个工作提交 + 2 个文档提交 |
+| engine.ts 缩减 | 6150 → 1409 行 (77%) |
+
+---
+
+## 代码审查修复（v3 5.2/5.4 后）
+
+由 Senior Code Reviewer 子代理出具的完整审查共识别 11 项问题。所有 Important 与 Minor 项均已修复，未留遗漏：
+
+| # | 严重级 | 修复 | Commit |
+|---|---|---|---|
+| 1 | Important | 路由 `/api/realtime-voice/agent-turn` 改用 `addTurn()` 替代字段错位的内联字面量 | 5cb43401 |
+| 2 | Important | `addTurn` 通过 `VALID_STRATEGY_IDS` 校验 strategy，未知值丢弃 | 5cb43401 |
+| 3 | Important | `createInterviewSession` 补全 `potentialTension`/`likelyOutputs`，去掉双重转型 | 5cb43401 |
+| 4 | Important | 进度文档提交计数说明 | 0d58e0f2 |
+| 5 | Minor | `review.ts` 状态字面量提取为 typed `AssetStatus` 常量 | 5e83dc9a |
+| 6 | Minor | 移除 `PointAsset.updatedAt` 上的死 `?? ""` | 5cb43401 |
+| 7 | Minor | `changedView` 摘要截断到 60 字 | 5cb43401 |
+| 8 | Minor | 把 `addTurn`/`createInterviewSession`/`buildInterviewAgentContext` 从 `engine.ts` 移到 `turn-builder.ts` | 5e83dc9a |
+| 9 | Minor | `InterviewAgentContext` 接口迁到 `types.ts` | 5e83dc9a |
+| 10 | Minor | 新增 `src/domain/review.test.ts`（9 个 `deriveChangedView` 单测） | ea428e94 |
+| 11 | Minor | 新增 `src/domain/interviewSession.test.ts`（13 个单测） | ea428e94 |
 
 ---
 
 ## Git 提交历史
 
 ```
+5e83dc9a refactor: address remaining review issues #5/#8/#9
+ea428e94 test: add regression tests for deriveChangedView and interview-session helpers
+0d58e0f2 docs: include review-fix commit in v3 progress history
 5cb43401 fix(review): address code-review issues from phase 5.2/5.4 review
+db552fab docs: update v3 optimization progress (5.2 + 5.4 complete)
 57558081 fix(review): derive changedView from product state instead of hardcoding
 78c1dc3a feat(domain): add createInterviewSession/addTurn/buildInterviewAgentContext
 548e82d8 feat: add OpenTelemetry tracing to API server
