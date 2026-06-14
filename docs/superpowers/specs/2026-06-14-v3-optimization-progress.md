@@ -132,7 +132,7 @@
 |------|-----|
 | 编译错误 | **0** |
 | 测试通过 | **230/230** ✅ |
-| Git 提交 | 8 个 |
+| Git 提交 | 9 个工作提交 + 1 个文档提交 |
 | engine.ts 缩减 | 6150 → 1404 行 (77%) |
 
 ---
@@ -140,6 +140,7 @@
 ## Git 提交历史
 
 ```
+5cb43401 fix(review): address code-review issues from phase 5.2/5.4 review
 57558081 fix(review): derive changedView from product state instead of hardcoding
 78c1dc3a feat(domain): add createInterviewSession/addTurn/buildInterviewAgentContext
 548e82d8 feat: add OpenTelemetry tracing to API server
