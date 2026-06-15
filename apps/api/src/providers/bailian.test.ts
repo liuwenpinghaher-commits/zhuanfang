@@ -114,7 +114,7 @@ describe("bailian provider client", () => {
       model: "cosyvoice-v3-plus",
       input: {
         text: "开场：这是一段确认后的播客脚本。",
-        voice: "longyuan_v3",
+        voice: "longanyang",
         format: "mp3",
         sample_rate: 24000
       }
@@ -122,9 +122,10 @@ describe("bailian provider client", () => {
     expect(result).toEqual({
       providerId: "bailian-cosyvoice",
       model: "cosyvoice-v3-plus",
-      voice: "longyuan_v3",
+      voice: "longanyang",
       audioUrl: "https://dashscope-result.example.com/podcast.mp3",
-      expiresAt: 1791705600
+      expiresAt: 1791705600,
+      durationSec: undefined
     });
   });
 

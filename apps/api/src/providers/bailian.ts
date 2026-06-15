@@ -6,7 +6,8 @@ export const BAILIAN_DEFAULT_AUDIO_BASE_URL = "https://dashscope.aliyuncs.com";
 export const BAILIAN_LATEST_PLUS_MODEL = "qwen3.7-plus";
 export const BAILIAN_ROLE_PLAY_MODEL = "qwen-plus-character";
 export const BAILIAN_PODCAST_TTS_MODEL = "cosyvoice-v3-plus";
-export const BAILIAN_PODCAST_TTS_VOICE = "longyuan_v3";
+// cosyvoice-v3-plus requires v3-series voices (longanyang/longanhuan_v3); v1/v2 voices return engine error 418.
+export const BAILIAN_PODCAST_TTS_VOICE = "longanyang";
 export const BAILIAN_REALTIME_MODEL = "qwen3.5-omni-plus-realtime";
 export const BAILIAN_TRANSCRIPTION_MODEL = "sensevoice-v1";
 // General-purpose text model for server-side synthesis (diary, review, corpus, intel).
@@ -517,7 +518,8 @@ export function createBailianPodcastAudioClient(options: BailianPodcastAudioClie
             enable_markdown_filter: true,
             enable_aigc_tag: true
           }
-        })
+        }),
+        signal: AbortSignal.timeout(60000)
       });
 
       if (!response.ok) {
