@@ -42,22 +42,27 @@ describe("interview business engine", () => {
     expect(updated.turns[1].content).toMatch(/兜底|失控|代价|机制/);
   });
 
-  it("finalizes an interview into dual-track notes and long-term assets", () => {
+  it("offline finalize produces an honest light record, not fabricated assets", () => {
     const state = createInitialProductState();
     const session = createSessionDraft(state, "decision");
     const afterFirst = receiveUserTurn(session, "我其实不是不想管，是不想每次都替他们兜底。");
-    const afterSecond = receiveUserTurn(
-      afterFirst,
-      "如果我不救火，最坏是项目短期延期，但他们可能才会真的承担判断。"
-    );
+    const afterSecond = receiveUserTurn(afterFirst, "如果我不救火，最坏是项目短期延期。");
 
     const result = finalizeSession(state, afterSecond);
 
+    // keyQuote 必须反映真实输入
+    expect(result.note.keyQuote).toContain("兜底");
     expect(result.note.saidTrack.length).toBeGreaterThan(0);
-    expect(result.note.learnedTrack.length).toBeGreaterThan(0);
-    expect(result.nextState.points.length).toBeGreaterThan(state.points.length);
-    expect(result.nextState.questions.length).toBeGreaterThan(state.questions.length);
-    expect(result.nextState.themes.some((theme) => theme.name === "控制感")).toBe(true);
+    // 离线 fallback 绝不凭空捏造资产
+    expect(result.nextState.points.length).toBe(state.points.length);
+    expect(result.nextState.questions.length).toBe(state.questions.length);
+    expect(result.nextState.decisions.length).toBe(state.decisions.length);
+    expect(result.nextState.debts.length).toBe(state.debts.length);
+    // 不再硬塞新主题
+    const newTheme = result.nextState.themes.find((t) => !state.themes.some((s) => s.id === t.id));
+    expect(newTheme).toBeUndefined();
+    // 笔记须标注这是降级记录
+    expect(result.note.learnedTrack.join("")).toContain("轻量记录");
   });
 
   it("records interview controls as visible assistant turns and changes strength", () => {
