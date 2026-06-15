@@ -20,6 +20,7 @@ export function createInMemoryProductStateRepository(initialState: ProductState 
       return state;
     },
     replaceState(nextState) {
+      // Server-authoritative: bump from the stored revision, not the incoming state's revision.
       const next = { ...nextState, revision: (state.revision ?? 0) + 1 };
       state = next;
       return state;

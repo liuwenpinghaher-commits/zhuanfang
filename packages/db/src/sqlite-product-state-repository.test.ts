@@ -64,3 +64,31 @@ describe("sqlite product state repository", () => {
     expect(repository.getState().profile.currentFocus).toBe(initialState.profile.currentFocus);
   });
 });
+
+describe("sqlite product state repository revision", () => {
+  const dirs: string[] = [];
+  function freshDbPath() {
+    const dir = mkdtempSync(join(tmpdir(), "zf-sqlite-"));
+    dirs.push(dir);
+    return join(dir, "state.db");
+  }
+  afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
+
+  it("bumps revision on replaceState and resets to 0 on resetState", () => {
+    const repo = createSqliteProductStateRepository({ dbPath: freshDbPath() });
+    const r0 = repo.getState().revision;
+    const a = repo.replaceState(repo.getState());
+    expect(a.revision).toBe(r0 + 1);
+    const b = repo.replaceState(a);
+    expect(b.revision).toBe(r0 + 2);
+    const reset = repo.resetState();
+    expect(reset.revision).toBe(0);
+  });
+
+  it("ignores a forged high revision in the incoming state (server-authoritative)", () => {
+    const repo = createSqliteProductStateRepository({ dbPath: freshDbPath() });
+    const forged = { ...repo.getState(), revision: 9999 };
+    const next = repo.replaceState(forged);
+    expect(next.revision).toBe(1); // bumped from persisted (0), NOT 9999+1
+  });
+});

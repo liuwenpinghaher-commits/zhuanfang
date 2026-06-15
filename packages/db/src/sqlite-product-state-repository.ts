@@ -40,6 +40,9 @@ export function createSqliteProductStateRepository(options: SqliteProductStateRe
   }
 
   function persistState(state: ProductState, eventType: ProductStateEventType) {
+    // Server-authoritative: bump from the PERSISTED revision, never the incoming
+    // state's revision (a PUT /api/state carries a client state whose revision may
+    // be stale or forged). This keeps revision strictly monotonic on the server.
     const baseState = eventType === "replace"
       ? { ...state, revision: (readPersistedState()?.revision ?? 0) + 1 }
       : state;
