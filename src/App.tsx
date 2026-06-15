@@ -896,7 +896,7 @@ export default function App() {
   }
 
   async function resetData() {
-    if (typeof window !== "undefined" && !window.confirm("确定要重置本地演示数据吗？这会清空当前浏览器里的访谈和资产状态。")) {
+    if (typeof window !== "undefined" && !window.confirm("确定清空示例数据，开始你自己的真实记录吗？这会移除内置示例的访谈、资产和记忆，且无法撤销。")) {
       return;
     }
     let nextState: ProductState;
@@ -906,7 +906,9 @@ export default function App() {
       saveProductState(nextState);
     } catch {
       setApiPersistenceEnabled(false);
-      nextState = resetProductState();
+      // Preserve the current revision so the post-reset auto-save isn't rejected by
+      // optimistic-concurrency and doesn't re-adopt the server's demo state.
+      nextState = { ...resetProductState(), revision: productState.revision };
     }
     setProductState(nextState);
     setSession(null);
@@ -920,7 +922,7 @@ export default function App() {
     setPodcastEditingScript("");
     setCorpusMediaType("text");
     setCorpusSourceUrl("");
-    setNotice(buildNotice("warning", "演示数据已重置", "当前浏览器状态已恢复为初始样例。"));
+    setNotice(buildNotice("warning", "示例数据已清空", "可以开始记录你自己的真实访谈了。"));
     setView("home");
   }
 

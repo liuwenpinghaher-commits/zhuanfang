@@ -47,7 +47,7 @@ describe("sqlite product state repository", () => {
     expect(secondRepository.getState().profile.currentFocus).toBe("验证数据库持久化边界");
   });
 
-  it("resets persisted state back to the seed state", () => {
+  it("resets to empty state: profile identity preserved, assets cleared", () => {
     const repository = createSqliteProductStateRepository({ dbPath: createDbPath() });
     const initialState = createInitialProductState();
     repository.replaceState({
@@ -60,8 +60,15 @@ describe("sqlite product state repository", () => {
 
     const resetState = repository.resetState();
 
+    // profile identity (currentFocus, name, role) is preserved from the demo scaffold
     expect(resetState.profile.currentFocus).toBe(initialState.profile.currentFocus);
     expect(repository.getState().profile.currentFocus).toBe(initialState.profile.currentFocus);
+    // all asset arrays are cleared — no demo contamination
+    expect(resetState.themes).toEqual([]);
+    expect(resetState.points).toEqual([]);
+    expect(resetState.notes).toEqual([]);
+    expect(resetState.profile.confirmedMemories).toEqual([]);
+    expect(resetState.profile.inferredMemories).toEqual([]);
   });
 });
 

@@ -1,4 +1,4 @@
-import { createInitialProductState } from "./engine";
+import { createInitialProductState, createEmptyProductState } from "./engine";
 import type { ProductState, ProviderConfig, SearchBrief, SearchProviderId, SystemConfig } from "./types";
 
 const STORAGE_KEY = "interview-product-state-v1";
@@ -245,7 +245,7 @@ export function saveProductState(state: ProductState) {
 }
 
 export function resetProductState(): ProductState {
-  const state = createInitialProductState();
+  const state = createEmptyProductState();
   if (typeof window !== "undefined") {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   }

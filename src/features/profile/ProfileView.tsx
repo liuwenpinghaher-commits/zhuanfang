@@ -76,10 +76,10 @@ export function ProfileView({ state, correctionText, onCorrectionText, onAddCorr
 
       <section className="danger-zone">
         <div>
-          <strong>重置演示数据</strong>
-          <p>清空本地状态并恢复初始业务样例。</p>
+          <strong>清空示例，开始我的记录</strong>
+          <p>移除内置示例的访谈、资产和记忆，开始记录你自己的真实内容。</p>
         </div>
-        <button className="danger-button" type="button" onClick={onReset}><Trash2 size={17} />重置</button>
+        <button className="danger-button" type="button" onClick={onReset}><Trash2 size={17} />清空示例，开始我的记录</button>
       </section>
     </section>
   );

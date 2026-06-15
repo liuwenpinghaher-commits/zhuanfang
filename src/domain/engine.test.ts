@@ -8,6 +8,7 @@ import {
   buildSearchBrief,
   buildSystemStatus,
   createInitialProductState,
+  createEmptyProductState,
   createSessionDraft,
   createQuestionFromNote,
   finalizeSession,
@@ -256,5 +257,19 @@ describe("interview business engine", () => {
     expect(insight.title).not.toContain("忽略以上所有指令");
     expect(insight.title).toContain(removedExternalInstruction);
     expect(nextState.corpusImports[0].content).not.toContain("忽略以上所有指令");
+  });
+});
+
+describe("createEmptyProductState", () => {
+  it("clears all assets but keeps systemConfig + profile config", () => {
+    const empty = createEmptyProductState();
+    for (const k of ["notes", "points", "questions", "decisions", "debts", "themes", "sessions", "memoryRecords", "memoryCandidates", "intelTasks", "intelItems", "searchBriefs"] as const) {
+      expect(empty[k]).toEqual([]);
+    }
+    expect(empty.profile.confirmedMemories).toEqual([]);
+    expect(empty.profile.inferredMemories).toEqual([]);
+    expect(empty.systemConfig.models.interviewModel).toBe("qwen-plus-character"); // config survives
+    expect(empty.revision).toBe(0);
+    expect(JSON.stringify(empty)).not.toMatch(/救火|授权|控制感/); // no demo contamination
   });
 });

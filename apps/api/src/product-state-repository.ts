@@ -1,4 +1,4 @@
-import { createInitialProductState } from "../../../src/domain/engine";
+import { createInitialProductState, createEmptyProductState } from "../../../src/domain/engine";
 import type { ProductState, InterviewSession } from "../../../src/domain/types";
 
 export interface ProductStateRepository {
@@ -16,7 +16,7 @@ export function createInMemoryProductStateRepository(initialState: ProductState 
       return state;
     },
     resetState() {
-      state = createInitialProductState();
+      state = createEmptyProductState();
       return state;
     },
     replaceState(nextState) {

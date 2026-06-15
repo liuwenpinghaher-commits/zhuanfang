@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { ProductStateRepository } from "../../../apps/api/src/product-state-repository";
-import { createInitialProductState } from "../../../src/domain/engine";
+import { createInitialProductState, createEmptyProductState } from "../../../src/domain/engine";
 import { normalizeProductState } from "../../../src/domain/storage";
 import type { ProductState } from "../../../src/domain/types";
 
@@ -76,7 +76,7 @@ export function createSqliteProductStateRepository(options: SqliteProductStateRe
       return persistState(createInitialProductState(), "seed");
     },
     resetState() {
-      return persistState(createInitialProductState(), "reset");
+      return persistState(createEmptyProductState(), "reset");
     },
     replaceState(state) {
       return persistState(state, "replace");

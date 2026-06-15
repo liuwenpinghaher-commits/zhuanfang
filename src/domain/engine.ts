@@ -525,6 +525,26 @@ export function createInitialProductState(): ProductState {
   return JSON.parse(JSON.stringify(initialProductState)) as ProductState;
 }
 
+/**
+ * A clean-start state: same systemConfig + profile identity scaffolding as the demo,
+ * but with every user-generated asset array empty and the demo-derived profile
+ * memories cleared. Used by reset ("清空示例，开始我的真实记录"). Demo remains the
+ * default first-run state; this is the explicit opt-out of the showcase data.
+ */
+export function createEmptyProductState(): ProductState {
+  const base = createInitialProductState();
+  return {
+    ...base,
+    sessions: [], notes: [], points: [], questions: [], decisions: [], debts: [], themes: [],
+    readings: [], memoryCorrections: [], memoryRecords: [], memoryCandidates: [], memoryEdges: [],
+    searchBriefs: [], podcastEpisodes: [], corpusImports: [], corpusInsights: [], playbookPatches: [],
+    importSources: [], ragChunks: [], intelTasks: [], intelItems: [],
+    configVersions: [], auditEvents: [], aiRunEvents: [], workflowRuns: [], operationalChecks: [],
+    profile: { ...base.profile, confirmedMemories: [], inferredMemories: [] },
+    revision: 0
+  };
+}
+
 // ============================================================================
 // Section C: External-material sanitization — consolidated into ./utils
 // (single source of truth; re-exported above).
