@@ -6,8 +6,9 @@ import {
   generatePodcastEpisodeFromTheme
 } from "../../../../src/domain/engine";
 import type { PodcastEpisode } from "../../../../src/domain/types";
-import type { BailianPodcastAudioClient } from "../providers/bailian";
+import type { BailianChatClient, BailianPodcastAudioClient } from "../providers/bailian";
 import type { ProductStateRepository } from "../product-state-repository";
+import { generatePodcastScript } from "../intelligence/podcast-script-llm";
 
 interface PodcastEpisodeRequestPayload {
   noteId?: unknown;
@@ -19,6 +20,7 @@ interface PodcastEpisodeRequestPayload {
 
 interface PodcastRouteOptions {
   bailianPodcastAudioClient?: BailianPodcastAudioClient;
+  bailianChatClient?: BailianChatClient;
 }
 
 export async function registerPodcastRoutes(
@@ -64,30 +66,90 @@ export async function registerPodcastRoutes(
         return reply.code(422).send({ error: "No notes are available for podcast generation." });
       }
       ({ episode, nextState } = generatePodcastEpisode(state, noteId, { format, voice }));
+
+      // For the note path, if a chat client is available, attempt LLM script generation.
+      // This happens BEFORE persist so the saved script is the LLM-generated one.
+      if (options.bailianChatClient) {
+        const note = state.notes.find((n) => n.id === noteId) ?? state.notes[0];
+        if (note) {
+          try {
+            const llmScript = await generatePodcastScript(
+              { note, format },
+              options.bailianChatClient
+            );
+            episode = {
+              ...episode,
+              script: llmScript,
+              durationSec: Math.max(180, Math.round(llmScript.length * 0.8))
+            };
+            nextState = {
+              ...nextState,
+              podcastEpisodes: nextState.podcastEpisodes.map((item) =>
+                item.id === episode.id ? episode : item
+              )
+            };
+          } catch (llmError) {
+            console.warn(
+              JSON.stringify({
+                event: "llm_fallback",
+                capability: "podcast_script",
+                error: llmError instanceof Error ? llmError.message : String(llmError)
+              })
+            );
+            // Keep the deterministic script already in episode
+          }
+        }
+      }
     }
 
+    // --- Step 1: Persist the episode FIRST (script is now saved, TTS failure won't lose it) ---
+    repository.replaceState(nextState);
+
+    // --- Step 2: If no TTS client, return the persisted episode as-is ---
     if (!options.bailianPodcastAudioClient) {
-      repository.replaceState(nextState);
       return { episode, state: nextState };
     }
 
-    const renderedAudio = await options.bailianPodcastAudioClient.synthesize({
-      text: episode.script,
-      voice: normalizeProviderVoice(voice)
-    });
-    const episodeWithAudio: PodcastEpisode = {
-      ...episode,
-      audioUrl: renderedAudio.audioUrl,
-      durationSec: renderedAudio.durationSec ?? episode.durationSec,
-      voice: renderedAudio.voice
-    };
-    const nextStateWithAudio = {
-      ...nextState,
-      podcastEpisodes: nextState.podcastEpisodes.map((item) => (item.id === episode.id ? episodeWithAudio : item))
-    };
+    // --- Step 3: Attempt TTS; degrade gracefully on failure ---
+    let finalEpisode = episode;
+    let finalState = nextState;
 
-    repository.replaceState(nextStateWithAudio);
-    return { episode: episodeWithAudio, state: nextStateWithAudio };
+    try {
+      const renderedAudio = await options.bailianPodcastAudioClient.synthesize({
+        text: episode.script,
+        voice: normalizeProviderVoice(voice)
+      });
+      finalEpisode = {
+        ...episode,
+        audioUrl: renderedAudio.audioUrl,
+        durationSec: renderedAudio.durationSec ?? episode.durationSec,
+        voice: renderedAudio.voice,
+        audioRenderStatus: "rendered",
+        audioRenderMessage: "音频已渲染。"
+      };
+    } catch (ttsError) {
+      finalEpisode = {
+        ...episode,
+        audioRenderStatus: "fallback",
+        audioRenderMessage: "音频渲染失败，脚本已保留，可稍后重试。"
+      };
+      console.warn(
+        JSON.stringify({
+          event: "llm_fallback",
+          capability: "podcast_tts",
+          error: ttsError instanceof Error ? ttsError.message : String(ttsError)
+        })
+      );
+    }
+
+    finalState = {
+      ...nextState,
+      podcastEpisodes: nextState.podcastEpisodes.map((item) =>
+        item.id === episode.id ? finalEpisode : item
+      )
+    };
+    repository.replaceState(finalState);
+    return { episode: finalEpisode, state: finalState };
   });
 }
 
