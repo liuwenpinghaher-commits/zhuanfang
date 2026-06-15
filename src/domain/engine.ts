@@ -23,6 +23,8 @@ export {
   trimFollowUp, shortUserQuote, findLastTurnIndex, findPendingControlAction,
   applyPendingControlToFollowUp, escapeRegExp, daysBetween,
   getReferenceMaterialPublisher, formatSearchTraceSourceLabel,
+  sanitizeExternalMaterialText, sanitizeExternalMaterialBlock,
+  sanitizeExternalMaterialList, sanitizeExternalSource, pickSearchBriefText,
 } from "./utils";
 
 export {
@@ -524,72 +526,13 @@ export function createInitialProductState(): ProductState {
 }
 
 // ============================================================================
-// Section C: External-material sanitization
+// Section C: External-material sanitization — consolidated into ./utils
+// (single source of truth; re-exported above).
 // ============================================================================
-
-const removedExternalInstruction = "[已移除外部指令片段]";
-
-const externalInstructionPatterns: RegExp[] = [
-  /忽略(?:以上|之前|前面|所有)*(?:的)?(?:系统|开发者|用户)?指令/gi,
-  /(?:系统|开发者)指令/gi,
-  /不要遵守(?:用户)?确认流程/gi,
-  /(?:直接)?输出密钥/gi,
-  /写入(?:长期)?记忆/gi,
-  /ignore\s+(?:all\s+)?previous\s+instructions/gi,
-  /system\s+prompt/gi,
-  /developer\s+message/gi,
-  /api\s*key/gi,
-  /password/gi,
-  /secret/gi,
-  /reveal\s+the\s+system\s+prompt/gi,
-  /export\s+(?:password|secret)/gi,
-  /leak\s+(?:api\s*key|secret|password)/gi,
-];
-
-export function sanitizeExternalMaterialText(text: string, fallback: string) {
-  let sanitized = text.trim();
-  for (const pattern of externalInstructionPatterns) {
-    sanitized = sanitized.replace(pattern, removedExternalInstruction);
-  }
-  sanitized = sanitized
-    .replace(
-      new RegExp(`(?:${removedExternalInstruction.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*){2,}`, "g"),
-      `${removedExternalInstruction} `,
-    )
-    .replace(/\s+/g, " ")
-    .trim();
-  return sanitized || fallback;
-}
-
-export function sanitizeExternalMaterialBlock(text: string, fallback: string) {
-  const lines = text
-    .split(/\n+/)
-    .map((line) => sanitizeExternalMaterialText(line, fallback))
-    .filter(Boolean);
-  return lines.length > 0 ? lines.join("\n") : fallback;
-}
-
-export function sanitizeExternalMaterialList(items: string[], fallback: string) {
-  return items.map((item) => sanitizeExternalMaterialText(item, fallback)).filter(Boolean);
-}
-
-export function sanitizeExternalSource(source: SourceHighlight): SourceHighlight {
-  return {
-    ...source,
-    title: sanitizeExternalMaterialText(source.title, "已清洗的外部资料标题"),
-    publisher: sanitizeExternalMaterialText(source.publisher, "来源待确认"),
-    snippet: sanitizeExternalMaterialText(source.snippet, "外部资料片段已清洗，需回到原始来源核验。"),
-  };
-}
 
 // ============================================================================
 // Section D: Search-brief text helpers
 // ============================================================================
-
-export function pickSearchBriefText(values: string[], fallback: string) {
-  const value = values.find((item) => item.trim());
-  return sanitizeExternalMaterialText(value ?? fallback, fallback);
-}
 
 export function formatSearchBriefSourceLabel(brief: SearchBrief) {
   const source = brief.sources[0];

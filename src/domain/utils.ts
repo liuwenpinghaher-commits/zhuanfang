@@ -1,4 +1,4 @@
-import type { AiRunEvent, AuditEvent, InterviewControlAction, InterviewMode, InterviewSession, InterviewTurn, ProductState } from "./types";
+import type { AiRunEvent, AuditEvent, InterviewControlAction, InterviewMode, InterviewSession, InterviewTurn, ProductState, SourceHighlight } from "./types";
 
 export const modeLabels: Record<InterviewMode, string> = {
   daily: "日常复盘",
@@ -19,7 +19,7 @@ export const removedExternalInstruction = "[已移除外部指令片段]";
 export const noQualityEvidenceScore = 70;
 
 export const externalInstructionPatterns: RegExp[] = [
-  /忽略(?:以上|之前|前面|所有)?(?:的)?(?:系统|开发者|用户)?指令/gi,
+  /忽略(?:以上|之前|前面|所有)*(?:的)?(?:系统|开发者|用户)?指令/gi,
   /(?:系统|开发者)指令/gi,
   /不要遵守(?:用户)?确认流程/gi,
   /(?:直接)?输出密钥/gi,
@@ -34,6 +34,46 @@ export const externalInstructionPatterns: RegExp[] = [
   /export\s+(?:password|secret)/gi,
   /leak\s+(?:api\s*key|secret|password)/gi
 ];
+
+// ── External-material sanitization (single source of truth) ──
+
+export function sanitizeExternalMaterialText(text: string, fallback: string) {
+  let sanitized = text.trim();
+  for (const pattern of externalInstructionPatterns) {
+    sanitized = sanitized.replace(pattern, removedExternalInstruction);
+  }
+  sanitized = sanitized
+    .replace(new RegExp(`(?:${escapeRegExp(removedExternalInstruction)}\\s*){2,}`, "g"), `${removedExternalInstruction} `)
+    .replace(/\s+/g, " ")
+    .trim();
+  return sanitized || fallback;
+}
+
+export function sanitizeExternalMaterialBlock(text: string, fallback: string) {
+  const lines = text
+    .split(/\n+/)
+    .map((line) => sanitizeExternalMaterialText(line, fallback))
+    .filter(Boolean);
+  return lines.length > 0 ? lines.join("\n") : fallback;
+}
+
+export function sanitizeExternalMaterialList(items: string[], fallback: string) {
+  return items.map((item) => sanitizeExternalMaterialText(item, fallback)).filter(Boolean);
+}
+
+export function sanitizeExternalSource(source: SourceHighlight): SourceHighlight {
+  return {
+    ...source,
+    title: sanitizeExternalMaterialText(source.title, "已清洗的外部资料标题"),
+    publisher: sanitizeExternalMaterialText(source.publisher, "来源待确认"),
+    snippet: sanitizeExternalMaterialText(source.snippet, "外部资料片段已清洗，需回到原始来源核验。")
+  };
+}
+
+export function pickSearchBriefText(values: string[], fallback: string) {
+  const value = values.find((item) => item.trim());
+  return sanitizeExternalMaterialText(value ?? fallback, fallback);
+}
 
 export function withAuditEvent(state: ProductState, event: Omit<AuditEvent, "id">): ProductState {
   return {

@@ -7,9 +7,8 @@ import type {
   SystemConfig,
 } from "./types";
 
-import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, escapeRegExp } from "./utils";
+import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, sanitizeExternalMaterialText, sanitizeExternalMaterialBlock, pickSearchBriefText } from "./utils";
 import { withGeneratedArtifactWorkflowRun, withSystemConfigVersion, removeVersionSuffix } from "./engine";
-import { externalInstructionPatterns, removedExternalInstruction } from "./context-pack";
 import { withMemoryCandidateReview } from "./memoryReview";
 
 /** LLM-produced analysis content. When supplied, it replaces the deterministic
@@ -332,32 +331,6 @@ export function revertPlaybookPatch(state: ProductState, patchId: string): Produ
   });
 }
 
-// ── Inline sanitization helpers ──
-
-function sanitizeExternalMaterialText(text: string, fallback: string) {
-  let sanitized = text.trim();
-  for (const pattern of externalInstructionPatterns) {
-    sanitized = sanitized.replace(pattern, removedExternalInstruction);
-  }
-  sanitized = sanitized
-    .replace(new RegExp(`(?:${escapeRegExp(removedExternalInstruction)}\\s*){2,}`, "g"), `${removedExternalInstruction} `)
-    .replace(/\s+/g, " ")
-    .trim();
-  return sanitized || fallback;
-}
-
-function sanitizeExternalMaterialBlock(text: string, fallback: string) {
-  const lines = text
-    .split(/\n+/)
-    .map((line: string) => sanitizeExternalMaterialText(line, fallback))
-    .filter(Boolean);
-  return lines.length > 0 ? lines.join("\n") : fallback;
-}
-
-function pickSearchBriefText(values: string[], fallback: string) {
-  const value = values.find((item: string) => item.trim());
-  return sanitizeExternalMaterialText(value ?? fallback, fallback);
-}
 function withExternalCorpusMemoryCandidate(
   state: ProductState,
   input: CorpusImportInput,
