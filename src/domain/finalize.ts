@@ -129,11 +129,13 @@ export function mergeFinalizedState(
   }
 
   const nextState = cloneState(state);
-  const memoryCandidate = buildMemoryCandidateFromSession(session, note, note.keyQuote, completedAt);
   nextState.sessions = [completedSession, ...nextState.sessions];
   nextState.searchBriefs = markSearchBriefAppliedToSession(nextState.searchBriefs, completedSession);
   nextState.notes = [note, ...nextState.notes];
-  nextState.memoryCandidates = [memoryCandidate, ...(nextState.memoryCandidates ?? [])];
+  if (note.keyQuote.trim()) {
+    const memoryCandidate = buildMemoryCandidateFromSession(session, note, note.keyQuote, completedAt);
+    nextState.memoryCandidates = [memoryCandidate, ...(nextState.memoryCandidates ?? [])];
+  }
   nextState.points = [...content.points, ...nextState.points];
   nextState.questions = [...content.questions, ...nextState.questions];
   nextState.decisions = [...content.decisions, ...nextState.decisions];
@@ -234,7 +236,7 @@ function pickKeyQuote(quotes: string[]): string {
   return (
     quotes
       .filter(Boolean)
-      .sort((a, b) => scoreQuote(b) - scoreQuote(a))[0] ?? "这次我还没有说清楚真正的问题。"
+      .sort((a, b) => scoreQuote(b) - scoreQuote(a))[0] ?? ""
   );
 }
 function scoreQuote(quote: string): number {

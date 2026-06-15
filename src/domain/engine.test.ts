@@ -197,4 +197,31 @@ describe("interview business engine", () => {
     expect(holding.phase).toBe("holding");
     expect(holding.nextAction).toContain("留白");
   });
+
+  it("finalize with zero user turns produces no fabricated memory candidate", () => {
+    const state = createInitialProductState();
+    const session = createSessionDraft(state, "decision");
+
+    const result = finalizeSession(state, session);
+
+    // No new memory candidate should be fabricated when there is no real user content
+    expect(result.nextState.memoryCandidates.length).toBe(state.memoryCandidates.length);
+    // saidTrack should be empty or empty-ish (no fabricated quote)
+    expect(result.note.saidTrack).toEqual([]);
+    // keyQuote must be empty — no sentinel string
+    expect(result.note.keyQuote).toBe("");
+  });
+
+  it("finalize with real user turns still produces a memory candidate", () => {
+    const state = createInitialProductState();
+    const session = createSessionDraft(state, "decision");
+    const afterFirst = receiveUserTurn(session, "我其实不是不想管，是不想每次都替他们兜底。");
+    const afterSecond = receiveUserTurn(afterFirst, "如果我不救火，最坏是项目短期延期。");
+
+    const result = finalizeSession(state, afterSecond);
+
+    // A real keyQuote should yield exactly one new memory candidate
+    expect(result.note.keyQuote).not.toBe("");
+    expect(result.nextState.memoryCandidates.length).toBe(state.memoryCandidates.length + 1);
+  });
 });
