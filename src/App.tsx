@@ -59,7 +59,7 @@ import {
   deletePodcastEpisode,
   deleteSearchBrief
 } from "./domain/lifecycle";
-import { loadProductState, resetProductState, saveProductState } from "./domain/storage";
+import { loadProductState, productStateContentSignature, resetProductState, saveProductState } from "./domain/storage";
 import type {
   AssetStatus,
   CorpusImportInput,
@@ -165,20 +165,37 @@ export default function App() {
     saveProductState(productState);
   }, [productState]);
 
+  const lastSavedContentRef = useRef<string>("");
   useEffect(() => {
     if (!apiPersistenceEnabled) {
       return;
     }
-
+    const signature = productStateContentSignature(productState);
+    // Only the revision changed (or nothing did) — nothing new to persist; skip to avoid the save->bump->adopt loop.
+    if (signature === lastSavedContentRef.current) {
+      return;
+    }
     const timer = setTimeout(() => {
-      productApiClient.saveState(productState).then((server) => {
-        // adopt server state only if it advanced past ours (avoids clobber + loops)
-        if (server.revision > productState.revision) setProductState(server);
-      }).catch(() => {
-        setApiPersistenceEnabled(false);
-      });
+      productApiClient
+        .saveState(productState)
+        .then(({ state: server, conflicted }) => {
+          if (conflicted) {
+            // Another writer advanced the server — adopt its newer content wholesale.
+            lastSavedContentRef.current = productStateContentSignature(server);
+            setProductState(server);
+          } else {
+            // Our write landed. Record what we saved, and sync only the revision so the
+            // next PUT isn't stale. A revision-only change won't re-trigger a save (the
+            // content signature is unchanged), so there is no loop.
+            lastSavedContentRef.current = signature;
+            setProductState((prev) => (prev.revision === server.revision ? prev : { ...prev, revision: server.revision }));
+          }
+        })
+        .catch(() => {
+          // Transient error: skip this cycle; the next content change retries. Do NOT
+          // permanently disable persistence on a network blip.
+        });
     }, 300);
-
     return () => clearTimeout(timer);
   }, [apiPersistenceEnabled, productState]);
 
@@ -628,7 +645,7 @@ export default function App() {
     };
 
     try {
-      const persisted = await productApiClient.saveState(updatedState);
+      const { state: persisted } = await productApiClient.saveState(updatedState);
       setProductState(persisted);
       setApiPersistenceEnabled(true);
       setPodcastEditingScript("");

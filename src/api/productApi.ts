@@ -43,7 +43,7 @@ export interface ProductApiClient {
   updateIntelItemStatus(itemId: string, status: IntelItem["status"]): Promise<ProductState>;
   intelItemToDebt(itemId: string): Promise<ProductState>;
   deleteIntelTask(taskId: string): Promise<ProductState>;
-  saveState(state: ProductState): Promise<ProductState>;
+  saveState(state: ProductState): Promise<{ state: ProductState; conflicted: boolean }>;
   resetState(): Promise<ProductState>;
   createSearchBrief(input: CreateSearchBriefRequest): Promise<CreateSearchBriefResponse>;
   createAutoBrief(input: CreateAutoBriefRequest): Promise<CreateAutoBriefResponse>;
@@ -437,12 +437,12 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
       });
       if (response.status === 409) {
         const body = (await response.json()) as { current: ProductState };
-        return normalizeProductState(body.current); // adopt the newer server state
+        return { state: normalizeProductState(body.current), conflicted: true };
       }
       if (!response.ok) {
         throw new Error(`Product API request failed: ${response.status}`);
       }
-      return normalizeProductState(await response.json());
+      return { state: normalizeProductState(await response.json()), conflicted: false };
     },
     async resetState() {
       return normalizeProductState(await requestJson("/api/state/reset", { method: "POST" }));

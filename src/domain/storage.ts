@@ -216,6 +216,11 @@ function normalizeProviderActivation(
   });
 }
 
+/** Stable signature of state CONTENT, ignoring the revision field (used to detect real changes vs revision-only churn). */
+export function productStateContentSignature(state: ProductState): string {
+  return JSON.stringify({ ...state, revision: 0 });
+}
+
 export function loadProductState(): ProductState {
   if (typeof window === "undefined") {
     return createInitialProductState();

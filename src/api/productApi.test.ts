@@ -38,7 +38,8 @@ describe("product api client", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(state)
     });
-    expect(result.profile.name).toBe("Mia");
+    expect(result.conflicted).toBe(false);
+    expect(result.state.profile.name).toBe("Mia");
   });
 
   it("loads system capability health from the Product API", async () => {
