@@ -12,8 +12,10 @@ import type {
   InterviewMode,
   InterviewSession,
   InterviewStrength,
+  InterviewTurn,
   ProductState
 } from "../../../../src/domain/types";
+import { makeId, nowIso } from "../../../../src/domain/utils";
 import { finalizeSessionWithLlm } from "../intelligence/finalize-llm";
 import { generatePreSignals } from "../intelligence/pre-signals-llm";
 import type { ProductStateRepository } from "../product-state-repository";
@@ -154,6 +156,34 @@ export async function registerInterviewSessionRoutes(
     } catch (error) {
       return reply.code(502).send({ error: error instanceof Error ? error.message : "pre_signals generation failed." });
     }
+  });
+
+  // Voice path: persist a turn (user or assistant) from the client to the server
+  // session WITHOUT triggering LLM assistant generation. Used so the server
+  // session stays authoritative even when the voice path handles the dialogue.
+  server.post("/api/interview-sessions/:id/record-turn", async (request, reply) => {
+    const state = repository.getState();
+    const session = findSession(state, getSessionId(request.params));
+    if (!session) {
+      return reply.code(404).send({ error: "Interview session not found." });
+    }
+    const body = normalizeObject<{ role?: unknown; content?: unknown }>(request.body);
+    const content = normalizeOptionalString(body.content);
+    if (!content) {
+      return reply.code(422).send({ error: "content is required." });
+    }
+    const role: "user" | "assistant" = body.role === "assistant" ? "assistant" : "user";
+    const turn: InterviewTurn = {
+      id: makeId("turn"),
+      role,
+      content,
+      intent: role === "user" ? "语音用户输入" : "语音助手回应",
+      timestamp: nowIso()
+    };
+    const nextSession = { ...session, turns: [...session.turns, turn] };
+    const nextState = upsertSession(state, nextSession);
+    repository.replaceState(nextState);
+    return { session: nextSession, state: nextState };
   });
 }
 

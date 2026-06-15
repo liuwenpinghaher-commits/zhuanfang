@@ -818,11 +818,18 @@ export default function App() {
       setApiPersistenceEnabled(true);
       return;
     } catch {
+      if (apiPersistenceEnabled) {
+        // Online but API call failed transiently — do NOT fork client session;
+        // restore input so the user can retry.
+        setNotice(buildNotice("warning", "未送达", "本轮未送到服务端，请重试。"));
+        setInterviewInput(content);
+        return;
+      }
       setApiPersistenceEnabled(false);
     }
 
+    // Genuinely offline fallback — only reached when !apiPersistenceEnabled.
     setSession(receiveUserTurn(session, content));
-    setInterviewInput("");
   }
 
   async function finishInterview() {
@@ -960,10 +967,11 @@ export default function App() {
                 onUserTranscript: (text, isFinal) => {
                   setLiveUserTranscript(text);
                   if (!isFinal || !text.trim()) return;
-                  setSession((prev) => {
-                    if (!prev) return prev;
-                    return receiveUserTurn(prev, text);
-                  });
+                  // Record on the server session to keep it authoritative (no fork).
+                  productApiClient
+                    .recordInterviewTurn(interviewId, { role: "user", content: text })
+                    .then((r) => setSession(r.session))
+                    .catch(() => setSession((prev) => (prev ? receiveUserTurn(prev, text) : prev)));
                   // Phase 8: regenerate pre_signals for the next turn (voice path).
                   if (interviewId) {
                     productApiClient
@@ -1045,18 +1053,18 @@ export default function App() {
                 onUserTranscript: (text, isFinal) => {
                   setLiveUserTranscript(text);
                   if (!isFinal || !text.trim()) return;
-                  setSession((prev) => {
-                    if (!prev) return prev;
-                    const updated = receiveUserTurn(prev, text);
-                    const lastTurn = updated.turns[updated.turns.length - 1];
-                    if (lastTurn?.role === "assistant" && lastTurn.strategy) {
-                      if ("setStrategy" in connection) connection.setStrategy(lastTurn.strategy);
-                    }
-                    return updated;
-                  });
+                  // Record on the server session to keep it authoritative (no fork).
+                  const voiceSid = session?.id ?? "";
+                  if (voiceSid) {
+                    productApiClient
+                      .recordInterviewTurn(voiceSid, { role: "user", content: text })
+                      .then((r) => setSession(r.session))
+                      .catch(() => setSession((prev) => (prev ? receiveUserTurn(prev, text) : prev)));
+                  } else {
+                    setSession((prev) => (prev ? receiveUserTurn(prev, text) : prev));
+                  }
                   // Phase 8: regenerate pre_signals for the next turn and push
                   // them into the live connection (the voice model can't emit them).
-                  const voiceSid = session?.id;
                   if (voiceSid) {
                     productApiClient
                       .generateInterviewPreSignals(voiceSid)

@@ -49,6 +49,7 @@ export interface ProductApiClient {
   createAutoBrief(input: CreateAutoBriefRequest): Promise<CreateAutoBriefResponse>;
   createInterviewSession(input: CreateInterviewSessionRequest): Promise<InterviewSessionResponse>;
   sendInterviewTurn(sessionId: string, input: SendInterviewTurnRequest): Promise<InterviewSessionResponse>;
+  recordInterviewTurn(sessionId: string, input: { role: "user" | "assistant"; content: string }): Promise<InterviewSessionResponse>;
   applyInterviewControl(sessionId: string, input: ApplyInterviewControlRequest): Promise<InterviewSessionResponse>;
   endInterviewSession(sessionId: string): Promise<EndInterviewSessionResponse>;
   generateInterviewPreSignals(sessionId: string): Promise<GeneratePreSignalsResponse>;
@@ -485,6 +486,18 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
     },
     async sendInterviewTurn(sessionId, input) {
       const response = (await requestJson(`/api/interview-sessions/${sessionId}/turns`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input)
+      })) as InterviewSessionResponse;
+
+      return {
+        ...response,
+        state: normalizeProductState(response.state)
+      };
+    },
+    async recordInterviewTurn(sessionId, input) {
+      const response = (await requestJson(`/api/interview-sessions/${sessionId}/record-turn`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input)
