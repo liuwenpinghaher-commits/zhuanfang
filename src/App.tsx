@@ -170,16 +170,16 @@ export default function App() {
       return;
     }
 
-    let cancelled = false;
-    productApiClient.saveState(productState).catch(() => {
-      if (!cancelled) {
+    const timer = setTimeout(() => {
+      productApiClient.saveState(productState).then((server) => {
+        // adopt server state only if it advanced past ours (avoids clobber + loops)
+        if (server.revision > productState.revision) setProductState(server);
+      }).catch(() => {
         setApiPersistenceEnabled(false);
-      }
-    });
+      });
+    }, 300);
 
-    return () => {
-      cancelled = true;
-    };
+    return () => clearTimeout(timer);
   }, [apiPersistenceEnabled, productState]);
 
   useEffect(() => {

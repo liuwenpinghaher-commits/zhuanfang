@@ -430,13 +430,19 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
       return normalizeProductState(response.state);
     },
     async saveState(state) {
-      return normalizeProductState(
-        await requestJson("/api/state", {
-          method: "PUT",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(state)
-        })
-      );
+      const response = await fetchImpl(`${normalizedBaseUrl}/api/state`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(state)
+      });
+      if (response.status === 409) {
+        const body = (await response.json()) as { current: ProductState };
+        return normalizeProductState(body.current); // adopt the newer server state
+      }
+      if (!response.ok) {
+        throw new Error(`Product API request failed: ${response.status}`);
+      }
+      return normalizeProductState(await response.json());
     },
     async resetState() {
       return normalizeProductState(await requestJson("/api/state/reset", { method: "POST" }));
