@@ -5,6 +5,7 @@ export type View =
   | "home"
   | "interview"
   | "search"
+  | "intel"
   | "corpus"
   | "podcast"
   | "notes"
@@ -81,6 +82,7 @@ export const groupedNavigation: NavigationGroup[] = [
     label: "素材",
     items: [
       { id: "search", label: "联网素材" },
+      { id: "intel", label: "情报中心" },
       { id: "corpus", label: "语料学习" },
       { id: "podcast", label: "播客工作台" }
     ]

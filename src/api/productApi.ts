@@ -8,6 +8,8 @@ import type {
   CorpusInsight,
   DualTrackNote,
   InteractionPreSignals,
+  IntelItem,
+  IntelTask,
   InterviewControlAction,
   InterviewMode,
   InterviewSession,
@@ -36,6 +38,11 @@ export interface ProductApiClient {
   updateMemoryCandidate(id: string, text: string): Promise<ProductState>;
   deprecateMemoryRecord(id: string, reason?: string): Promise<ProductState>;
   deleteMemoryRecord(id: string): Promise<ProductState>;
+  createIntelTask(input: CreateIntelTaskRequest): Promise<{ task: IntelTask; state: ProductState }>;
+  runIntelTask(taskId: string): Promise<{ count: number; state: ProductState }>;
+  updateIntelItemStatus(itemId: string, status: IntelItem["status"]): Promise<ProductState>;
+  intelItemToDebt(itemId: string): Promise<ProductState>;
+  deleteIntelTask(taskId: string): Promise<ProductState>;
   saveState(state: ProductState): Promise<ProductState>;
   resetState(): Promise<ProductState>;
   createSearchBrief(input: CreateSearchBriefRequest): Promise<CreateSearchBriefResponse>;
@@ -163,6 +170,13 @@ export interface ImportDocumentResponse {
   sourceId: string;
   candidateCount: number;
   state: ProductState;
+}
+
+export interface CreateIntelTaskRequest {
+  name: string;
+  keywords: string[];
+  provider?: SearchProviderId;
+  frequency?: IntelTask["frequency"];
 }
 
 export interface CreateInterviewSessionRequest {
@@ -382,6 +396,37 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
     },
     async deleteMemoryRecord(id) {
       const response = (await requestJson(`/api/memory-records/${id}`, { method: "DELETE" })) as { state: ProductState };
+      return normalizeProductState(response.state);
+    },
+    async createIntelTask(input) {
+      const response = (await requestJson("/api/intel/tasks", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input)
+      })) as { task: IntelTask; state: ProductState };
+      return { task: response.task, state: normalizeProductState(response.state) };
+    },
+    async runIntelTask(taskId) {
+      const response = (await requestJson(`/api/intel/tasks/${taskId}/run`, { method: "POST" })) as {
+        count: number;
+        state: ProductState;
+      };
+      return { count: response.count, state: normalizeProductState(response.state) };
+    },
+    async updateIntelItemStatus(itemId, status) {
+      const response = (await requestJson(`/api/intel/items/${itemId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ status })
+      })) as { state: ProductState };
+      return normalizeProductState(response.state);
+    },
+    async intelItemToDebt(itemId) {
+      const response = (await requestJson(`/api/intel/items/${itemId}/to-debt`, { method: "POST" })) as { state: ProductState };
+      return normalizeProductState(response.state);
+    },
+    async deleteIntelTask(taskId) {
+      const response = (await requestJson(`/api/intel/tasks/${taskId}`, { method: "DELETE" })) as { state: ProductState };
       return normalizeProductState(response.state);
     },
     async saveState(state) {

@@ -117,6 +117,8 @@ export const initialProductState: ProductState = {
   memoryEdges: [],
   importSources: [],
   ragChunks: [],
+  intelTasks: [],
+  intelItems: [],
   configVersions: [],
   auditEvents: [],
   aiRunEvents: [],

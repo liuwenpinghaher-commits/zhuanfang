@@ -18,6 +18,7 @@ describe("ui helpers", () => {
       "home",
       "interview",
       "search",
+      "intel",
       "corpus",
       "podcast",
       "notes",

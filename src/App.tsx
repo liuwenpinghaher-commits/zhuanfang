@@ -63,6 +63,7 @@ import { loadProductState, resetProductState, saveProductState } from "./domain/
 import type {
   AssetStatus,
   CorpusImportInput,
+  IntelItem,
   InterviewControlAction,
   InterviewMode,
   InterviewSession,
@@ -83,6 +84,7 @@ import { ProfileView } from "./features/profile/ProfileView";
 import { SearchIntelligenceView } from "./features/search/SearchIntelligenceView";
 import { ThemesView } from "./features/themes/ThemesView";
 import { MemoryGovernanceView } from "./features/memory/MemoryGovernanceView";
+import { IntelView } from "./features/intel/IntelView";
 import {
   buildNotice,
   groupedNavigation,
@@ -97,6 +99,7 @@ const navIconByView: Record<View, typeof Compass> = {
   home: Compass,
   interview: Mic,
   search: Search,
+  intel: Search,
   corpus: Upload,
   podcast: Headphones,
   notes: BookOpen,
@@ -113,6 +116,7 @@ export default function App() {
   const [systemCapabilities, setSystemCapabilities] = useState<SystemCapabilitiesResponse | null>(null);
   const [serverReviews, setServerReviews] = useState<ReviewsResponse | null>(null);
   const [importing, setImporting] = useState(false);
+  const [runningTaskId, setRunningTaskId] = useState<string | null>(null);
   const [runtimeConfig, setRuntimeConfig] = useState<SystemConfigResponse | null>(null);
   const [runtimeConfigSaving, setRuntimeConfigSaving] = useState(false);
   const [view, setView] = useState<View>("home");
@@ -304,6 +308,33 @@ export default function App() {
   const editCandidate = (id: string, text: string) => withMemoryAction(() => productApiClient.updateMemoryCandidate(id, text));
   const deprecateRecord = (id: string) => withMemoryAction(() => productApiClient.deprecateMemoryRecord(id));
   const deleteRecord = (id: string) => withMemoryAction(() => productApiClient.deleteMemoryRecord(id));
+
+  async function createIntelTask(name: string, keywords: string[]) {
+    try {
+      const result = await productApiClient.createIntelTask({ name, keywords });
+      setProductState(result.state);
+      setApiPersistenceEnabled(true);
+      setNotice(buildNotice("success", "情报任务已创建", `「${result.task.name}」已开始监控，点击运行抓取首批情报。`));
+    } catch {
+      setNotice(buildNotice("warning", "创建失败", "情报中心需要后端在线。"));
+    }
+  }
+  async function runIntelTask(taskId: string) {
+    setRunningTaskId(taskId);
+    try {
+      const result = await productApiClient.runIntelTask(taskId);
+      setProductState(result.state);
+      setNotice(buildNotice("success", "情报抓取完成", `新增 ${result.count} 条情报。`));
+    } catch {
+      setNotice(buildNotice("warning", "抓取失败", "需要后端在线且配置搜索 key。"));
+    } finally {
+      setRunningTaskId(null);
+    }
+  }
+  const deleteIntelTaskHandler = (taskId: string) => withMemoryAction(() => productApiClient.deleteIntelTask(taskId));
+  const intelItemStatus = (itemId: string, status: IntelItem["status"]) =>
+    withMemoryAction(() => productApiClient.updateIntelItemStatus(itemId, status));
+  const intelToDebt = (itemId: string) => withMemoryAction(() => productApiClient.intelItemToDebt(itemId));
   const assetResults = useMemo(() => searchProductAssets(productState, assetQuery), [productState, assetQuery]);
   const systemStatus = useMemo(() => buildSystemStatus(productState), [productState]);
   const realtimeState = useMemo(
@@ -1234,6 +1265,17 @@ export default function App() {
             onEditCandidate={editCandidate}
             onDeprecate={deprecateRecord}
             onDeleteRecord={deleteRecord}
+          />
+        )}
+        {view === "intel" && (
+          <IntelView
+            state={productState}
+            runningTaskId={runningTaskId}
+            onCreate={createIntelTask}
+            onRun={runIntelTask}
+            onDeleteTask={deleteIntelTaskHandler}
+            onItemStatus={intelItemStatus}
+            onToDebt={intelToDebt}
           />
         )}
         {view === "config" && (

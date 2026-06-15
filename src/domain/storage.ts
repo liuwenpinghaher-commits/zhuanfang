@@ -54,6 +54,8 @@ export function normalizeProductState(value: unknown): ProductState {
     memoryEdges: Array.isArray(candidate.memoryEdges) ? candidate.memoryEdges : fallback.memoryEdges,
     importSources: Array.isArray(candidate.importSources) ? candidate.importSources : fallback.importSources,
     ragChunks: Array.isArray(candidate.ragChunks) ? candidate.ragChunks : fallback.ragChunks,
+    intelTasks: Array.isArray(candidate.intelTasks) ? candidate.intelTasks : fallback.intelTasks,
+    intelItems: Array.isArray(candidate.intelItems) ? candidate.intelItems : fallback.intelItems,
     configVersions: Array.isArray(candidate.configVersions) ? candidate.configVersions : fallback.configVersions,
     auditEvents: Array.isArray(candidate.auditEvents) ? candidate.auditEvents : fallback.auditEvents,
     aiRunEvents: Array.isArray(candidate.aiRunEvents) ? candidate.aiRunEvents : fallback.aiRunEvents,

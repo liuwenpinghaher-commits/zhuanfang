@@ -1165,6 +1165,8 @@ export interface ProductState {
   searchBriefs: SearchBrief[];
   importSources: ImportSource[];
   ragChunks: RagChunk[];
+  intelTasks: IntelTask[];
+  intelItems: IntelItem[];
   podcastEpisodes: PodcastEpisode[];
   corpusImports: CorpusImport[];
   corpusInsights: CorpusInsight[];
@@ -1175,6 +1177,37 @@ export interface ProductState {
   workflowRuns: WorkflowRun[];
   operationalChecks: OperationalCheckEvidence[];
   systemConfig: SystemConfig;
+}
+
+/** A persistent intelligence-monitoring task (联网素材 → 自动化情报). */
+export interface IntelTask {
+  id: string;
+  name: string;
+  keywords: string[];
+  provider: SearchProviderId;
+  frequency: "manual" | "daily" | "weekly";
+  relatedThemeIds: string[];
+  relatedDebtIds: string[];
+  status: "active" | "paused";
+  lastRunAt?: string;
+  createdAt: string;
+}
+
+/** A single triaged intelligence item produced by running an IntelTask. */
+export interface IntelItem {
+  id: string;
+  taskId: string;
+  taskName: string;
+  title: string;
+  url: string;
+  publisher: string;
+  summary: string;
+  relevance: number;
+  claims: string[];
+  category: string;
+  status: "unread" | "saved" | "ignored";
+  topic: string;
+  createdAt: string;
 }
 
 export interface FinalizeResult {
