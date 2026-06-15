@@ -2,13 +2,11 @@ import type { FastifyInstance } from "fastify";
 import {
   createIntelTask,
   deleteIntelTask,
-  ingestIntelItems,
   intelItemToKnowledgeDebt,
-  updateIntelItemStatus,
-  type TriagedIntelItem
+  updateIntelItemStatus
 } from "../../../../src/domain/intel";
-import type { IntelItem, SearchProviderId, SourceHighlight } from "../../../../src/domain/types";
-import { triageIntelResults } from "../intelligence/intel-triage-llm";
+import type { IntelItem, SearchProviderId } from "../../../../src/domain/types";
+import { IntelRunError, runIntelTaskOnce } from "../intel-run";
 import type { AnySearchClient } from "../providers/anysearch";
 import type { BailianChatClient, BailianSearchClient } from "../providers/bailian";
 import type { ProductStateRepository } from "../product-state-repository";
@@ -52,51 +50,16 @@ export async function registerIntelRoutes(
       return reply.code(404).send({ error: "Intel task not found." });
     }
 
-    const topic = task.keywords.join(" ") || task.name;
-    const searchInput = {
-      topic,
-      maxSources: state.systemConfig.search.maxSources,
-      recencyDays: state.systemConfig.search.recencyDays
-    };
-
-    let sources: SourceHighlight[] = [];
     try {
-      if (task.provider === "anysearch" && options.anySearchClient) {
-        sources = (await options.anySearchClient.createSearchBrief({ ...searchInput, providerId: "anysearch" })).sources;
-      } else if (options.bailianSearchClient) {
-        sources = (await options.bailianSearchClient.createSearchBrief({ ...searchInput, providerId: "bailian" })).sources;
-      }
+      const { count, nextState } = await runIntelTaskOnce(state, task, options);
+      repository.replaceState(nextState);
+      return { count, state: nextState };
     } catch (error) {
-      return reply.code(502).send({ error: error instanceof Error ? error.message : "Intel search failed." });
-    }
-
-    if (sources.length === 0) {
-      return reply.code(503).send({ error: "No search provider configured (need DASHSCOPE/ANYSEARCH key)." });
-    }
-
-    let triaged: TriagedIntelItem[] = [];
-    if (options.bailianChatClient) {
-      try {
-        triaged = await triageIntelResults(task.name, task.keywords, sources, options.bailianChatClient);
-      } catch {
-        // fall through to untriaged
+      if (error instanceof IntelRunError) {
+        return reply.code(error.code).send({ error: error.message });
       }
+      throw error;
     }
-    if (triaged.length === 0) {
-      triaged = sources.slice(0, 8).map((source) => ({
-        title: source.title,
-        url: source.url,
-        publisher: source.publisher,
-        summary: source.snippet,
-        relevance: 50,
-        claims: [],
-        category: "未分类"
-      }));
-    }
-
-    const { count, nextState } = ingestIntelItems(state, task, triaged);
-    repository.replaceState(nextState);
-    return { count, state: nextState };
   });
 
   server.patch("/api/intel/items/:id", async (request, reply) => {

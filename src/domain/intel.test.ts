@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createInitialProductState } from "./engine";
-import { createIntelTask, ingestIntelItems, intelItemToKnowledgeDebt, updateIntelItemStatus } from "./intel";
+import { createIntelTask, ingestIntelItems, intelItemToKnowledgeDebt, isIntelTaskDue, updateIntelItemStatus } from "./intel";
 
 const item = (url: string, overrides: Record<string, unknown> = {}) => ({
   title: "x",
@@ -11,6 +11,49 @@ const item = (url: string, overrides: Record<string, unknown> = {}) => ({
   claims: [],
   category: "c",
   ...overrides
+});
+
+describe("isIntelTaskDue", () => {
+  const base = {
+    id: "t",
+    name: "n",
+    keywords: ["a"],
+    provider: "bailian" as const,
+    relatedThemeIds: [],
+    relatedDebtIds: [],
+    status: "active" as const,
+    createdAt: "2026-06-01T00:00:00.000Z"
+  };
+  const now = new Date("2026-06-15T00:00:00.000Z");
+
+  it("manual frequency is never due", () => {
+    expect(isIntelTaskDue({ ...base, frequency: "manual" }, now)).toBe(false);
+  });
+
+  it("daily due when lastRunAt > 1 day ago", () => {
+    expect(isIntelTaskDue({ ...base, frequency: "daily", lastRunAt: "2026-06-13T00:00:00.000Z" }, now)).toBe(true);
+  });
+
+  it("daily not due when lastRunAt < 1 day ago", () => {
+    expect(
+      isIntelTaskDue(
+        { ...base, frequency: "daily", lastRunAt: "2026-06-15T01:00:00.000Z" },
+        new Date("2026-06-15T02:00:00.000Z")
+      )
+    ).toBe(false);
+  });
+
+  it("weekly due when lastRunAt > 7 days ago", () => {
+    expect(isIntelTaskDue({ ...base, frequency: "weekly", lastRunAt: "2026-06-01T00:00:00.000Z" }, now)).toBe(true);
+  });
+
+  it("no lastRunAt → due for non-manual frequency", () => {
+    expect(isIntelTaskDue({ ...base, frequency: "daily" }, now)).toBe(true);
+  });
+
+  it("paused status is never due", () => {
+    expect(isIntelTaskDue({ ...base, frequency: "daily", status: "paused" }, now)).toBe(false);
+  });
 });
 
 describe("intel domain", () => {

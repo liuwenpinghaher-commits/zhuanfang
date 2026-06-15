@@ -51,6 +51,9 @@ export function IntelView({
           <input id="intel-name" type="text" value={name} placeholder="例如：AI 编程 agent 监控" onChange={(event) => setName(event.target.value)} />
           <label className="label" htmlFor="intel-keywords">关键词（逗号或空格分隔）</label>
           <input id="intel-keywords" type="text" value={keywords} placeholder="AI 编程 agent, coding agent 落地" onChange={(event) => setKeywords(event.target.value)} />
+          <p className="label" style={{ marginTop: "0.5rem", opacity: 0.7 }}>
+            自动运行需保持 API 服务在线（关闭后暂停）。
+          </p>
           <div className="note-actions">
             <button className="primary-action" type="button" disabled={!keywords.trim()} onClick={handleCreate}>
               <Plus size={16} />创建情报任务

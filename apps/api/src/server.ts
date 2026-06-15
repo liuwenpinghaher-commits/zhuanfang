@@ -24,6 +24,7 @@ import {
   type BailianSearchClient,
   type BailianVoiceEnrollmentClient
 } from "./providers/bailian";
+import { startIntelScheduler } from "./intel-scheduler";
 import { registerAssetRoutes } from "./routes/assets";
 import { registerCorpusRoutes } from "./routes/corpus";
 import { registerGeneratedArtifactRoutes } from "./routes/generated-artifacts";
@@ -215,10 +216,26 @@ export async function startServer() {
   // Persist by default so a server restart no longer drops all interview state.
   // Tests call buildApiServer() directly (no dbPath) and stay in-memory/isolated.
   const productStateDbPath = process.env.PRODUCT_STATE_DB_PATH ?? join(process.cwd(), ".data", "product-state.db");
-  const server = buildApiServer({ productStateDbPath });
+
+  // Build the repository and provider clients here so we can share them with
+  // the in-process scheduler (startIntelScheduler is ONLY wired in startServer,
+  // never in buildApiServer, so tests stay timer-free).
+  const repository = createSqliteProductStateRepository({ dbPath: productStateDbPath });
+  const schedulerClients = {
+    bailianSearchClient: createBailianSearchClientFromEnv(process.env),
+    anySearchClient: createAnySearchClientFromEnv(process.env),
+    bailianChatClient: createBailianChatClientFromEnv(process.env)
+  };
+
+  const server = buildApiServer({ productStateDbPath, productStateRepository: repository });
   const port = Number(process.env.PORT ?? 8787);
   const host = process.env.HOST ?? "127.0.0.1";
   await server.listen({ host, port });
+
+  // Start the scheduler after the server is listening. It reads/writes through
+  // the same repository instance, so state stays consistent.
+  startIntelScheduler(repository, schedulerClients);
+
   return server;
 }
 

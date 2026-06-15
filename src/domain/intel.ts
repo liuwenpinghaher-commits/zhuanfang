@@ -87,6 +87,22 @@ export function updateIntelItemStatus(state: ProductState, itemId: string, statu
   return next;
 }
 
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * Pure function — NEVER calls Date.now() or new Date() internally.
+ * Returns true when the task should be run again given the current time `now`.
+ */
+export function isIntelTaskDue(task: IntelTask, now: Date): boolean {
+  if (task.frequency === "manual") return false;
+  if (task.status !== "active") return false;
+  if (!task.lastRunAt) return true; // never run → due immediately
+  const elapsed = now.getTime() - new Date(task.lastRunAt).getTime();
+  if (task.frequency === "daily") return elapsed >= MS_PER_DAY;
+  if (task.frequency === "weekly") return elapsed >= 7 * MS_PER_DAY;
+  return false;
+}
+
 export function deleteIntelTask(state: ProductState, taskId: string): ProductState {
   const next = cloneState(state);
   next.intelTasks = next.intelTasks.filter((task) => task.id !== taskId);
