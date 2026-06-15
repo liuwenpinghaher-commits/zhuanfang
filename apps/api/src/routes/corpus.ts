@@ -94,7 +94,7 @@ async function analyzeCorpus(
     try {
       return await analyzeCorpusWithLlm(state, input, chatClient);
     } catch (error) {
-      console.warn("[corpus] LLM analysis failed, falling back to deterministic:", error instanceof Error ? error.message : error);
+      console.warn(JSON.stringify({ event: "llm_fallback", capability: "corpus", error: error instanceof Error ? error.message : String(error) }));
     }
   }
   return analyzeImportedInterview(state, input);

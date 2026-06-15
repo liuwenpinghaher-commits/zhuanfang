@@ -1,3 +1,4 @@
+import { SpanStatusCode, trace } from "@opentelemetry/api";
 import type { InteractionPreSignals, InterviewSession, SearchBriefInput, SearchProviderId, SourceHighlight } from "../../../../src/domain/types";
 
 export const BAILIAN_DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
@@ -234,6 +235,7 @@ interface BailianChatCompletionOutput {
       content?: unknown;
     };
   }>;
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
 }
 
 export function createBailianSearchClient(options: BailianSearchClientOptions): BailianSearchClient {
@@ -313,41 +315,60 @@ export function createBailianChatClient(options: BailianChatClientOptions): Bail
   return {
     async complete(input) {
       const model = input.model ?? defaultModel;
-      const body: Record<string, unknown> = {
-        model,
-        messages: input.messages
-      };
-      if (typeof input.temperature === "number") {
-        body.temperature = input.temperature;
-      }
-      if (typeof input.maxTokens === "number") {
-        body.max_tokens = input.maxTokens;
-      }
-      if (input.responseFormat === "json") {
-        body.response_format = { type: "json_object" };
-      }
+      const tracer = trace.getTracer("bailian-chat");
+      return tracer.startActiveSpan("bailian.chat.complete", async (span) => {
+        span.setAttribute("llm.model", model);
+        span.setAttribute("llm.message_count", input.messages.length);
+        span.setAttribute("llm.response_format", input.responseFormat ?? "text");
+        try {
+          const body: Record<string, unknown> = {
+            model,
+            messages: input.messages
+          };
+          if (typeof input.temperature === "number") {
+            body.temperature = input.temperature;
+          }
+          if (typeof input.maxTokens === "number") {
+            body.max_tokens = input.maxTokens;
+          }
+          if (input.responseFormat === "json") {
+            body.response_format = { type: "json_object" };
+          }
 
-      const response = await fetchImpl(`${baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${options.apiKey}`,
-          "content-type": "application/json"
-        },
-        body: JSON.stringify(body),
-        // Latency/cost guard: don't let a hung request stall a route forever.
-        signal: AbortSignal.timeout(timeoutMs)
+          const response = await fetchImpl(`${baseUrl}/chat/completions`, {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${options.apiKey}`,
+              "content-type": "application/json"
+            },
+            body: JSON.stringify(body),
+            // Latency/cost guard: don't let a hung request stall a route forever.
+            signal: AbortSignal.timeout(timeoutMs)
+          });
+
+          if (!response.ok) {
+            throw new Error(`Bailian chat completion failed (${model}): ${response.status} ${await safeReadErrorBody(response)}`);
+          }
+
+          const payload = (await response.json()) as BailianChatCompletionOutput;
+          const content = payload.choices?.[0]?.message?.content;
+          if (typeof content !== "string" || !content.trim()) {
+            throw new Error(`Bailian chat completion returned empty content (${model}).`);
+          }
+          if (payload.usage) {
+            span.setAttribute("llm.prompt_tokens", payload.usage.prompt_tokens ?? 0);
+            span.setAttribute("llm.completion_tokens", payload.usage.completion_tokens ?? 0);
+          }
+          span.setStatus({ code: SpanStatusCode.OK });
+          return content;
+        } catch (error) {
+          span.recordException(error as Error);
+          span.setStatus({ code: SpanStatusCode.ERROR, message: error instanceof Error ? error.message : String(error) });
+          throw error;
+        } finally {
+          span.end();
+        }
       });
-
-      if (!response.ok) {
-        throw new Error(`Bailian chat completion failed (${model}): ${response.status} ${await safeReadErrorBody(response)}`);
-      }
-
-      const payload = (await response.json()) as BailianChatCompletionOutput;
-      const content = payload.choices?.[0]?.message?.content;
-      if (typeof content !== "string" || !content.trim()) {
-        throw new Error(`Bailian chat completion returned empty content (${model}).`);
-      }
-      return content;
     }
   };
 }

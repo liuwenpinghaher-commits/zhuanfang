@@ -111,7 +111,7 @@ export async function registerSearchRoutes(
         return { brief, state: nextState };
       }
     } catch (error) {
-      console.warn("[auto-brief] live search failed, falling back to local:", error instanceof Error ? error.message : error);
+      console.warn(JSON.stringify({ event: "llm_fallback", capability: "search", error: error instanceof Error ? error.message : String(error) }));
     }
 
     // Fallback: deterministic local brief when no live provider is configured.

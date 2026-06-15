@@ -201,7 +201,7 @@ async function finalizeInterview(
     try {
       return await finalizeSessionWithLlm(state, session, chatClient);
     } catch (error) {
-      console.warn("[finalize] LLM synthesis failed, falling back to deterministic:", error instanceof Error ? error.message : error);
+      console.warn(JSON.stringify({ event: "llm_fallback", capability: "finalize", error: error instanceof Error ? error.message : String(error) }));
     }
   }
   return finalizeSession(state, session);

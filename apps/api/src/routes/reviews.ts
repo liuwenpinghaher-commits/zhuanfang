@@ -18,7 +18,7 @@ export async function registerReviewRoutes(
       try {
         return await buildReviewsWithLlm(state, options.bailianChatClient);
       } catch (error) {
-        console.warn("[reviews] LLM synthesis failed, falling back to deterministic:", error instanceof Error ? error.message : error);
+        console.warn(JSON.stringify({ event: "llm_fallback", capability: "reviews", error: error instanceof Error ? error.message : String(error) }));
       }
     }
     return buildDeterministicReviews(state);
