@@ -52,6 +52,12 @@ export type {
 
 export {
   finalizeSession,
+  mergeFinalizedState,
+} from "./finalize";
+
+export type {
+  FinalizeContent,
+  FinalizeThemeUpsert,
 } from "./finalize";
 
 export {

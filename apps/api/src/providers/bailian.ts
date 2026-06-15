@@ -8,6 +8,10 @@ export const BAILIAN_PODCAST_TTS_MODEL = "cosyvoice-v3-plus";
 export const BAILIAN_PODCAST_TTS_VOICE = "longyuan_v3";
 export const BAILIAN_REALTIME_MODEL = "qwen3.5-omni-plus-realtime";
 export const BAILIAN_TRANSCRIPTION_MODEL = "sensevoice-v1";
+// General-purpose text model for server-side synthesis (diary, review, corpus, intel).
+// qwen-plus is fast (~0.8s) and supports JSON mode — verified live. Kept separate from
+// BAILIAN_SEARCH_MODEL (qwen3.7-plus, ~9s) so synthesis never inherits the slow search model.
+export const BAILIAN_GENERAL_MODEL = "qwen-plus";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -25,6 +29,28 @@ export interface BailianRealtimeVoiceClient {
 
 export interface BailianAudioTranscriptionClient {
   transcribe(input: BailianAudioTranscriptionRequest): Promise<BailianAudioTranscriptionResult>;
+}
+
+export interface BailianChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+export interface BailianChatCompleteRequest {
+  messages: BailianChatMessage[];
+  model?: string;
+  responseFormat?: "json" | "text";
+  temperature?: number;
+  maxTokens?: number;
+}
+
+/**
+ * Reusable "messages -> text" LLM client. The foundation for all server-side
+ * synthesis (diary finalize, review, corpus, intel). Throws on transport/HTTP
+ * failure so callers can fall back to deterministic domain functions.
+ */
+export interface BailianChatClient {
+  complete(input: BailianChatCompleteRequest): Promise<string>;
 }
 
 export interface BailianSearchBriefRequest {
@@ -96,6 +122,13 @@ interface BailianSearchClientOptions {
 }
 
 interface BailianCharacterInterviewClientOptions {
+  apiKey: string;
+  baseUrl?: string;
+  model?: string;
+  fetchImpl?: FetchLike;
+}
+
+interface BailianChatClientOptions {
   apiKey: string;
   baseUrl?: string;
   model?: string;
@@ -262,36 +295,75 @@ export function createBailianSearchClient(options: BailianSearchClientOptions): 
   };
 }
 
-export function createBailianCharacterInterviewClient(
-  options: BailianCharacterInterviewClientOptions
-): BailianCharacterInterviewClient {
+async function safeReadErrorBody(response: Response): Promise<string> {
+  try {
+    return (await response.text()).replace(/\s+/g, " ").slice(0, 300);
+  } catch {
+    return "";
+  }
+}
+
+export function createBailianChatClient(options: BailianChatClientOptions): BailianChatClient {
   const baseUrl = (options.baseUrl ?? BAILIAN_DEFAULT_BASE_URL).replace(/\/$/, "");
-  const model = options.model ?? BAILIAN_ROLE_PLAY_MODEL;
+  const defaultModel = options.model ?? BAILIAN_GENERAL_MODEL;
   const fetchImpl = options.fetchImpl ?? fetch;
 
   return {
-    async createAssistantTurn(input) {
+    async complete(input) {
+      const model = input.model ?? defaultModel;
+      const body: Record<string, unknown> = {
+        model,
+        messages: input.messages
+      };
+      if (typeof input.temperature === "number") {
+        body.temperature = input.temperature;
+      }
+      if (typeof input.maxTokens === "number") {
+        body.max_tokens = input.maxTokens;
+      }
+      if (input.responseFormat === "json") {
+        body.response_format = { type: "json_object" };
+      }
+
       const response = await fetchImpl(`${baseUrl}/chat/completions`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${options.apiKey}`,
           "content-type": "application/json"
         },
-        body: JSON.stringify({
-          model,
-          messages: buildCharacterMessages(input.session, input.userText)
-        })
+        body: JSON.stringify(body)
       });
 
       if (!response.ok) {
-        throw new Error(`Bailian Character request failed: ${response.status}`);
+        throw new Error(`Bailian chat completion failed (${model}): ${response.status} ${await safeReadErrorBody(response)}`);
       }
 
       const payload = (await response.json()) as BailianChatCompletionOutput;
-      const rawContent = payload.choices?.[0]?.message?.content;
-      if (typeof rawContent !== "string" || !rawContent.trim()) {
-        throw new Error("Bailian Character response did not include assistant content.");
+      const content = payload.choices?.[0]?.message?.content;
+      if (typeof content !== "string" || !content.trim()) {
+        throw new Error(`Bailian chat completion returned empty content (${model}).`);
       }
+      return content;
+    }
+  };
+}
+
+export function createBailianCharacterInterviewClient(
+  options: BailianCharacterInterviewClientOptions
+): BailianCharacterInterviewClient {
+  const model = options.model ?? BAILIAN_ROLE_PLAY_MODEL;
+  const chatClient = createBailianChatClient({
+    apiKey: options.apiKey,
+    baseUrl: options.baseUrl,
+    model,
+    fetchImpl: options.fetchImpl
+  });
+
+  return {
+    async createAssistantTurn(input) {
+      const rawContent = await chatClient.complete({
+        messages: buildCharacterMessages(input.session, input.userText)
+      });
 
       const { content, preSignals } = extractPreSignals(rawContent.trim());
 
@@ -575,6 +647,21 @@ export function createBailianCharacterInterviewClientFromEnv(
   });
 }
 
+export function createBailianChatClientFromEnv(
+  env: Record<string, string | undefined> = process.env
+): BailianChatClient | undefined {
+  const apiKey = env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY;
+  if (!apiKey) {
+    return undefined;
+  }
+
+  return createBailianChatClient({
+    apiKey,
+    baseUrl: env.BAILIAN_BASE_URL,
+    model: env.BAILIAN_GENERAL_MODEL ?? BAILIAN_GENERAL_MODEL
+  });
+}
+
 export function createBailianRealtimeVoiceClientFromEnv(
   env: Record<string, string | undefined> = process.env
 ): BailianRealtimeVoiceClient | undefined {
@@ -653,7 +740,7 @@ function buildSearchPrompt(input: BailianSearchBriefRequest) {
   ].join("\n");
 }
 
-function buildCharacterMessages(session: InterviewSession, userText: string) {
+function buildCharacterMessages(session: InterviewSession, userText: string): BailianChatMessage[] {
   return [
     {
       role: "system",

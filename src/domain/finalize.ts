@@ -1,9 +1,14 @@
 import type {
+  DecisionAsset,
   DualTrackNote,
   FinalizeResult,
   InterviewSession,
+  KnowledgeDebt,
+  LongTermTheme,
   MemoryCandidate,
+  PointAsset,
   ProductState,
+  QuestionAsset,
   SearchBrief,
 } from "./types";
 
@@ -32,8 +37,40 @@ function buildMemoryCandidateFromSession(
     createdAt
   });
 }
+/** A theme upsert produced by either the deterministic or the LLM finalize path. */
+export interface FinalizeThemeUpsert {
+  id?: string;
+  name: string;
+  summary: string;
+  representativeQuote: string;
+  nextQuestion: string;
+  maturity: LongTermTheme["maturity"];
+}
+
+/**
+ * Fully-formed finalize content (note + assets), produced by either the
+ * deterministic builder or the LLM. mergeFinalizedState turns it into state.
+ */
+export interface FinalizeContent {
+  note: DualTrackNote;
+  points: PointAsset[];
+  questions: QuestionAsset[];
+  decisions: DecisionAsset[];
+  debts: KnowledgeDebt[];
+  themes: FinalizeThemeUpsert[];
+}
+
 export function finalizeSession(state: ProductState, session: InterviewSession): FinalizeResult {
   const completedAt = nowIso();
+  const content = buildDeterministicFinalizeContent(session, completedAt);
+  return mergeFinalizedState(state, session, content, completedAt);
+}
+
+/**
+ * Deterministic, offline fallback content. Anchored on the "救火/授权" demo
+ * scenario — only keyQuote reflects real input. Used when no LLM is available.
+ */
+function buildDeterministicFinalizeContent(session: InterviewSession, completedAt: string): FinalizeContent {
   const userTurns = session.turns.filter((turn) => turn.role === "user");
   const assistantTurns = session.turns.filter((turn) => turn.role === "assistant");
   const keyQuote = pickKeyQuote(userTurns.map((turn) => turn.content));
@@ -62,6 +99,93 @@ export function finalizeSession(state: ProductState, session: InterviewSession):
     createdAt: completedAt
   };
 
+  if (!session.doNotSave && assistantTurns.length === 0) {
+    note.learnedTrack.push("本次没有形成足够的 AI 追问，应标记为轻量记录。");
+  }
+
+  const points: PointAsset[] = [
+    {
+      id: makeId("point"),
+      title: "我需要重新定义救火和授权的边界",
+      content: "继续兜底能降低短期风险，但会延长团队对我拍板的依赖。",
+      status: "被挑战中",
+      confidence: "待验证",
+      evidence: [keyQuote],
+      relatedThemeIds: ["theme-control"],
+      important: true,
+      updatedAt: completedAt
+    }
+  ];
+
+  const questions: QuestionAsset[] = [
+    {
+      id: makeId("question"),
+      question: "如果我不救火，最坏会发生什么？",
+      whyImportant: "这个问题决定用户能否从抽象授权推进到真实代价评估。",
+      status: "正在聚焦",
+      appearances: 1,
+      relatedThemeIds: ["theme-control"],
+      nextPrompt: "把最坏情况拆成延期、质量、客户、团队信任四类风险。",
+      important: true,
+      updatedAt: completedAt
+    }
+  ];
+
+  const decisions: DecisionAsset[] = [
+    {
+      id: makeId("decision"),
+      title: "是否继续亲自救火",
+      decisionKind: "候选决策",
+      confirmationStatus: "待用户确认",
+      choice: "候选低成本验证路径：先选一个低风险项目减少直接兜底。",
+      tradeOff: "短期会暴露团队判断缺口，但能验证机制是否真的可承压。",
+      riskHypothesis: "没有用户兜底时，项目可能延期，但团队会更快暴露真正缺口。",
+      reviewAt: "2026-07-10",
+      status: "待复盘",
+      updatedAt: completedAt
+    }
+  ];
+
+  const debts: KnowledgeDebt[] = [
+    {
+      id: makeId("debt"),
+      concept: "授权机制",
+      context: "本次访谈中，用户把救火和团队承担判断联系起来。",
+      whyImportant: "它能帮助用户区分“给任务”和“给判断权”。",
+      status: "待了解",
+      nextQuestion: "你能不能用一个项目例子说明什么叫真正授权？",
+      updatedAt: completedAt
+    }
+  ];
+
+  const themes: FinalizeThemeUpsert[] = [
+    {
+      id: "theme-control",
+      name: "控制感",
+      summary: "用户正在探索放手、授权和短期失控之间的关系。",
+      representativeQuote: keyQuote,
+      nextQuestion: "如果你允许短期失控，最坏会发生什么？",
+      maturity: "聚焦"
+    }
+  ];
+
+  return { note, points, questions, decisions, debts, themes };
+}
+
+/**
+ * Shared state-plumbing for finalize: completes the session, prepends the note
+ * and assets, records the memory candidate, marks the source brief applied,
+ * upserts themes by name, and emits audit/AI-run events. Used by BOTH the
+ * deterministic path and the LLM path so they stay behaviourally identical
+ * apart from the content.
+ */
+export function mergeFinalizedState(
+  state: ProductState,
+  session: InterviewSession,
+  content: FinalizeContent,
+  completedAt: string
+): FinalizeResult {
+  const { note } = content;
   const completedSession: InterviewSession = {
     ...session,
     status: "completed",
@@ -80,107 +204,65 @@ export function finalizeSession(state: ProductState, session: InterviewSession):
       completedAt
     );
 
-    return {
-      note,
-      nextState
-    };
+    return { note, nextState };
   }
 
   const nextState = cloneState(state);
-  const memoryCandidate = buildMemoryCandidateFromSession(session, note, keyQuote, completedAt);
+  const memoryCandidate = buildMemoryCandidateFromSession(session, note, note.keyQuote, completedAt);
   nextState.sessions = [completedSession, ...nextState.sessions];
   nextState.searchBriefs = markSearchBriefAppliedToSession(nextState.searchBriefs, completedSession);
   nextState.notes = [note, ...nextState.notes];
   nextState.memoryCandidates = [memoryCandidate, ...(nextState.memoryCandidates ?? [])];
-  nextState.points = [
-    {
-      id: makeId("point"),
-      title: "我需要重新定义救火和授权的边界",
-      content: "继续兜底能降低短期风险，但会延长团队对我拍板的依赖。",
-      status: "被挑战中",
-      confidence: "待验证",
-      evidence: [keyQuote],
-      relatedThemeIds: ["theme-control"],
-      important: true,
-      updatedAt: completedAt
-    },
-    ...nextState.points
-  ];
-  nextState.questions = [
-    {
-      id: makeId("question"),
-      question: "如果我不救火，最坏会发生什么？",
-      whyImportant: "这个问题决定用户能否从抽象授权推进到真实代价评估。",
-      status: "正在聚焦",
-      appearances: 1,
-      relatedThemeIds: ["theme-control"],
-      nextPrompt: "把最坏情况拆成延期、质量、客户、团队信任四类风险。",
-      important: true,
-      updatedAt: completedAt
-    },
-    ...nextState.questions
-  ];
-  nextState.decisions = [
-    {
-      id: makeId("decision"),
-      title: "是否继续亲自救火",
-      decisionKind: "候选决策",
-      confirmationStatus: "待用户确认",
-      choice: "候选低成本验证路径：先选一个低风险项目减少直接兜底。",
-      tradeOff: "短期会暴露团队判断缺口，但能验证机制是否真的可承压。",
-      riskHypothesis: "没有用户兜底时，项目可能延期，但团队会更快暴露真正缺口。",
-      reviewAt: "2026-07-10",
-      status: "待复盘",
-      updatedAt: completedAt
-    },
-    ...nextState.decisions
-  ];
-  nextState.debts = [
-    {
-      id: makeId("debt"),
-      concept: "授权机制",
-      context: "本次访谈中，用户把救火和团队承担判断联系起来。",
-      whyImportant: "它能帮助用户区分“给任务”和“给判断权”。",
-      status: "待了解",
-      nextQuestion: "你能不能用一个项目例子说明什么叫真正授权？",
-      updatedAt: completedAt
-    },
-    ...nextState.debts
-  ];
-  nextState.themes = nextState.themes.map((theme) =>
-    theme.name === "控制感"
-      ? {
-          ...theme,
-          maturity: "聚焦",
-          appearances: theme.appearances + 1,
-          representativeQuote: keyQuote,
-          nextQuestion: "如果你允许短期失控，最坏会发生什么？",
-          updatedAt: completedAt
-        }
-      : theme
-  );
-
-  if (!nextState.themes.some((theme) => theme.name === "控制感")) {
-    nextState.themes.unshift({
-      id: "theme-control",
-      name: "控制感",
-      summary: "用户正在探索放手、授权和短期失控之间的关系。",
-      maturity: "聚焦",
-      representativeQuote: keyQuote,
-      appearances: 1,
-      nextQuestion: "如果你允许短期失控，最坏会发生什么？",
-      updatedAt: completedAt
-    });
-  }
-
-  if (assistantTurns.length === 0) {
-    note.learnedTrack.push("本次没有形成足够的 AI 追问，应标记为轻量记录。");
-  }
+  nextState.points = [...content.points, ...nextState.points];
+  nextState.questions = [...content.questions, ...nextState.questions];
+  nextState.decisions = [...content.decisions, ...nextState.decisions];
+  nextState.debts = [...content.debts, ...nextState.debts];
+  nextState.themes = upsertFinalizeThemes(nextState.themes, content.themes, completedAt);
 
   return {
     note,
     nextState: withInterviewFinalizedEvents(nextState, completedSession, note, completedAt)
   };
+}
+
+/** Upsert each theme by name: update appearances/quote/maturity if it exists, else prepend. */
+function upsertFinalizeThemes(
+  existingThemes: LongTermTheme[],
+  upserts: FinalizeThemeUpsert[],
+  completedAt: string
+): LongTermTheme[] {
+  let themes = existingThemes;
+  for (const upsert of upserts) {
+    if (themes.some((theme) => theme.name === upsert.name)) {
+      themes = themes.map((theme) =>
+        theme.name === upsert.name
+          ? {
+              ...theme,
+              maturity: upsert.maturity,
+              appearances: theme.appearances + 1,
+              representativeQuote: upsert.representativeQuote,
+              nextQuestion: upsert.nextQuestion,
+              updatedAt: completedAt
+            }
+          : theme
+      );
+    } else {
+      themes = [
+        {
+          id: upsert.id ?? makeId("theme"),
+          name: upsert.name,
+          summary: upsert.summary,
+          maturity: upsert.maturity,
+          representativeQuote: upsert.representativeQuote,
+          appearances: 1,
+          nextQuestion: upsert.nextQuestion,
+          updatedAt: completedAt
+        },
+        ...themes
+      ];
+    }
+  }
+  return themes;
 }
 function findReferencedMemoryRecord(state: ProductState, memoryText: string) {
   const exactMatch = state.memoryRecords.find(

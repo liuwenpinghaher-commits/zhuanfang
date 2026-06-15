@@ -7,14 +7,16 @@ import {
   updateInterviewControl
 } from "../../../../src/domain/engine";
 import type {
+  FinalizeResult,
   InterviewControlAction,
   InterviewMode,
   InterviewSession,
   InterviewStrength,
   ProductState
 } from "../../../../src/domain/types";
+import { finalizeSessionWithLlm } from "../intelligence/finalize-llm";
 import type { ProductStateRepository } from "../product-state-repository";
-import type { BailianCharacterInterviewClient } from "../providers/bailian";
+import type { BailianChatClient, BailianCharacterInterviewClient } from "../providers/bailian";
 
 interface CreateSessionPayload {
   mode?: unknown;
@@ -32,6 +34,7 @@ interface ControlPayload {
 
 interface InterviewSessionRouteOptions {
   bailianInterviewClient?: BailianCharacterInterviewClient;
+  bailianChatClient?: BailianChatClient;
 }
 
 const interviewModes: InterviewMode[] = ["daily", "decision", "point", "learning", "organization", "long-term"];
@@ -124,7 +127,7 @@ export async function registerInterviewSessionRoutes(
       ...state,
       sessions: state.sessions.filter((item) => item.id !== session.id)
     };
-    const result = finalizeSession(baseState, session);
+    const result = await finalizeInterview(baseState, session, options.bailianChatClient);
     const completedSession = result.nextState.sessions.find((item) => item.id === session.id) ?? session;
 
     repository.replaceState(result.nextState);
@@ -165,6 +168,21 @@ function upsertSession(state: ProductState, session: InterviewSession): ProductS
     ...state,
     sessions: [session, ...state.sessions.filter((item) => item.id !== session.id)]
   };
+}
+
+async function finalizeInterview(
+  state: ProductState,
+  session: InterviewSession,
+  chatClient: BailianChatClient | undefined
+): Promise<FinalizeResult> {
+  if (chatClient) {
+    try {
+      return await finalizeSessionWithLlm(state, session, chatClient);
+    } catch (error) {
+      console.warn("[finalize] LLM synthesis failed, falling back to deterministic:", error instanceof Error ? error.message : error);
+    }
+  }
+  return finalizeSession(state, session);
 }
 
 async function receiveTurn(

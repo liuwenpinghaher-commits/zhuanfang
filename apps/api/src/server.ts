@@ -10,12 +10,14 @@ import { createInMemoryProductStateRepository, type ProductStateRepository } fro
 import { createAnySearchClientFromEnv, type AnySearchClient } from "./providers/anysearch";
 import {
   createBailianAudioTranscriptionClientFromEnv,
+  createBailianChatClientFromEnv,
   createBailianCharacterInterviewClientFromEnv,
   createBailianPodcastAudioClientFromEnv,
   createBailianRealtimeVoiceClientFromEnv,
   createBailianSearchClientFromEnv,
   createBailianVoiceEnrollmentClientFromEnv,
   type BailianAudioTranscriptionClient,
+  type BailianChatClient,
   type BailianCharacterInterviewClient,
   type BailianPodcastAudioClient,
   type BailianRealtimeVoiceClient,
@@ -47,6 +49,7 @@ interface BuildApiServerOptions {
   anySearchClient?: AnySearchClient;
   bailianPodcastAudioClient?: BailianPodcastAudioClient;
   bailianInterviewClient?: BailianCharacterInterviewClient;
+  bailianChatClient?: BailianChatClient;
   bailianRealtimeVoiceClient?: BailianRealtimeVoiceClient;
   bailianTranscriptionClient?: BailianAudioTranscriptionClient;
   env?: Record<string, string | undefined>;
@@ -58,6 +61,7 @@ interface ProviderClients {
   anySearchClient?: AnySearchClient;
   bailianPodcastAudioClient?: BailianPodcastAudioClient;
   bailianInterviewClient?: BailianCharacterInterviewClient;
+  bailianChatClient?: BailianChatClient;
   bailianRealtimeVoiceClient?: BailianRealtimeVoiceClient;
   voiceEnrollmentClient?: BailianVoiceEnrollmentClient;
   bailianTranscriptionClient?: BailianAudioTranscriptionClient;
@@ -158,6 +162,7 @@ function refreshRuntimeProviderClients(
   providerClients.anySearchClient = options.anySearchClient ?? createAnySearchClientFromEnv(env);
   providerClients.bailianPodcastAudioClient = options.bailianPodcastAudioClient ?? createBailianPodcastAudioClientFromEnv(env);
   providerClients.bailianInterviewClient = options.bailianInterviewClient ?? createBailianCharacterInterviewClientFromEnv(env);
+  providerClients.bailianChatClient = options.bailianChatClient ?? createBailianChatClientFromEnv(env);
   providerClients.bailianRealtimeVoiceClient = options.bailianRealtimeVoiceClient ?? createBailianRealtimeVoiceClientFromEnv(env);
   providerClients.voiceEnrollmentClient = createBailianVoiceEnrollmentClientFromEnv(env);
   providerClients.bailianTranscriptionClient =
@@ -195,7 +200,10 @@ function isInMemoryDbPath(dbPath: string) {
 
 export async function startServer() {
   loadLocalEnvFile();
-  const server = buildApiServer();
+  // Persist by default so a server restart no longer drops all interview state.
+  // Tests call buildApiServer() directly (no dbPath) and stay in-memory/isolated.
+  const productStateDbPath = process.env.PRODUCT_STATE_DB_PATH ?? join(process.cwd(), ".data", "product-state.db");
+  const server = buildApiServer({ productStateDbPath });
   const port = Number(process.env.PORT ?? 8787);
   const host = process.env.HOST ?? "127.0.0.1";
   await server.listen({ host, port });
