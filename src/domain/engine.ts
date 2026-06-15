@@ -100,6 +100,8 @@ export {
   revertPlaybookPatch,
 } from "./corpus";
 
+export type { CorpusLlmAnalysis } from "./corpus";
+
 export {
   generatePodcastEpisode, generatePodcastEpisodeFromCorpusInsight,
   generatePodcastEpisodeFromKnowledgeDebt, generatePodcastEpisodeFromSearchBrief,

@@ -12,9 +12,25 @@ import { withGeneratedArtifactWorkflowRun, withSystemConfigVersion, removeVersio
 import { externalInstructionPatterns, removedExternalInstruction } from "./context-pack";
 import { withMemoryCandidateReview } from "./memoryReview";
 
+/** LLM-produced analysis content. When supplied, it replaces the deterministic
+ *  templated dimensions/plan/patch while reusing all the state-plumbing below. */
+export interface CorpusLlmAnalysis {
+  dimensions: Array<{ name: string; score: number; finding: string; example: string; recommendedAction: string }>;
+  improvementPlan: Array<{ title: string; rationale: string; action: string; expectedEngineChange: string; evidence: string }>;
+  patch: { title: string; description: string; rules: string[]; impact: "low" | "medium" | "high" };
+}
+
+function clampCorpusScore(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 3;
+  }
+  return Math.max(1, Math.min(5, Math.round(value)));
+}
+
 export function analyzeImportedInterview(
   state: ProductState,
-  input: CorpusImportInput
+  input: CorpusImportInput,
+  analysis?: CorpusLlmAnalysis
 ): { insight: CorpusInsight; nextState: ProductState } {
   const createdAt = nowIso();
   const importId = makeId("corpus");
@@ -34,71 +50,94 @@ export function analyzeImportedInterview(
     sanitizedInput.content.slice(0, 60);
   const patch: PlaybookPatch = {
     id: makeId("patch"),
-    title: "先索要具体时刻，再做机制反转",
-    description: "优秀样本不是直接给结论，而是先让被访者落到具体事件，再把事件翻译为机制问题。",
+    title: analysis?.patch.title?.trim() || "先索要具体时刻，再做机制反转",
+    description:
+      analysis?.patch.description?.trim() ||
+      "优秀样本不是直接给结论，而是先让被访者落到具体事件，再把事件翻译为机制问题。",
     sourceInsightId: insightId,
     sourceImportId: importId,
     sourceTitle: sanitizedInput.title,
     ...(sanitizedInput.sourceUrl ? { sourceUrl: sanitizedInput.sourceUrl } : {}),
     status: "proposed",
-    rules: [
-      "当用户使用抽象评价时，先追问一个具体时刻。",
-      "当用户已经给出具体例子后，再从机制、奖励和代价角度反问。",
-      "每轮只改变一个追问动作，避免把访谈变成建议清单。"
-    ],
-    impact: "medium",
+    rules:
+      analysis?.patch.rules?.filter((rule) => rule.trim()).length
+        ? analysis.patch.rules.filter((rule) => rule.trim())
+        : [
+            "当用户使用抽象评价时，先追问一个具体时刻。",
+            "当用户已经给出具体例子后，再从机制、奖励和代价角度反问。",
+            "每轮只改变一个追问动作，避免把访谈变成建议清单。"
+          ],
+    impact: analysis?.patch.impact ?? "medium",
     createdAt
   };
+  const dimensions = analysis?.dimensions?.length
+    ? analysis.dimensions.slice(0, 6).map((dimension) => ({
+        name: dimension.name,
+        score: clampCorpusScore(dimension.score),
+        finding: dimension.finding,
+        example: dimension.example,
+        recommendedAction: dimension.recommendedAction
+      }))
+    : [
+        {
+          name: "追问动作",
+          score: Math.min(5, 2 + followUpCount + challengeCount),
+          finding: "样本先要求具体化，再把回答推进到机制层。",
+          example: concreteExample,
+          recommendedAction: "在当前引擎中增加“具体时刻 -> 机制反转”的追问序列。"
+        },
+        {
+          name: "节奏控制",
+          score: Math.min(5, 3 + Math.floor(hostTurns.length / 2)),
+          finding: "主持人没有急着总结，而是在回答后保留一个二次追问空间。",
+          example: hostTurns[0]?.content ?? "样本中主持人先接住回答，再推进问题。",
+          recommendedAction: "用户停顿时保留短留白，不立即补问题。"
+        },
+        {
+          name: "反方推动",
+          score: Math.min(5, 2 + challengeCount),
+          finding: "样本会把用户叙述翻转成机制假设，帮助形成可挑战观点。",
+          example: turns.find((turn) => turn.move === "challenge")?.content ?? "如果反过来看，是不是机制奖励了报喜不报忧？",
+          recommendedAction: "在观点专访中增加反例和反方假设。"
+        }
+      ];
+  const improvementPlan = analysis?.improvementPlan?.length
+    ? analysis.improvementPlan.slice(0, 6).map((item) => ({
+        title: item.title,
+        rationale: item.rationale,
+        action: item.action,
+        expectedEngineChange: item.expectedEngineChange,
+        evidence: item.evidence
+      }))
+    : [
+        {
+          title: "具体时刻优先",
+          rationale: "样本面对抽象评价时没有立刻解释或建议，而是先把被访者带回一个可复盘的具体场景。",
+          action: "用户使用“很难、很乱、不主动”等抽象评价时，先追问最近一次具体时刻。",
+          expectedEngineChange: "确认后，引擎会在抽象评价后优先触发“索要具体时刻”的追问动作。",
+          evidence: concreteExample
+        },
+        {
+          title: "机制反转追问",
+          rationale: "样本在拿到具体例子后，会把个体表现翻转成机制、奖励和代价问题。",
+          action: "用户给出具体事件后，从机制奖励、隐性代价或反方假设继续追问。",
+          expectedEngineChange: "确认后，引擎会在具体例子之后更稳定地触发“机制反转”策略。",
+          evidence: turns.find((turn) => turn.move === "challenge")?.content ?? "如果反过来看，是不是机制奖励了报喜不报忧？"
+        },
+        {
+          title: "单步节奏控制",
+          rationale: "样本每轮只推进一个动作，避免把自然专访变成建议清单。",
+          action: "一次只问一个问题；用户停顿时先留白，再补短反馈。",
+          expectedEngineChange: "确认后，引擎会更偏向短反馈、留白和单步追问，而不是连续输出多个建议。",
+          evidence: hostTurns[0]?.content ?? "样本中主持人先接住回答，再推进问题。"
+        }
+      ];
   const insight: CorpusInsight = {
     id: insightId,
     importId,
     title: `${sanitizedInput.title}：访谈逻辑分析`,
-    dimensions: [
-      {
-        name: "追问动作",
-        score: Math.min(5, 2 + followUpCount + challengeCount),
-        finding: "样本先要求具体化，再把回答推进到机制层。",
-        example: concreteExample,
-        recommendedAction: "在当前引擎中增加“具体时刻 -> 机制反转”的追问序列。"
-      },
-      {
-        name: "节奏控制",
-        score: Math.min(5, 3 + Math.floor(hostTurns.length / 2)),
-        finding: "主持人没有急着总结，而是在回答后保留一个二次追问空间。",
-        example: hostTurns[0]?.content ?? "样本中主持人先接住回答，再推进问题。",
-        recommendedAction: "用户停顿时保留短留白，不立即补问题。"
-      },
-      {
-        name: "反方推动",
-        score: Math.min(5, 2 + challengeCount),
-        finding: "样本会把用户叙述翻转成机制假设，帮助形成可挑战观点。",
-        example: turns.find((turn) => turn.move === "challenge")?.content ?? "如果反过来看，是不是机制奖励了报喜不报忧？",
-        recommendedAction: "在观点专访中增加反例和反方假设。"
-      }
-    ],
-    improvementPlan: [
-      {
-        title: "具体时刻优先",
-        rationale: "样本面对抽象评价时没有立刻解释或建议，而是先把被访者带回一个可复盘的具体场景。",
-        action: "用户使用“很难、很乱、不主动”等抽象评价时，先追问最近一次具体时刻。",
-        expectedEngineChange: "确认后，引擎会在抽象评价后优先触发“索要具体时刻”的追问动作。",
-        evidence: concreteExample
-      },
-      {
-        title: "机制反转追问",
-        rationale: "样本在拿到具体例子后，会把个体表现翻转成机制、奖励和代价问题。",
-        action: "用户给出具体事件后，从机制奖励、隐性代价或反方假设继续追问。",
-        expectedEngineChange: "确认后，引擎会在具体例子之后更稳定地触发“机制反转”策略。",
-        evidence: turns.find((turn) => turn.move === "challenge")?.content ?? "如果反过来看，是不是机制奖励了报喜不报忧？"
-      },
-      {
-        title: "单步节奏控制",
-        rationale: "样本每轮只推进一个动作，避免把自然专访变成建议清单。",
-        action: "一次只问一个问题；用户停顿时先留白，再补短反馈。",
-        expectedEngineChange: "确认后，引擎会更偏向短反馈、留白和单步追问，而不是连续输出多个建议。",
-        evidence: hostTurns[0]?.content ?? "样本中主持人先接住回答，再推进问题。"
-      }
-    ],
+    dimensions,
+    improvementPlan,
     recommendedPatches: [patch],
     createdAt
   };

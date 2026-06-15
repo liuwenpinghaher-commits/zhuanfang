@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { analyzeImportedInterview } from "../../../../src/domain/engine";
 import type { AudioTranscription, AudioTranscriptionInput, CorpusImportInput } from "../../../../src/domain/types";
-import type { BailianAudioTranscriptionClient } from "../providers/bailian";
+import { analyzeCorpusWithLlm } from "../intelligence/corpus-llm";
+import type { BailianAudioTranscriptionClient, BailianChatClient } from "../providers/bailian";
 import type { ProductStateRepository } from "../product-state-repository";
 
 interface CorpusInsightRequestPayload {
@@ -19,6 +20,7 @@ interface CorpusTranscriptionRequestPayload {
 
 interface CorpusRouteOptions {
   bailianTranscriptionClient?: BailianAudioTranscriptionClient;
+  bailianChatClient?: BailianChatClient;
 }
 
 export async function registerCorpusRoutes(
@@ -77,10 +79,25 @@ export async function registerCorpusRoutes(
     }
 
     const state = repository.getState();
-    const { insight, nextState } = analyzeImportedInterview(state, input);
+    const { insight, nextState } = await analyzeCorpus(state, input, options.bailianChatClient);
     repository.replaceState(nextState);
     return { insight, state: nextState };
   });
+}
+
+async function analyzeCorpus(
+  state: Parameters<typeof analyzeImportedInterview>[0],
+  input: CorpusImportInput,
+  chatClient: BailianChatClient | undefined
+) {
+  if (chatClient) {
+    try {
+      return await analyzeCorpusWithLlm(state, input, chatClient);
+    } catch (error) {
+      console.warn("[corpus] LLM analysis failed, falling back to deterministic:", error instanceof Error ? error.message : error);
+    }
+  }
+  return analyzeImportedInterview(state, input);
 }
 
 function normalizeCorpusInput(value: unknown): CorpusImportInput {
