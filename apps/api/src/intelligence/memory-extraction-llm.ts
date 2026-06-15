@@ -1,6 +1,7 @@
 // LLM extraction of candidate long-term memories from an imported document.
 // Returns reviewable candidates (the user approves each before it's stored).
 import type { ImportedMemoryCandidate } from "../../../../src/domain/import";
+import { sanitizeExternalMaterialBlock } from "../../../../src/domain/engine";
 import type { BailianChatClient } from "../providers/bailian";
 import { asArray, asObject, asString, parseJsonObject } from "./llm-json";
 
@@ -24,7 +25,7 @@ export async function extractCandidateMemories(
           `资料标题：${title}`,
           "",
           "=== 资料内容 ===",
-          content.slice(0, 8000),
+          sanitizeExternalMaterialBlock(content, "（外部资料片段已清洗）").slice(0, 8000),
           "=== 内容结束 ===",
           "",
           "请输出 JSON：",

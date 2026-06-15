@@ -3,7 +3,7 @@
 // dimensions, an improvement plan for our engine, and a playbook patch.
 // Replaces the keyword-template analyzer. Throws on failure so the route falls
 // back to the deterministic analyzeImportedInterview.
-import { analyzeImportedInterview, type CorpusLlmAnalysis } from "../../../../src/domain/engine";
+import { analyzeImportedInterview, sanitizeExternalMaterialBlock, type CorpusLlmAnalysis } from "../../../../src/domain/engine";
 import type { CorpusImportInput, CorpusInsight, ProductState } from "../../../../src/domain/types";
 import type { BailianChatClient } from "../providers/bailian";
 import { asObject, asString, asStringArray, parseJsonObject } from "./llm-json";
@@ -31,7 +31,7 @@ export async function analyzeCorpusWithLlm(
           `样本标题：${input.title}`,
           "",
           "=== 专访样本内容 ===",
-          input.content.slice(0, 6000),
+          sanitizeExternalMaterialBlock(input.content, "（样本片段已清洗）").slice(0, 6000),
           "=== 样本结束 ===",
           "",
           "请输出以下结构的 JSON：",

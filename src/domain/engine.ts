@@ -530,7 +530,7 @@ export function createInitialProductState(): ProductState {
 const removedExternalInstruction = "[已移除外部指令片段]";
 
 const externalInstructionPatterns: RegExp[] = [
-  /忽略(?:以上|之前|前面|所有)?(?:的)?(?:系统|开发者|用户)?指令/gi,
+  /忽略(?:以上|之前|前面|所有)*(?:的)?(?:系统|开发者|用户)?指令/gi,
   /(?:系统|开发者)指令/gi,
   /不要遵守(?:用户)?确认流程/gi,
   /(?:直接)?输出密钥/gi,
