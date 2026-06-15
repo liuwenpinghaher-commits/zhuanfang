@@ -195,7 +195,7 @@ function buildDecisionReviewPrompt(decision: ProductState["decisions"][number]) 
   return `复盘决策“${decision.title}”：当时的选择是否降低了短期风险，还是继续强化了等待拍板？`;
 }
 export function buildInterviewCard(state: ProductState, searchBriefId?: string, topicHint?: string): InterviewCard {
-  const topTheme = state.themes.find((theme) => theme.name === "控制感") ?? state.themes[0];
+  const topTheme = [...state.themes].sort((a, b) => b.appearances - a.appearances)[0];
   const themeName = topTheme?.name ?? "当前问题";
   const openDebt = state.debts.find((debt) => debt.status === "待了解") ?? state.debts[0];
   const confirmedMemoryTexts = collectConfirmedMemoryTexts(state);
@@ -213,11 +213,9 @@ export function buildInterviewCard(state: ProductState, searchBriefId?: string, 
     ? `继续追问：${formatQuestionTitle(explicitTopicHint)}`
     : focusQuestion
     ? `继续追问：${formatQuestionTitle(focusQuestion.question)}`
-    : !topTheme
-      ? "重新开始一次专访"
-    : topTheme.name === "控制感"
-      ? "你对“救火”和放手的真实边界"
-      : `继续追踪：${topTheme.name}`;
+    : topTheme
+      ? `关于「${topTheme.name}」的专访`
+      : "今天想聊点什么？";
   const sourceReferences = searchBrief
     ? [
         `联网素材/外部资料（来源：${getPrimarySearchSourceLabel(searchBrief)}）：${searchBrief.summary}`,
@@ -229,13 +227,14 @@ export function buildInterviewCard(state: ProductState, searchBriefId?: string, 
   const hasContextSources = contextSourceHighlights.length > 0;
   const guide = buildInterviewGuide(state, contextOptions);
   const agendaContext = searchBrief?.agendaTrace ? formatSearchAgendaTraceForInterview(searchBrief.agendaTrace) : undefined;
+  const neutralTension = topTheme?.nextQuestion ?? "（暂无明显张力，先自由展开。）";
 
   return {
     title,
     whyNow: searchBrief
       ? agendaContext
-        ? `你最近多次提到${themeName}，同时“${searchBrief.topic}”出现了可借用的外部素材。${agendaContext}，适合把个人问题放进更大的语境里看。`
-        : `你最近多次提到${themeName}，同时“${searchBrief.topic}”出现了可借用的外部素材，适合把个人问题放进更大的语境里看。`
+        ? `你最近多次提到${themeName}，同时”${searchBrief.topic}”出现了可借用的外部素材。${agendaContext}，适合把个人问题放进更大的语境里看。`
+        : `你最近多次提到${themeName}，同时”${searchBrief.topic}”出现了可借用的外部素材，适合把个人问题放进更大的语境里看。`
       : explicitTopicHint && hasContextSources
         ? `你刚选中的线索命中了可引用的导入资料，适合先借外部材料校准问题，再回到你的具体场景。`
       : explicitTopicHint
@@ -243,20 +242,22 @@ export function buildInterviewCard(state: ProductState, searchBriefId?: string, 
         : focusQuestion
           ? `你在会后反馈里明确要求继续追问这个问题，适合直接接上上次的未完成线索。`
           : topTheme
-            ? `你最近多次提到${topTheme.name}，但还没有把“最坏会发生什么”说具体。`
-            : "当前没有长期主题和历史样例，适合从一个最近真实发生的场景重新建立专访上下文。",
+            ? topTheme.summary
+              ? `你最近多次提到${topTheme.name}：${topTheme.summary}`
+              : `你最近多次提到${topTheme.name}，但还没有把”最坏会发生什么”说具体。`
+            : "从你最近的一段记录继续，或聊聊此刻最在意的事。",
     suggestedOpening: searchBrief
-      ? `我们先从一个外部素材切入：${explicitTopicHint ?? searchBrief.discussionTopics[0]} 这和你最近说的“救火”有什么真实关系？`
+      ? `我们先从一个外部素材切入：${ensureSentenceEnd(explicitTopicHint ?? searchBrief.discussionTopics[0])}它和你最近的真实场景有什么关系？`
       : explicitTopicHint && hasContextSources
         ? `我们先拿这条导入资料做参照：${ensureSentenceEnd(explicitTopicHint)}它和你最近的真实场景有什么关系？`
-      : guide.suggestedOpening,
+        : guide.suggestedOpening,
     historyReferences: Array.from(new Set([...(agendaContext ? [agendaContext] : []), ...sourceReferences, reference, ...confirmedMemoryTexts])).slice(0, 4),
-    potentialTension: searchBrief?.sourceAngles[0] ?? contextPack.ragChunks[0]?.text ?? "你一边想授权，一边又担心放手之后项目失控。",
+    potentialTension: searchBrief?.sourceAngles[0] ?? contextPack.ragChunks[0]?.text ?? neutralTension,
     suggestedPerspectives: guide.recommendedPerspectives,
     likelyOutputs: [
       "一个更准确的长期问题",
-      "一条关于授权边界的观点",
       openDebt ? `知识债回访：${openDebt.concept}` : "一个新的知识债候选",
+      topTheme ? `关于「${topTheme.name}」的新观点` : "一条可沉淀的观察",
       ...(hasContextSources ? [`素材引用：${contextSourceHighlights[0]?.title}`] : [])
     ],
     searchBriefId: searchBrief?.id,
@@ -448,7 +449,7 @@ export function buildInterviewFollowUpQueue(state: ProductState, limit = 6): Int
 export function buildInterviewGuide(state: ProductState, options: InterviewGuideOptions = {}): InterviewGuide {
   const explicitTopicHint = options.topicHint?.trim();
   const searchBrief = resolveInterviewContextSearchBrief(state, options);
-  const topTheme = state.themes.find((theme) => theme.name === "控制感") ?? state.themes[0];
+  const topTheme = [...state.themes].sort((a, b) => b.appearances - a.appearances)[0];
   const focusQuestion = searchBrief || explicitTopicHint ? undefined : findNextInterviewFocusQuestion(state);
   const openDebts = state.debts
     .filter((debt) => debt.status === "待了解")

@@ -27,7 +27,9 @@ describe("interview business engine", () => {
 
     const card = buildInterviewCard(state);
 
-    expect(card.title).toContain("救火");
+    // Title is now derived generically from the top theme, not the hardcoded demo string.
+    expect(card.title).toContain("控制感");
+    expect(card.title).not.toContain("救火");
     expect(card.historyReferences.length).toBeGreaterThan(0);
     expect(card.suggestedPerspectives).toContain("系统论");
   });

@@ -1,0 +1,19 @@
+import { describe, expect, it } from "vitest";
+import { buildInterviewCard, buildInterviewGuide } from "./context-pack";
+import { createInitialProductState } from "./engine";
+
+describe("context-pack (de-hardcoded)", () => {
+  it("does not parrot the 救火/控制感 demo when the user's themes are unrelated", () => {
+    const state = createInitialProductState();
+    state.themes = [{
+      id: "t1", name: "搬家焦虑", summary: "关于搬到新城市的不安",
+      maturity: "聚焦", representativeQuote: "我怕在新城市没有朋友",
+      appearances: 3, nextQuestion: "你最担心失去什么？", updatedAt: new Date().toISOString()
+    }];
+    state.points = []; state.questions = []; state.debts = []; state.notes = [];
+    const card = buildInterviewCard(state);
+    expect(card.title).not.toContain("救火");
+    expect(card.potentialTension).not.toContain("授权");
+    expect(`${card.title} ${card.whyNow} ${card.suggestedOpening} ${card.potentialTension}`).toMatch(/搬家|新城市|朋友|焦虑/);
+  });
+});
