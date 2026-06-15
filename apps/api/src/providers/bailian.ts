@@ -378,7 +378,7 @@ export function createBailianCharacterInterviewClient(
   };
 }
 
-function extractPreSignals(text: string): { content: string; preSignals?: InteractionPreSignals } {
+export function extractPreSignals(text: string): { content: string; preSignals?: InteractionPreSignals } {
   const match = text.match(/<pre_signals>([\s\S]*?)<\/pre_signals>/);
   if (!match) {
     return { content: text };

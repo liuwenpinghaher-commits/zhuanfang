@@ -94,6 +94,7 @@ describe("connectBailianRealtimeWebsocket", () => {
       destination: {},
       createMediaStreamSource: vi.fn(() => ({ disconnect: vi.fn(), connect: vi.fn() })),
       createScriptProcessor: vi.fn(() => ({ disconnect: vi.fn(), connect: vi.fn(), onaudioprocess: null })),
+      createAnalyser: vi.fn(() => ({ fftSize: 1024, frequencyBinCount: 512, getByteFrequencyData: vi.fn() })),
       createBuffer: vi.fn((_ch: number, len: number, _sr: number) => ({
         length: len,
         getChannelData: vi.fn(() => new Float32Array(len))

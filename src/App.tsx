@@ -888,6 +888,17 @@ export default function App() {
                     if (!prev) return prev;
                     return receiveUserTurn(prev, text);
                   });
+                  // Phase 8: regenerate pre_signals for the next turn (voice path).
+                  if (interviewId) {
+                    productApiClient
+                      .generateInterviewPreSignals(interviewId)
+                      .then((res) => {
+                        setSession((prev) => (prev ? { ...prev, interactionPreSignals: res.preSignals } : prev));
+                      })
+                      .catch(() => {
+                        // keep existing signals on failure
+                      });
+                  }
                 },
                 onAssistantTranscript: (text, isFinal) => {
                   if (!isFinal || !text.trim()) return;
@@ -909,6 +920,8 @@ export default function App() {
               },
             });
 
+            // Publish the microphone — without this the agent never hears the user.
+            await livekitSession.startListening();
             setLivekitVoiceSession(livekitSession);
             setRecording(true);
             setVoiceStatus("listening");
@@ -965,6 +978,20 @@ export default function App() {
                     }
                     return updated;
                   });
+                  // Phase 8: regenerate pre_signals for the next turn and push
+                  // them into the live connection (the voice model can't emit them).
+                  const voiceSid = session?.id;
+                  if (voiceSid) {
+                    productApiClient
+                      .generateInterviewPreSignals(voiceSid)
+                      .then((res) => {
+                        setSession((prev) => (prev ? { ...prev, interactionPreSignals: res.preSignals } : prev));
+                        if ("updatePreSignals" in connection) connection.updatePreSignals(res.preSignals);
+                      })
+                      .catch(() => {
+                        // keep existing signals on failure
+                      });
+                  }
                 },
                 onAssistantTranscript: (text, isFinal) => {
                   if (!isFinal || !text.trim()) return;

@@ -7,6 +7,7 @@ import type {
   CorpusImportInput,
   CorpusInsight,
   DualTrackNote,
+  InteractionPreSignals,
   InterviewControlAction,
   InterviewMode,
   InterviewSession,
@@ -37,6 +38,7 @@ export interface ProductApiClient {
   sendInterviewTurn(sessionId: string, input: SendInterviewTurnRequest): Promise<InterviewSessionResponse>;
   applyInterviewControl(sessionId: string, input: ApplyInterviewControlRequest): Promise<InterviewSessionResponse>;
   endInterviewSession(sessionId: string): Promise<EndInterviewSessionResponse>;
+  generateInterviewPreSignals(sessionId: string): Promise<GeneratePreSignalsResponse>;
   createRealtimeVoiceSession(input: CreateRealtimeVoiceSessionRequest): Promise<RealtimeVoiceSessionResponse>;
   exchangeRealtimeVoiceSdp(signalingPath: string, offerSdp: string): Promise<string>;
   interruptRealtimeVoiceSession(
@@ -165,6 +167,11 @@ export interface InterviewSessionResponse {
 
 export interface EndInterviewSessionResponse extends InterviewSessionResponse {
   note: DualTrackNote;
+}
+
+export interface GeneratePreSignalsResponse {
+  preSignals: InteractionPreSignals;
+  session: InterviewSession;
 }
 
 export interface CreateRealtimeVoiceSessionRequest {
@@ -399,6 +406,11 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         ...response,
         state: normalizeProductState(response.state)
       };
+    },
+    async generateInterviewPreSignals(sessionId) {
+      return (await requestJson(`/api/interview-sessions/${sessionId}/pre-signals`, {
+        method: "POST"
+      })) as GeneratePreSignalsResponse;
     },
     async createRealtimeVoiceSession(input) {
       return (await requestJson("/api/realtime-voice/sessions", {

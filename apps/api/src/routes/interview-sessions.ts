@@ -15,6 +15,7 @@ import type {
   ProductState
 } from "../../../../src/domain/types";
 import { finalizeSessionWithLlm } from "../intelligence/finalize-llm";
+import { generatePreSignals } from "../intelligence/pre-signals-llm";
 import type { ProductStateRepository } from "../product-state-repository";
 import type { BailianChatClient, BailianCharacterInterviewClient } from "../providers/bailian";
 
@@ -132,6 +133,27 @@ export async function registerInterviewSessionRoutes(
 
     repository.replaceState(result.nextState);
     return { session: completedSession, note: result.note, state: result.nextState };
+  });
+
+  // Voice path: generate interaction pre_signals for the next turn on demand
+  // (the realtime voice model, unlike the character model, doesn't emit them).
+  server.post("/api/interview-sessions/:id/pre-signals", async (request, reply) => {
+    const state = repository.getState();
+    const session = findSession(state, getSessionId(request.params));
+    if (!session) {
+      return reply.code(404).send({ error: "Interview session not found." });
+    }
+    if (!options.bailianChatClient) {
+      return reply.code(503).send({ error: "Chat client is not configured." });
+    }
+    try {
+      const preSignals = await generatePreSignals(session, options.bailianChatClient);
+      const updatedSession: InterviewSession = { ...session, interactionPreSignals: preSignals };
+      repository.replaceState(upsertSession(state, updatedSession));
+      return { preSignals, session: updatedSession };
+    } catch (error) {
+      return reply.code(502).send({ error: error instanceof Error ? error.message : "pre_signals generation failed." });
+    }
   });
 }
 

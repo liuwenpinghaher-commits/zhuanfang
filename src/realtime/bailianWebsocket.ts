@@ -7,6 +7,7 @@ import type {
 import type { InterruptionScene } from "../domain/engine";
 import { buildInterruptionContext, getInterruptionScene, buildFallbackPreSignals } from "../domain/engine";
 import { createExpressionStateDetector, type ExpressionStateInput } from "./expressionStateDetector";
+import { createSpeechFeatureTracker, spectralCentroid } from "./speechFeatures";
 import { evaluateIntent } from "./interactionIntentEngine";
 import type { InteractionPreSignals } from "../domain/types";
 
@@ -20,6 +21,7 @@ export interface BailianRealtimeWebsocketConnection {
   session: RealtimeVoiceSessionResponse;
   stream: MediaStream;
   setStrategy(strategy: string | undefined): void;
+  updatePreSignals(next: InteractionPreSignals | null): void;
   beginAssistantTurn(input: { turnId?: string; providerTurnId?: string }): void;
   markAssistantSpeaking(input: { text: string; audioMs?: number }): void;
   completeAssistantTurn(): AssistantSpeechProgress | null;
@@ -69,6 +71,16 @@ export async function connectBailianRealtimeWebsocket(
   const audioContext = new AudioContext({ sampleRate: 16000 });
   const source = audioContext.createMediaStreamSource(stream);
   const processor = audioContext.createScriptProcessor(4096, 1, 1);
+  // FFT tap for a real pitch/brightness signal (spectral centroid).
+  const analyser = audioContext.createAnalyser();
+  analyser.fftSize = 1024;
+  source.connect(analyser);
+  const freqData = new Uint8Array(analyser.frequencyBinCount);
+  // Real frame duration: 4096 samples / sampleRate (~256ms). The previous code
+  // assumed 32ms frames, under-reporting silence/duration by ~8x.
+  const frameMs = Math.round((4096 / audioContext.sampleRate) * 1000);
+  const interruptEvalFrames = Math.max(1, Math.round(250 / frameMs));
+  const guidanceEvalFrames = Math.max(1, Math.round(480 / frameMs));
 
   const ws = new WebSocket(wsUrl);
   let progress: AssistantSpeechProgress | null = null;
@@ -84,6 +96,10 @@ export async function connectBailianRealtimeWebsocket(
    *  Evaluates the user's speaking rhythm + semantic signals so that backchannel
    *  words (嗯, 对) don't interrupt, but real sentences do. */
   const expressionDetector = createExpressionStateDetector();
+  /** Computes real speech features (rate, pitch trend, pause position, repetition)
+   *  from transcript + FFT, replacing the previous hardcoded constants. */
+  const featureTracker = createSpeechFeatureTracker();
+  let guidanceCountThisTurn = 0;
   let preSignals: InteractionPreSignals | null = options.preSignals ?? null;
   /** Tracks how many processor frames since the last time energy was above the
    *  speech threshold — used as a proxy for silenceMs. */
@@ -99,6 +115,7 @@ export async function connectBailianRealtimeWebsocket(
 
   function updateSemanticFlags(text: string) {
     latestPartialTranscript = text;
+    featureTracker.onTranscript(text, Date.now());
     semanticFlags.hasFilledPause = /[嗯唔啊]/.test(text);
     semanticFlags.hasVagueTerm = /那个|这个|某种|怎么说呢|反正就是|你懂的|那种/.test(text);
     semanticFlags.hasEmotionWord = /矛盾|纠结|两难|不知道|不确定|也许|可能吧|烦|累|受不了|没办法|后悔|早知道|如果当初/.test(text);
@@ -107,15 +124,18 @@ export async function connectBailianRealtimeWebsocket(
   }
 
   function evaluateExpressionIntent(energy: number): ReturnType<typeof evaluateIntent> {
+    const now = Date.now();
+    const features = featureTracker.features(now, latestPartialTranscript);
     const exprInput: ExpressionStateInput = {
-      speechRate: 3, baselineSpeechRate: 3,
+      speechRate: features.speechRate,
+      baselineSpeechRate: features.baselineSpeechRate,
       energy, baselineEnergy: 0.3,
-      pitchTrend: "flat",
-      currentSilenceMs: lowEnergyFrames * 32,
-      pausePosition: "mid_clause",
+      pitchTrend: features.pitchTrend,
+      currentSilenceMs: lowEnergyFrames * frameMs,
+      pausePosition: features.pausePosition,
       ...semanticFlags,
-      samePointCount: 0,
-      timeSinceLastGuidance: 5000,
+      samePointCount: features.samePointCount,
+      timeSinceLastGuidance: features.timeSinceLastGuidance,
     };
     const exprState = expressionDetector.evaluate(exprInput);
     return evaluateIntent({
@@ -123,10 +143,10 @@ export async function connectBailianRealtimeWebsocket(
       preSignals,
       isAssistantSpeaking: aiIsSpeaking,
       partialTranscript: latestPartialTranscript,
-      audioDuration: highEnergyFrames * 32,
+      audioDuration: highEnergyFrames * frameMs,
       energy,
-      guidanceCountThisTurn: 0,
-      timeSinceLastGuidance: 5000,
+      guidanceCountThisTurn,
+      timeSinceLastGuidance: features.timeSinceLastGuidance,
       guidanceEnabled: true,
       guidanceBudget: { maxPerTurn: 2, minIntervalMs: 5000 },
     });
@@ -137,6 +157,8 @@ export async function connectBailianRealtimeWebsocket(
       cancelAndSaveContext();
       options.onSpeechStart?.();
     } else if (decision.intent === "guidance" && decision.action === "nudge" && decision.detail?.text) {
+      guidanceCountThisTurn++;
+      featureTracker.markGuidance(Date.now());
       options.onGuidance?.(decision.detail.text);
     } else if (decision.intent === "noise") {
       // ignore
@@ -294,6 +316,9 @@ export async function connectBailianRealtimeWebsocket(
             }));
             const level = Math.max(...Array.from(inputData).map(Math.abs));
             options.onAudioLevel?.(level);
+            // Sample a real pitch/brightness signal for the expression engine.
+            analyser.getByteFrequencyData(freqData);
+            featureTracker.onCentroid(spectralCentroid(freqData, audioContext.sampleRate));
             // Track silence / speech frames for expression-state evaluation
             const ENERGY_THRESHOLD = 0.08;
             if (level > ENERGY_THRESHOLD) {
@@ -303,13 +328,12 @@ export async function connectBailianRealtimeWebsocket(
               lowEnergyFrames++;
               highEnergyFrames = Math.max(0, highEnergyFrames - 1);
             }
-            if (aiIsSpeaking && highEnergyFrames >= 8) {
+            if (aiIsSpeaking && highEnergyFrames >= interruptEvalFrames) {
               const decision = evaluateExpressionIntent(level);
               handleIntentDecision(decision);
-            } else if (!aiIsSpeaking && highEnergyFrames > 0 && highEnergyFrames % 15 === 0) {
-              // Periodically evaluate expression state while user is speaking
-              // (every ~480ms = 15 frames × 32ms) to detect guidance opportunities
-              // without overwhelming the system.
+            } else if (!aiIsSpeaking && highEnergyFrames > 0 && highEnergyFrames % guidanceEvalFrames === 0) {
+              // Periodically evaluate expression state while the user speaks
+              // (~480ms cadence) to catch guidance opportunities without spamming.
               const decision = evaluateExpressionIntent(level);
               if (decision.intent === "guidance" && decision.action === "nudge") {
                 handleIntentDecision(decision);
@@ -324,6 +348,9 @@ export async function connectBailianRealtimeWebsocket(
             setStrategy(strategy) {
               currentStrategy = strategy;
               interruptionScene = getInterruptionScene(strategy);
+            },
+            updatePreSignals(next) {
+              preSignals = next;
             },
             beginAssistantTurn(input) {
               fullAssistantTranscript = "";
@@ -432,6 +459,7 @@ export async function connectBailianRealtimeWebsocket(
 
         case "response.created": {
           aiIsSpeaking = true;
+          guidanceCountThisTurn = 0; // new AI turn -> reset the user's per-turn guidance budget
           if (pendingInterruptionContext) {
             ws.send(JSON.stringify({ type: "response.cancel" }));
           }
