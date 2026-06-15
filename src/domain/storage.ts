@@ -59,7 +59,7 @@ export function normalizeProductState(value: unknown): ProductState {
     configVersions: Array.isArray(candidate.configVersions) ? candidate.configVersions : fallback.configVersions,
     auditEvents: Array.isArray(candidate.auditEvents) ? candidate.auditEvents : fallback.auditEvents,
     aiRunEvents: Array.isArray(candidate.aiRunEvents) ? candidate.aiRunEvents : fallback.aiRunEvents,
-    workflowRuns: Array.isArray(candidate.workflowRuns) ? candidate.workflowRuns : fallback.workflowRuns,
+    workflowRuns: Array.isArray(candidate.workflowRuns) ? migrateWorkflowRuns(candidate.workflowRuns) : fallback.workflowRuns,
     operationalChecks: Array.isArray(candidate.operationalChecks) ? candidate.operationalChecks : fallback.operationalChecks,
     revision: typeof candidate.revision === "number" ? candidate.revision : fallback.revision,
     systemConfig: {
@@ -79,6 +79,18 @@ export function normalizeProductState(value: unknown): ProductState {
       }
     }
   };
+}
+
+function migrateWorkflowRuns(value: unknown[]): import("./types").WorkflowRun[] {
+  return value.map((run) => {
+    if (!run || typeof run !== "object") return run as import("./types").WorkflowRun;
+    const r = run as Record<string, unknown>;
+    // Migrate legacy "mastra-runtime" providerId to "local-workflow-runtime"
+    if (r.providerId === "mastra-runtime") {
+      return { ...r, providerId: "local-workflow-runtime" } as import("./types").WorkflowRun;
+    }
+    return run as import("./types").WorkflowRun;
+  });
 }
 
 function normalizeSearchBriefs(value: unknown[]): SearchBrief[] {

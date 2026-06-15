@@ -494,13 +494,13 @@ function buildPrivacyNoticeProcessors(categories: PrivacyNoticeDataCategory[]): 
       transfer: "external-provider"
     },
     {
-      id: "mastra-runtime",
-      label: "Mastra-compatible Workflow Runtime",
-      role: "optional-subprocessor",
-      purpose: "在用户配置外部 runtime 后，用于执行工作流编排和上下文构建。",
+      id: "local-workflow-runtime",
+      label: "Local Workflow Runtime",
+      role: "processor",
+      purpose: "本地工作流引擎，用于执行专访准备、记忆投影、素材导入等工作流编排，无数据出境。",
       dataCategories: ["memory", "operations", "external_knowledge"],
-      configuration: "WORKFLOW_RUNTIME_PROVIDER / MASTRA_RUNTIME_ENDPOINT",
-      transfer: "external-provider"
+      configuration: "（内置，无需额外配置）",
+      transfer: "local-or-self-hosted"
     }
   ];
 }

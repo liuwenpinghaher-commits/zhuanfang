@@ -354,7 +354,7 @@ export interface WorkflowRun {
   id: string;
   workflow: WorkflowId;
   status: "queued" | "running" | "succeeded" | "degraded" | "failed";
-  providerId: "local-workflow-runtime" | "mastra-runtime";
+  providerId: "local-workflow-runtime";
   entityType: AiRunEvent["entityType"];
   entityId: string;
   inputSummary: string;
