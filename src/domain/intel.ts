@@ -49,8 +49,15 @@ export function ingestIntelItems(
   items: TriagedIntelItem[]
 ): { count: number; nextState: ProductState } {
   const createdAt = nowIso();
+  // Dedup against existing items AND against duplicates within this batch.
   const seenUrls = new Set(state.intelItems.map((item) => item.url));
-  const fresh = items.filter((item) => item.url && !seenUrls.has(item.url));
+  const fresh: TriagedIntelItem[] = [];
+  for (const item of items) {
+    if (item.url && !seenUrls.has(item.url)) {
+      seenUrls.add(item.url);
+      fresh.push(item);
+    }
+  }
 
   const intelItems: IntelItem[] = fresh.map((item) => ({
     id: makeId("intel-item"),

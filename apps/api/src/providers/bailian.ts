@@ -132,6 +132,7 @@ interface BailianChatClientOptions {
   apiKey: string;
   baseUrl?: string;
   model?: string;
+  timeoutMs?: number;
   fetchImpl?: FetchLike;
 }
 
@@ -306,6 +307,7 @@ async function safeReadErrorBody(response: Response): Promise<string> {
 export function createBailianChatClient(options: BailianChatClientOptions): BailianChatClient {
   const baseUrl = (options.baseUrl ?? BAILIAN_DEFAULT_BASE_URL).replace(/\/$/, "");
   const defaultModel = options.model ?? BAILIAN_GENERAL_MODEL;
+  const timeoutMs = options.timeoutMs ?? 60000;
   const fetchImpl = options.fetchImpl ?? fetch;
 
   return {
@@ -331,7 +333,9 @@ export function createBailianChatClient(options: BailianChatClientOptions): Bail
           authorization: `Bearer ${options.apiKey}`,
           "content-type": "application/json"
         },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
+        // Latency/cost guard: don't let a hung request stall a route forever.
+        signal: AbortSignal.timeout(timeoutMs)
       });
 
       if (!response.ok) {

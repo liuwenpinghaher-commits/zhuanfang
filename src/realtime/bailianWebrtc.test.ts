@@ -179,7 +179,9 @@ describe("createTurnStateMachine", () => {
   it("escalates to long_pause once silence exceeds the short threshold", () => {
     const machine = makeMachine();
     machine.update({ inputLevel: 0.5, silenceMs: 0 });
-    const next = machine.update({ inputLevel: 0.05, silenceMs: 500 });
+    // 1000ms is past the 400-800ms guidance window and below the long-pause
+    // threshold (1500ms), so the machine settles in long_pause.
+    const next = machine.update({ inputLevel: 0.05, silenceMs: 1000 });
     expect(next.phase).toBe("long_pause");
     expect(next.backchannel).toBeNull();
   });

@@ -7,7 +7,8 @@ describe("silenceVadDetector", () => {
   it("exposes a stable detector id", () => {
     const detector = createSilenceVadDetector(baseOptions);
     expect(detector.id).toBe(SILENCE_VAD_DETECTOR_ID);
-  
+  });
+
   it("returns guidance in 400-800ms silence window when assistant is not speaking", () => {
     const detector = createSilenceVadDetector(baseOptions);
     const result = detector.evaluate({
@@ -31,7 +32,6 @@ describe("silenceVadDetector", () => {
     });
     expect(result.decision).not.toBe("guidance");
   });
-});
 
   it("flags continue while user is actively speaking", () => {
     const detector = createSilenceVadDetector(baseOptions);
@@ -69,11 +69,13 @@ describe("silenceVadDetector", () => {
     expect(decision.confidence).toBeLessThanOrEqual(0.4);
   });
 
-  it("returns continue with mid confidence between thresholds", () => {
+  it("returns continue with mid confidence between thresholds (outside guidance window)", () => {
     const detector = createSilenceVadDetector(baseOptions);
+    // 1000ms is past the silence threshold but outside the 400-800ms guidance
+    // window and below the long-pause threshold -> short-pause "continue".
     const decision = detector.evaluate({
       inputLevel: 0.05,
-      silenceMs: 600,
+      silenceMs: 1000,
       isUserSpeaking: false,
       isAssistantSpeaking: false
     });

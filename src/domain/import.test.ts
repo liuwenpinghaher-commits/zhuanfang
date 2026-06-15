@@ -1,0 +1,49 @@
+import { describe, expect, it } from "vitest";
+import { createInitialProductState } from "./engine";
+import { chunkDocument, ingestImportSource } from "./import";
+
+describe("chunkDocument", () => {
+  it("splits on paragraphs and caps chunk size", () => {
+    const text = `${"a".repeat(700)}\n\n${"b".repeat(100)}`;
+    const chunks = chunkDocument(text, 600);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((chunk) => chunk.length <= 600)).toBe(true);
+  });
+
+  it("returns a single chunk for short text", () => {
+    expect(chunkDocument("hello world", 600)).toEqual(["hello world"]);
+  });
+});
+
+describe("ingestImportSource", () => {
+  it("creates an import source, rag chunks, and pending candidates", () => {
+    const state = createInitialProductState();
+    const { sourceId, candidateCount, nextState } = ingestImportSource(
+      state,
+      { title: "T", content: "para one\n\npara two", sourceType: "text" },
+      [
+        { text: "fact A", evidenceQuote: "para one", sensitivity: "normal" },
+        { text: "secret B", evidenceQuote: "para two", sensitivity: "sensitive" }
+      ]
+    );
+
+    expect(candidateCount).toBe(2);
+    expect(nextState.importSources[0].id).toBe(sourceId);
+    // sensitivity rolls up to sensitive when any candidate is sensitive
+    expect(nextState.importSources[0].sensitivity).toBe("sensitive");
+    expect(nextState.ragChunks.length).toBeGreaterThan(0);
+
+    const newCandidates = nextState.memoryCandidates.filter((candidate) => candidate.sourceId === sourceId);
+    expect(newCandidates).toHaveLength(2);
+    expect(newCandidates.every((candidate) => candidate.status === "pending")).toBe(true);
+    expect(newCandidates.every((candidate) => typeof candidate.reviewScore === "number")).toBe(true);
+    expect(newCandidates.every((candidate) => candidate.sourceType === "import_source")).toBe(true);
+  });
+
+  it("does not mutate the input state", () => {
+    const state = createInitialProductState();
+    const before = state.importSources.length;
+    ingestImportSource(state, { title: "T", content: "x", sourceType: "text" }, []);
+    expect(state.importSources.length).toBe(before);
+  });
+});
