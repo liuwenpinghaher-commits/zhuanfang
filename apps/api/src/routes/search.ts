@@ -9,7 +9,9 @@ import {
   startCapabilityTask
 } from "../../../../src/capabilities/task";
 import { buildSearchBrief, createSearchBriefFromInput } from "../../../../src/domain/engine";
-import type { SearchProviderId } from "../../../../src/domain/types";
+import type { SearchBriefInput, SearchProviderId } from "../../../../src/domain/types";
+import { enrichBriefInput } from "../intelligence/search-synthesis-llm";
+import type { BailianChatClient } from "../providers/bailian";
 import type { ProductStateRepository } from "../product-state-repository";
 
 const searchProviderIds: SearchProviderId[] = ["local-demo", "bailian", "anysearch", "tavily", "exa", "brave"];
@@ -24,6 +26,7 @@ interface SearchBriefRequestPayload {
 interface SearchRouteOptions {
   bailianSearchClient?: BailianSearchClient;
   anySearchClient?: AnySearchClient;
+  bailianChatClient?: BailianChatClient;
 }
 
 export async function registerSearchRoutes(
@@ -60,7 +63,10 @@ export async function registerSearchRoutes(
       return reply.code(502).send({ task: run.task });
     }
 
-    const { brief, nextState } = createSearchBriefFromInput(state, run.result);
+    // Replace templated insights with LLM synthesis over the real sources
+    // (no-op for bailian, which already synthesizes via its Responses API).
+    const enriched = await enrichBriefInput(run.result, options.bailianChatClient);
+    const { brief, nextState } = createSearchBriefFromInput(state, enriched);
     repository.replaceState(nextState);
     return { brief, state: nextState, task: run.task };
   });
@@ -82,7 +88,34 @@ export async function registerSearchRoutes(
       return reply.code(400).send({ error: "No topic found" });
     }
 
-    const { brief, nextState } = buildSearchBrief(state, topic, state.systemConfig.search.activeProvider);
+    const provider = state.systemConfig.search.activeProvider;
+    const searchInput = {
+      topic,
+      maxSources: state.systemConfig.search.maxSources,
+      recencyDays: state.systemConfig.search.recencyDays
+    };
+
+    // Actually run the configured provider so auto-briefs hit the live web
+    // instead of returning the templated demo brief.
+    try {
+      let result: SearchBriefInput | undefined;
+      if (provider === "bailian" && options.bailianSearchClient) {
+        result = await options.bailianSearchClient.createSearchBrief({ ...searchInput, providerId: "bailian" });
+      } else if (provider === "anysearch" && options.anySearchClient) {
+        result = await options.anySearchClient.createSearchBrief({ ...searchInput, providerId: "anysearch" });
+      }
+      if (result) {
+        const enriched = await enrichBriefInput(result, options.bailianChatClient);
+        const { brief, nextState } = createSearchBriefFromInput(state, enriched);
+        repository.replaceState(nextState);
+        return { brief, state: nextState };
+      }
+    } catch (error) {
+      console.warn("[auto-brief] live search failed, falling back to local:", error instanceof Error ? error.message : error);
+    }
+
+    // Fallback: deterministic local brief when no live provider is configured.
+    const { brief, nextState } = buildSearchBrief(state, topic, provider);
     repository.replaceState(nextState);
     return { brief, state: nextState };
   });
