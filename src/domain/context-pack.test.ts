@@ -27,4 +27,15 @@ describe("context-pack (de-hardcoded)", () => {
     expect(card.potentialTension.length).toBeGreaterThan(0);
     expect(`${card.title}${card.whyNow}${card.potentialTension}`).not.toMatch(/救火|授权/);
   });
+
+  it("blindspot candidates never leak the 救火/授权 demo persona", () => {
+    for (const themes of [[], [{ id: "t1", name: "搬家焦虑", summary: "搬到新城市的不安", maturity: "聚焦" as const, representativeQuote: "怕没朋友", appearances: 2, nextQuestion: "最担心失去什么？", updatedAt: new Date().toISOString() }]]) {
+      const state = createInitialProductState();
+      state.themes = themes; state.points = []; state.questions = []; state.debts = []; state.notes = []; state.memoryRecords = []; state.memoryCandidates = [];
+      const guide = buildInterviewGuide(state);
+      for (const b of guide.blindspotCandidates) {
+        expect(`${b.concept} ${b.reason}`).not.toMatch(/救火|授权/);
+      }
+    }
+  });
 });

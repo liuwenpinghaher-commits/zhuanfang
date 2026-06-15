@@ -56,12 +56,12 @@ function buildBlindspotCandidates(missingPerspectives: string[], topicHint: stri
     "叙事": {
       concept: "用户在故事里扮演的角色",
       importance: "medium",
-      reason: "如果用户一直是救火者，就需要看见自己是否被固定在某个角色叙事里。"
+      reason: "用户在自己的故事里可能固定扮演了某个角色，值得追问：这是主动选择，还是被环境塑造的？"
     },
     "商业": {
-      concept: "授权选择的业务代价",
+      concept: "决策选择的业务代价",
       importance: "high",
-      reason: "讨论授权不能只停在管理理念，还要落到延期、质量、客户和节奏的业务代价。"
+      reason: "管理决策不能只停在理念层面，要落到时间、质量、客户和节奏上的具体代价。"
     },
     "形式科学": {
       concept: "可验证的判断标准",
