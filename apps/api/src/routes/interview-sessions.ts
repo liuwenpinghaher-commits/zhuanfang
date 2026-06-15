@@ -21,6 +21,7 @@ import { synthesizeInterviewCard } from "../intelligence/interview-card-llm";
 import { generatePreSignals } from "../intelligence/pre-signals-llm";
 import type { ProductStateRepository } from "../product-state-repository";
 import type { BailianChatClient, BailianCharacterInterviewClient } from "../providers/bailian";
+import { createLlmBudget, type LlmBudget } from "../llm-budget";
 
 interface CreateSessionPayload {
   mode?: unknown;
@@ -39,6 +40,7 @@ interface ControlPayload {
 interface InterviewSessionRouteOptions {
   bailianInterviewClient?: BailianCharacterInterviewClient;
   bailianChatClient?: BailianChatClient;
+  llmBudget?: LlmBudget;
 }
 
 const interviewModes: InterviewMode[] = ["daily", "decision", "point", "learning", "organization", "long-term"];
@@ -57,6 +59,8 @@ export async function registerInterviewSessionRoutes(
   repository: ProductStateRepository,
   options: InterviewSessionRouteOptions = {}
 ) {
+  const budget = options.llmBudget ?? createLlmBudget();
+
   server.post("/api/interview-sessions", async (request) => {
     const state = repository.getState();
     const payload = normalizeObject<CreateSessionPayload>(request.body);
@@ -108,7 +112,11 @@ export async function registerInterviewSessionRoutes(
       return reply.code(422).send({ error: "Turn content is required." });
     }
 
-    const updatedSession = await receiveTurn(session, content, options.bailianInterviewClient);
+    const allowLlm = !!options.bailianInterviewClient && budget.tryConsume(session.id);
+    if (!!options.bailianInterviewClient && !allowLlm) {
+      console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "interview_turn", sessionId: session.id }));
+    }
+    const updatedSession = await receiveTurn(session, content, allowLlm ? options.bailianInterviewClient : undefined);
     const { nextSession, preSignals } = updatedSession;
     const nextState = upsertSession(state, nextSession);
 
@@ -153,6 +161,7 @@ export async function registerInterviewSessionRoutes(
     const completedSession = result.nextState.sessions.find((item) => item.id === session.id) ?? session;
 
     repository.replaceState(result.nextState);
+    budget.reset(session.id);
     return { session: completedSession, note: result.note, state: result.nextState };
   });
 
@@ -166,6 +175,10 @@ export async function registerInterviewSessionRoutes(
     }
     if (!options.bailianChatClient) {
       return reply.code(503).send({ error: "Chat client is not configured." });
+    }
+    if (!budget.tryConsume(session.id)) {
+      console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "pre_signals", sessionId: session.id }));
+      return { preSignals: null, session };
     }
     try {
       const preSignals = await generatePreSignals(session, options.bailianChatClient);

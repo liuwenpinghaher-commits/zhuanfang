@@ -324,13 +324,11 @@ export function createBailianChatClient(options: BailianChatClientOptions): Bail
         try {
           const body: Record<string, unknown> = {
             model,
-            messages: input.messages
+            messages: input.messages,
+            max_tokens: input.maxTokens ?? 2048
           };
           if (typeof input.temperature === "number") {
             body.temperature = input.temperature;
-          }
-          if (typeof input.maxTokens === "number") {
-            body.max_tokens = input.maxTokens;
           }
           if (input.responseFormat === "json") {
             body.response_format = { type: "json_object" };
@@ -388,7 +386,8 @@ export function createBailianCharacterInterviewClient(
   return {
     async createAssistantTurn(input) {
       const rawContent = await chatClient.complete({
-        messages: buildCharacterMessages(input.session, input.userText)
+        messages: buildCharacterMessages(input.session, input.userText),
+        maxTokens: 800
       });
 
       const { content, preSignals } = extractPreSignals(rawContent.trim());
