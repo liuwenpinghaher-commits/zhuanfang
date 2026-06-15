@@ -38,6 +38,7 @@ import { registerPodcastRoutes } from "./routes/podcast";
 import { registerProductConfigRoutes } from "./routes/product-config";
 import { registerQualityRoutes } from "./routes/quality";
 import { registerRealtimeVoiceRoutes } from "./routes/realtime-voice";
+import { registerReviewRoutes } from "./routes/reviews";
 import { registerSearchRoutes } from "./routes/search";
 import { registerStateRoutes } from "./routes/state";
 import { registerSystemRoutes } from "./routes/system";
@@ -122,6 +123,9 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   });
   void server.register(async (registeredServer) => {
     await registerCorpusRoutes(registeredServer, productStateRepository, providerClients);
+  });
+  void server.register(async (registeredServer) => {
+    await registerReviewRoutes(registeredServer, productStateRepository, providerClients);
   });
   void server.register(async (registeredServer) => {
     await registerMemoryRecordRoutes(registeredServer, productStateRepository);

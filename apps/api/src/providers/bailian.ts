@@ -762,7 +762,8 @@ function buildCharacterMessages(session: InterviewSession, userText: string): Ba
 }
 
 function buildCharacterSystemPrompt(session: InterviewSession) {
-  return [
+  const guide = session.guide;
+  const lines: string[] = [
     "你是一个真正的专访主持人，不是普通聊天助手。",
     "你的目标是通过自然、克制、有人味的追问，帮助被访者把模糊表达推进到具体事件、真实张力、可验证问题和可沉淀资产。",
     `本轮模式：${session.mode}。追问强度：${session.strength}。`,
@@ -770,14 +771,48 @@ function buildCharacterSystemPrompt(session: InterviewSession) {
     `为什么现在聊：${session.card.whyNow}`,
     `潜在张力：${session.card.potentialTension}`,
     `建议视角：${session.card.suggestedPerspectives.join("、")}`,
-    "语言要求：每次只问一个核心问题；不要做长篇总结；不要替用户下结论；可以短暂复述用户原话，但必须继续推进。",
+  ];
+
+  // 注入长期上下文：让追问能引用历史、指出前后矛盾、回访知识债、戳盲区。
+  // 全部「仅当自然相关时使用」，避免硬塞。
+  if (guide) {
+    if (guide.relevantMemories?.length) {
+      lines.push(`【可引用的历史】（如自然相关，可引用其中一条来追问或指出前后变化，不要生硬套用）：${guide.relevantMemories.slice(0, 4).join("；")}`);
+    }
+    if (guide.statedPositions?.length) {
+      lines.push(`【用户过去的立场】（若本次出现矛盾，温和地把矛盾指出来追问）：${guide.statedPositions.slice(0, 3).join("；")}`);
+    }
+    if (guide.opinionEvolution?.length) {
+      const evo = guide.opinionEvolution.slice(0, 2).map((item) => `「${item.topic}」从「${item.oldView}」变到「${item.newView}」`).join("；");
+      lines.push(`【观点演变】（可顺势确认变化是否成立）：${evo}`);
+    }
+    const debts = (guide.openDebts ?? []).slice(0, 3).map((debt) => debt.concept);
+    if (debts.length) {
+      lines.push(`【未还知识债】（合适时回访其中一个）：${debts.join("、")}`);
+    }
+    const blindspots = (guide.blindspotCandidates ?? [])
+      .filter((candidate) => candidate.importance !== "low")
+      .slice(0, 3)
+      .map((candidate) => `${candidate.concept}（${candidate.reason}）`);
+    if (blindspots.length) {
+      lines.push(`【盲区候选】（用户可能在回避或没意识到，值得自然地引向）：${blindspots.join("；")}`);
+    }
+    if (guide.recommendedPerspectives?.length) {
+      lines.push(`【建议引入的认知视角】（以一个自然问题呈现，绝不要讲理论课）：${guide.recommendedPerspectives.slice(0, 3).join("、")}`);
+    }
+  }
+
+  lines.push(
+    "",
+    "你的访谈动作库（每次开口都应属于其中之一，自然使用，不要报出动作名）：接住情绪、澄清歧义、追具体事实、追细节、追背后机制、追感受、追意义、追反复模式、挑战假设、引入反方、回访旧线索、镜像复述、从抽象切到具体、从具体抽到模式、阶段小结、留白等待。",
+    "语言要求：每次只问一个核心问题；不要长篇总结；不要替用户下结论；可短暂复述用户原话但必须继续推进；当用户用抽象词（如'没办法''还好''差不多'）时，先把它问成一个具体时刻（谁、何时、哪句话）。",
     "输出只返回主持人的下一句中文追问，不要 Markdown，不要 JSON。",
     "",
     "在你的追问末尾，用 <pre_signals>...</pre_signals> 输出交互预判信号：",
     "",
     "<pre_signals>",
     "depth_direction:",
-    "  concept: [基于盲区候选、知识债、策略追踪，判断下一轮最值得深挖的一个方向]",
+    "  concept: [基于上面的盲区候选、知识债、历史立场，判断下一轮最值得深挖的一个方向]",
     "  reason: [为什么这个方向值得深挖]",
     "  guidance: [一句邀请式引导话语，如'你刚才提到的X，能具体说说吗？']",
     "backchannel: [用户说这些时不打断，逗号分隔，如：嗯,对,是的,好]",
@@ -785,8 +820,10 @@ function buildCharacterSystemPrompt(session: InterviewSession) {
     "sensitivity: [low/medium/high，基于话题重要性]",
     "</pre_signals>",
     "",
-    "规则：depth_direction 只输出一条；guidance 必须是邀请式；sensitivity 根据话题重要性：盲区/知识债=low，闲聊=high；如果当前没有明确的深挖方向，depth_direction 可以为空。",
-  ].join("\n");
+    "规则：depth_direction 只输出一条；guidance 必须是邀请式；sensitivity 根据话题重要性：盲区/知识债=low，闲聊=high；如果当前没有明确的深挖方向，depth_direction 可以为空。"
+  );
+
+  return lines.join("\n");
 }
 
 function extractOutputText(payload: BailianResponsesOutput) {

@@ -3,6 +3,7 @@ import type { CapabilityTask } from "../capabilities/task";
 import type {
   AudioTranscription,
   AudioTranscriptionInput,
+  CognitiveRadar,
   CorpusImportInput,
   CorpusInsight,
   DualTrackNote,
@@ -10,11 +11,13 @@ import type {
   InterviewMode,
   InterviewSession,
   InterviewStrength,
+  MonthlyReview,
   PodcastEpisode,
   ProductState,
   SearchBrief,
   SearchBriefInput,
-  SearchProviderId
+  SearchProviderId,
+  YearlyReview
 } from "../domain/types";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -25,6 +28,7 @@ export interface ProductApiClient {
   getSystemConfig(): Promise<SystemConfigResponse>;
   updateSystemConfig(updates: SystemConfigUpdateRequest): Promise<SystemConfigUpdateResponse>;
   getState(): Promise<ProductState>;
+  getReviews(): Promise<ReviewsResponse>;
   saveState(state: ProductState): Promise<ProductState>;
   resetState(): Promise<ProductState>;
   createSearchBrief(input: CreateSearchBriefRequest): Promise<CreateSearchBriefResponse>;
@@ -132,6 +136,12 @@ export interface CreateAutoBriefRequest {
 export interface CreateAutoBriefResponse {
   brief: SearchBrief;
   state: ProductState;
+}
+
+export interface ReviewsResponse {
+  monthly: MonthlyReview;
+  yearly: YearlyReview;
+  radar: CognitiveRadar;
 }
 
 export interface CreateInterviewSessionRequest {
@@ -304,6 +314,9 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
     },
     async getState() {
       return normalizeProductState(await requestJson("/api/state", { method: "GET" }));
+    },
+    async getReviews() {
+      return (await requestJson("/api/reviews", { method: "GET" })) as ReviewsResponse;
     },
     async saveState(state) {
       return normalizeProductState(

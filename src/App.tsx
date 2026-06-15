@@ -12,7 +12,7 @@ import {
   Upload,
   Volume2
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   analyzeImportedInterview,
   approvePlaybookPatch,
@@ -42,7 +42,7 @@ import {
 } from "./domain/engine";
 import { executeSearchProvider } from "./capabilities/search";
 import { createIdleCapabilityTask, startCapabilityTask } from "./capabilities/task";
-import { productApiClient, getProductApiBaseUrl } from "./api/productApi";
+import { productApiClient, getProductApiBaseUrl, type ReviewsResponse } from "./api/productApi";
 import type { RealtimeVoiceSessionResponse, SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigUpdateRequest, VoiceInfo } from "./api/productApi";
 import {
   connectBailianRealtimeWebrtc,
@@ -109,6 +109,7 @@ export default function App() {
   const [productState, setProductState] = useState<ProductState>(() => loadProductState());
   const [apiPersistenceEnabled, setApiPersistenceEnabled] = useState(false);
   const [systemCapabilities, setSystemCapabilities] = useState<SystemCapabilitiesResponse | null>(null);
+  const [serverReviews, setServerReviews] = useState<ReviewsResponse | null>(null);
   const [runtimeConfig, setRuntimeConfig] = useState<SystemConfigResponse | null>(null);
   const [runtimeConfigSaving, setRuntimeConfigSaving] = useState(false);
   const [view, setView] = useState<View>("home");
@@ -234,9 +235,47 @@ export default function App() {
   }, []);
 
   const card = useMemo(() => buildInterviewCard(productState, activeSearchBriefId), [activeSearchBriefId, productState]);
-  const monthlyReview = useMemo(() => buildMonthlyReview(productState), [productState]);
-  const yearlyReview = useMemo(() => buildYearlyReview(productState), [productState]);
-  const radar = useMemo(() => buildCognitiveRadar(productState), [productState]);
+  const localMonthlyReview = useMemo(() => buildMonthlyReview(productState), [productState]);
+  const localYearlyReview = useMemo(() => buildYearlyReview(productState), [productState]);
+  const localRadar = useMemo(() => buildCognitiveRadar(productState), [productState]);
+  // Prefer LLM-synthesized reviews when available; the deterministic memos above
+  // render instantly and act as the offline / no-key fallback.
+  const monthlyReview = serverReviews?.monthly ?? localMonthlyReview;
+  const yearlyReview = serverReviews?.yearly ?? localYearlyReview;
+  const radar = serverReviews?.radar ?? localRadar;
+
+  // Re-fetch LLM reviews only when the asset set actually changes (not on every
+  // turn), so an interview in progress doesn't trigger repeated review calls.
+  const reviewSignatureRef = useRef<string>("");
+  useEffect(() => {
+    const signature = [
+      productState.notes.length,
+      productState.points.length,
+      productState.questions.length,
+      productState.decisions.length,
+      productState.debts.length,
+      productState.themes.length
+    ].join(":");
+    if (signature === reviewSignatureRef.current) {
+      return;
+    }
+    reviewSignatureRef.current = signature;
+    setServerReviews(null);
+    let cancelled = false;
+    productApiClient
+      .getReviews()
+      .then((reviews) => {
+        if (!cancelled) {
+          setServerReviews(reviews);
+        }
+      })
+      .catch(() => {
+        // Offline / no API key: keep the deterministic fallback.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [productState]);
   const assetResults = useMemo(() => searchProductAssets(productState, assetQuery), [productState, assetQuery]);
   const systemStatus = useMemo(() => buildSystemStatus(productState), [productState]);
   const realtimeState = useMemo(
