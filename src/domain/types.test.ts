@@ -40,6 +40,7 @@ describe("domain types", () => {
       readings: [], memoryRecords: [], memoryCandidates: [], memoryEdges: [],
       importSources: [], ragChunks: [], intelTasks: [], intelItems: [], configVersions: [],
       auditEvents: [], aiRunEvents: [], workflowRuns: [], operationalChecks: [],
+      revision: 0,
       systemConfig: {
         version: "v1",
         providers: [],

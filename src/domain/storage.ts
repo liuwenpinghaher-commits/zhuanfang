@@ -61,6 +61,7 @@ export function normalizeProductState(value: unknown): ProductState {
     aiRunEvents: Array.isArray(candidate.aiRunEvents) ? candidate.aiRunEvents : fallback.aiRunEvents,
     workflowRuns: Array.isArray(candidate.workflowRuns) ? candidate.workflowRuns : fallback.workflowRuns,
     operationalChecks: Array.isArray(candidate.operationalChecks) ? candidate.operationalChecks : fallback.operationalChecks,
+    revision: typeof candidate.revision === "number" ? candidate.revision : fallback.revision,
     systemConfig: {
       ...fallback.systemConfig,
       ...systemConfig,

@@ -156,4 +156,9 @@ describe("product state storage", () => {
 
     expect(normalized.systemConfig.voice.realtimeMode).toBe("livekit");
   });
+
+  it("defaults revision to 0 when missing and preserves a numeric revision", () => {
+    expect(normalizeProductState({}).revision).toBe(0);
+    expect(normalizeProductState({ revision: 7 }).revision).toBe(7);
+  });
 });

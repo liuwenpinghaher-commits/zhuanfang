@@ -40,7 +40,10 @@ export function createSqliteProductStateRepository(options: SqliteProductStateRe
   }
 
   function persistState(state: ProductState, eventType: ProductStateEventType) {
-    const normalizedState = normalizeProductState(state);
+    const baseState = eventType === "replace"
+      ? { ...state, revision: (readPersistedState()?.revision ?? 0) + 1 }
+      : state;
+    const normalizedState = normalizeProductState(baseState);
     const stateJson = JSON.stringify(normalizedState);
     const createdAt = new Date().toISOString();
 

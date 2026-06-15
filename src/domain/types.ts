@@ -1177,6 +1177,7 @@ export interface ProductState {
   workflowRuns: WorkflowRun[];
   operationalChecks: OperationalCheckEvidence[];
   systemConfig: SystemConfig;
+  revision: number;
 }
 
 /** A persistent intelligence-monitoring task (联网素材 → 自动化情报). */

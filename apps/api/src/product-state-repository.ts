@@ -20,7 +20,8 @@ export function createInMemoryProductStateRepository(initialState: ProductState 
       return state;
     },
     replaceState(nextState) {
-      state = nextState;
+      const next = { ...nextState, revision: (state.revision ?? 0) + 1 };
+      state = next;
       return state;
     },
     getInterviewSession(id) {

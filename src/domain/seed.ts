@@ -124,6 +124,7 @@ export const initialProductState: ProductState = {
   aiRunEvents: [],
   workflowRuns: [],
   operationalChecks: [],
+  revision: 0,
   systemConfig: {
     version: "local-demo-2026.06.10",
     providers: [
