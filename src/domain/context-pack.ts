@@ -78,7 +78,7 @@ function buildBlindspotCandidates(missingPerspectives: string[], topicHint: stri
         {
           concept: "短期失控的可承受边界",
           importance: "high",
-          reason: "当前资产已经反复出现救火和授权，但仍需要把最坏情况拆成可验证风险。"
+          reason: "当前资产已覆盖多数常见视角，可以开始聚焦：你最担心的最坏情况，其可承受边界在哪里。"
         }
       ];
 }

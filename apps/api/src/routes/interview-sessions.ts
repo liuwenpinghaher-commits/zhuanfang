@@ -70,7 +70,7 @@ export async function registerInterviewSessionRoutes(
           ...session.card,
           whyNow: synth.whyNow,
           suggestedOpening: synth.suggestedOpening,
-          potentialTension: synth.potentialTension,
+          potentialTension: synth.potentialTension || session.card.potentialTension,
           likelyOutputs: synth.likelyOutputs.length ? synth.likelyOutputs : session.card.likelyOutputs
         };
       } catch (error) {

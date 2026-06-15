@@ -16,4 +16,15 @@ describe("context-pack (de-hardcoded)", () => {
     expect(card.potentialTension).not.toContain("授权");
     expect(`${card.title} ${card.whyNow} ${card.suggestedOpening} ${card.potentialTension}`).toMatch(/搬家|新城市|朋友|焦虑/);
   });
+
+  it("produces neutral card fields when the user has no themes (clean-start)", () => {
+    const state = createInitialProductState();
+    state.themes = []; state.points = []; state.questions = []; state.debts = []; state.notes = [];
+    const card = buildInterviewCard(state);
+    expect(card.title).toBe("今天想聊点什么？");
+    expect(card.whyNow.length).toBeGreaterThan(0);
+    expect(card.suggestedOpening.length).toBeGreaterThan(0);
+    expect(card.potentialTension.length).toBeGreaterThan(0);
+    expect(`${card.title}${card.whyNow}${card.potentialTension}`).not.toMatch(/救火|授权/);
+  });
 });
