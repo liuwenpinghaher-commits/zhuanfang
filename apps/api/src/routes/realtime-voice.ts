@@ -241,7 +241,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     }
     const state = stateRepo.getState();
     const recentMemories = (state.memoryRecords || []).slice(-5);
-    const activeThemes = (state.themes || []).filter((t) => t.maturity !== "mature");
+    const activeThemes = (state.themes || []).filter((t) => t.maturity !== "关闭");
     return { recentMemories, activeThemes };
   });
 

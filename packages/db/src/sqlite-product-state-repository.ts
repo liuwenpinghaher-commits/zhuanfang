@@ -80,6 +80,10 @@ export function createSqliteProductStateRepository(options: SqliteProductStateRe
     },
     replaceState(state) {
       return persistState(state, "replace");
+    },
+    getInterviewSession(id) {
+      const state = readPersistedState() ?? createInitialProductState();
+      return state.sessions.find((s) => s.id === id) ?? null;
     }
   };
 }

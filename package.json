@@ -7,12 +7,14 @@
     "dev": "vite",
     "dev:api": "tsx watch apps/api/src/server.ts",
     "dev:full": "node scripts/dev-full.mjs",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && tsc -p apps/api/tsconfig.json && vite build",
     "start:api": "tsx apps/api/src/server.ts",
     "test": "vitest",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "typecheck:api": "tsc -p apps/api/tsconfig.json",
+    "typecheck": "tsc -b && tsc -p apps/api/tsconfig.json"
   },
   "dependencies": {
     "@livekit/components-react": "^2.9.21",

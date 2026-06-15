@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, type Mock } from "vitest";
 import {
   createBailianAudioTranscriptionClient,
   createBailianCharacterInterviewClient,
@@ -7,6 +7,12 @@ import {
   createBailianSearchClient
 } from "./bailian";
 import { createInitialProductState, createSessionDraft } from "../../../../src/domain/engine";
+
+type FetchMock = Mock<(input: string, init?: RequestInit) => Promise<Response>>;
+function getLastFetchCall(mock: FetchMock): [string, RequestInit | undefined] {
+  const calls = mock.mock.calls as [string, RequestInit | undefined][];
+  return calls[0];
+}
 
 describe("bailian provider client", () => {
   it("uses qwen3.7-plus Responses API with built-in web tools for search briefs", async () => {
@@ -55,7 +61,7 @@ describe("bailian provider client", () => {
         }
       })
     );
-    const requestBody = JSON.parse(fetchImpl.mock.calls[0][1]?.body as string);
+    const requestBody = JSON.parse(getLastFetchCall(fetchImpl as FetchMock)[1]?.body as string);
     expect(requestBody).toMatchObject({
       model: "qwen3.7-plus",
       tools: [{ type: "web_search" }, { type: "web_extractor" }, { type: "code_interpreter" }]
@@ -103,7 +109,7 @@ describe("bailian provider client", () => {
         }
       })
     );
-    const requestBody = JSON.parse(fetchImpl.mock.calls[0][1]?.body as string);
+    const requestBody = JSON.parse(getLastFetchCall(fetchImpl as FetchMock)[1]?.body as string);
     expect(requestBody).toMatchObject({
       model: "cosyvoice-v3-plus",
       input: {
@@ -200,7 +206,7 @@ describe("bailian provider client", () => {
         }
       })
     );
-    const requestBody = JSON.parse(fetchImpl.mock.calls[0][1]?.body as string);
+    const requestBody = JSON.parse(getLastFetchCall(fetchImpl as FetchMock)[1]?.body as string);
     expect(requestBody).toMatchObject({
       model: "sensevoice-v1",
       input: {
@@ -275,7 +281,7 @@ describe("bailian provider client", () => {
         }
       })
     );
-    const requestBody = JSON.parse(fetchImpl.mock.calls[0][1]?.body as string);
+    const requestBody = JSON.parse(getLastFetchCall(fetchImpl as FetchMock)[1]?.body as string);
     expect(requestBody).toMatchObject({
       model: "qwen-plus-character",
       messages: expect.arrayContaining([

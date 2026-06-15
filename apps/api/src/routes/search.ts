@@ -59,7 +59,7 @@ export async function registerSearchRoutes(
             })
         : await executeSearchProvider(searchInput);
 
-    if (run.task.status === "failed") {
+    if (run.task.status === "failed" || run.result === undefined) {
       return reply.code(502).send({ task: run.task });
     }
 

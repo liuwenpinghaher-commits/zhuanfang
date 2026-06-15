@@ -140,7 +140,7 @@ export function registerQualityRoutes(app: FastifyInstance, stateRepo: ProductSt
         return { scorerName, ...result };
       }
       case "contextPackRelevance": {
-        const result = scorers.contextPackRelevance(body.pack ?? {}, asString(body.sessionTopic));
+        const result = scorers.contextPackRelevance((body.pack ?? {}) as Record<string, unknown>, asString(body.sessionTopic));
         return { scorerName, ...result };
       }
       case "sourceFaithfulness": {

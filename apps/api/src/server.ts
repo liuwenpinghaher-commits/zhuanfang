@@ -1,7 +1,7 @@
 // OpenTelemetry must be initialized before any other imports
 import "./telemetry";
 
-import Fastify from "fastify";
+import Fastify, { type FastifyRequest, type FastifyReply } from "fastify";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createSqliteProductStateRepository } from "../../../packages/db/src/sqlite-product-state-repository";
@@ -182,7 +182,7 @@ function refreshRuntimeProviderClients(
 }
 
 function registerCors(server: ReturnType<typeof Fastify>) {
-  server.addHook("onRequest", async (request, reply) => {
+  server.addHook("onRequest", async (request: FastifyRequest, reply: FastifyReply) => {
     const origin = request.headers.origin;
     const allowedOrigin =
       origin === "http://127.0.0.1:5173" || origin === "http://localhost:5173" ? origin : "http://127.0.0.1:5173";
@@ -223,7 +223,7 @@ export async function startServer() {
 }
 
 export function isDirectCliExecution(importMetaUrl: string, argvEntry: string | undefined) {
-  return Boolean(argvEntry) && importMetaUrl === pathToFileURL(argvEntry).href;
+  return Boolean(argvEntry) && importMetaUrl === pathToFileURL(argvEntry!).href;
 }
 
 if (isDirectCliExecution(import.meta.url, process.argv[1])) {

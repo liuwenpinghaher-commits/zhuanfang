@@ -880,7 +880,7 @@ function normalizeStringList(value: unknown, fallback: string[]) {
     return fallback;
   }
 
-  const items = value.filter((item): item is string => typeof item === "string" && item.trim()).map((item) => item.trim());
+  const items = value.filter((item): item is string => typeof item === "string" && Boolean(item.trim())).map((item) => item.trim());
   return items.length > 0 ? items : fallback;
 }
 

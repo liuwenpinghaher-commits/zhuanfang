@@ -339,6 +339,7 @@ const runtimeSettingDefinitions: RuntimeSettingDefinition[] = [
     key: "REALTIME_MODE",
     section: "voice",
     label: "实时语音模式",
+    description: "选择实时语音的运行模式：端到端 Omni S2S 或级联 LiveKit 模式。",
     valueKind: "select",
     defaultValue: "s2s",
     options: [

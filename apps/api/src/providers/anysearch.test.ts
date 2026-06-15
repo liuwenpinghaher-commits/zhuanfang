@@ -1,5 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, type Mock } from "vitest";
 import { createAnySearchClient } from "./anysearch";
+
+type FetchMock = Mock<(input: string, init?: RequestInit) => Promise<Response>>;
+function getFetchCallInit(mock: FetchMock): RequestInit | undefined {
+  const calls = mock.mock.calls as [string, RequestInit | undefined][];
+  return calls[0]?.[1];
+}
 
 describe("anysearch provider client", () => {
   it("posts search requests to AnySearch and maps structured results into interview material", async () => {
@@ -57,7 +63,7 @@ describe("anysearch provider client", () => {
         }
       })
     );
-    const requestBody = JSON.parse(fetchImpl.mock.calls[0][1]?.body as string);
+    const requestBody = JSON.parse(getFetchCallInit(fetchImpl as FetchMock)?.body as string);
     expect(requestBody).toMatchObject({
       query: "AI 产品商业化热点",
       max_results: 2,
@@ -110,7 +116,7 @@ describe("anysearch provider client", () => {
       recencyDays: 3
     });
 
-    const headers = fetchImpl.mock.calls[0][1]?.headers as Record<string, string>;
+    const headers = getFetchCallInit(fetchImpl as FetchMock)?.headers as Record<string, string>;
     expect(headers.authorization).toBeUndefined();
     expect(result.sources[0].publisher).toBe("example.com");
   });
