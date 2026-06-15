@@ -1,4 +1,3 @@
-import { normalizeProductState } from "../../../src/domain/storage";
 import { triggerWorkflowRun } from "../../../src/domain/engine";
 import type { ProductState, TriggerWorkflowRunInput, WorkflowRun } from "../../../src/domain/types";
 import type { RuntimeEnv } from "./env";

@@ -161,4 +161,58 @@ describe("product state storage", () => {
     expect(normalizeProductState({}).revision).toBe(0);
     expect(normalizeProductState({ revision: 7 }).revision).toBe(7);
   });
+
+  it("migrateWorkflowRuns: maps legacy mastra-runtime providerId to local-workflow-runtime", () => {
+    const state = createInitialProductState();
+    const legacyRun = {
+      id: "run-legacy-001",
+      workflow: "interview_preparation" as const,
+      status: "succeeded" as const,
+      providerId: "mastra-runtime",
+      entityType: "interview_session" as const,
+      entityId: "session-abc",
+      inputSummary: "legacy input",
+      outputSummary: "legacy output",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      completedAt: "2026-01-01T00:01:00.000Z",
+      traceId: "trace-001"
+    };
+    const alreadyValidRun = {
+      id: "run-valid-002",
+      workflow: "context_pack_build" as const,
+      status: "succeeded" as const,
+      providerId: "local-workflow-runtime" as const,
+      entityType: "interview_session" as const,
+      entityId: "session-def",
+      inputSummary: "valid input",
+      outputSummary: "valid output",
+      startedAt: "2026-02-01T00:00:00.000Z",
+      traceId: "trace-002"
+    };
+
+    const normalized = normalizeProductState({
+      ...state,
+      workflowRuns: [legacyRun, alreadyValidRun]
+    });
+
+    // legacy entry is migrated
+    expect(normalized.workflowRuns[0].providerId).toBe("local-workflow-runtime");
+    // other fields on the migrated run are preserved
+    expect(normalized.workflowRuns[0].id).toBe("run-legacy-001");
+    expect(normalized.workflowRuns[0].workflow).toBe("interview_preparation");
+    expect(normalized.workflowRuns[0].status).toBe("succeeded");
+    expect(normalized.workflowRuns[0].traceId).toBe("trace-001");
+    expect(normalized.workflowRuns[0].entityId).toBe("session-abc");
+
+    // already-valid entry is unchanged
+    expect(normalized.workflowRuns[1].providerId).toBe("local-workflow-runtime");
+    expect(normalized.workflowRuns[1].id).toBe("run-valid-002");
+
+    // empty workflowRuns does not crash
+    expect(normalizeProductState({ ...state, workflowRuns: [] }).workflowRuns).toEqual([]);
+
+    // missing workflowRuns falls back to default (empty array)
+    const { workflowRuns: _omitted, ...stateWithoutRuns } = state;
+    expect(normalizeProductState(stateWithoutRuns).workflowRuns).toEqual([]);
+  });
 });
