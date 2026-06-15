@@ -23,6 +23,7 @@ describe("ui helpers", () => {
       "notes",
       "assets",
       "themes",
+      "memory",
       "config",
       "profile"
     ]);

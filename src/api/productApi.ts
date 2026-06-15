@@ -30,6 +30,12 @@ export interface ProductApiClient {
   updateSystemConfig(updates: SystemConfigUpdateRequest): Promise<SystemConfigUpdateResponse>;
   getState(): Promise<ProductState>;
   getReviews(): Promise<ReviewsResponse>;
+  importDocument(input: ImportDocumentRequest): Promise<ImportDocumentResponse>;
+  approveMemoryCandidate(id: string): Promise<ProductState>;
+  rejectMemoryCandidate(id: string, reviewNote?: string): Promise<ProductState>;
+  updateMemoryCandidate(id: string, text: string): Promise<ProductState>;
+  deprecateMemoryRecord(id: string, reason?: string): Promise<ProductState>;
+  deleteMemoryRecord(id: string): Promise<ProductState>;
   saveState(state: ProductState): Promise<ProductState>;
   resetState(): Promise<ProductState>;
   createSearchBrief(input: CreateSearchBriefRequest): Promise<CreateSearchBriefResponse>;
@@ -144,6 +150,19 @@ export interface ReviewsResponse {
   monthly: MonthlyReview;
   yearly: YearlyReview;
   radar: CognitiveRadar;
+}
+
+export interface ImportDocumentRequest {
+  title: string;
+  content: string;
+  sourceType?: "text" | "webpage";
+  sourceUrl?: string;
+}
+
+export interface ImportDocumentResponse {
+  sourceId: string;
+  candidateCount: number;
+  state: ProductState;
 }
 
 export interface CreateInterviewSessionRequest {
@@ -324,6 +343,46 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
     },
     async getReviews() {
       return (await requestJson("/api/reviews", { method: "GET" })) as ReviewsResponse;
+    },
+    async importDocument(input) {
+      const response = (await requestJson("/api/import/documents", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input)
+      })) as ImportDocumentResponse;
+      return { ...response, state: normalizeProductState(response.state) };
+    },
+    async approveMemoryCandidate(id) {
+      const response = (await requestJson(`/api/memory-candidates/${id}/approve`, { method: "POST" })) as { state: ProductState };
+      return normalizeProductState(response.state);
+    },
+    async rejectMemoryCandidate(id, reviewNote) {
+      const response = (await requestJson(`/api/memory-candidates/${id}/reject`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reviewNote })
+      })) as { state: ProductState };
+      return normalizeProductState(response.state);
+    },
+    async updateMemoryCandidate(id, text) {
+      const response = (await requestJson(`/api/memory-candidates/${id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text })
+      })) as { state: ProductState };
+      return normalizeProductState(response.state);
+    },
+    async deprecateMemoryRecord(id, reason) {
+      const response = (await requestJson(`/api/memory-records/${id}/deprecate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason })
+      })) as { state: ProductState };
+      return normalizeProductState(response.state);
+    },
+    async deleteMemoryRecord(id) {
+      const response = (await requestJson(`/api/memory-records/${id}`, { method: "DELETE" })) as { state: ProductState };
+      return normalizeProductState(response.state);
     },
     async saveState(state) {
       return normalizeProductState(

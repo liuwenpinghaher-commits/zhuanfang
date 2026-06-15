@@ -82,6 +82,7 @@ import { PodcastStudioView } from "./features/podcast/PodcastStudioView";
 import { ProfileView } from "./features/profile/ProfileView";
 import { SearchIntelligenceView } from "./features/search/SearchIntelligenceView";
 import { ThemesView } from "./features/themes/ThemesView";
+import { MemoryGovernanceView } from "./features/memory/MemoryGovernanceView";
 import {
   buildNotice,
   groupedNavigation,
@@ -101,6 +102,7 @@ const navIconByView: Record<View, typeof Compass> = {
   notes: BookOpen,
   assets: Archive,
   themes: Brain,
+  memory: Brain,
   config: SlidersHorizontal,
   profile: Settings
 };
@@ -110,6 +112,7 @@ export default function App() {
   const [apiPersistenceEnabled, setApiPersistenceEnabled] = useState(false);
   const [systemCapabilities, setSystemCapabilities] = useState<SystemCapabilitiesResponse | null>(null);
   const [serverReviews, setServerReviews] = useState<ReviewsResponse | null>(null);
+  const [importing, setImporting] = useState(false);
   const [runtimeConfig, setRuntimeConfig] = useState<SystemConfigResponse | null>(null);
   const [runtimeConfigSaving, setRuntimeConfigSaving] = useState(false);
   const [view, setView] = useState<View>("home");
@@ -276,6 +279,31 @@ export default function App() {
       cancelled = true;
     };
   }, [productState]);
+
+  async function importMemoryDocument(title: string, content: string) {
+    setImporting(true);
+    try {
+      const result = await productApiClient.importDocument({ title, content, sourceType: "text" });
+      setProductState(result.state);
+      setApiPersistenceEnabled(true);
+      setNotice(buildNotice("success", "导入完成", `抽取了 ${result.candidateCount} 条候选记忆，请在下方审核。`));
+    } catch {
+      setNotice(buildNotice("warning", "导入失败", "需要后端在线且配置 DASHSCOPE_API_KEY 才能抽取候选记忆。"));
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  function withMemoryAction(run: () => Promise<ProductState>) {
+    run()
+      .then((next) => setProductState(next))
+      .catch(() => setNotice(buildNotice("warning", "操作失败", "记忆治理需要后端在线。")));
+  }
+  const approveCandidate = (id: string) => withMemoryAction(() => productApiClient.approveMemoryCandidate(id));
+  const rejectCandidate = (id: string) => withMemoryAction(() => productApiClient.rejectMemoryCandidate(id));
+  const editCandidate = (id: string, text: string) => withMemoryAction(() => productApiClient.updateMemoryCandidate(id, text));
+  const deprecateRecord = (id: string) => withMemoryAction(() => productApiClient.deprecateMemoryRecord(id));
+  const deleteRecord = (id: string) => withMemoryAction(() => productApiClient.deleteMemoryRecord(id));
   const assetResults = useMemo(() => searchProductAssets(productState, assetQuery), [productState, assetQuery]);
   const systemStatus = useMemo(() => buildSystemStatus(productState), [productState]);
   const realtimeState = useMemo(
@@ -1196,6 +1224,18 @@ export default function App() {
           />
         )}
         {view === "themes" && <ThemesView state={productState} review={monthlyReview} yearlyReview={yearlyReview} radar={radar} onStart={prepareInterview} />}
+        {view === "memory" && (
+          <MemoryGovernanceView
+            state={productState}
+            importing={importing}
+            onImport={importMemoryDocument}
+            onApprove={approveCandidate}
+            onReject={rejectCandidate}
+            onEditCandidate={editCandidate}
+            onDeprecate={deprecateRecord}
+            onDeleteRecord={deleteRecord}
+          />
+        )}
         {view === "config" && (
           <ConfigView
             state={productState}

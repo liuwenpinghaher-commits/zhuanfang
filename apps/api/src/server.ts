@@ -28,6 +28,7 @@ import { registerAssetRoutes } from "./routes/assets";
 import { registerCorpusRoutes } from "./routes/corpus";
 import { registerGeneratedArtifactRoutes } from "./routes/generated-artifacts";
 import { registerHealthRoutes } from "./routes/health";
+import { registerImportRoutes } from "./routes/import";
 import { registerInterviewSessionRoutes } from "./routes/interview-sessions";
 import { registerMemoryRecordRoutes } from "./routes/memory-records";
 import { registerMemoryCandidateRoutes } from "./routes/memory-candidates";
@@ -126,6 +127,9 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   });
   void server.register(async (registeredServer) => {
     await registerReviewRoutes(registeredServer, productStateRepository, providerClients);
+  });
+  void server.register(async (registeredServer) => {
+    await registerImportRoutes(registeredServer, productStateRepository, providerClients);
   });
   void server.register(async (registeredServer) => {
     await registerMemoryRecordRoutes(registeredServer, productStateRepository);

@@ -1,0 +1,50 @@
+import type { FastifyInstance } from "fastify";
+import { ingestImportSource, type ImportDocumentInput } from "../../../../src/domain/import";
+import { extractCandidateMemories } from "../intelligence/memory-extraction-llm";
+import type { BailianChatClient } from "../providers/bailian";
+import type { ProductStateRepository } from "../product-state-repository";
+
+interface ImportRouteOptions {
+  bailianChatClient?: BailianChatClient;
+}
+
+export async function registerImportRoutes(
+  server: FastifyInstance,
+  repository: ProductStateRepository,
+  options: ImportRouteOptions = {}
+) {
+  server.post("/api/import/documents", async (request, reply) => {
+    const input = normalizeImportInput(request.body);
+    if (!input.content.trim()) {
+      return reply.code(422).send({ error: "Document content is required." });
+    }
+
+    const state = repository.getState();
+
+    // Extract candidate memories via LLM; on failure, still ingest the source
+    // (chunked for RAG) with zero candidates so nothing is lost.
+    let candidates: Awaited<ReturnType<typeof extractCandidateMemories>> = [];
+    if (options.bailianChatClient) {
+      try {
+        candidates = await extractCandidateMemories(input.title, input.content, options.bailianChatClient);
+      } catch (error) {
+        console.warn("[import] memory extraction failed, ingesting source only:", error instanceof Error ? error.message : error);
+      }
+    }
+
+    const { sourceId, candidateCount, nextState } = ingestImportSource(state, input, candidates);
+    repository.replaceState(nextState);
+    return { sourceId, candidateCount, state: nextState };
+  });
+}
+
+function normalizeImportInput(value: unknown): ImportDocumentInput {
+  const payload = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const sourceType = payload.sourceType === "webpage" ? "webpage" : "text";
+  return {
+    title: typeof payload.title === "string" && payload.title.trim() ? payload.title.trim() : "未命名导入资料",
+    content: typeof payload.content === "string" ? payload.content : "",
+    sourceType,
+    sourceUrl: typeof payload.sourceUrl === "string" && payload.sourceUrl.trim() ? payload.sourceUrl.trim() : undefined
+  };
+}

@@ -10,6 +10,7 @@ export type View =
   | "notes"
   | "assets"
   | "themes"
+  | "memory"
   | "config"
   | "profile";
 
@@ -89,7 +90,8 @@ export const groupedNavigation: NavigationGroup[] = [
     items: [
       { id: "notes", label: "双轨笔记" },
       { id: "assets", label: "资产库" },
-      { id: "themes", label: "长期追踪" }
+      { id: "themes", label: "长期追踪" },
+      { id: "memory", label: "记忆治理" }
     ]
   },
   {
