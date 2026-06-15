@@ -2,7 +2,7 @@
 // from REAL search sources, replacing the string-template insight builders.
 // Operates only on real sources; throws on failure so callers keep the
 // provider's own (templated) insights as fallback.
-import { sanitizeExternalMaterialText } from "../../../../src/domain/engine";
+import { sanitizeExternalSource } from "../../../../src/domain/engine";
 import type { SearchBriefInput, SourceHighlight } from "../../../../src/domain/types";
 import type { BailianChatClient } from "../providers/bailian";
 import { asObject, asString, asStringArray, parseJsonObject } from "./llm-json";
@@ -31,9 +31,8 @@ export async function synthesizeSearchInsights(
   const sourceLines = sources
     .slice(0, 8)
     .map((source, index) => {
-      const t = sanitizeExternalMaterialText(source.title, "（标题已清洗）");
-      const s = sanitizeExternalMaterialText(source.snippet, "（摘要已清洗）");
-      return `[${index + 1}] ${t}（${source.publisher}）：${s}`;
+      const src = sanitizeExternalSource(source);
+      return `[${index + 1}] ${src.title}（${src.publisher}）：${src.snippet}`;
     })
     .join("\n");
 

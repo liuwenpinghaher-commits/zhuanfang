@@ -2,7 +2,7 @@
 // summary, relevance score, extracted claims, and category. Maps results back
 // to real source URLs by index (so the LLM never invents links).
 import type { TriagedIntelItem } from "../../../../src/domain/intel";
-import { sanitizeExternalMaterialText } from "../../../../src/domain/engine";
+import { sanitizeExternalSource } from "../../../../src/domain/engine";
 import type { SourceHighlight } from "../../../../src/domain/types";
 import type { BailianChatClient } from "../providers/bailian";
 import { asArray, asObject, asString, asStringArray, parseJsonObject } from "./llm-json";
@@ -24,9 +24,8 @@ export async function triageIntelResults(
   const limited = sources.slice(0, 10);
   const list = limited
     .map((source, index) => {
-      const t = sanitizeExternalMaterialText(source.title, "（标题已清洗）");
-      const s = sanitizeExternalMaterialText(source.snippet, "（摘要已清洗）");
-      return `[${index + 1}] ${t}（${source.publisher}）：${s}`;
+      const src = sanitizeExternalSource(source);
+      return `[${index + 1}] ${src.title}（${src.publisher}）：${src.snippet}`;
     })
     .join("\n");
 
