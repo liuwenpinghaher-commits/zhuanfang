@@ -631,22 +631,22 @@ export default function App() {
       return;
     }
 
-    const updatedEpisode = {
-      ...episode,
-      script: podcastEditingScript,
-      scriptReviewStatus: "用户确认" as const,
-      status: "ready" as const
-    };
-    const updatedState = {
-      ...productState,
-      podcastEpisodes: productState.podcastEpisodes.map((ep) =>
-        ep.id === episodeId ? updatedEpisode : ep
+    const applyReadyToState = (base: typeof productState) => ({
+      ...base,
+      podcastEpisodes: base.podcastEpisodes.map((ep) =>
+        ep.id === episodeId
+          ? { ...ep, script: podcastEditingScript, scriptReviewStatus: "用户确认" as const, status: "ready" as const }
+          : ep
       )
-    };
+    });
+    const updatedState = applyReadyToState(productState);
 
     try {
-      const { state: persisted } = await productApiClient.saveState(updatedState);
-      setProductState(persisted);
+      const { state: persisted, conflicted } = await productApiClient.saveState(updatedState);
+      // If a concurrent auto-save raced and returned a stale 409, `persisted` is the server's current
+      // state (still "draft"). Re-apply the "ready" mutation on top of the server's authoritative state
+      // so the UI always reflects what the user intended.
+      setProductState(conflicted ? applyReadyToState(persisted) : persisted);
       setApiPersistenceEnabled(true);
       setPodcastEditingScript("");
       setNotice(buildNotice("success", "语音合成已确认", `播客 "${episode.title}" 脚本已确认，等待 TTS 渲染。`));

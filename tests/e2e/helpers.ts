@@ -1,10 +1,16 @@
 import { expect, type Page } from "@playwright/test";
+import { createInitialProductState } from "../../src/domain/engine";
 
 export async function resetDemoState(page: Page) {
+  // Restore a known demo baseline (createInitialProductState) via the Product API.
+  // We must read the current revision first so the server's optimistic-concurrency check accepts the PUT.
+  const base = "http://127.0.0.1:8787/api/state";
   try {
-    await page.request.post("http://127.0.0.1:8787/api/state/reset");
+    const cur = await (await page.request.get(base)).json() as { revision?: number };
+    const demoState = { ...createInitialProductState(), revision: cur.revision ?? 0 };
+    await page.request.put(base, { data: demoState });
   } catch {
-    // API may be unavailable; the legacy localStorage-only path below still works for demo flows.
+    // API may be down (e.g. intercepted by page.route); localStorage path below still works for mock flows.
   }
   await page.goto("/");
   await page.evaluate(() => window.localStorage.clear());

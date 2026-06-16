@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { expectNoHorizontalOverflow, openView, resetDemoState, useMobileViewport } from "./helpers";
 
 const views = [
-  ["今日访谈台", "你对“救火”和放手的真实边界"],
+  ["今日访谈台", "系统已根据长期主题、知识债和历史原话准备本次专访方向。"],
   ["实时专访", "专访启动"],
   ["联网素材", "主动搜集热点、素材和可讨论主题"],
   ["语料学习", "从外部专访中学习提问逻辑"],
@@ -197,7 +197,8 @@ test.describe("primary navigation", () => {
   });
 
   test("saves product strategy configuration and applies it to later workflows", async ({ page }) => {
-    const voice = `strategy-voice-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
+    // 播客默认声音 is now a <select> with fixed CosyVoice options — use a known valid value.
+    const voice = "longyuan_v3";
     await resetDemoState(page);
     await openView(page, "系统配置", "底层能力、provider 和引擎策略");
     await page.getByRole("button", { name: "策略 搜索、语音和访谈运行策略" }).click();
@@ -206,7 +207,7 @@ test.describe("primary navigation", () => {
     await page.getByLabel("搜索时效窗口").fill("9");
     await page.getByLabel("最大来源数").fill("4");
     await page.getByLabel("允许会中引用联网素材").selectOption("false");
-    await page.getByLabel("播客默认声音").fill(voice);
+    await page.getByLabel("播客默认声音").selectOption(voice);
     await page.getByLabel("启用实时语音").selectOption("true");
     await page.getByLabel("留白阈值").fill("1500");
     await page.getByLabel("最大追问深度").fill("6");
@@ -214,6 +215,7 @@ test.describe("primary navigation", () => {
 
     await expect(page.getByText("产品策略已保存")).toBeVisible();
     await page.getByRole("button", { name: "播客工作台" }).click();
+    // The free-text 声音配置 input in PodcastStudioView is seeded from systemConfig.voice.podcastVoice
     await expect(page.getByLabel("声音配置")).toHaveValue(voice);
 
     await page.getByRole("button", { name: "联网素材" }).click();

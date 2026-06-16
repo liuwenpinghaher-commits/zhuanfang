@@ -129,9 +129,11 @@ test("runs the interview workflow through the Product API", async ({ page }) => 
   await openView(page, "实时专访", "专访启动");
   await page.getByRole("button", { name: "开始专访" }).click();
   await expect(page.getByRole("button", { name: "提交表达" })).toBeVisible();
-  await page.getByRole("button", { name: "保持留白" }).click();
-  await expect(page.getByText("实时语音会话已就绪")).toBeVisible();
-  await expect(page.getByText("qwen3.5-omni-plus-realtime · WebRTC")).toBeVisible();
+  // Click the mic toggle (aria-label "开始录音" when idle) to trigger POST /api/realtime-voice/sessions.
+  // After the mocked session response is returned, the subtitle reflects the transport mode immediately
+  // (before any WebRTC/WebSocket connection attempt). We assert on the subtitle's transport badge.
+  await page.getByRole("button", { name: "开始录音" }).click();
+  await expect(page.getByText("WebRTC 实时语音")).toBeVisible();
 
   await page.getByLabel("你的回答").fill("我怕放手后项目失控。");
   await page.getByRole("button", { name: "提交表达" }).click();
