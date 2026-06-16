@@ -166,6 +166,19 @@ describe("realtime-voice /interrupt route", () => {
     const session = state.sessions.find((s) => s.id === "sess-1");
     expect(session?.turns.find((t) => t.id === "turn-assistant")?.truncated?.reason).toBe("provider_error");
   });
+
+  it("POST /sessions fallback instructions carry opening discipline when no instructions passed", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/realtime-voice/sessions",
+      payload: { interviewSessionId: "sess-1" }
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    const instructions: string = body.sessionUpdate?.session?.instructions ?? "";
+    expect(instructions).toContain("专访主持人");
+    expect(instructions).toMatch(/开场|不寒暄|跟踪点|最近怎么样/);
+  });
 });
 
 describe("realtime-voice /agent-context route", () => {
