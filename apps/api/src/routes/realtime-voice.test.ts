@@ -1,12 +1,14 @@
 // @vitest-environment node
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Fastify, { type FastifyInstance } from "fastify";
+import { createServer } from "node:http";
 import { createInitialProductState } from "../../../../src/domain/engine";
 import {
   createInMemoryProductStateRepository,
   type ProductStateRepository
 } from "../product-state-repository";
 import { registerRealtimeVoiceRoutes } from "./realtime-voice";
+import type { BailianStreamingTtsClient } from "../providers/bailian-streaming-tts";
 import type { InterviewSession } from "../../../../src/domain/types";
 
 function buildAssistantSession(content: string): InterviewSession {
@@ -366,5 +368,153 @@ describe("realtime-voice /agent-turn route", () => {
     expect(res.statusCode).toBe(503);
     expect(res.json().error).toBe("state_repo_unavailable");
     await lonelyApp.close();
+  });
+});
+
+describe("realtime-voice TTS WebSocket proxy (/api/realtime-voice/ws/tts/:sessionId)", () => {
+  /**
+   * Browser↔proxy message contract (documented here for reference):
+   *
+   * Browser → proxy (JSON text frames):
+   *   { type: "speak", segments: string[], voice?: string }
+   *   { type: "cancel" }
+   *
+   * Proxy → browser:
+   *   binary audio frames (forwarded directly from CosyVoice)
+   *   { type: "tts.done" }   — synthesis complete
+   *   { type: "error", message: string }  — synthesis error or config error
+   */
+
+  it("upgrade handler is registered: unknown-session TTS upgrade is rejected with 404", async () => {
+    // Simulate a raw HTTP Upgrade request. When the session is unknown the
+    // upgrade handler must destroy the socket without calling handleUpgrade.
+    const testApp = Fastify();
+    await registerRealtimeVoiceRoutes(testApp);
+    await testApp.ready();
+
+    await new Promise<void>((resolve, reject) => {
+      const httpServer = testApp.server;
+      httpServer.listen(0, "127.0.0.1", () => {
+        const port = (httpServer.address() as { port: number }).port;
+        const net = require("node:net") as typeof import("node:net");
+        const socket = net.connect(port, "127.0.0.1", () => {
+          socket.write(
+            "GET /api/realtime-voice/ws/tts/unknown-session-id HTTP/1.1\r\n" +
+            `Host: 127.0.0.1:${port}\r\n` +
+            "Upgrade: websocket\r\nConnection: Upgrade\r\n" +
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
+            "Sec-WebSocket-Version: 13\r\n\r\n"
+          );
+        });
+        socket.on("data", (data: Buffer) => {
+          // The server must send a 4xx or close — NOT a 101 Switching Protocols
+          expect(data.toString()).not.toMatch(/^HTTP\/1\.1 101/);
+        });
+        socket.on("close", () => {
+          httpServer.close(() => testApp.close().then(() => resolve()));
+        });
+        socket.on("error", () => {
+          // Socket destroyed without response — also acceptable
+          httpServer.close(() => testApp.close().then(() => resolve()));
+        });
+      });
+    });
+  });
+
+  it("synthesizeStream is called with correct segments when browser sends a speak message", async () => {
+    // Use a mock TTS client to verify the proxy relays browser messages correctly.
+    const calls: Array<{ segments: string[]; voice?: string }> = [];
+    const mockTtsClient: BailianStreamingTtsClient = {
+      async synthesizeStream(input, handlers) {
+        calls.push({ segments: input.segments, voice: input.voice });
+        // Immediately complete without producing audio
+        handlers.onComplete();
+      }
+    };
+
+    const testApp = Fastify();
+    await registerRealtimeVoiceRoutes(testApp, { streamingTtsClient: mockTtsClient });
+    await testApp.ready();
+
+    // Create a realtime voice session first (the TTS proxy reuses the sessions map)
+    const sessionRes = await testApp.inject({
+      method: "POST",
+      url: "/api/realtime-voice/sessions",
+      payload: {}
+    });
+    expect(sessionRes.statusCode).toBe(200);
+    const { sessionId } = sessionRes.json() as { sessionId: string };
+
+    await new Promise<void>((resolve, reject) => {
+      const httpServer = testApp.server;
+      httpServer.listen(0, "127.0.0.1", () => {
+        const port = (httpServer.address() as { port: number }).port;
+        const { WebSocket: WsClient } = require("ws") as typeof import("ws");
+        const ws = new WsClient(`ws://127.0.0.1:${port}/api/realtime-voice/ws/tts/${sessionId}`);
+
+        const received: string[] = [];
+        ws.on("open", () => {
+          ws.send(JSON.stringify({ type: "speak", segments: ["你好", "世界"] }));
+        });
+        ws.on("message", (data: Buffer) => {
+          received.push(data.toString());
+        });
+        ws.on("close", () => {
+          try {
+            // Verify the proxy called synthesizeStream with our segments
+            expect(calls).toHaveLength(1);
+            expect(calls[0].segments).toEqual(["你好", "世界"]);
+            // Verify the proxy sent tts.done after completion
+            expect(received.some((m) => m.includes("tts.done"))).toBe(true);
+            httpServer.close(() => testApp.close().then(() => resolve()));
+          } catch (err) {
+            httpServer.close(() => testApp.close().then(() => reject(err as Error)));
+          }
+        });
+        ws.on("error", (err: Error) => {
+          httpServer.close(() => testApp.close().then(() => reject(err)));
+        });
+        // Safety timeout — close ws after 1s if still open
+        setTimeout(() => ws.close(), 1000);
+      });
+    });
+  });
+
+  it("closes with 4001 when no TTS client is provided and no API key env var is set", async () => {
+    const originalKey = process.env.DASHSCOPE_API_KEY;
+    const originalBailian = process.env.BAILIAN_API_KEY;
+    delete process.env.DASHSCOPE_API_KEY;
+    delete process.env.BAILIAN_API_KEY;
+
+    const testApp = Fastify();
+    await registerRealtimeVoiceRoutes(testApp);
+    await testApp.ready();
+
+    const sessionRes = await testApp.inject({
+      method: "POST",
+      url: "/api/realtime-voice/sessions",
+      payload: {}
+    });
+    const { sessionId } = sessionRes.json() as { sessionId: string };
+
+    await new Promise<void>((resolve, reject) => {
+      const httpServer = testApp.server;
+      httpServer.listen(0, "127.0.0.1", () => {
+        const port = (httpServer.address() as { port: number }).port;
+        const { WebSocket: WsClient } = require("ws") as typeof import("ws");
+        const ws = new WsClient(`ws://127.0.0.1:${port}/api/realtime-voice/ws/tts/${sessionId}`);
+        ws.on("close", (code: number) => {
+          try {
+            expect(code).toBe(4001);
+            if (originalKey !== undefined) process.env.DASHSCOPE_API_KEY = originalKey;
+            if (originalBailian !== undefined) process.env.BAILIAN_API_KEY = originalBailian;
+            httpServer.close(() => testApp.close().then(() => resolve()));
+          } catch (err) {
+            httpServer.close(() => testApp.close().then(() => reject(err as Error)));
+          }
+        });
+        ws.on("error", () => { /* ignore upgrade-rejection errors */ });
+      });
+    });
   });
 });

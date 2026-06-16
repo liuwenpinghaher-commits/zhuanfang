@@ -3,6 +3,10 @@ import type { IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import type { BailianRealtimeVoiceClient, BailianVoiceEnrollmentClient } from "../providers/bailian";
+import {
+  createBailianStreamingTtsClient,
+  type BailianStreamingTtsClient
+} from "../providers/bailian-streaming-tts";
 import type { ProductStateRepository } from "../product-state-repository";
 import {
   appendRealtimeSignalTrace,
@@ -34,6 +38,13 @@ interface RealtimeVoiceRouteOptions {
   bailianRealtimeVoiceClient?: BailianRealtimeVoiceClient;
   voiceEnrollmentClient?: BailianVoiceEnrollmentClient;
   stateRepo?: ProductStateRepository;
+  /**
+   * Injectable streaming TTS client for the TTS WebSocket proxy.
+   * When omitted the proxy constructs one at upgrade time from the
+   * DASHSCOPE_API_KEY / BAILIAN_API_KEY env var. If neither is set,
+   * the upgrade is rejected with close code 4001.
+   */
+  streamingTtsClient?: BailianStreamingTtsClient;
 }
 
 interface RealtimeVoiceSessionPayload {
@@ -317,9 +328,119 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
   });
 
   const wss = new WebSocketServer({ noServer: true });
+  const ttsWss = new WebSocketServer({ noServer: true });
 
   server.server.on("upgrade", (request: IncomingMessage, socket, head) => {
     const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
+
+    // ── TTS proxy branch (/api/realtime-voice/ws/tts/:sessionId) ────────────
+    //
+    // Browser↔proxy message contract:
+    //
+    //   Browser → proxy (JSON text frames):
+    //     { type: "speak", segments: string[], voice?: string }
+    //       — start streaming synthesis; proxy calls synthesizeStream and forwards
+    //         binary audio chunks + tts.done back to the browser.
+    //     { type: "cancel" }
+    //       — abort the in-flight synthesis (AbortController signal).
+    //
+    //   Proxy → browser:
+    //     <binary frames>          — raw CosyVoice MP3 audio chunks
+    //     { type: "tts.done" }     — synthesis completed normally
+    //     { type: "error", message: string }
+    //                              — synthesis error (includes key-not-configured)
+    //
+    const ttsMatch = url.pathname.match(/^\/api\/realtime-voice\/ws\/tts\/(.+)$/);
+    if (ttsMatch) {
+      const sessionId = ttsMatch[1];
+      const record = sessions.get(sessionId);
+      if (!record) {
+        socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+
+      ttsWss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
+        // Resolve TTS client: prefer injected (tests / server.ts wires one)
+        // then fall back to constructing from env at upgrade time.
+        const apiKey = process.env.DASHSCOPE_API_KEY ?? process.env.BAILIAN_API_KEY;
+        const ttsClient: BailianStreamingTtsClient | undefined =
+          options.streamingTtsClient ??
+          (apiKey ? createBailianStreamingTtsClient({ apiKey }) : undefined);
+
+        if (!ttsClient) {
+          ws.close(4001, "API key not configured");
+          return;
+        }
+
+        let abortController = new AbortController();
+
+        ws.on("message", (data: Buffer) => {
+          let msg: { type?: string; segments?: unknown; voice?: unknown };
+          try {
+            msg = JSON.parse(data.toString());
+          } catch {
+            return; // ignore non-JSON frames
+          }
+
+          if (msg.type === "cancel") {
+            abortController.abort();
+            abortController = new AbortController();
+            return;
+          }
+
+          if (msg.type === "speak") {
+            const segments = Array.isArray(msg.segments)
+              ? msg.segments.filter((s): s is string => typeof s === "string")
+              : [];
+            const voice = typeof msg.voice === "string" ? msg.voice : undefined;
+
+            // Abort any prior in-flight synthesis before starting a new one
+            abortController.abort();
+            abortController = new AbortController();
+            const signal = abortController.signal;
+
+            ttsClient
+              .synthesizeStream(
+                { segments, voice },
+                {
+                  onAudio: (chunk) => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                      ws.send(chunk);
+                    }
+                  },
+                  onComplete: () => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                      ws.send(JSON.stringify({ type: "tts.done" }));
+                    }
+                  },
+                  onError: (e) => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                      ws.send(JSON.stringify({ type: "error", message: e.message }));
+                    }
+                  }
+                },
+                signal
+              )
+              .catch(() => {
+                // synthesizeStream rejects on error; onError already sent the
+                // message — nothing more to do here.
+              });
+          }
+        });
+
+        ws.on("close", () => {
+          abortController.abort();
+        });
+
+        ws.on("error", () => {
+          abortController.abort();
+        });
+      });
+      return;
+    }
+
+    // ── ASR proxy branch (/api/realtime-voice/ws/:sessionId) ────────────────
     const match = url.pathname.match(/^\/api\/realtime-voice\/ws\/(.+)$/);
     if (!match) return;
 

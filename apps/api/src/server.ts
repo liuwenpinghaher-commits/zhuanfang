@@ -24,6 +24,10 @@ import {
   type BailianSearchClient,
   type BailianVoiceEnrollmentClient
 } from "./providers/bailian";
+import {
+  createBailianStreamingTtsClient,
+  type BailianStreamingTtsClient
+} from "./providers/bailian-streaming-tts";
 import { startIntelScheduler } from "./intel-scheduler";
 import { registerAssetRoutes } from "./routes/assets";
 import { registerCorpusRoutes } from "./routes/corpus";
@@ -56,6 +60,7 @@ interface BuildApiServerOptions {
   bailianChatClient?: BailianChatClient;
   bailianRealtimeVoiceClient?: BailianRealtimeVoiceClient;
   bailianTranscriptionClient?: BailianAudioTranscriptionClient;
+  streamingTtsClient?: BailianStreamingTtsClient;
   env?: Record<string, string | undefined>;
   envFilePath?: string;
 }
@@ -69,6 +74,7 @@ interface ProviderClients {
   bailianRealtimeVoiceClient?: BailianRealtimeVoiceClient;
   voiceEnrollmentClient?: BailianVoiceEnrollmentClient;
   bailianTranscriptionClient?: BailianAudioTranscriptionClient;
+  streamingTtsClient?: BailianStreamingTtsClient;
 }
 
 export function buildApiServer(options: BuildApiServerOptions = {}) {
@@ -122,7 +128,12 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     await registerPodcastRoutes(registeredServer, productStateRepository, providerClients);
   });
   void server.register(async (registeredServer) => {
-    await registerRealtimeVoiceRoutes(registeredServer, { bailianRealtimeVoiceClient: providerClients.bailianRealtimeVoiceClient, voiceEnrollmentClient: providerClients.voiceEnrollmentClient, stateRepo: productStateRepository });
+    await registerRealtimeVoiceRoutes(registeredServer, {
+      bailianRealtimeVoiceClient: providerClients.bailianRealtimeVoiceClient,
+      voiceEnrollmentClient: providerClients.voiceEnrollmentClient,
+      stateRepo: productStateRepository,
+      streamingTtsClient: providerClients.streamingTtsClient
+    });
   });
   void server.register(async (registeredServer) => {
     await registerCorpusRoutes(registeredServer, productStateRepository, providerClients);
@@ -180,6 +191,13 @@ function refreshRuntimeProviderClients(
   providerClients.voiceEnrollmentClient = createBailianVoiceEnrollmentClientFromEnv(env);
   providerClients.bailianTranscriptionClient =
     options.bailianTranscriptionClient ?? createBailianAudioTranscriptionClientFromEnv(env);
+  // Streaming TTS client for the TTS WebSocket proxy (browser ↔ CosyVoice).
+  // If no API key is configured, the proxy will reject upgrades with 4001 at
+  // connect time — safe to leave undefined here.
+  const ttsApiKey = env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY;
+  providerClients.streamingTtsClient =
+    options.streamingTtsClient ??
+    (ttsApiKey ? createBailianStreamingTtsClient({ apiKey: ttsApiKey }) : undefined);
 }
 
 function registerCors(server: ReturnType<typeof Fastify>) {
