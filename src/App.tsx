@@ -1032,9 +1032,17 @@ export default function App() {
         // or WebRTC — single hop, integrated STT+LLM+TTS with server VAD.
         try {
           setVoiceStatus("connecting");
+          // Augment the session with the scripted opening line (sourced from the
+          // interview card's suggestedOpening). The WS path uses this to send an
+          // initial response.create so the AI proactively opens with the prepared
+          // tracking-point question rather than improvising small-talk.
+          const sessionWithOpening = {
+            ...voiceSession,
+            ...(card.suggestedOpening ? { openingLine: card.suggestedOpening } : {})
+          };
           const connection = voiceSession.transport === "webrtc"
             ? await connectBailianRealtimeWebrtc(voiceSession, { productApiClient })
-            : await connectBailianRealtimeWebsocket(voiceSession, {
+            : await connectBailianRealtimeWebsocket(sessionWithOpening, {
                 productApiBaseUrl: `ws://${location.hostname}:8787`,
                 preSignals: session?.interactionPreSignals,
                 onAudioLevel: (level) => setAudioLevel(level),

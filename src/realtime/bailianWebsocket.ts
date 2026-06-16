@@ -269,6 +269,18 @@ export async function connectBailianRealtimeWebsocket(
   return new Promise((resolve, reject) => {
     ws.onopen = () => {
       ws.send(JSON.stringify(session.sessionUpdate));
+      // If a scripted opening line is supplied, immediately trigger the AI to open
+      // with that exact question — preventing any improvised greeting or small-talk.
+      // This is the INITIAL/first-turn response.create only; subsequent turns
+      // (interruption-resume path via injectContextAndRespond) are separate.
+      if (session.openingLine) {
+        ws.send(JSON.stringify({
+          type: "response.create",
+          response: {
+            instructions: `直接说出这句开场，不要任何寒暄或自我介绍：${session.openingLine}`
+          }
+        }));
+      }
     };
 
     ws.onmessage = (event) => {

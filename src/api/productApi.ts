@@ -250,6 +250,10 @@ export interface RealtimeVoiceSessionResponse {
   };
   interviewSessionId?: string;
   expiresAt: string;
+  /** Scripted opening line sourced from card.suggestedOpening.
+   * When present the WS client sends an initial response.create on connect
+   * so the AI proactively opens with this question (no improvised small-talk). */
+  openingLine?: string;
 }
 
 export interface InterruptRealtimeVoiceSessionRequest {
