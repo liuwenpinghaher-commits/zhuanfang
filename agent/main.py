@@ -1,5 +1,6 @@
 import os
 import json as _json
+import httpx
 from dotenv import load_dotenv
 from livekit.agents import (
     Agent,
@@ -12,6 +13,34 @@ from livekit.plugins import aliyun
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 load_dotenv()
+
+BACKEND_URL = os.getenv("INTERVIEW_BACKEND_URL", "http://127.0.0.1:8787")
+
+
+async def _fetch_agent_context(interview_session_id: str) -> dict | None:
+    """Fetch the unified interview agent context (instructions + opening) from the backend.
+
+    Returns the InterviewAgentContext dict on success, or None on any failure.
+    The ``instructions`` field is the full unified voice prompt built by
+    buildRealtimeVoiceInstructions — it already contains the opening discipline
+    and card.suggestedOpening, so we use it to update the agent persona and
+    to drive the opening generate_reply.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{BACKEND_URL}/api/realtime-voice/agent-context/{interview_session_id}"
+            )
+            if resp.status_code == 200:
+                return resp.json()
+            print(
+                f"[agent] agent-context fetch failed: "
+                f"session={interview_session_id} status={resp.status_code}"
+            )
+            return None
+    except Exception as exc:
+        print(f"[agent] agent-context fetch error: {exc}")
+        return None
 
 # ----------------------------------------------------------------------------
 # Bug fix: livekit-plugins-aliyun==1.2.9's chat-context serializer pre-dates the
@@ -37,22 +66,42 @@ _aliyun_utils.to_chat_ctx = _patched_to_chat_ctx
 import livekit.plugins.aliyun.llm as _aliyun_llm
 _aliyun_llm.to_chat_ctx = _patched_to_chat_ctx
 
-class InterviewAgent(Agent):
-    def __init__(self):
-        super().__init__(
-            instructions="""你是一个真正的私人专访主持人。
-每次只问一个核心问题，优先追具体事件、真实张力和可验证假设。
-保持回复简洁，每句话不超过两段，不要替用户下结论。
+_FALLBACK_INSTRUCTIONS = (
+    "你是一个真正的私人专访主持人，不是普通聊天助手。"
+    "这是对同一个人的持续跟踪，不是初次见面——绝不寒暄、绝不自我介绍、绝不问『最近怎么样』。"
+    "第一句话直接从跟踪点切入：上次要追的问题、反复出现的主题、或未还的知识债。"
+    "每次只问一个核心问题，优先追具体事件和真实张力，不替对方下结论。"
+    "用户打断时立刻停，沉默时先留白。"
+)
 
-打断与附和规则：
-- 用户说"嗯""对""是的"等短回应时，这是附和，不要停止说话，可以在说完当前句后简短回应
-- 用户开始说完整句子时，这是打断，立即停止说话，把控制权还给用户
-- 用户沉默时，先留白等待，不要急着填满""",
-        )
+
+class InterviewAgent(Agent):
+    def __init__(self, instructions: str = _FALLBACK_INSTRUCTIONS):
+        super().__init__(instructions=instructions)
 
 
 async def entrypoint(ctx: JobContext):
-    agent = InterviewAgent()
+    # Resolve the interview session id from the LiveKit room name.
+    # The JS side mints room names as "interview-{interviewSessionId}".
+    room_name = ctx.room.name or ""
+    interview_session_id: str | None = None
+    if room_name.startswith("interview-"):
+        interview_session_id = room_name[len("interview-"):]
+
+    # Fetch the unified agent context (persona instructions + opening discipline
+    # with card.suggestedOpening already embedded) from the backend.
+    agent_context: dict | None = None
+    if interview_session_id:
+        agent_context = await _fetch_agent_context(interview_session_id)
+
+    # Build the agent with the fetched instructions, falling back to the safe
+    # static persona when no session context is available.
+    instructions = (
+        agent_context.get("instructions") or _FALLBACK_INSTRUCTIONS
+        if agent_context
+        else _FALLBACK_INSTRUCTIONS
+    )
+    agent = InterviewAgent(instructions=instructions)
 
     session = AgentSession(
         stt=aliyun.STT(model="paraformer-realtime-v2"),
@@ -71,9 +120,22 @@ async def entrypoint(ctx: JobContext):
     await ctx.connect()
     await session.start(agent=agent, room=ctx.room)
 
-    await session.generate_reply(
-        instructions="向用户问好，说明你是他的私人专访主持人，邀请他开始提问或分享想聊的话题。"
-    )
+    # Open from the prepared tracking-point question — never greet or small-talk.
+    # The unified instructions (fetched above) already embed the opening discipline
+    # and card.suggestedOpening via buildVoiceOpeningDiscipline.  The generate_reply
+    # instruction here reinforces that rule so the LLM fires the right first turn.
+    if agent_context:
+        opening_instruction = (
+            "严格遵守你的【开场铁律】：直接说出你的开场问题（card.suggestedOpening），"
+            "不要任何寒暄、不要自我介绍、不要说『你好』或『最近怎么样』。"
+            "从跟踪点切入第一句话，立刻抛出问题。"
+        )
+    else:
+        opening_instruction = (
+            "按你的开场铁律直接开场：从一个跟踪点（上次要追的问题/反复出现的主题/未还的知识债）"
+            "切入第一句，绝不寒暄、不自我介绍、不要问『最近怎么样』。"
+        )
+    await session.generate_reply(instructions=opening_instruction)
 
 
 if __name__ == "__main__":
