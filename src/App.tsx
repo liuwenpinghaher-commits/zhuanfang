@@ -35,6 +35,7 @@ import {
   receiveUserTurn,
   searchProductAssets,
   toggleAssetImportance,
+  buildRealtimeVoiceInstructions,
   updateInterviewControl,
   updateKnowledgeDebtStatus,
   updatePointStatus,
@@ -1339,17 +1340,6 @@ export default function App() {
     </div>
     </>
   );
-}
-
-function buildRealtimeVoiceInstructions(session: InterviewSession | null, card: ReturnType<typeof buildInterviewCard>) {
-  return [
-    "你是一个真正的私人专访主持人。",
-    "每次只问一个核心问题，优先追具体事件、真实张力和可验证假设。",
-    `本次主题：${session?.title ?? card.title}`,
-    `为什么现在聊：${card.whyNow}`,
-    `建议开场：${card.suggestedOpening}`,
-    "不要长篇输出，不要替用户下结论，不要像客服。"
-  ].join("\n");
 }
 
 function buildLocalAudioTranscriptionDraft(sourceUrl: string) {
