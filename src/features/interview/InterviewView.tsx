@@ -52,6 +52,17 @@ export function InterviewView({
   onInterrupt,
   guidanceState
 }: InterviewViewProps) {
+  // Hooks must run unconditionally on every render (Rules of Hooks). Keep them
+  // ABOVE the `if (!session)` early return so the launch screen and the live
+  // conversation render the same hook sequence — otherwise React throws
+  // "Expected static flag was missing" and the view misrenders on start.
+  const turnListRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (turnListRef.current) {
+      turnListRef.current.scrollTop = turnListRef.current.scrollHeight;
+    }
+  }, [session?.turns.length]);
+
   if (!session) {
     return (
       <section className="interview-launch">
@@ -85,13 +96,6 @@ export function InterviewView({
     sharp: "直接"
   }[session.strength];
   const historyReferences = session.card.historyReferences.length > 0 ? session.card.historyReferences : ["暂无明确历史引用"];
-  const turnListRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (turnListRef.current) {
-      turnListRef.current.scrollTop = turnListRef.current.scrollHeight;
-    }
-  }, [session?.turns.length]);
 
   return (
     <section className="view-stack">

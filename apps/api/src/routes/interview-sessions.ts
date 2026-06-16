@@ -17,7 +17,6 @@ import type {
 } from "../../../../src/domain/types";
 import { makeId, nowIso } from "../../../../src/domain/utils";
 import { finalizeSessionWithLlm } from "../intelligence/finalize-llm";
-import { synthesizeInterviewCard } from "../intelligence/interview-card-llm";
 import { generatePreSignals } from "../intelligence/pre-signals-llm";
 import type { ProductStateRepository } from "../product-state-repository";
 import type { BailianChatClient, BailianCharacterInterviewClient } from "../providers/bailian";
@@ -67,24 +66,10 @@ export async function registerInterviewSessionRoutes(
     const session = createSessionDraft(state, normalizeMode(payload.mode), normalizeStrength(payload.strength, state), {
       searchBriefId: normalizeOptionalString(payload.searchBriefId)
     });
-    if (options.bailianChatClient) {
-      try {
-        const synth = await synthesizeInterviewCard(state, session.guide, options.bailianChatClient);
-        session.card = {
-          ...session.card,
-          whyNow: synth.whyNow,
-          suggestedOpening: synth.suggestedOpening,
-          potentialTension: synth.potentialTension || session.card.potentialTension,
-          likelyOutputs: synth.likelyOutputs.length ? synth.likelyOutputs : session.card.likelyOutputs
-        };
-      } catch (error) {
-        console.warn(JSON.stringify({
-          event: "llm_fallback",
-          capability: "interview_card",
-          error: error instanceof Error ? error.message : String(error)
-        }));
-      }
-    }
+    // The deterministic card (createSessionDraft → buildInterviewCard) is already
+    // de-hardcoded/personalized, so "开始专访" returns instantly. The LLM card
+    // enrichment used to block here ~5s on a live call; moved off the create
+    // critical path for responsiveness. The diary still uses real LLM at /end.
     const nextState = upsertSession(state, session);
 
     repository.replaceState(nextState);

@@ -811,9 +811,11 @@ export default function App() {
 
     try {
       const apiRun = await productApiClient.sendInterviewTurn(session.id, { content });
-      setSession(apiRun.session.interactionPreSignals
-        ? { ...session, interactionPreSignals: apiRun.session.interactionPreSignals }
-        : apiRun.session);
+      // Use the server's authoritative session — it already carries the new
+      // user+assistant turns AND its own interactionPreSignals. (The old code
+      // spread the STALE closure `session` here, which dropped the new turns
+      // whenever the reply included pre_signals, i.e. always with the real LLM.)
+      setSession(apiRun.session);
       setProductState(apiRun.state);
       setApiPersistenceEnabled(true);
       return;
