@@ -54,6 +54,9 @@ import {
   type BailianRealtimeWebsocketConnection
 } from "./realtime/bailianWebsocket";
 import { createLivekitVoiceSession, type LivekitVoiceSession } from "./realtime/livekitVoice";
+import { connectCascadedPipeline, type CascadedPipeline } from "./realtime/cascadedPipeline";
+import { createBrowserAsrSource } from "./realtime/cascadedAsrSource";
+import { createBrowserTtsSink } from "./realtime/cascadedTtsSink";
 import {
   dedupeGeneratedArtifacts,
   deleteCorpusInsightBundle,
@@ -134,6 +137,8 @@ export default function App() {
   const [realtimeVoiceSession, setRealtimeVoiceSession] = useState<RealtimeVoiceSessionResponse | null>(null);
   const [realtimeVoiceConnection, setRealtimeVoiceConnection] = useState<BailianRealtimeWebrtcConnection | BailianRealtimeWebsocketConnection | LivekitVoiceSession | null>(null);
   const [livekitVoiceSession, setLivekitVoiceSession] = useState<LivekitVoiceSession | null>(null);
+  // Cascade pipeline instance — held in a ref so closing it doesn't trigger re-render.
+  const cascadePipelineRef = useRef<CascadedPipeline | null>(null);
   const [audioLevel, setAudioLevel] = useState(0);
   const [voiceStatus, setVoiceStatus] = useState<"idle" | "connecting" | "listening" | "speaking" | "interrupted">("idle");
   const [liveUserTranscript, setLiveUserTranscript] = useState("");
@@ -400,6 +405,10 @@ export default function App() {
     realtimeVoiceConnection?.close();
     setRealtimeVoiceConnection(null);
     setRealtimeVoiceSession(null);
+    if (cascadePipelineRef.current) {
+      cascadePipelineRef.current.close();
+      cascadePipelineRef.current = null;
+    }
     setRecording(false);
     setAudioLevel(0);
     setVoiceStatus("idle");
@@ -945,7 +954,99 @@ export default function App() {
       setApiPersistenceEnabled(true);
 
       if (voiceSession.status === "ready") {
-        const voiceMode = productState.systemConfig.voice.realtimeMode ?? "bailian";
+        const voiceMode = productState.systemConfig.voice.realtimeMode ?? "cascade";
+
+        if (voiceMode === "cascade") {
+          // Cascade pipeline: real ASR (text-only omni WS) → LLM HTTP → CosyVoice TTS WS
+          try {
+            setVoiceStatus("connecting");
+            const baseWsUrl = `ws://${location.hostname}:8787`;
+            const asrWsUrl = `${baseWsUrl}/api/realtime-voice/ws/${voiceSession.sessionId}`;
+            const ttsWsUrl = `${baseWsUrl}/api/realtime-voice/ws/tts/${voiceSession.sessionId}`;
+            const interviewId = session?.id ?? "";
+
+            const asr = createBrowserAsrSource({
+              asrWsUrl,
+              instructions: voiceSession.sessionUpdate.session.instructions
+            });
+            const tts = createBrowserTtsSink(ttsWsUrl, productState.systemConfig.voice.defaultVoice);
+
+            // sendUserTurn: POST to /api/interview-sessions/:id/turns, return assistantText
+            const sendUserTurn = async (text: string, _signal: AbortSignal) => {
+              if (!interviewId) {
+                return { assistantText: "" };
+              }
+              const r = await productApiClient.sendInterviewTurn(interviewId, { content: text });
+              setSession(r.session);
+              setProductState(r.state);
+              setApiPersistenceEnabled(true);
+              const assistantText = r.session.turns.at(-1)?.content ?? "";
+              return { assistantText };
+            };
+
+            const preSignals = session?.interactionPreSignals ?? null;
+
+            const pipeline = connectCascadedPipeline({
+              asr,
+              tts,
+              sendUserTurn,
+              preSignals,
+              callbacks: {
+                onStateChange: (s) => {
+                  if (s === "listening" || s === "transcribing") setVoiceStatus("listening");
+                  else if (s === "thinking") setVoiceStatus("connecting");
+                  else if (s === "speaking") setVoiceStatus("speaking");
+                  else if (s === "interrupted") setVoiceStatus("interrupted");
+                  else if (s === "idle") setVoiceStatus("idle");
+                },
+                onUserTranscript: (text, isFinal) => {
+                  setLiveUserTranscript(text);
+                  if (!isFinal || !text.trim() || !interviewId) return;
+                  // Record user turn on server for persistence (send already does this for final turns
+                  // that go through sendUserTurn; this covers partial/barge-in saves).
+                  productApiClient
+                    .recordInterviewTurn(interviewId, { role: "user", content: text })
+                    .then((r) => setSession(r.session))
+                    .catch(() => { /* best-effort */ });
+                },
+                onAssistantText: (text) => {
+                  if (!text.trim()) return;
+                  setSession((prev) => {
+                    if (!prev) return prev;
+                    // The sendInterviewTurn call already added the assistant turn;
+                    // ensure UI reflects the final text from the session update.
+                    return prev;
+                  });
+                  if (interviewId) {
+                    productApiClient
+                      .recordInterviewTurn(interviewId, { role: "assistant", content: text })
+                      .catch(() => { /* best-effort */ });
+                  }
+                },
+                onError: (err) => {
+                  setNotice(buildNotice("warning", "级联语音错误", err.message));
+                }
+              }
+            });
+
+            cascadePipelineRef.current = pipeline;
+
+            // Cascade opening: AI opens with the scripted tracking-point question first,
+            // then begins listening (no small-talk, no improvised greeting).
+            if (card.suggestedOpening) {
+              await tts.speak([card.suggestedOpening]);
+            }
+            await pipeline.startListening();
+            setRecording(true);
+            setVoiceStatus("listening");
+            setNotice(buildNotice("success", "实时语音会话已就绪", "级联模式 (ASR→分析→TTS) 已连接"));
+            return;
+          } catch (err) {
+            setNotice(buildNotice("warning", "级联语音连接失败", err instanceof Error ? err.message : "请确认后端在线且 API key 已配置"));
+            return;
+          }
+        }
+
         if (voiceMode === "livekit") {
           // LiveKit cascaded pipeline (browser → LiveKit server → Python agent → DashScope)
           try {

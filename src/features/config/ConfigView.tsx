@@ -483,6 +483,26 @@ export function ConfigView({
                     </select>
                     <span className="field-help">影响配置页状态和实时专访入口是否按可用能力展示。</span>
                   </label>
+                  <label className="field-stack runtime-setting-field" htmlFor="product-realtime-mode">
+                    <span className="field-label">实时语音模式</span>
+                    <select
+                      id="product-realtime-mode"
+                      name="voice.realtimeMode"
+                      value={productDraft.voice.realtimeMode}
+                      onChange={(event) => {
+                        const nextValue = event.target.value as "bailian" | "livekit" | "cascade";
+                        updateProductConfig((config) => ({
+                          ...config,
+                          voice: { ...config.voice, realtimeMode: nextValue }
+                        }));
+                      }}
+                    >
+                      <option value="cascade">级联 (ASR→分析→TTS)</option>
+                      <option value="bailian">百炼 S2S (直通 omni)</option>
+                      <option value="livekit">LiveKit (外接 Python agent)</option>
+                    </select>
+                    <span className="field-help">级联模式：ASR 转写 → LLM 追问 → CosyVoice TTS，支持打断和深度分析。</span>
+                  </label>
                   <label className="field-stack runtime-setting-field" htmlFor="product-silence-hold">
                     <span className="field-label">留白阈值</span>
                     <input
