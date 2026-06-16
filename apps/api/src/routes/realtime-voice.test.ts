@@ -209,7 +209,7 @@ describe("realtime-voice /agent-context route", () => {
 
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.instructions).toContain("你是一个真正的专访主持人");
+    expect(body.instructions).toContain("专访主持人");
     expect(body.sessionTitle).toBe("测试专访");
     expect(body.turnCount).toBe(2);
     expect(body.history).toHaveLength(2);

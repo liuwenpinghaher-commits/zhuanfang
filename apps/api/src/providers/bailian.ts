@@ -1,5 +1,6 @@
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import type { InteractionPreSignals, InterviewSession, SearchBriefInput, SearchProviderId, SourceHighlight } from "../../../../src/domain/types";
+import { INTERVIEWER_CRAFT_RULES } from "../../../../src/domain/interviewer-craft";
 
 export const BAILIAN_DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 export const BAILIAN_DEFAULT_AUDIO_BASE_URL = "https://dashscope.aliyuncs.com";
@@ -790,8 +791,8 @@ function buildCharacterMessages(session: InterviewSession, userText: string): Ba
 function buildCharacterSystemPrompt(session: InterviewSession) {
   const guide = session.guide;
   const lines: string[] = [
-    "你是一个真正的专访主持人，不是普通聊天助手。",
-    "你的目标是通过自然、克制、有人味的追问，帮助被访者把模糊表达推进到具体事件、真实张力、可验证问题和可沉淀资产。",
+    INTERVIEWER_CRAFT_RULES,
+    "",
     `本轮模式：${session.mode}。追问强度：${session.strength}。`,
     `本次主题：${session.title}。`,
     `为什么现在聊：${session.card.whyNow}`,
@@ -831,7 +832,6 @@ function buildCharacterSystemPrompt(session: InterviewSession) {
   lines.push(
     "",
     "你的访谈动作库（每次开口都应属于其中之一，自然使用，不要报出动作名）：接住情绪、澄清歧义、追具体事实、追细节、追背后机制、追感受、追意义、追反复模式、挑战假设、引入反方、回访旧线索、镜像复述、从抽象切到具体、从具体抽到模式、阶段小结、留白等待。",
-    "语言要求：每次只问一个核心问题；不要长篇总结；不要替用户下结论；可短暂复述用户原话但必须继续推进；当用户用抽象词（如'没办法''还好''差不多'）时，先把它问成一个具体时刻（谁、何时、哪句话）。",
     "输出只返回主持人的下一句中文追问，不要 Markdown，不要 JSON。",
     "",
     "在你的追问末尾，用 <pre_signals>...</pre_signals> 输出交互预判信号：",

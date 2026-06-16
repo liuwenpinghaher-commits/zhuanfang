@@ -291,7 +291,9 @@ describe("bailian provider client", () => {
         expect.objectContaining({ role: "user", content: "我不想每次都替团队兜底，但又怕项目失控。" })
       ])
     });
-    expect(requestBody.messages[0].content).toContain("真正的专访主持人");
+    expect(requestBody.messages[0].content).toContain("专访主持人");
+    expect(requestBody.messages[0].content).toContain("二选一");
+    expect(requestBody.messages[0].content).toContain("很难说");
     expect(requestBody.messages[0].content).toContain("<pre_signals>");
     expect(result).toEqual({
       providerId: "bailian-character",

@@ -28,7 +28,7 @@ describe("buildInterviewAgentContext", () => {
     expect(ctx.latestUserTurn).toBeNull();
     expect(ctx.history).toEqual([]);
     expect(ctx.activeStrategies).toEqual([]);
-    expect(ctx.instructions).toContain("你是一个真正的专访主持人");
+    expect(ctx.instructions).toContain("专访主持人");
   });
 
   it("includes user and assistant turns in history in order", () => {
