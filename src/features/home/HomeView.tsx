@@ -40,7 +40,9 @@ export function HomeView({ state, card, monthlyReview, onStart }: HomeViewProps)
             <h2>今日主建议</h2>
           </div>
           <p className="lead">{card.whyNow}</p>
-          <div className="quote-line">“{card.historyReferences[0]}”</div>
+          {card.historyReferences[0] && (
+            <div className="quote-line">&ldquo;{card.historyReferences[0]}&rdquo;</div>
+          )}
           <div className="inline-list">
             {card.suggestedPerspectives.map((perspective) => (
               <span key={perspective}>{perspective}</span>
@@ -53,8 +55,14 @@ export function HomeView({ state, card, monthlyReview, onStart }: HomeViewProps)
             <TimerReset size={18} />
             <h2>继续追踪</h2>
           </div>
-          <p>{topTheme.nextQuestion}</p>
-          <button className="text-button" type="button" onClick={() => onStart("long-term")}>继续长期主题 <ChevronRight size={16} /></button>
+          {topTheme ? (
+            <>
+              <p>{topTheme.nextQuestion}</p>
+              <button className="text-button" type="button" onClick={() => onStart("long-term")}>继续长期主题 <ChevronRight size={16} /></button>
+            </>
+          ) : (
+            <p className="empty-hint">还没有长期主题，开始第一次专访后会自动出现在这里。</p>
+          )}
         </section>
 
         <section className="panel">
@@ -62,8 +70,14 @@ export function HomeView({ state, card, monthlyReview, onStart }: HomeViewProps)
             <ClipboardList size={18} />
             <h2>知识债</h2>
           </div>
-          <p>{openDebt.concept}</p>
-          <small>{openDebt.nextQuestion}</small>
+          {openDebt ? (
+            <>
+              <p>{openDebt.concept}</p>
+              <small>{openDebt.nextQuestion}</small>
+            </>
+          ) : (
+            <p className="empty-hint">还没有知识债，专访中会自动识别并记录。</p>
+          )}
         </section>
       </div>
 
