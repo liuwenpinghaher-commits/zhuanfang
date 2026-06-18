@@ -2,6 +2,7 @@
 import "./telemetry";
 
 import Fastify, { type FastifyRequest, type FastifyReply } from "fastify";
+import fastifyStatic from "@fastify/static";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createSqliteProductStateRepository } from "../../../packages/db/src/sqlite-product-state-repository";
@@ -174,6 +175,15 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   void server.register(async (registeredServer) => {
     await registerQualityRoutes(registeredServer, productStateRepository);
   });
+
+  // Static file serving: when PRODUCT_STATIC_DIR is set (production Docker image),
+  // serve the built frontend from that directory. Registered after all API routes
+  // so /api/* handlers take precedence.
+  const staticDir = runtimeEnv.PRODUCT_STATIC_DIR;
+  if (staticDir) {
+    void server.register(fastifyStatic, { root: staticDir });
+  }
+
   return server;
 }
 

@@ -848,4 +848,45 @@ describe("Product API", () => {
       process.env.DASHSCOPE_API_KEY = previousKey;
     }
   });
+
+  describe("PRODUCT_STATIC_DIR static file serving (P0-4)", () => {
+    it("serves index.html from PRODUCT_STATIC_DIR when env is set", async () => {
+      const staticDir = mkdtempSync(join(tmpdir(), "interview-static-"));
+      tempDirs.push(staticDir);
+      writeFileSync(join(staticDir, "index.html"), "<html><body>hello static</body></html>");
+
+      const server = buildApiServer({
+        env: { PRODUCT_STATIC_DIR: staticDir }
+      });
+
+      const response = await server.inject({ method: "GET", url: "/" });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("hello static");
+    });
+
+    it("does not serve static files when PRODUCT_STATIC_DIR is not set", async () => {
+      const server = buildApiServer({ env: {} });
+
+      const response = await server.inject({ method: "GET", url: "/" });
+
+      // Without static serving, / is not a registered route → 404
+      expect(response.statusCode).toBe(404);
+    });
+
+    it("API routes still work when PRODUCT_STATIC_DIR is set", async () => {
+      const staticDir = mkdtempSync(join(tmpdir(), "interview-static-"));
+      tempDirs.push(staticDir);
+      writeFileSync(join(staticDir, "index.html"), "<html><body>hello static</body></html>");
+
+      const server = buildApiServer({
+        env: { PRODUCT_STATIC_DIR: staticDir }
+      });
+
+      const response = await server.inject({ method: "GET", url: "/api/health" });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ ok: true, service: "interview-product-api" });
+    });
+  });
 });

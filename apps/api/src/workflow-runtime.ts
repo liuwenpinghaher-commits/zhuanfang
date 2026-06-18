@@ -1,8 +1,5 @@
 import { triggerWorkflowRun } from "../../../src/domain/engine";
 import type { ProductState, TriggerWorkflowRunInput, WorkflowRun } from "../../../src/domain/types";
-import type { RuntimeEnv } from "./env";
-
-type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export type WorkflowRuntimeId = "local-workflow-runtime";
 
@@ -27,9 +24,6 @@ export function createLocalWorkflowRuntime(): WorkflowRuntime {
   };
 }
 
-export function createWorkflowRuntimeFromEnv(
-  _env: RuntimeEnv = process.env,
-  _fetchImpl?: FetchLike
-): WorkflowRuntime {
+export function createWorkflowRuntimeFromEnv(): WorkflowRuntime {
   return createLocalWorkflowRuntime();
 }
