@@ -28,7 +28,7 @@ export function normalizeProductState(value: unknown): ProductState {
       ...fallback.profile,
       ...candidate.profile
     },
-    sessions: Array.isArray(candidate.sessions) ? candidate.sessions : fallback.sessions,
+    sessions: Array.isArray(candidate.sessions) ? migrateSessionStatuses(candidate.sessions) : fallback.sessions,
     notes: Array.isArray(candidate.notes) ? candidate.notes : fallback.notes,
     points: Array.isArray(candidate.points) ? candidate.points : fallback.points,
     questions: Array.isArray(candidate.questions) ? candidate.questions : fallback.questions,
@@ -84,6 +84,17 @@ export function normalizeProductState(value: unknown): ProductState {
     }
   };
   return pruneDanglingThemeRefs(normalized);
+}
+
+function migrateSessionStatuses(value: unknown[]): import("./types").InterviewSession[] {
+  return value.map((session) => {
+    if (!session || typeof session !== "object") return session as import("./types").InterviewSession;
+    const raw = session as Record<string, unknown>;
+    if (raw["status"] === "draft") {
+      return { ...raw, status: "active" } as import("./types").InterviewSession;
+    }
+    return raw as unknown as import("./types").InterviewSession;
+  });
 }
 
 function migrateThemesToTracks(value: unknown[]): import("./types").LongTermTheme[] {

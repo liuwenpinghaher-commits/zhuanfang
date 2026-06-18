@@ -370,4 +370,83 @@ describe("product state storage", () => {
     const { workflowRuns: _omitted, ...stateWithoutRuns } = state;
     expect(normalizeProductState(stateWithoutRuns).workflowRuns).toEqual([]);
   });
+
+  // P2-23: draft → active migration
+  describe("InterviewSession draft→active migration", () => {
+    it("migrates sessions with status='draft' to 'active' on normalize", () => {
+      const state = createInitialProductState();
+      const stateWithDraftSession = {
+        ...state,
+        sessions: [
+          {
+            id: "sess-001",
+            mode: "daily",
+            strength: "standard",
+            status: "draft" as string,
+            title: "旧 draft 会话",
+            card: { title: "卡片", whyNow: "", suggestedOpening: "", historyReferences: [], potentialTension: "", suggestedPerspectives: [], likelyOutputs: [] },
+            guide: {
+              topicHint: "", dailyBrief: { suggestedTopic: "", openingQuestion: "", contextNote: "" },
+              perspectiveCoverage: {}, missingPerspectives: [], recommendedPerspectives: [],
+              perspectiveRationale: "", relevantMemories: [], graphReferences: [],
+              opinionEvolution: [], statedPositions: [], openDebts: [], blindspotCandidates: [],
+              knowledgeFragments: [], suggestedOpening: "", strategyChecklist: []
+            },
+            turns: [],
+            startedAt: "2025-01-01T00:00:00.000Z"
+          }
+        ]
+      };
+
+      const normalized = normalizeProductState(stateWithDraftSession);
+      expect(normalized.sessions[0].status).toBe("active");
+    });
+
+    it("does not alter sessions that are already 'active' or 'completed'", () => {
+      const state = createInitialProductState();
+      const guide = {
+        topicHint: "", dailyBrief: { suggestedTopic: "", openingQuestion: "", contextNote: "" },
+        perspectiveCoverage: {}, missingPerspectives: [], recommendedPerspectives: [],
+        perspectiveRationale: "", relevantMemories: [], graphReferences: [],
+        opinionEvolution: [], statedPositions: [], openDebts: [], blindspotCandidates: [],
+        knowledgeFragments: [], suggestedOpening: "", strategyChecklist: []
+      };
+      const card = { title: "卡片", whyNow: "", suggestedOpening: "", historyReferences: [], potentialTension: "", suggestedPerspectives: [], likelyOutputs: [] };
+
+      const stateWithSessions = {
+        ...state,
+        sessions: [
+          { id: "sess-active", mode: "daily", strength: "standard", status: "active", title: "进行中", card, guide, turns: [], startedAt: "2025-01-01T00:00:00.000Z" },
+          { id: "sess-completed", mode: "daily", strength: "standard", status: "completed", title: "已结束", card, guide, turns: [], startedAt: "2025-01-01T00:00:00.000Z", completedAt: "2025-01-01T01:00:00.000Z" }
+        ]
+      };
+
+      const normalized = normalizeProductState(stateWithSessions);
+      expect(normalized.sessions[0].status).toBe("active");
+      expect(normalized.sessions[1].status).toBe("completed");
+    });
+
+    it("is idempotent: normalizing twice does not corrupt session status", () => {
+      const state = createInitialProductState();
+      const guide = {
+        topicHint: "", dailyBrief: { suggestedTopic: "", openingQuestion: "", contextNote: "" },
+        perspectiveCoverage: {}, missingPerspectives: [], recommendedPerspectives: [],
+        perspectiveRationale: "", relevantMemories: [], graphReferences: [],
+        opinionEvolution: [], statedPositions: [], openDebts: [], blindspotCandidates: [],
+        knowledgeFragments: [], suggestedOpening: "", strategyChecklist: []
+      };
+      const card = { title: "卡片", whyNow: "", suggestedOpening: "", historyReferences: [], potentialTension: "", suggestedPerspectives: [], likelyOutputs: [] };
+
+      const stateWithDraftSession = {
+        ...state,
+        sessions: [
+          { id: "sess-001", mode: "daily", strength: "standard", status: "draft" as string, title: "旧 draft", card, guide, turns: [], startedAt: "2025-01-01T00:00:00.000Z" }
+        ]
+      };
+
+      const once = normalizeProductState(stateWithDraftSession);
+      const twice = normalizeProductState(once);
+      expect(twice.sessions[0].status).toBe("active");
+    });
+  });
 });

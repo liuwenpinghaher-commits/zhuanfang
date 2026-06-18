@@ -6,7 +6,7 @@ describe("domain types", () => {
       id: "s1",
       mode: "daily",
       strength: "standard",
-      status: "draft",
+      status: "active",
       title: "test",
       card: { title: "card", whyNow: "now", suggestedOpening: "open", historyReferences: [], potentialTension: "", suggestedPerspectives: [], likelyOutputs: [] },
       guide: {

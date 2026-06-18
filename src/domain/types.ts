@@ -498,7 +498,7 @@ export interface InterviewSession {
   id: string;
   mode: InterviewMode;
   strength: InterviewStrength;
-  status: "draft" | "active" | "completed";
+  status: "active" | "completed";
   title: string;
   card: InterviewCard;
   guide: InterviewGuide;
