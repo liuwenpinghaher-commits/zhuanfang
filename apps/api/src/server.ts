@@ -48,6 +48,7 @@ import { registerPlaybookPatchRoutes } from "./routes/playbook-patches";
 import { registerPodcastRoutes } from "./routes/podcast";
 import { registerProductConfigRoutes } from "./routes/product-config";
 import { registerQualityRoutes } from "./routes/quality";
+import { registerRagRoutes } from "./routes/rag";
 import { registerRealtimeVoiceRoutes } from "./routes/realtime-voice";
 import { registerReviewRoutes } from "./routes/reviews";
 import { registerSearchRoutes } from "./routes/search";
@@ -202,6 +203,12 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   });
   void server.register(async (registeredServer) => {
     await registerQualityRoutes(registeredServer, productStateRepository);
+  });
+  void server.register(async (registeredServer) => {
+    await registerRagRoutes(registeredServer, productStateRepository, {
+      ...providerClients,
+      llmBudget: sharedBudget
+    });
   });
 
   // Static file serving: when PRODUCT_STATIC_DIR is set (production Docker image),
