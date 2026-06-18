@@ -15,7 +15,7 @@ import type {
   InterviewTurn,
   ProductState
 } from "../../../../src/domain/types";
-import { makeId, nowIso } from "../../../../src/domain/utils";
+import { makeId, nowIso, withAuditEvent } from "../../../../src/domain/utils";
 import { finalizeSessionWithLlm } from "../intelligence/finalize-llm";
 import { generatePreSignals } from "../intelligence/pre-signals-llm";
 import { classifyTurnComplete } from "../intelligence/turn-endpoint-llm";
@@ -213,12 +213,35 @@ export async function registerInterviewSessionRoutes(
       expressionState?: unknown;
       transcript?: unknown;
     }>(request.body);
-    console.info(JSON.stringify({
-      event: "cascade_decision", sessionId,
-      layer: body.layer, action: body.action, reason: body.reason,
-      silenceMs: body.silenceMs, expressionState: body.expressionState,
-      transcript: typeof body.transcript === "string" ? body.transcript.slice(0, 80) : undefined
-    }));
+    const action = typeof body.action === "string" ? body.action : String(body.action ?? "");
+    const reason = typeof body.reason === "string" ? body.reason : String(body.reason ?? "");
+    const layer = body.layer != null ? String(body.layer) : undefined;
+    const silenceMs = body.silenceMs != null ? String(body.silenceMs) : undefined;
+    const expressionState = typeof body.expressionState === "string" ? body.expressionState : undefined;
+    const transcript = typeof body.transcript === "string" ? body.transcript.slice(0, 80) : undefined;
+
+    const detail = [
+      action,
+      reason,
+      layer != null ? `layer=${layer}` : undefined,
+      silenceMs != null ? `silenceMs=${silenceMs}` : undefined,
+      expressionState != null ? `expr=${expressionState}` : undefined,
+      transcript != null ? `transcript=${transcript}` : undefined
+    ].filter(Boolean).join(" | ");
+
+    const createdAt = nowIso();
+    const state = repository.getState();
+    const nextState = withAuditEvent(state, {
+      type: "cascade_decision_logged",
+      label: "级联决策已记录",
+      detail,
+      severity: "info",
+      entityType: "interview_session",
+      entityId: sessionId ?? "",
+      createdAt
+    });
+    repository.replaceState(nextState);
+
     return { ok: true };
   });
 

@@ -155,4 +155,37 @@ describe("interview-sessions routes", () => {
 
     await server.close();
   });
+
+  it("/decisions: persists decision to auditEvents in state (P2-22)", async () => {
+    const repo = createInMemoryProductStateRepository();
+    const server = Fastify({ logger: false });
+    await registerInterviewSessionRoutes(server, repo, {});
+
+    const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "daily" } })).json();
+    const id = created.session.id;
+
+    await server.inject({
+      method: "POST",
+      url: `/api/interview-sessions/${id}/decisions`,
+      payload: {
+        layer: 2,
+        action: "hold",
+        reason: "guest still speaking",
+        silenceMs: 200,
+        expressionState: "listening",
+        transcript: "正在讲话中"
+      }
+    });
+
+    const state = repo.getState();
+    const event = state.auditEvents.find((e) => e.type === "cascade_decision_logged");
+    expect(event).toBeDefined();
+    expect(event?.entityType).toBe("interview_session");
+    expect(event?.entityId).toBe(id);
+    expect(event?.severity).toBe("info");
+    expect(event?.detail).toContain("hold");
+    expect(event?.detail).toContain("guest still speaking");
+
+    await server.close();
+  });
 });

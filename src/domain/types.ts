@@ -281,7 +281,8 @@ export interface AuditEvent {
     | "interview_feedback_submitted"
     | "context_security_intercepted"
     | "decision_candidate_confirmed"
-    | "privacy_data_purged";
+    | "privacy_data_purged"
+    | "cascade_decision_logged";
   label: string;
   detail: string;
   severity: AuditEventSeverity;
