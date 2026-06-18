@@ -1,6 +1,7 @@
 import { Archive, CheckCircle2, ClipboardList, Cpu, Database, Mic, RefreshCcw, Search, ShieldCheck, Upload, Volume2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigSetting, SystemConfigUpdateRequest, VoiceInfo } from "../../api/productApi";
+import { searchProviderIds, searchProviderLabels } from "../../capabilities/contracts";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import { Metric } from "../../components/Metric";
 import type { buildSystemStatus } from "../../domain/engine";
@@ -338,8 +339,8 @@ export function ConfigView({
                         }));
                       }}
                     >
-                      {["bailian", "anysearch", "local-demo"].map((provider) => (
-                        <option value={provider} key={provider}>{provider}</option>
+                      {searchProviderIds.map((provider) => (
+                        <option value={provider} key={provider}>{searchProviderLabels[provider]}</option>
                       ))}
                     </select>
                     <span className="field-help">影响“联网素材”默认使用的 provider。</span>

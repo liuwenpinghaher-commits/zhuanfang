@@ -2,6 +2,7 @@ import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SystemCapabilitiesResponse, SystemConfigResponse } from "../../api/productApi";
+import { searchProviderIds, searchProviderLabels } from "../../capabilities/contracts";
 import { buildSystemStatus, createInitialProductState } from "../../domain/engine";
 import { ConfigView } from "./ConfigView";
 
@@ -205,6 +206,29 @@ describe("ConfigView", () => {
         })
       })
     );
+  });
+
+  it("provider select options match the single-source searchProviderLabels exactly", () => {
+    const state = createInitialProductState();
+
+    renderView(state, emptyCapabilities(), {
+      section: "policies",
+      voices: [
+        { voice: "longanyang", name: "龙安洋·阳光男声", description: "" },
+        { voice: "longanhuan", name: "龙安欢·元气女声", description: "" }
+      ]
+    });
+
+    const providerSelect = container?.querySelector<HTMLSelectElement>('select[name="search.activeProvider"]');
+    const optionValues = Array.from(providerSelect?.options ?? []).map((o) => o.value);
+
+    // Must match searchProviderIds exactly (same set, same order)
+    expect(optionValues).toEqual(searchProviderIds);
+
+    // Each option label must match the searchProviderLabels entry
+    const optionTexts = Array.from(providerSelect?.options ?? []).map((o) => o.text);
+    const expectedTexts = searchProviderIds.map((id) => searchProviderLabels[id]);
+    expect(optionTexts).toEqual(expectedTexts);
   });
 
   function renderView(

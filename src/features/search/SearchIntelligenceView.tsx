@@ -1,4 +1,5 @@
 import { Database, Globe2, Mic, Search, Sparkles, Trash2, Wand2 } from "lucide-react";
+import { searchProviderIds, searchProviderLabels } from "../../capabilities/contracts";
 import type { CapabilityTask } from "../../capabilities/task";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { ProductState, SearchBriefInput, SearchProviderId } from "../../domain/types";
@@ -38,7 +39,8 @@ export function SearchIntelligenceView({
     { id: "local-demo", label: "本地演示", icon: "database" }
   ];
 
-  const allProviders: SearchProviderId[] = ["local-demo", "bailian", "anysearch", "tavily", "exa", "brave"];
+  // Derived from the single source of truth — searchProviderIds in contracts.ts
+  const allProviders = searchProviderIds;
 
   return (
     <section className="view-stack">
@@ -100,7 +102,7 @@ export function SearchIntelligenceView({
             >
               {allProviders.map((provider) => (
                 <option key={provider} value={provider}>
-                  {provider}
+                  {searchProviderLabels[provider]}
                 </option>
               ))}
             </select>

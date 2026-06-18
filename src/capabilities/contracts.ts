@@ -8,3 +8,10 @@ export const searchProviderLabels: Record<SearchProviderId, string> = {
   exa: "Exa",
   brave: "Brave Search"
 };
+
+/**
+ * Canonical ordered list of all registered search providers.
+ * Derived from searchProviderLabels — the single source of truth.
+ * All UI lists (ConfigView, SearchIntelligenceView) must import this.
+ */
+export const searchProviderIds = Object.keys(searchProviderLabels) as SearchProviderId[];
