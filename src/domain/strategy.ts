@@ -11,7 +11,7 @@ import type {
 
 import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, extractAnchor, noQualityEvidenceScore } from "./utils";
 
-import { buildInterviewQualityReport, buildQualityOperationsReport } from "./engine";
+import { buildInterviewQualityReport, buildQualityOperationsReport } from "./quality-report";
 import { collectAppliedPlaybookRules } from "./context-pack";
 
 function average(values: number[]) {
