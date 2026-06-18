@@ -7,7 +7,7 @@ export async function registerStateRoutes(server: FastifyInstance, repository: P
   server.put("/api/state", async (request, reply) => {
     const stored = repository.getState();
     const incomingRevision = (request.body as { revision?: unknown })?.revision;
-    if (typeof incomingRevision === "number" && incomingRevision < stored.revision) {
+    if (typeof incomingRevision === "number" && incomingRevision !== stored.revision) {
       return reply.code(409).send({ error: "stale revision", current: stored });
     }
     return repository.replaceState(normalizeProductState(request.body));
