@@ -8,17 +8,27 @@ import type { ProductState } from "../../../src/domain/types";
 
 const SNAPSHOT_ID = "default";
 
+// ponytail: 固定保留窗口 500;需要按时间裁剪再说
+const MAX_PERSISTED_EVENTS = 500;
+
 type ProductStateEventType = "seed" | "replace" | "reset";
 
 interface ProductStateSnapshotRow {
   state_json: string;
 }
 
-export interface SqliteProductStateRepositoryOptions {
-  dbPath: string;
+interface EventCountRow {
+  count: number;
 }
 
-export function createSqliteProductStateRepository(options: SqliteProductStateRepositoryOptions): ProductStateRepository {
+export interface SqliteProductStateRepositoryOptions {
+  dbPath: string;
+  /** 可注入最大事件行数,默认 MAX_PERSISTED_EVENTS(500);用于测试 */
+  maxEvents?: number;
+}
+
+export function createSqliteProductStateRepository(options: SqliteProductStateRepositoryOptions): ProductStateRepository & { getEventCount: () => number } {
+  const maxEvents = options.maxEvents ?? MAX_PERSISTED_EVENTS;
   mkdirSync(dirname(options.dbPath), { recursive: true });
   const database = new DatabaseSync(options.dbPath);
   initializeSchema(database);
@@ -64,6 +74,16 @@ export function createSqliteProductStateRepository(options: SqliteProductStateRe
       .prepare("INSERT INTO product_state_events (event_type, state_json, created_at) VALUES (?, ?, ?)")
       .run(eventType, stateJson, createdAt);
 
+    // 固定保留窗口裁剪:保留最近 maxEvents 条,其余删除
+    database
+      .prepare(
+        `DELETE FROM product_state_events
+         WHERE id NOT IN (
+           SELECT id FROM product_state_events ORDER BY id DESC LIMIT ?
+         )`
+      )
+      .run(maxEvents);
+
     return normalizedState;
   }
 
@@ -84,6 +104,12 @@ export function createSqliteProductStateRepository(options: SqliteProductStateRe
     getInterviewSession(id) {
       const state = readPersistedState() ?? createInitialProductState();
       return state.sessions.find((s) => s.id === id) ?? null;
+    },
+    getEventCount() {
+      const row = database
+        .prepare("SELECT COUNT(*) AS count FROM product_state_events")
+        .get() as unknown as EventCountRow;
+      return row.count;
     }
   };
 }
