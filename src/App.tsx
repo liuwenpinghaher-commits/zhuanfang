@@ -1249,9 +1249,8 @@ export default function App() {
       setApiPersistenceEnabled(false);
     }
 
-    setRecording(true);
     setRealtimeVoiceSession(null);
-    setNotice(buildNotice("warning", "实时语音已降级", "Product API 不可用，当前仅模拟录音节奏。"));
+    setNotice(buildNotice("warning", "实时语音不可用", "Product API 不可用，无法开始语音专访，请检查服务后重试。"));
   }
 
   return (
