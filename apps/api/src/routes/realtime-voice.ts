@@ -393,7 +393,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
             const segments = Array.isArray(msg.segments)
               ? msg.segments.filter((s): s is string => typeof s === "string")
               : [];
-            const voice = typeof msg.voice === "string" ? msg.voice : undefined;
+            const voice = normalizeCosyVoice(msg.voice);
 
             // Abort any prior in-flight synthesis before starting a new one
             abortController.abort();
@@ -604,6 +604,22 @@ function normalizeInstructions(value: unknown) {
 
 function normalizeOptionalString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+/**
+ * Map a requested TTS voice to one CosyVoice v3 will accept.
+ * The product config stores semantic aliases (warm-interviewer / calm-host) that
+ * are product labels, NOT CosyVoice voice IDs — forwarding them to cosyvoice-v3-plus
+ * yields engine error 418. Return undefined for aliases/empties so the streaming
+ * client falls back to its v3 default (longanyang). Real v3 voice IDs pass through.
+ * Mirrors the podcast route's voice normalization.
+ */
+const TTS_SEMANTIC_ALIASES = new Set(["warm-interviewer", "calm-host"]);
+function normalizeCosyVoice(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const v = value.trim();
+  if (!v || TTS_SEMANTIC_ALIASES.has(v)) return undefined;
+  return v;
 }
 
 function getSessionId(params: unknown) {
