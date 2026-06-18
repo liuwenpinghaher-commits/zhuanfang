@@ -48,10 +48,27 @@ export interface CreateBrowserAsrSourceOptions {
   getMicStream?: () => Promise<MediaStream>;
   /** Instructions forwarded to the model for the ASR-only session. */
   instructions?: string;
+  /**
+   * Max reconnect attempts after ASR start failure (default: 2).
+   * Set to 0 to disable reconnect.
+   */
+  maxReconnectAttempts?: number;
+  /**
+   * Base delay in ms between reconnect attempts (default: 500).
+   * Actual delay = baseReconnectDelayMs * attempt (linear backoff).
+   * Injectable for tests (set to 0 for instant retries).
+   */
+  baseReconnectDelayMs?: number;
 }
 
 export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): AsrSource {
-  const { asrWsUrl, getMicStream, instructions = "" } = opts;
+  const {
+    asrWsUrl,
+    getMicStream,
+    instructions = "",
+    maxReconnectAttempts = 2,
+    baseReconnectDelayMs = 500,
+  } = opts;
 
   let handlers: AsrEventHandlers | null = null;
   let ws: WebSocket | null = null;
@@ -200,100 +217,133 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
         throw new Error("AsrSource: register() must be called before start()");
       }
 
-      await startMic();
+      // attemptConnect: one connection attempt. On failure, stopMic first.
+      // Returns void on success; throws on failure.
+      const attemptConnect = async (): Promise<void> => {
+        await startMic();
 
-      await new Promise<void>((resolve, reject) => {
-        const socket = new WebSocket(asrWsUrl);
-        ws = socket;
+        return new Promise<void>((resolve, reject) => {
+          const socket = new WebSocket(asrWsUrl);
+          ws = socket;
 
-        socket.onopen = () => {
-          // Text-only session: the model will transcribe but not generate audio
-          socket.send(JSON.stringify(buildAsrSessionUpdate(instructions)));
-        };
+          socket.onopen = () => {
+            // Text-only session: the model will transcribe but not generate audio
+            socket.send(JSON.stringify(buildAsrSessionUpdate(instructions)));
+          };
 
-        socket.onmessage = (event) => {
-          if (closed) return;
-          let msg: Record<string, unknown>;
-          try {
-            msg = JSON.parse(event.data as string);
-          } catch {
-            return;
-          }
-
-          const type = msg.type as string | undefined;
-
-          switch (type) {
-            case "proxy.connected":
-              // Proxy is ready — resolve so startListening() can proceed
-              resolve();
-              break;
-
-            case "input_audio_buffer.speech_started":
-              handlers?.onSpeechStarted();
-              break;
-
-            case "input_audio_buffer.speech_stopped": {
-              // Measure silence since last high-energy frame
-              const silenceMs = lowEnergyFrames * frameMs;
-              handlers?.onSpeechStopped(silenceMs);
-              break;
+          socket.onmessage = (event) => {
+            if (closed) return;
+            let msg: Record<string, unknown>;
+            try {
+              msg = JSON.parse(event.data as string);
+            } catch {
+              return;
             }
 
-            case "conversation.item.input_audio_transcription.delta": {
-              // Type guard: text and stash must both be strings (or absent → treat as "").
-              // Non-string values (number, null, object, etc.) indicate a malformed delta;
-              // skip silently and emit a structured warning so ops can detect schema drift.
-              const rawText = msg.text;
-              const rawStash = msg.stash;
-              const textIsValid = rawText === undefined || typeof rawText === "string";
-              const stashIsValid = rawStash === undefined || typeof rawStash === "string";
-              if (!textIsValid || !stashIsValid) {
-                console.warn(JSON.stringify({
-                  event: "asr_invalid_delta",
-                  textType: typeof rawText,
-                  stashType: typeof rawStash,
-                }));
+            const type = msg.type as string | undefined;
+
+            switch (type) {
+              case "proxy.connected":
+                // Proxy is ready — resolve so startListening() can proceed
+                resolve();
+                break;
+
+              case "input_audio_buffer.speech_started":
+                handlers?.onSpeechStarted();
+                break;
+
+              case "input_audio_buffer.speech_stopped": {
+                // Measure silence since last high-energy frame
+                const silenceMs = lowEnergyFrames * frameMs;
+                handlers?.onSpeechStopped(silenceMs);
                 break;
               }
-              const text = ((rawText as string | undefined) ?? "") + ((rawStash as string | undefined) ?? "");
-              if (!text) {
-                console.warn(JSON.stringify({ event: "asr_empty_transcript" }));
+
+              case "conversation.item.input_audio_transcription.delta": {
+                // Type guard: text and stash must both be strings (or absent → treat as "").
+                // Non-string values (number, null, object, etc.) indicate a malformed delta;
+                // skip silently and emit a structured warning so ops can detect schema drift.
+                const rawText = msg.text;
+                const rawStash = msg.stash;
+                const textIsValid = rawText === undefined || typeof rawText === "string";
+                const stashIsValid = rawStash === undefined || typeof rawStash === "string";
+                if (!textIsValid || !stashIsValid) {
+                  console.warn(JSON.stringify({
+                    event: "asr_invalid_delta",
+                    textType: typeof rawText,
+                    stashType: typeof rawStash,
+                  }));
+                  break;
+                }
+                const text = ((rawText as string | undefined) ?? "") + ((rawStash as string | undefined) ?? "");
+                if (!text) {
+                  console.warn(JSON.stringify({ event: "asr_empty_transcript" }));
+                  break;
+                }
+                updateSemanticFlags(text);
+                // Cumulative partial — orchestrator REPLACES the partial with it.
+                handlers?.onTranscriptDelta(text, false);
                 break;
               }
-              updateSemanticFlags(text);
-              // Cumulative partial — orchestrator REPLACES the partial with it.
-              handlers?.onTranscriptDelta(text, false);
-              break;
-            }
 
-            case "conversation.item.input_audio_transcription.completed": {
-              const transcript = msg.transcript as string | undefined;
-              if (transcript) {
-                updateSemanticFlags(transcript);
-                // Finalized segment — orchestrator commits it.
-                handlers?.onTranscriptDelta(transcript, true);
+              case "conversation.item.input_audio_transcription.completed": {
+                const transcript = msg.transcript as string | undefined;
+                if (transcript) {
+                  updateSemanticFlags(transcript);
+                  // Finalized segment — orchestrator commits it.
+                  handlers?.onTranscriptDelta(transcript, true);
+                }
+                break;
               }
-              break;
-            }
 
-            case "error": {
-              const errMsg = (msg.error as { message?: string } | undefined)?.message ?? "ASR error";
-              if (!closed) {
-                reject(new Error(errMsg));
+              case "error": {
+                const errMsg = (msg.error as { message?: string } | undefined)?.message ?? "ASR error";
+                if (!closed) {
+                  reject(new Error(errMsg));
+                }
+                break;
               }
-              break;
             }
+          };
+
+          socket.onerror = () => {
+            if (!closed) reject(new Error("ASR WebSocket error"));
+          };
+
+          socket.onclose = () => {
+            ws = null;
+          };
+        });
+      };
+
+      // Retry loop: on failure always stopMic first (prevent mic leak),
+      // then retry up to maxReconnectAttempts times with linear backoff.
+      let lastError: Error = new Error("ASR start failed");
+      for (let attempt = 0; attempt <= maxReconnectAttempts; attempt++) {
+        if (closed) return; // stop() called during retry — bail out cleanly
+        if (attempt > 0 && baseReconnectDelayMs > 0) {
+          await new Promise<void>((r) => setTimeout(r, baseReconnectDelayMs * attempt));
+        }
+        if (closed) return;
+        try {
+          await attemptConnect();
+          return; // success — done
+        } catch (err) {
+          // P0-7: always release the mic on failure to prevent mic leak
+          stopMic();
+          lastError = err instanceof Error ? err : new Error(String(err));
+          if (attempt < maxReconnectAttempts) {
+            console.warn(JSON.stringify({
+              event: "asr_reconnect",
+              attempt: attempt + 1,
+              maxReconnectAttempts,
+              error: lastError.message,
+            }));
           }
-        };
-
-        socket.onerror = () => {
-          if (!closed) reject(new Error("ASR WebSocket error"));
-        };
-
-        socket.onclose = () => {
-          ws = null;
-        };
-      });
+        }
+      }
+      // All attempts exhausted — propagate the last error
+      throw lastError;
     },
 
     stop() {

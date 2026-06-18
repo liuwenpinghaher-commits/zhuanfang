@@ -2,9 +2,9 @@
 /**
  * cascadedAsrSource.test.ts
  *
- * TDD for ASR delta message schema validation + empty-transcript warnings.
- * P0-9: non-string text/stash fields should be safely handled with a warn;
- *       empty transcripts should trigger an empty-transcript warn.
+ * TDD for:
+ *   P0-7: ASR start failure → stopMic (prevent mic leak) + finite reconnect.
+ *   P0-9: non-string text/stash fields safely handled; empty transcript warns.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createBrowserAsrSource } from "./cascadedAsrSource";
@@ -395,5 +395,212 @@ describe("createBrowserAsrSource — ASR delta schema validation", () => {
     });
 
     expect(onTranscriptDelta).toHaveBeenCalledWith("final text", true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P0-7: ASR start failure → stopMic (mic leak) + finite reconnect
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds a harness where ASR WebSocket failure behaviour is injectable.
+ *
+ * `wsFactory` receives an attempt index (0-based) and returns either:
+ *   - "error"    → triggers socket.onerror immediately
+ *   - "connected" → sends proxy.connected (success)
+ */
+function buildReconnectHarness(wsFactory: (attempt: number) => "error" | "connected") {
+  let attempt = 0;
+
+  // Track mic track stop calls per stream
+  const trackStops: (() => void)[][] = [];
+
+  function makeStream() {
+    const stop = vi.fn();
+    const tracks = [{ kind: "audio", stop }];
+    const st = { getTracks: () => tracks } as unknown as MediaStream;
+    trackStops.push([stop]);
+    return st;
+  }
+
+  const getMicStream = vi.fn(async () => makeStream());
+
+  const originalWebSocket = (globalThis as Record<string, unknown>).WebSocket;
+  const originalAudioContext = (globalThis as Record<string, unknown>).AudioContext;
+  const originalNavigator = (globalThis as Record<string, unknown>).navigator;
+
+  type WsCb = (e?: unknown) => void;
+  const wsInstances: {
+    onopen: WsCb | null;
+    onmessage: ((e: { data: string }) => void) | null;
+    onerror: WsCb | null;
+    onclose: WsCb | null;
+    readyState: number;
+  }[] = [];
+
+  (globalThis as Record<string, unknown>).WebSocket = class MockWS {
+    readyState = 1;
+    onopen: WsCb | null = null;
+    onmessage: ((e: { data: string }) => void) | null = null;
+    onerror: WsCb | null = null;
+    onclose: WsCb | null = null;
+    send = vi.fn();
+    close = vi.fn();
+    addEventListener = vi.fn();
+    removeEventListener = vi.fn();
+    constructor(_url: string) {
+      const thisWs = this;
+      wsInstances.push(thisWs);
+      const currentAttempt = attempt++;
+      // Fire onerror / connected asynchronously so callbacks are assigned
+      setTimeout(() => {
+        const result = wsFactory(currentAttempt);
+        if (result === "error") {
+          thisWs.onerror?.();
+        } else {
+          thisWs.onopen?.();
+          thisWs.onmessage?.({ data: JSON.stringify({ type: "proxy.connected" }) });
+        }
+      }, 0);
+    }
+  };
+
+  const audioCtxMock = {
+    sampleRate: 16000,
+    state: "running",
+    destination: {},
+    createMediaStreamSource: vi.fn(() => ({ disconnect: vi.fn(), connect: vi.fn() })),
+    createScriptProcessor: vi.fn(() => ({
+      disconnect: vi.fn(),
+      connect: vi.fn(),
+      onaudioprocess: null as unknown,
+    })),
+    createAnalyser: vi.fn(() => ({
+      fftSize: 1024,
+      frequencyBinCount: 512,
+      getByteFrequencyData: vi.fn(),
+      disconnect: vi.fn(),
+      connect: vi.fn(),
+    })),
+    close: vi.fn().mockResolvedValue(undefined),
+  };
+
+  (globalThis as Record<string, unknown>).AudioContext = class MockAudioContext {
+    constructor() { return audioCtxMock; }
+  };
+
+  Object.defineProperty(globalThis, "navigator", {
+    value: { mediaDevices: { getUserMedia: vi.fn(async () => makeStream()) } },
+    configurable: true,
+    writable: true,
+  });
+
+  function teardown() {
+    (globalThis as Record<string, unknown>).WebSocket = originalWebSocket;
+    (globalThis as Record<string, unknown>).AudioContext = originalAudioContext;
+    Object.defineProperty(globalThis, "navigator", {
+      value: originalNavigator,
+      configurable: true,
+      writable: true,
+    });
+  }
+
+  return { getMicStream, trackStops, wsInstances, teardown, audioCtxMock };
+}
+
+const defaultHandlers = (): AsrEventHandlers => ({
+  onTranscriptDelta: vi.fn(),
+  onSpeechStarted: vi.fn(),
+  onSpeechStopped: vi.fn(),
+});
+
+describe("createBrowserAsrSource — P0-7: stopMic on failure + finite reconnect", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("calls stopMic (releases AudioContext + stream tracks) when ASR WebSocket errors on first attempt", async () => {
+    const harness = buildReconnectHarness(() => "error"); // always fail
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const source = createBrowserAsrSource({
+      asrWsUrl: "ws://test/asr",
+      getMicStream: harness.getMicStream,
+      maxReconnectAttempts: 0, // no retries — fail immediately
+      baseReconnectDelayMs: 0,
+    });
+    source.register(defaultHandlers());
+
+    await expect(source.start()).rejects.toThrow();
+
+    // AudioContext.close should have been called (mic released)
+    expect(harness.audioCtxMock.close).toHaveBeenCalled();
+    harness.teardown();
+  });
+
+  it("retries up to maxReconnectAttempts times then rejects", async () => {
+    let callCount = 0;
+    const harness = buildReconnectHarness(() => {
+      callCount++;
+      return "error"; // always fail
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const source = createBrowserAsrSource({
+      asrWsUrl: "ws://test/asr",
+      getMicStream: harness.getMicStream,
+      maxReconnectAttempts: 2,
+      baseReconnectDelayMs: 0,
+    });
+    source.register(defaultHandlers());
+
+    await expect(source.start()).rejects.toThrow();
+
+    // Should have attempted 1 (initial) + 2 (retries) = 3 total WS connections
+    expect(callCount).toBe(3);
+    harness.teardown();
+  });
+
+  it("succeeds on a later attempt when initial attempts fail", async () => {
+    // Fail first 2, succeed on 3rd (attempt index 2)
+    const harness = buildReconnectHarness((attempt) => attempt < 2 ? "error" : "connected");
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const source = createBrowserAsrSource({
+      asrWsUrl: "ws://test/asr",
+      getMicStream: harness.getMicStream,
+      maxReconnectAttempts: 2,
+      baseReconnectDelayMs: 0,
+    });
+    source.register(defaultHandlers());
+
+    // Should resolve (not reject) — 3rd attempt succeeds
+    await expect(source.start()).resolves.toBeUndefined();
+    harness.teardown();
+  });
+
+  it("stop() sets closed=true so the reconnect loop will not start new connections after current attempt", async () => {
+    // Verify: after stop() is called, any further start() call is a no-op (closed guard)
+    // This is a white-box test for the `closed` flag semantics.
+    const harness = buildReconnectHarness(() => "error");
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const source = createBrowserAsrSource({
+      asrWsUrl: "ws://test/asr",
+      getMicStream: harness.getMicStream,
+      maxReconnectAttempts: 2,
+      baseReconnectDelayMs: 0,
+    });
+    source.register(defaultHandlers());
+
+    // stop() before start: sets closed=true, so the loop returns immediately on `if (closed) return`
+    source.stop();
+
+    // start() should return without making any WS connections
+    await expect(source.start()).resolves.toBeUndefined();
+
+    // No WS instances should have been created (closed before any connection)
+    expect(harness.wsInstances).toHaveLength(0);
+    harness.teardown();
   });
 });

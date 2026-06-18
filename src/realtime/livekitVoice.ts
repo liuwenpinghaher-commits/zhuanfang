@@ -111,12 +111,15 @@ export async function createLivekitVoiceSession(
     async startListening() {
       await room.localParticipant.setMicrophoneEnabled(true);
     },
-    async interrupt() {
-      try {
-        await room.localParticipant.setMicrophoneEnabled(true);
-      } catch {
-        // mic might already be enabled
-      }
+    interrupt() {
+      // ponytail: LiveKit 模式 interrupt 受 SDK/架构限制，客户端侧无法直接取消
+      // 远端 Agent 的 TTS 合成或停止远端音轨播放。完整的打断（停止 Agent 合成并
+      // 重新聆听）需要 Agent 侧支持 interrupt 信令（livekit-agents Python 侧）。
+      // 当前最小有效行为：确保本地麦克风处于启用状态，以便用户发言时 ASR 可以拾音。
+      // 如需真打断，请在后端 Agent 实现 interrupt 数据通道协议并通过 publishData 发送信令。
+      room.localParticipant.setMicrophoneEnabled(true).catch(() => {
+        // mic might already be enabled — ignore
+      });
     },
     close() {
       room.disconnect();
