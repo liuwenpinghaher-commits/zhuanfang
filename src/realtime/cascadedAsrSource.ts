@@ -240,12 +240,29 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
             }
 
             case "conversation.item.input_audio_transcription.delta": {
-              const text = ((msg.text as string) ?? "") + ((msg.stash as string) ?? "");
-              if (text) {
-                updateSemanticFlags(text);
-                // Cumulative partial — orchestrator REPLACES the partial with it.
-                handlers?.onTranscriptDelta(text, false);
+              // Type guard: text and stash must both be strings (or absent → treat as "").
+              // Non-string values (number, null, object, etc.) indicate a malformed delta;
+              // skip silently and emit a structured warning so ops can detect schema drift.
+              const rawText = msg.text;
+              const rawStash = msg.stash;
+              const textIsValid = rawText === undefined || typeof rawText === "string";
+              const stashIsValid = rawStash === undefined || typeof rawStash === "string";
+              if (!textIsValid || !stashIsValid) {
+                console.warn(JSON.stringify({
+                  event: "asr_invalid_delta",
+                  textType: typeof rawText,
+                  stashType: typeof rawStash,
+                }));
+                break;
               }
+              const text = ((rawText as string | undefined) ?? "") + ((rawStash as string | undefined) ?? "");
+              if (!text) {
+                console.warn(JSON.stringify({ event: "asr_empty_transcript" }));
+                break;
+              }
+              updateSemanticFlags(text);
+              // Cumulative partial — orchestrator REPLACES the partial with it.
+              handlers?.onTranscriptDelta(text, false);
               break;
             }
 
