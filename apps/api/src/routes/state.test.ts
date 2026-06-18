@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { buildApiServer } from "../server";
+import { buildPrivacyReport } from "../../../../src/domain/privacy";
+import { buildBackupRestoreRehearsalReport } from "../../../../src/domain/backup";
 
 describe("state routes", () => {
   it("rejects a stale whole-state PUT with 409 and returns the current state", async () => {
@@ -44,5 +46,62 @@ describe("state routes", () => {
     const updated = res.json();
     expect(updated.revision).toBe(cur.revision + 1);
     await server.close();
+  });
+
+  describe("data governance endpoints (P0-1, P0-2, P0-3)", () => {
+    it("GET /api/state/privacy-report returns 200 with inventory array (P0-1)", async () => {
+      const server = buildApiServer();
+      const res = await server.inject({ method: "GET", url: "/api/state/privacy-report" });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      // Must match buildPrivacyReport structure
+      expect(body.inventory).toBeDefined();
+      expect(Array.isArray(body.inventory)).toBe(true);
+      expect(body.inventory.length).toBeGreaterThan(0);
+      expect(body.generatedAt).toBeDefined();
+      expect(typeof body.totalRecords).toBe("number");
+      expect(typeof body.hasPersonalData).toBe("boolean");
+      expect(body.operations).toBeDefined();
+      await server.close();
+    });
+
+    it("GET /api/state/export returns 200 with backup rehearsal structure (P0-2)", async () => {
+      const server = buildApiServer();
+      const res = await server.inject({ method: "GET", url: "/api/state/export" });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      // Must match buildBackupRestoreRehearsalReport structure
+      expect(body.schemaVersion).toBe(1);
+      expect(body.strategy).toBe("json-export-import-rehearsal");
+      expect(body.generatedAt).toBeDefined();
+      expect(body.package).toBeDefined();
+      expect(body.privacyReport).toBeDefined();
+      expect(Array.isArray(body.checks)).toBe(true);
+      await server.close();
+    });
+
+    it("POST /api/state/purge returns 200 and subsequent GET /api/state reflects purged state (P0-3)", async () => {
+      const server = buildApiServer();
+      // Seed some data first so purge has something to clear
+      const cur = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      const purgeRes = await server.inject({ method: "POST", url: "/api/state/purge" });
+      expect(purgeRes.statusCode).toBe(200);
+      const purgeBody = purgeRes.json();
+      // createPurgedProductState clears all arrays and resets profile
+      expect(purgeBody.sessions).toBeDefined();
+      expect(Array.isArray(purgeBody.sessions)).toBe(true);
+      expect(purgeBody.sessions.length).toBe(0);
+      expect(purgeBody.notes.length).toBe(0);
+      expect(purgeBody.points.length).toBe(0);
+      // auditEvents has exactly one purge event
+      expect(purgeBody.auditEvents.length).toBe(1);
+      expect(purgeBody.auditEvents[0].type).toBe("privacy_data_purged");
+      // Subsequent GET reflects persisted purge
+      const afterGet = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      expect(afterGet.sessions.length).toBe(0);
+      expect(afterGet.auditEvents.length).toBe(1);
+      expect(afterGet.auditEvents[0].type).toBe("privacy_data_purged");
+      await server.close();
+    });
   });
 });
