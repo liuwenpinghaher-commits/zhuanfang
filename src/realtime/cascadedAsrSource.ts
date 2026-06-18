@@ -28,7 +28,14 @@ function buildAsrSessionUpdate(instructions: string) {
       turn_detection: {
         type: "server_vad",
         threshold: 0.5,
-        silence_duration_ms: 600
+        silence_duration_ms: 600,
+        // Pure transcriber: emit VAD turn events + transcription, but do NOT let
+        // omni auto-generate a response each turn. The cascade orchestrator owns
+        // the respond/留白 decision and the LLM+TTS reply. Verified accepted by
+        // DashScope omni (spike-asr-create-response): server echoes create_response:false.
+        // Without this, omni auto-creates a text response per turn → wasted work +
+        // "conversation already has an active response" errors.
+        create_response: false
       }
     }
   };
