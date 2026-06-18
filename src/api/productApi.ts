@@ -50,6 +50,8 @@ export interface ProductApiClient {
   createInterviewSession(input: CreateInterviewSessionRequest): Promise<InterviewSessionResponse>;
   sendInterviewTurn(sessionId: string, input: SendInterviewTurnRequest): Promise<InterviewSessionResponse>;
   recordInterviewTurn(sessionId: string, input: { role: "user" | "assistant"; content: string }): Promise<InterviewSessionResponse>;
+  classifyTurnComplete(sessionId: string, transcript: string): Promise<{ done: boolean; reason: string }>;
+  logCascadeDecision(sessionId: string, trace: { layer: number; action: string; reason: string; silenceMs: number; expressionState: string; transcript: string }): Promise<void>;
   applyInterviewControl(sessionId: string, input: ApplyInterviewControlRequest): Promise<InterviewSessionResponse>;
   endInterviewSession(sessionId: string): Promise<EndInterviewSessionResponse>;
   generateInterviewPreSignals(sessionId: string): Promise<GeneratePreSignalsResponse>;
@@ -197,6 +199,7 @@ export interface ApplyInterviewControlRequest {
 export interface InterviewSessionResponse {
   session: InterviewSession;
   state: ProductState;
+  preSignals?: InteractionPreSignals;
 }
 
 export interface EndInterviewSessionResponse extends InterviewSessionResponse {
@@ -511,6 +514,22 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         ...response,
         state: normalizeProductState(response.state)
       };
+    },
+    async classifyTurnComplete(sessionId, transcript) {
+      const res = await fetch(`${normalizedBaseUrl}/api/interview-sessions/${sessionId}/turn-complete`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ transcript })
+      });
+      if (!res.ok) return { done: true, reason: "http error → respond" };
+      return res.json();
+    },
+    async logCascadeDecision(sessionId, trace) {
+      try {
+        await fetch(`${normalizedBaseUrl}/api/interview-sessions/${sessionId}/decisions`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify(trace)
+        });
+      } catch { /* best-effort audit */ }
     },
     async applyInterviewControl(sessionId, input) {
       const response = (await requestJson(`/api/interview-sessions/${sessionId}/control`, {

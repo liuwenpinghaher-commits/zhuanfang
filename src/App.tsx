@@ -980,6 +980,7 @@ export default function App() {
               setSession(r.session);
               setProductState(r.state);
               setApiPersistenceEnabled(true);
+              if (r.preSignals) cascadePipelineRef.current?.updatePreSignals(r.preSignals);
               const assistantText = r.session.turns.at(-1)?.content ?? "";
               return { assistantText };
             };
@@ -1014,17 +1015,21 @@ export default function App() {
                 onError: (err) => {
                   setNotice(buildNotice("warning", "级联语音错误", err.message));
                 }
-              }
+              },
+              classifyEndpoint: interviewId
+                ? (text: string, _signal: AbortSignal) => productApiClient.classifyTurnComplete(interviewId, text)
+                : undefined,
+              onDecision: (trace) => {
+                console.debug("[cascade decision]", trace);
+                if (interviewId) void productApiClient.logCascadeDecision(interviewId, trace);
+              },
             });
 
             cascadePipelineRef.current = pipeline;
 
-            // Cascade opening: AI opens with the scripted tracking-point question first,
-            // then begins listening (no small-talk, no improvised greeting).
-            if (card.suggestedOpening) {
-              await tts.speak([card.suggestedOpening]);
-            }
-            await pipeline.startListening();
+            // Cascade opening: pass the scripted opening to startListening so
+            // the pipeline speaks it before entering the first listening window.
+            await pipeline.startListening(card.suggestedOpening || undefined);
             setRecording(true);
             setVoiceStatus("listening");
             setNotice(buildNotice("success", "实时语音会话已就绪", "级联模式 (ASR→分析→TTS) 已连接"));
