@@ -15,52 +15,63 @@ import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, extractAnch
 import { decideInterviewStrategy } from "./strategy";
 import { buildRealtimeVoiceInstructions } from "./voice-instructions";
 
+// 通用信号：用户在表达"不想再承担/想放手"类的压力回避意图
+function mentionsAvoidance(text: string): boolean {
+  return ["不想", "不愿", "不再", "想放手", "放权", "放手", "脱手", "退出", "兜底", "救火", "背锅", "担责"].some((s) => text.includes(s));
+}
+
+// 通用信号：用户在触及代价/风险/最坏情况
+function mentionsWorstCase(text: string): boolean {
+  return ["最坏", "代价", "失控", "延期", "崩", "出问题", "风险", "后果", "损失", "垮"].some((s) => text.includes(s));
+}
+
 function buildAssistantTurn(session: InterviewSession, userText: string): InterviewTurn & { strategyDecision: InterviewStrategyDecision } {
   const decision = decideInterviewStrategy(session, userText);
   const pairIndex = Math.floor(session.turns.length / 2);
   const anchor = extractAnchor(userText);
   const lower = userText.toLowerCase();
-  const mentionsRescue = userText.includes("兜底") || userText.includes("救火");
-  const mentionsLoss = userText.includes("失控") || userText.includes("延期") || userText.includes("最坏");
+  const hasAvoidance = mentionsAvoidance(userText);
+  const hasWorstCase = mentionsWorstCase(userText);
 
   let intent = decision.label;
-  let content = `你刚才的锚点是“${anchor}”。如果不从谁对谁错看，而从机制看：这个系统现在到底奖励谁等你来兜底？`;
+  // 默认 content 基于锚点的通用机制追问，不绑定特定场景词
+  let content = `你刚才的锚点是"${anchor}"。如果不从谁对谁错看，而从机制看：这个系统现在到底在奖励什么行为？`;
 
   if (decision.strategy === "concrete_example_probe") {
-    content = `先别急着概括成判断。你能讲一个最近的具体时刻吗：当时谁在场，发生了什么，哪一句话让你觉得“${anchor}”？`;
+    content = `先别急着概括成判断。你能讲一个最近的具体时刻吗：当时谁在场，发生了什么，哪一句话让你觉得"${anchor}"？`;
   } else if (decision.strategy === "mechanism_reversal_probe") {
-    content = `反过来看，这个具体时刻里可能不是某个人不主动，而是机制奖励了“等你拍板”。如果把它当成一个系统问题，谁因为等待获得了安全感，谁承担了真实代价？`;
+    content = `反过来看，这个具体时刻里可能不是某个人不主动，而是机制奖励了某种等待。如果把它当成一个系统问题，谁因为等待获得了安全感，谁承担了真实代价？`;
   } else if (decision.strategy === "debt_followup") {
     const debt = session.guide.openDebts.find((item) => item.concept === session.guide.debtToAddress) ?? session.guide.openDebts[0];
     content = debt
-      ? `我想回访一个知识债：上次提到的“${debt.concept}”，你现在能用自己的话解释它吗？如果还不能，卡住你的到底是概念本身，还是它和你团队现场的关系？`
-      : `我想回访一个知识债：“${session.guide.debtToAddress}”。你现在能用自己的话解释它和这件事的关系吗？`;
+      ? `我想回访一个知识债：上次提到的"${debt.concept}"，你现在能用自己的话解释它吗？如果还不能，卡住你的到底是概念本身，还是它和你团队现场的关系？`
+      : `我想回访一个知识债："${session.guide.debtToAddress}"。你现在能用自己的话解释它和这件事的关系吗？`;
   } else if (decision.strategy === "perspective_shift") {
     const perspective = decision.perspective ?? session.guide.recommendedPerspectives[0] ?? "系统论";
     const memory = decision.referencedMemory ?? session.card.historyReferences[0];
-    content = `如果从${perspective}视角看，我先引用一条你的历史：“${memory}”。这件事里真正被系统奖励的行为是什么？谁因为等你兜底而少承担了判断？`;
+    content = `如果从${perspective}视角看，我先引用一条你的历史："${memory}"。这件事里真正被系统奖励的行为是什么？谁因为等待而少承担了判断责任？`;
   } else if (decision.strategy === "blindspot_probe") {
-    const concept = decision.blindspotConcept ?? session.guide.blindspotCandidates[0]?.concept ?? "短期失控的可承受边界";
-    content = `你有没有想过“${concept}”也在影响这件事？如果不是某个人不主动，而是这个默认习惯一直被保留下来，你最该验证的一个信号是什么？`;
+    const concept = decision.blindspotConcept ?? session.guide.blindspotCandidates[0]?.concept ?? "可承受的短期代价边界";
+    content = `你有没有想过"${concept}"也在影响这件事？如果不是某个人不主动，而是这个默认习惯一直被保留下来，你最该验证的一个信号是什么？`;
   } else if (decision.strategy === "synthesis") {
-    content = `我们先收束一下：你反复提到的不是“${anchor}”本身，而是它背后的判断机制。到现在为止，最值得验证的一个假设是什么？`;
-  } else if (pairIndex === 0 && mentionsRescue) {
+    content = `我们先收束一下：你反复提到的不是"${anchor}"本身，而是它背后的判断机制。到现在为止，最值得验证的一个假设是什么？`;
+  } else if (pairIndex === 0 && hasAvoidance) {
     intent = "追问机制";
-    content = mentionsLoss
-      ? "你把“兜底”和“失控”放在了一起。这里我想追具体一点：如果你不兜底，最坏的代价是什么，是延期、质量，还是你对团队判断力的信任会被击穿？"
-      : "你说不想再兜底。这里先别急着找方法：你现在替他们兜住的到底是执行，还是判断的责任？";
-  } else if (pairIndex === 1 && mentionsLoss) {
+    content = hasWorstCase
+      ? `你把"${anchor}"和代价放在了一起。这里我想追具体一点：如果你真的放手，最坏的代价是什么——是执行延误、质量下滑，还是你对团队判断力的信任会被击穿？`
+      : `你说不想再承担"${anchor}"。这里先别急着找方法：你现在替他们承担的到底是执行的压力，还是判断的责任？`;
+  } else if (pairIndex === 1 && hasWorstCase) {
     intent = "挑战前提";
-    content = "你已经说到了最坏情况。那我挑战一下：你是不是默认了“短期失控一定比长期依赖更糟”？这个前提还成立吗？";
+    content = `你已经说到了最坏情况。那我挑战一下：你是不是默认了"短期出现代价一定比长期依赖更糟"？这个前提还成立吗？`;
   } else if (session.mode === "point" || lower.includes("我觉得")) {
     intent = "反方观点";
-    content = `如果把“${anchor}”当成一个观点，它最强的反例是什么？有没有一个场景里你会承认这个判断不成立？`;
+    content = `如果把"${anchor}"当成一个观点，它最强的反例是什么？有没有一个场景里你会承认这个判断不成立？`;
   } else if (session.mode === "learning") {
     intent = "学习复述";
-    content = `先不用讲你看了多少资料。你能不能用自己的话解释“${anchor}”，再说它能解释你当前哪个真实问题？`;
+    content = `先不用讲你看了多少资料。你能不能用自己的话解释"${anchor}"，再说它能解释你当前哪个真实问题？`;
   } else if (pairIndex >= 2) {
     intent = "阶段总结";
-    content = "我先收一下：你不是单纯在说团队不主动，而是在问自己愿不愿意承受放手之后的短期代价。这里最值得下次继续的是：你到底能接受哪一种失控？";
+    content = `我先收一下：你不是单纯在说"${anchor}"，而是在问自己愿不愿意承受放手之后的短期代价。这里最值得下次继续的是：你到底能接受哪一种代价？`;
   }
 
   if (isLongUserAnswer(userText)) {
@@ -96,7 +107,7 @@ function controlFeedback(
     case "skip":
       return {
         nextStrength: session.strength,
-        content: `可以，先跳过“${anchor}”。我会把它放进线索池，不在本轮继续追。我们换到一个更低压力的问题：这件事里你现在最确定的一点是什么？`
+        content: `可以，先跳过"${anchor}"。我会把它放进线索池，不在本轮继续追。我们换到一个更低压力的问题：这件事里你现在最确定的一点是什么？`
       };
     case "softer":
       return {
@@ -111,7 +122,7 @@ function controlFeedback(
     case "different-angle":
       return {
         nextStrength: session.strength,
-        content: `我们换个角度：如果从系统视角看，“${anchor}”不是个人问题，而是机制一直在奖励某种行为，那它奖励的是什么？`
+        content: `我们换个角度：如果从系统视角看，"${anchor}"不是个人问题，而是机制一直在奖励某种行为，那它奖励的是什么？`
       };
     case "summary":
       return {

@@ -47,6 +47,38 @@ describe("interview business engine", () => {
     expect(updated.turns[1].content).toMatch(/兜底|失控|代价|机制/);
   });
 
+  it("scenario-agnostic: non-seed input (无兜底/救火词) still produces a meaningful follow-up", () => {
+    // 用户输入不含任何硬编码种子词，turn-builder 应走通用路径，不退化为空/无意义追问
+    const state = createInitialProductState();
+    const session = createSessionDraft(state, "decision");
+
+    const updated = receiveUserTurn(session, "我觉得团队在关键决策上总是等待，很难推进。");
+
+    expect(updated.turns).toHaveLength(2);
+    expect(updated.turns[1].role).toBe("assistant");
+    // intent 不应为空
+    expect(updated.turns[1].intent).toBeTruthy();
+    // content 不应为空，且应包含通用追问信号词（锚点/机制/代价/具体/视角类）
+    expect(updated.turns[1].content.length).toBeGreaterThan(10);
+    expect(updated.turns[1].content).toMatch(/等待|决策|机制|代价|具体|锚点|视角|假设|团队/);
+    // 关键：默认 content 不应包含种子场景词"兜底"（scenario-agnostic）
+    expect(updated.turns[1].content).not.toContain("兜底");
+    expect(updated.turns[1].content).not.toContain("救火");
+  });
+
+  it("scenario-agnostic: seed-word input still does not degrade — quality preserved", () => {
+    // 含种子词的输入重构后仍应产出有质量的追问（不退化）
+    const state = createInitialProductState();
+    const session = createSessionDraft(state, "decision");
+
+    const updated = receiveUserTurn(session, "我不想每次都替团队兜底，但又怕放手之后项目失控。");
+
+    expect(updated.turns).toHaveLength(2);
+    expect(updated.turns[1].role).toBe("assistant");
+    expect(updated.turns[1].intent).toMatch(/追问|挑战|回访|索要|机制|总结|盲区|视角/);
+    expect(updated.turns[1].content).toMatch(/兜底|失控|代价|机制|锚点|前提|判断/);
+  });
+
   it("offline finalize produces an honest light record, not fabricated assets", () => {
     const state = createInitialProductState();
     const session = createSessionDraft(state, "decision");

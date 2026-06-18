@@ -432,12 +432,12 @@ export function decideInterviewStrategy(session: InterviewSession, userText: str
     };
   }
 
-  if (previousUserTurns === 1 && (userText.includes("失控") || userText.includes("延期") || userText.includes("最坏"))) {
+  if (previousUserTurns === 1 && hasWorstCaseSignal(userText)) {
     return {
       ...base,
       strategy: "premise_challenge",
       label: "挑战前提",
-      reason: "用户已经触及最坏情况，检查短期失控和长期依赖的前提。",
+      reason: "用户已经触及最坏情况或代价边界，检查其隐含前提是否成立。",
       depth: "mechanism"
     };
   }
@@ -494,6 +494,10 @@ function hasReachedStageSummaryWindow(session: InterviewSession) {
 }
 function hasStrategy(trace: InterviewStrategyDecision[], strategy: InterviewStrategyId) {
   return trace.some((item) => item.strategy === strategy);
+}
+// 通用信号：用户触及代价/风险/最坏情况，不依赖特定场景词
+function hasWorstCaseSignal(text: string): boolean {
+  return ["最坏", "代价", "失控", "延期", "崩", "出问题", "风险", "后果", "损失", "垮"].some((s) => text.includes(s));
 }
 function isAbstractInterviewClaim(text: string) {
   const abstractSignals = ["整体", "总是", "一直", "就是", "都", "不主动", "很难", "不愿意", "承担", "判断", "增长", "团队"];
