@@ -19,6 +19,11 @@ export interface ImportDocumentInput {
   sourceUrl?: string;
 }
 
+/** Minimal interface for an embedding client — matches BailianEmbeddingClient exactly. */
+export interface EmbeddingClient {
+  embed(texts: string[]): Promise<number[][]>;
+}
+
 /** Split text into ~maxChars chunks on paragraph/sentence boundaries. */
 export function chunkDocument(content: string, maxChars = 600): string[] {
   const paragraphs = content
@@ -47,16 +52,28 @@ export function chunkDocument(content: string, maxChars = 600): string[] {
   return chunks.filter((chunk) => chunk.trim().length > 0);
 }
 
-export function ingestImportSource(
+export async function ingestImportSource(
   state: ProductState,
   input: ImportDocumentInput,
-  candidates: ImportedMemoryCandidate[]
-): { sourceId: string; candidateCount: number; nextState: ProductState } {
+  candidates: ImportedMemoryCandidate[],
+  embeddingClient?: EmbeddingClient
+): Promise<{ sourceId: string; candidateCount: number; nextState: ProductState }> {
   const createdAt = nowIso();
   const sourceId = makeId("import-source");
 
-  const chunks = chunkDocument(input.content);
-  const ragChunks: RagChunk[] = chunks.map((text, index) => ({
+  const chunkTexts = chunkDocument(input.content);
+
+  // Attempt batch embedding; silently skip on failure or missing client.
+  let embeddings: number[][] | undefined;
+  if (embeddingClient && chunkTexts.length > 0) {
+    try {
+      embeddings = await embeddingClient.embed(chunkTexts);
+    } catch (err) {
+      console.warn("[import] embedding failed, ingesting without embeddings:", err instanceof Error ? err.message : err);
+    }
+  }
+
+  const ragChunks: RagChunk[] = chunkTexts.map((text, index) => ({
     id: makeId("rag-chunk"),
     sourceId,
     title: `${input.title} #${index + 1}`,
@@ -65,7 +82,8 @@ export function ingestImportSource(
     tokenEstimate: Math.ceil(text.length / 2),
     sourceUrl: input.sourceUrl,
     usage: "interview-context" as const,
-    createdAt
+    createdAt,
+    ...(embeddings?.[index] !== undefined ? { embedding: embeddings[index] } : {})
   }));
 
   const importSource: ImportSource = {

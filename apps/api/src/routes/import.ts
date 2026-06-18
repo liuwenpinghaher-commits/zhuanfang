@@ -2,11 +2,12 @@ import type { FastifyInstance } from "fastify";
 import { ingestImportSource, type ImportDocumentInput } from "../../../../src/domain/import";
 import { extractCandidateMemories } from "../intelligence/memory-extraction-llm";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
-import type { BailianChatClient } from "../providers/bailian";
+import type { BailianChatClient, BailianEmbeddingClient } from "../providers/bailian";
 import type { ProductStateRepository } from "../product-state-repository";
 
 interface ImportRouteOptions {
   bailianChatClient?: BailianChatClient;
+  embeddingClient?: BailianEmbeddingClient;
   llmBudget?: LlmBudget;
 }
 
@@ -40,7 +41,12 @@ export async function registerImportRoutes(
       }
     }
 
-    const { sourceId, candidateCount, nextState } = ingestImportSource(state, input, candidates);
+    const { sourceId, candidateCount, nextState } = await ingestImportSource(
+      state,
+      input,
+      candidates,
+      options.embeddingClient
+    );
     repository.replaceState(nextState);
     return { sourceId, candidateCount, state: nextState };
   });

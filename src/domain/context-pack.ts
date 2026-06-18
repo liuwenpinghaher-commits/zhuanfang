@@ -26,6 +26,7 @@ import type {
 import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, formatSearchTraceSourceLabel, getReferenceMaterialPublisher, daysBetween, modeLabels, removedExternalInstruction } from "./utils";
 
 import { buildInterviewEnginePolicy } from "./strategy";
+import { topKByCosine } from "./vector";
 
 type MemoryGraphTargetCandidate = {
   targetType: MemoryGraphTargetType;
@@ -733,26 +734,62 @@ function buildQuestionFollowUpReason(question: ProductState["questions"][number]
   }
   return `${question.status}问题：${question.whyImportant}`;
 }
-function buildSemanticRagContext(state: ProductState, topicHint: string, limit: number): SemanticRagContext {
-  const topicTokens = tokenizeMemoryGraphText(topicHint);
-  if (topicTokens.size === 0 || state.ragChunks.length === 0) {
+export function buildSemanticRagContext(
+  state: ProductState,
+  topicHint: string,
+  limit: number,
+  queryEmbedding?: number[]
+): SemanticRagContext {
+  if (state.ragChunks.length === 0) {
     return emptySemanticRagContext();
   }
 
   const sourcesById = new Map(state.importSources.map((source) => [source.id, source]));
-  const matches = state.ragChunks
+
+  // Eligible candidates: correct usage + source allowed in context
+  const candidates = state.ragChunks
     .map((chunk) => {
       const source = sourcesById.get(chunk.sourceId);
       if (!source || chunk.usage !== "interview-context" || !isImportSourceAllowedInContext(source, state.systemConfig.memory)) {
         return undefined;
       }
-      return {
-        chunk,
-        source,
-        score: scoreRagChunkForTopic(chunk, source, topicTokens)
-      };
+      return { chunk, source };
     })
-    .filter((match): match is { chunk: RagChunk; source: ImportSource; score: number } => Boolean(match))
+    .filter((item): item is { chunk: RagChunk; source: ImportSource } => Boolean(item));
+
+  // Cosine path: queryEmbedding present AND at least one candidate has an embedding
+  const hasEmbeddedChunks = candidates.some((item) => Array.isArray(item.chunk.embedding));
+  if (queryEmbedding && hasEmbeddedChunks) {
+    const embeddedCandidates = candidates.filter(
+      (item): item is { chunk: RagChunk & { embedding: number[] }; source: ImportSource } =>
+        Array.isArray(item.chunk.embedding)
+    );
+    const topChunks = topKByCosine(queryEmbedding, embeddedCandidates.map((item) => item.chunk), limit);
+    const topChunkIds = new Set(topChunks.map((c) => c.id));
+    const matches = embeddedCandidates.filter((item) => topChunkIds.has(item.chunk.id));
+    // Restore cosine-sorted order
+    matches.sort((a, b) => topChunks.findIndex((c) => c.id === a.chunk.id) - topChunks.findIndex((c) => c.id === b.chunk.id));
+
+    const importSources = Array.from(new Map(matches.map((match) => [match.source.id, match.source])).values());
+    return {
+      chunks: matches.map((match) => match.chunk),
+      sourceHighlights: matches.map((match, index) => buildSemanticRagSourceHighlight(match.source, match.chunk, 10 - index, index)),
+      importSources
+    };
+  }
+
+  // Keyword fallback path (original behaviour, fully preserved)
+  const topicTokens = tokenizeMemoryGraphText(topicHint);
+  if (topicTokens.size === 0) {
+    return emptySemanticRagContext();
+  }
+
+  const matches = candidates
+    .map((item) => ({
+      chunk: item.chunk,
+      source: item.source,
+      score: scoreRagChunkForTopic(item.chunk, item.source, topicTokens)
+    }))
     .filter((match) => match.score >= 2)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
