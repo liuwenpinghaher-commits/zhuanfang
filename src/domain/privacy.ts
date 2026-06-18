@@ -9,6 +9,7 @@ export type PrivacyInventoryCategoryId =
   | "external_knowledge"
   | "corpus_learning"
   | "generated_media"
+  | "intel"
   | "operations";
 
 export interface PrivacyInventoryItem {
@@ -207,6 +208,14 @@ export function buildPrivacyReport(state: ProductState, generatedAt = new Date()
       label: "播客与生成物",
       count: state.podcastEpisodes.length,
       detail: "播客脚本、shownotes、音频地址、渲染状态和声音配置。",
+      exported: true,
+      purged: true
+    },
+    {
+      id: "intel",
+      label: "情报监控与素材",
+      count: state.intelTasks.length + state.intelItems.length,
+      detail: "情报监控任务、自动化采集的情报条目和关键声明。",
       exported: true,
       purged: true
     },
@@ -419,6 +428,7 @@ function buildPrivacyNoticePurpose(category: PrivacyInventoryCategoryId) {
     external_knowledge: "保存联网搜索、导入资料和 RAG 片段，用于准备主题与可追溯引用。",
     corpus_learning: "学习用户导入的优秀专访样本，形成可审核的访谈策略改进建议。",
     generated_media: "保存播客脚本、shownotes、音频生成状态和用户选择的声音配置。",
+    intel: "保存情报监控任务配置、自动化采集的情报条目和关键声明，用于主题追踪和专访准备。",
     operations: "记录审计事件、AI 运行事件、workflow trace、运营检查和配置版本。"
   };
   return purposes[category];

@@ -12,6 +12,7 @@ export interface MigrationEntityCount {
     | "external_knowledge"
     | "corpus_learning"
     | "generated_media"
+    | "intel"
     | "operations";
   label: string;
   count: number;
@@ -142,6 +143,11 @@ function buildMigrationEntityCounts(state: ProductState): MigrationEntityCount[]
       id: "generated_media",
       label: "播客生成物",
       count: state.podcastEpisodes.length
+    },
+    {
+      id: "intel",
+      label: "情报监控",
+      count: state.intelTasks.length + state.intelItems.length
     },
     {
       id: "operations",

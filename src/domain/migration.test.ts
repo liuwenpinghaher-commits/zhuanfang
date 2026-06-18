@@ -42,6 +42,46 @@ describe("migration", () => {
     );
   });
 
+  it("includes intel entity counts in migration manifest", () => {
+    const state = {
+      ...createInitialProductState(),
+      intelTasks: [
+        {
+          id: "intel-task-1",
+          name: "AI 行业动态",
+          keywords: ["AI"],
+          provider: "local-demo" as const,
+          frequency: "weekly" as const,
+          relatedThemeIds: [],
+          relatedDebtIds: [],
+          status: "active" as const,
+          createdAt: "2026-06-19T00:00:00.000Z"
+        }
+      ],
+      intelItems: [
+        {
+          id: "intel-item-1",
+          taskId: "intel-task-1",
+          taskName: "AI 行业动态",
+          title: "GPT-5 发布",
+          url: "https://example.com/gpt5",
+          publisher: "OpenAI Blog",
+          summary: "GPT-5 正式发布。",
+          relevance: 92,
+          claims: [],
+          category: "模型发布",
+          status: "unread" as const,
+          topic: "LLM 进展",
+          createdAt: "2026-06-19T00:00:00.000Z"
+        }
+      ]
+    };
+    const manifest = buildProductStateMigrationManifest(state);
+    const intelEntry = manifest.entityCounts.find((e) => e.id === "intel");
+    expect(intelEntry).toBeDefined();
+    expect(intelEntry?.count).toBe(2); // 1 task + 1 item
+  });
+
   it("reports local object audio as a migration warning", () => {
     const state = {
       ...createInitialProductState(),
