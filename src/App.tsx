@@ -1017,7 +1017,7 @@ export default function App() {
                 }
               },
               classifyEndpoint: interviewId
-                ? (text: string, _signal: AbortSignal) => productApiClient.classifyTurnComplete(interviewId, text)
+                ? (text: string, signal: AbortSignal) => productApiClient.classifyTurnComplete(interviewId, text, signal)
                 : undefined,
               onDecision: (trace) => {
                 console.debug("[cascade decision]", trace);

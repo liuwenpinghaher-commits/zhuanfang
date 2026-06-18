@@ -180,6 +180,20 @@ export function connectCascadedPipeline(
     clearMaxWaitTimer();
   }
 
+  // Arm the max-wait safety net (留白 timeout). When it fires, emit a layer-0
+  // decision trace (so timer-driven responses are audited too — not just the
+  // synchronous heuristic ones) and respond.
+  function armMaxWait(transcript: string, expressionState: ExpressionState) {
+    if (maxWaitTimer !== null) return;
+    maxWaitTimer = setTimeout(() => {
+      maxWaitTimer = null;
+      if (!closed && state !== "thinking" && state !== "speaking") {
+        onDecision?.({ layer: 0, action: "respond", reason: "max-wait timer fired", transcript, silenceMs: maxWaitMs, expressionState });
+        void doRespond();
+      }
+    }, maxWaitMs);
+  }
+
   // ── Echo guard (half-duplex during AI speech) ─────────────────────────────
   // While the AI is speaking (and ~ECHO_GUARD_MS after it stops), the mic hears
   // the AI's own TTS output. Suppress ASR-driven turns/barge-in during that
@@ -250,17 +264,13 @@ export function connectCascadedPipeline(
     const decision = decideCascadeTurn({ expressionState, silenceMs, completeness, minPauseMs, maxWaitMs });
 
     onDecision?.({
-      layer: completeness === "ambiguous" ? 1 : (decision.action === "respond" && silenceMs >= maxWaitMs ? 0 : 1),
+      // layer 0 = VAD max-wait timeout fired synchronously; layer 1 = heuristic.
+      layer: silenceMs >= maxWaitMs ? 0 : 1,
       action: decision.action, reason: decision.reason, transcript, silenceMs, expressionState,
     });
 
     if (decision.action === "wait") {
-      if (maxWaitTimer === null) {
-        maxWaitTimer = setTimeout(() => {
-          maxWaitTimer = null;
-          if (!closed && state !== "thinking" && state !== "speaking") void doRespond();
-        }, maxWaitMs);
-      }
+      armMaxWait(transcript, expressionState);
       return;
     }
 
@@ -277,12 +287,7 @@ export function connectCascadedPipeline(
       clearMaxWaitTimer();
       if (!classifyEndpoint) {
         // No layer-2 endpoint — arm max-wait and hold
-        if (maxWaitTimer === null) {
-          maxWaitTimer = setTimeout(() => {
-            maxWaitTimer = null;
-            if (!closed && state !== "thinking" && state !== "speaking") void doRespond();
-          }, maxWaitMs);
-        }
+        armMaxWait(transcript, expressionState);
         return;
       }
       classifyAbort?.abort();
@@ -301,12 +306,7 @@ export function connectCascadedPipeline(
         if (classifyAbort?.signal === sig) classifyAbort = null;
       }
       if (done) { await doRespond(); }
-      else if (maxWaitTimer === null) {
-        maxWaitTimer = setTimeout(() => {
-          maxWaitTimer = null;
-          if (!closed && state !== "thinking" && state !== "speaking") void doRespond();
-        }, maxWaitMs);
-      }
+      else { armMaxWait(transcript, expressionState); }
       return;
     }
 
@@ -428,6 +428,7 @@ export function connectCascadedPipeline(
         releaseMicAfterGuard();
         if (!closed) setState("listening");
       }
+      if (closed) return; // closed mid-opening — don't open the mic
       await asr.start();
     },
 

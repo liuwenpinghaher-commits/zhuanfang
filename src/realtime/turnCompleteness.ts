@@ -13,8 +13,11 @@ const TRAILING_CONNECTIVES = [
 ];
 // Discourse fillers when left dangling — speaker is buffering, not done.
 const TRAILING_FILLERS = ["那个", "这个", "就是", "呃", "嗯", "怎么说", "那种", "反正", "其实", "然后呢"];
-// Single chars that REQUIRE an object/complement — clearly mid-clause if final.
-const TRAILING_REQUIRE_OBJECT = ["和", "跟", "与", "或", "把", "被", "对", "在", "让", "向", "给", "从", "比", "为"];
+// Single chars that, when sentence-final, almost ALWAYS still need a conjunct/
+// object — strong "mid-clause" signal. Kept deliberately small: chars like
+// 对/在/为/给 also end complete sentences ("你说得对", "我现在"), so they're
+// excluded and fall through to "ambiguous" (let Layer 2 decide).
+const TRAILING_REQUIRE_OBJECT = ["和", "跟", "与", "或", "把", "被"];
 // Sentence-final particles — strong "done" when at the very end.
 const FINAL_PARTICLES = ["吗", "呢", "吧", "啊", "呀", "嘛", "哈", "咯", "啦"];
 // Terminal punctuation — done.

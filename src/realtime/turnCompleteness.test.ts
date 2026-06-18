@@ -18,10 +18,14 @@ describe("assessTurnCompleteness", () => {
     expect(assessTurnCompleteness("就是")).toBe("incomplete");
   });
 
-  it("需要宾语的介词/连词收尾 → incomplete", () => {
+  it("强需宾语的连词收尾 → incomplete", () => {
     expect(assessTurnCompleteness("我把")).toBe("incomplete");
     expect(assessTurnCompleteness("苹果和")).toBe("incomplete");
-    expect(assessTurnCompleteness("我现在")).toBe("incomplete");
+  });
+
+  it("常见词末字（对/在 等）不再误判为 incomplete → ambiguous", () => {
+    expect(assessTurnCompleteness("我现在")).toBe("ambiguous");
+    expect(assessTurnCompleteness("你说得对")).toBe("ambiguous");
   });
 
   it("终止标点 → complete", () => {

@@ -50,7 +50,7 @@ export interface ProductApiClient {
   createInterviewSession(input: CreateInterviewSessionRequest): Promise<InterviewSessionResponse>;
   sendInterviewTurn(sessionId: string, input: SendInterviewTurnRequest): Promise<InterviewSessionResponse>;
   recordInterviewTurn(sessionId: string, input: { role: "user" | "assistant"; content: string }): Promise<InterviewSessionResponse>;
-  classifyTurnComplete(sessionId: string, transcript: string): Promise<{ done: boolean; reason: string }>;
+  classifyTurnComplete(sessionId: string, transcript: string, signal?: AbortSignal): Promise<{ done: boolean; reason: string }>;
   logCascadeDecision(sessionId: string, trace: { layer: number; action: string; reason: string; silenceMs: number; expressionState: string; transcript: string }): Promise<void>;
   applyInterviewControl(sessionId: string, input: ApplyInterviewControlRequest): Promise<InterviewSessionResponse>;
   endInterviewSession(sessionId: string): Promise<EndInterviewSessionResponse>;
@@ -515,10 +515,13 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         state: normalizeProductState(response.state)
       };
     },
-    async classifyTurnComplete(sessionId, transcript) {
+    async classifyTurnComplete(sessionId, transcript, signal) {
       const res = await fetch(`${normalizedBaseUrl}/api/interview-sessions/${sessionId}/turn-complete`, {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ transcript })
+        body: JSON.stringify({ transcript }),
+        // Pass the barge-in AbortSignal so an interrupted turn cancels the in-flight
+        // endpoint LLM call instead of letting it run to completion server-side.
+        ...(signal ? { signal } : {})
       });
       if (!res.ok) return { done: true, reason: "http error → respond" };
       return res.json();
