@@ -13,6 +13,7 @@ import {
   createBailianAudioTranscriptionClientFromEnv,
   createBailianChatClientFromEnv,
   createBailianCharacterInterviewClientFromEnv,
+  createBailianEmbeddingClientFromEnv,
   createBailianPodcastAudioClientFromEnv,
   createBailianRealtimeVoiceClientFromEnv,
   createBailianSearchClientFromEnv,
@@ -20,6 +21,7 @@ import {
   type BailianAudioTranscriptionClient,
   type BailianChatClient,
   type BailianCharacterInterviewClient,
+  type BailianEmbeddingClient,
   type BailianPodcastAudioClient,
   type BailianRealtimeVoiceClient,
   type BailianSearchClient,
@@ -63,6 +65,7 @@ interface BuildApiServerOptions {
   bailianRealtimeVoiceClient?: BailianRealtimeVoiceClient;
   bailianTranscriptionClient?: BailianAudioTranscriptionClient;
   streamingTtsClient?: BailianStreamingTtsClient;
+  embeddingClient?: BailianEmbeddingClient;
   env?: Record<string, string | undefined>;
   envFilePath?: string;
 }
@@ -77,6 +80,7 @@ interface ProviderClients {
   voiceEnrollmentClient?: BailianVoiceEnrollmentClient;
   bailianTranscriptionClient?: BailianAudioTranscriptionClient;
   streamingTtsClient?: BailianStreamingTtsClient;
+  embeddingClient?: BailianEmbeddingClient;
 }
 
 export function buildApiServer(options: BuildApiServerOptions = {}) {
@@ -225,6 +229,10 @@ function refreshRuntimeProviderClients(
   providerClients.voiceEnrollmentClient = createBailianVoiceEnrollmentClientFromEnv(env);
   providerClients.bailianTranscriptionClient =
     options.bailianTranscriptionClient ?? createBailianAudioTranscriptionClientFromEnv(env);
+  // Embedding client for RAG / semantic search. Returns null when no API key — routes
+  // that need it should fall back to deterministic retrieval when null.
+  providerClients.embeddingClient =
+    options.embeddingClient ?? createBailianEmbeddingClientFromEnv(env) ?? undefined;
   // Streaming TTS client for the TTS WebSocket proxy (browser ↔ CosyVoice).
   // If no API key is configured, the proxy will reject upgrades with 4001 at
   // connect time — safe to leave undefined here.

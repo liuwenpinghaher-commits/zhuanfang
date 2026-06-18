@@ -15,8 +15,13 @@ export const BAILIAN_TRANSCRIPTION_MODEL = "sensevoice-v1";
 // qwen-plus is fast (~0.8s) and supports JSON mode — verified live. Kept separate from
 // BAILIAN_SEARCH_MODEL (qwen3.7-plus, ~9s) so synthesis never inherits the slow search model.
 export const BAILIAN_GENERAL_MODEL = "qwen-plus";
+export const BAILIAN_EMBEDDING_MODEL = "text-embedding-v3";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+
+export interface BailianEmbeddingClient {
+  embed(texts: string[]): Promise<number[][]>;
+}
 
 export interface BailianSearchClient {
   createSearchBrief(input: BailianSearchBriefRequest): Promise<SearchBriefInput>;
@@ -1111,5 +1116,67 @@ export function createBailianVoiceEnrollmentClientFromEnv(
   return createBailianVoiceEnrollmentClient({
     apiKey,
     audioBaseUrl: env.BAILIAN_AUDIO_BASE_URL
+  });
+}
+
+interface BailianEmbeddingClientOptions {
+  apiKey: string;
+  baseUrl?: string;
+  model?: string;
+  fetchImpl?: FetchLike;
+}
+
+interface BailianEmbeddingOutput {
+  data?: Array<{ embedding?: number[] }>;
+}
+
+/**
+ * Creates a DashScope-compatible embedding client for text-embedding-v3.
+ * Returns null when apiKey is absent — callers use this as the no-key fallback signal.
+ */
+export function createBailianEmbeddingClient(
+  options: BailianEmbeddingClientOptions
+): BailianEmbeddingClient | null {
+  if (!options.apiKey) {
+    return null;
+  }
+
+  const baseUrl = (options.baseUrl ?? BAILIAN_DEFAULT_BASE_URL).replace(/\/$/, "");
+  const model = options.model ?? BAILIAN_EMBEDDING_MODEL;
+  const fetchImpl = options.fetchImpl ?? fetch;
+
+  return {
+    async embed(texts) {
+      const response = await fetchImpl(`${baseUrl}/embeddings`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${options.apiKey}`,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({ model, input: { texts } })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Bailian embeddings request failed: ${response.status}`);
+      }
+
+      const payload = (await response.json()) as BailianEmbeddingOutput;
+      return (payload.data ?? []).map((item) => item.embedding ?? []);
+    }
+  };
+}
+
+export function createBailianEmbeddingClientFromEnv(
+  env: Record<string, string | undefined> = process.env
+): BailianEmbeddingClient | null {
+  const apiKey = env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY;
+  if (!apiKey) {
+    return null;
+  }
+
+  return createBailianEmbeddingClient({
+    apiKey,
+    baseUrl: env.BAILIAN_BASE_URL,
+    model: env.BAILIAN_EMBEDDING_MODEL ?? BAILIAN_EMBEDDING_MODEL
   });
 }
