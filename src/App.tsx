@@ -458,6 +458,14 @@ export default function App() {
     setView("interview");
   }
 
+  /** 一键开始：直接传参给 startInterview，不依赖 setState 后的值。 */
+  async function launchInterview(mode: InterviewMode = "decision", searchBriefId = activeSearchBriefId) {
+    setPendingMode(mode);
+    setActiveSearchBriefId(searchBriefId);
+    setSession(null);
+    await startInterview(mode, searchBriefId);
+  }
+
   async function startInterview(mode: InterviewMode = pendingMode, searchBriefId = activeSearchBriefId) {
     try {
       const apiRun = await productApiClient.createInterviewSession({
@@ -533,7 +541,7 @@ export default function App() {
   }
 
   function startFromBrief(briefId: string) {
-    prepareInterview("learning", briefId);
+    launchInterview("learning", briefId);
   }
 
   function removeSearchBrief(briefId: string) {
@@ -1295,7 +1303,7 @@ export default function App() {
           </section>
         )}
         {view === "home" && (
-          <HomeView state={productState} card={card} monthlyReview={monthlyReview} onStart={prepareInterview} />
+          <HomeView state={productState} card={card} monthlyReview={monthlyReview} onStart={launchInterview} />
         )}
         {view === "interview" && (
           <InterviewView
@@ -1374,7 +1382,7 @@ export default function App() {
             onSaveDefaultVoice={saveDefaultPodcastVoice}
           />
         )}
-        {view === "notes" && <NotesView state={productState} onStart={prepareInterview} onSaveQuestion={saveNoteQuestion} />}
+        {view === "notes" && <NotesView state={productState} onStart={launchInterview} onSaveQuestion={saveNoteQuestion} />}
         {view === "assets" && (
           <AssetsView
             query={assetQuery}
@@ -1390,7 +1398,7 @@ export default function App() {
             onDebtStatus={(assetId, status) => setProductState(updateKnowledgeDebtStatus(productState, assetId, status))}
           />
         )}
-        {view === "themes" && <ThemesView state={productState} review={monthlyReview} yearlyReview={yearlyReview} radar={radar} onStart={prepareInterview} />}
+        {view === "themes" && <ThemesView state={productState} review={monthlyReview} yearlyReview={yearlyReview} radar={radar} onStart={launchInterview} />}
         {view === "memory" && (
           <MemoryGovernanceView
             state={productState}
