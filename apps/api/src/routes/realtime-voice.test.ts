@@ -9,7 +9,7 @@ import {
 } from "../product-state-repository";
 import { registerRealtimeVoiceRoutes } from "./realtime-voice";
 import type { BailianStreamingTtsClient } from "../providers/bailian-streaming-tts";
-import type { InterviewSession } from "../../../../src/domain/types";
+import type { InterviewEnginePolicy, InterviewSession } from "../../../../src/domain/types";
 
 function buildAssistantSession(content: string): InterviewSession {
   return {
@@ -480,7 +480,7 @@ describe("realtime-voice TTS WebSocket proxy (/api/realtime-voice/ws/tts/:sessio
     });
   });
 
-  it("closes with 4001 when no TTS client is provided and no API key env var is set", async () => {
+  it("closes with 4001 when no TTS client is provided and no API key env var is set (after session create)", async () => {
     const originalKey = process.env.DASHSCOPE_API_KEY;
     const originalBailian = process.env.BAILIAN_API_KEY;
     delete process.env.DASHSCOPE_API_KEY;
@@ -516,5 +516,110 @@ describe("realtime-voice TTS WebSocket proxy (/api/realtime-voice/ws/tts/:sessio
         ws.on("error", () => { /* ignore upgrade-rejection errors */ });
       });
     });
+  });
+});
+
+describe("realtime-voice POST /sessions — enginePolicy (P1-21)", () => {
+  let app: FastifyInstance;
+  let stateRepo: ProductStateRepository;
+
+  beforeEach(async () => {
+    app = Fastify();
+    const initial = createInitialProductState();
+    stateRepo = createInMemoryProductStateRepository(initial);
+    await registerRealtimeVoiceRoutes(app, { stateRepo });
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it("returns enginePolicy when interviewSessionId links to a session that has enginePolicy", async () => {
+    const { createInterviewSession } = await import("../../../../src/domain/engine");
+    const { generateSessionId } = await import("../../../../src/domain/identifiers");
+
+    const sid = generateSessionId();
+    const enginePolicy: InterviewEnginePolicy = {
+      allowWebInInterview: false,
+      maxFollowUpDepth: 3,
+      silenceHoldMs: 1000,
+      playbookVersion: "v-test-1",
+      appliedPlaybookRules: ["具体时刻", "追问"],
+      qualityGuardrails: ["no_filler"],
+      memory: { includeSensitiveMemoriesInContext: false, includePendingCandidatesInContext: false, externalMaterialMemoryPolicy: "review-only" },
+      guidanceEnabled: true,
+      guidanceFrequency: "medium",
+      maxGuidancePerTurn: 2,
+      minGuidanceIntervalMs: 5000,
+      challengeBudgetPerSession: 3
+    };
+    const session: InterviewSession = {
+      ...createInterviewSession({ id: sid, title: "Test with policy", createdAt: new Date().toISOString() }),
+      enginePolicy
+    };
+    stateRepo.replaceState({ ...stateRepo.getState(), sessions: [session] });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/realtime-voice/sessions",
+      payload: { interviewSessionId: sid }
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.enginePolicy).toBeDefined();
+    expect(body.enginePolicy.playbookVersion).toBe("v-test-1");
+    expect(body.enginePolicy.maxFollowUpDepth).toBe(3);
+    expect(body.enginePolicy.allowWebInInterview).toBe(false);
+  });
+
+  it("returns enginePolicy (default from state) when linked session has no enginePolicy set", async () => {
+    const { createInterviewSession } = await import("../../../../src/domain/engine");
+    const { generateSessionId } = await import("../../../../src/domain/identifiers");
+
+    const sid = generateSessionId();
+    const session = createInterviewSession({ id: sid, title: "Test no policy", createdAt: new Date().toISOString() });
+    // session.enginePolicy is undefined by default
+    stateRepo.replaceState({ ...stateRepo.getState(), sessions: [session] });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/realtime-voice/sessions",
+      payload: { interviewSessionId: sid }
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.enginePolicy).toBeDefined();
+    // Default policy must have required fields
+    expect(typeof body.enginePolicy.maxFollowUpDepth).toBe("number");
+    expect(typeof body.enginePolicy.silenceHoldMs).toBe("number");
+    expect(typeof body.enginePolicy.playbookVersion).toBe("string");
+  });
+
+  it("returns enginePolicy (default) when no interviewSessionId is given but stateRepo is present", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/realtime-voice/sessions",
+      payload: {}
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.enginePolicy).toBeDefined();
+    expect(typeof body.enginePolicy.maxFollowUpDepth).toBe("number");
+  });
+
+  it("enginePolicy is absent when no stateRepo is configured", async () => {
+    const lonelyApp = Fastify();
+    await registerRealtimeVoiceRoutes(lonelyApp);
+    await lonelyApp.ready();
+    const res = await lonelyApp.inject({
+      method: "POST",
+      url: "/api/realtime-voice/sessions",
+      payload: {}
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.enginePolicy).toBeUndefined();
+    await lonelyApp.close();
   });
 });

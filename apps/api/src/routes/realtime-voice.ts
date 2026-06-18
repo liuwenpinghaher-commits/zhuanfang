@@ -13,8 +13,10 @@ import {
   appendRealtimeSignalTrace,
   truncateAssistantTurn
 } from "../../../../src/domain/engine";
+import { collectAppliedPlaybookRules } from "../../../../src/domain/context-pack";
 import type {
   AiRunEvent,
+  InterviewEnginePolicy,
   InterviewSession,
   ProductState,
   RealtimeSignal,
@@ -78,6 +80,7 @@ interface RealtimeVoiceSessionRecord extends RealtimeVoiceConfig {
     };
   };
   interviewSessionId?: string;
+  enginePolicy?: InterviewEnginePolicy;
   expiresAt: string;
 }
 
@@ -138,7 +141,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
 
   server.get("/api/realtime-voice/config", async () => buildRealtimeVoiceConfig());
   server.post("/api/realtime-voice/sessions", async (request) => {
-    const record = createRealtimeVoiceSession(normalizeObject<RealtimeVoiceSessionPayload>(request.body), options.bailianRealtimeVoiceClient);
+    const record = createRealtimeVoiceSession(normalizeObject<RealtimeVoiceSessionPayload>(request.body), options.bailianRealtimeVoiceClient, options.stateRepo);
     sessions.set(record.sessionId, record);
     return record;
   });
@@ -562,14 +565,48 @@ function normalizeVad(value: string | undefined): RealtimeVoiceConfig["vad"] {
   return value === "client_vad" ? "client_vad" : "server_vad";
 }
 
+function buildDefaultEnginePolicy(state: ProductState): InterviewEnginePolicy {
+  const cfg = state.systemConfig;
+  return {
+    allowWebInInterview: cfg.search.allowWebInInterview,
+    maxFollowUpDepth: cfg.interview.maxFollowUpDepth,
+    silenceHoldMs: cfg.interview.silenceHoldMs,
+    playbookVersion: cfg.interview.playbookVersion,
+    appliedPlaybookRules: collectAppliedPlaybookRules(state),
+    qualityGuardrails: [],
+    memory: { ...cfg.memory },
+    guidanceEnabled: cfg.interview.guidanceEnabled ?? true,
+    guidanceFrequency: cfg.interview.guidanceFrequency ?? "medium",
+    maxGuidancePerTurn: cfg.interview.maxGuidancePerTurn ?? 2,
+    minGuidanceIntervalMs: cfg.interview.minGuidanceIntervalMs ?? 5000,
+    challengeBudgetPerSession: cfg.interview.challengeBudgetPerSession ?? 3
+  };
+}
+
+function resolveEnginePolicy(
+  interviewSessionId: string | undefined,
+  stateRepo: { getState(): ProductState; getInterviewSession(id: string): InterviewSession | null } | undefined
+): InterviewEnginePolicy | undefined {
+  if (!stateRepo) return undefined;
+  const state = stateRepo.getState();
+  if (interviewSessionId) {
+    const session = stateRepo.getInterviewSession(interviewSessionId);
+    if (session?.enginePolicy) return session.enginePolicy;
+  }
+  return buildDefaultEnginePolicy(state);
+}
+
 function createRealtimeVoiceSession(
   payload: RealtimeVoiceSessionPayload,
-  realtimeClient: BailianRealtimeVoiceClient | undefined
+  realtimeClient: BailianRealtimeVoiceClient | undefined,
+  stateRepo?: { getState(): ProductState; getInterviewSession(id: string): InterviewSession | null }
 ): RealtimeVoiceSessionRecord {
   const config = buildRealtimeVoiceConfig();
   const sessionId = `rtv-${randomUUID()}`;
   const signalingPath = `/api/realtime-voice/sessions/${sessionId}/webrtc/answer`;
   const instructions = normalizeInstructions(payload.instructions);
+  const interviewSessionId = normalizeOptionalString(payload.interviewSessionId);
+  const enginePolicy = resolveEnginePolicy(interviewSessionId, stateRepo);
 
   return {
     ...config,
@@ -599,7 +636,8 @@ function createRealtimeVoiceSession(
         }
       }
     },
-    interviewSessionId: normalizeOptionalString(payload.interviewSessionId),
+    interviewSessionId,
+    enginePolicy,
     expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString()
   };
 }
