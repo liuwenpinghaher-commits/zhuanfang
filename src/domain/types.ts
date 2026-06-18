@@ -214,8 +214,6 @@ export type InterviewStrategyId =
   | "perspective_shift"
   | "blindspot_probe"
   | "premise_challenge"
-  | "counterexample_probe"
-  | "learning_reflection"
   | "synthesis";
 
 export type InterviewDepth = "surface" | "mechanism" | "meta" | "synthesis";
