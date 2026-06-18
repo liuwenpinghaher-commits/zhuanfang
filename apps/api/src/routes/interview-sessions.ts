@@ -18,6 +18,7 @@ import type {
 import { makeId, nowIso } from "../../../../src/domain/utils";
 import { finalizeSessionWithLlm } from "../intelligence/finalize-llm";
 import { generatePreSignals } from "../intelligence/pre-signals-llm";
+import { classifyTurnComplete } from "../intelligence/turn-endpoint-llm";
 import type { ProductStateRepository } from "../product-state-repository";
 import type { BailianChatClient, BailianCharacterInterviewClient } from "../providers/bailian";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
@@ -173,6 +174,52 @@ export async function registerInterviewSessionRoutes(
     } catch (error) {
       return reply.code(502).send({ error: error instanceof Error ? error.message : "pre_signals generation failed." });
     }
+  });
+
+  // Layer 2 endpoint: is the user done speaking? (cascade calls this only on
+  // an "ambiguous" heuristic verdict.) Fails safe to done=true (respond).
+  server.post("/api/interview-sessions/:id/turn-complete", async (request, reply) => {
+    const state = repository.getState();
+    const session = findSession(state, getSessionId(request.params));
+    if (!session) {
+      return reply.code(404).send({ error: "Interview session not found." });
+    }
+    const transcript = normalizeOptionalString(
+      normalizeObject<{ transcript?: unknown }>(request.body).transcript
+    );
+    if (!transcript) {
+      return reply.code(422).send({ error: "transcript is required." });
+    }
+    if (!options.bailianChatClient) {
+      return { done: true, reason: "no chat client → default respond" };
+    }
+    const result = await classifyTurnComplete(session, transcript, options.bailianChatClient);
+    console.info(JSON.stringify({
+      event: "cascade_turn_complete", sessionId: session.id,
+      done: result.done, reason: result.reason, transcript: transcript.slice(0, 80)
+    }));
+    return result;
+  });
+
+  // Decision audit (G3): the cascade fire-and-forgets its turn decisions here so
+  // they show up in the server log the operator greps. Best-effort, never errors.
+  server.post("/api/interview-sessions/:id/decisions", async (request) => {
+    const sessionId = getSessionId(request.params);
+    const body = normalizeObject<{
+      layer?: unknown;
+      action?: unknown;
+      reason?: unknown;
+      silenceMs?: unknown;
+      expressionState?: unknown;
+      transcript?: unknown;
+    }>(request.body);
+    console.info(JSON.stringify({
+      event: "cascade_decision", sessionId,
+      layer: body.layer, action: body.action, reason: body.reason,
+      silenceMs: body.silenceMs, expressionState: body.expressionState,
+      transcript: typeof body.transcript === "string" ? body.transcript.slice(0, 80) : undefined
+    }));
+    return { ok: true };
   });
 
   // Voice path: persist a turn (user or assistant) from the client to the server

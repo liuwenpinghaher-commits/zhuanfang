@@ -64,4 +64,95 @@ describe("interview-sessions routes", () => {
 
     await server.close();
   });
+
+  // --- turn-complete (Layer 2) + decisions (audit log) ---
+
+  it("/turn-complete: with chatClient mock returns done:true when LLM says so", async () => {
+    const mockChatClient = {
+      complete: vi.fn(async (_opts: any) => '{"done":true,"reason":"完整"}')
+    };
+    const repo = createInMemoryProductStateRepository();
+    const server = Fastify({ logger: false });
+    await registerInterviewSessionRoutes(server, repo, {
+      bailianChatClient: mockChatClient as any
+    });
+
+    // Create a session first
+    const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "daily" } })).json();
+    const id = created.session.id;
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/interview-sessions/${id}/turn-complete`,
+      payload: { transcript: "我已经说完了这段话" }
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.done).toBe(true);
+    expect(typeof body.reason).toBe("string");
+    expect(mockChatClient.complete).toHaveBeenCalledTimes(1);
+
+    await server.close();
+  });
+
+  it("/turn-complete: without chatClient returns done:true as safe default", async () => {
+    const repo = createInMemoryProductStateRepository();
+    const server = Fastify({ logger: false });
+    await registerInterviewSessionRoutes(server, repo, {}); // no chatClient
+
+    const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "daily" } })).json();
+    const id = created.session.id;
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/interview-sessions/${id}/turn-complete`,
+      payload: { transcript: "说一半" }
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().done).toBe(true);
+
+    await server.close();
+  });
+
+  it("/turn-complete: missing transcript returns 422", async () => {
+    const repo = createInMemoryProductStateRepository();
+    const server = Fastify({ logger: false });
+    await registerInterviewSessionRoutes(server, repo, {});
+
+    const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "daily" } })).json();
+    const id = created.session.id;
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/interview-sessions/${id}/turn-complete`,
+      payload: {}
+    });
+    expect(res.statusCode).toBe(422);
+
+    await server.close();
+  });
+
+  it("/decisions: logs a decision trace and returns ok:true", async () => {
+    const repo = createInMemoryProductStateRepository();
+    const server = Fastify({ logger: false });
+    await registerInterviewSessionRoutes(server, repo, {});
+
+    const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "daily" } })).json();
+    const id = created.session.id;
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/interview-sessions/${id}/decisions`,
+      payload: {
+        layer: 1,
+        action: "respond",
+        reason: "silence threshold exceeded",
+        silenceMs: 800
+      }
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().ok).toBe(true);
+
+    await server.close();
+  });
 });
