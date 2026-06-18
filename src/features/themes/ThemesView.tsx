@@ -1,4 +1,4 @@
-import { Brain, ChartNoAxesCombined, History, TimerReset } from "lucide-react";
+import { Brain, ChartNoAxesCombined, History, Layers, TimerReset } from "lucide-react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { buildCognitiveRadar, buildMonthlyReview, buildYearlyReview } from "../../domain/engine";
 import type { InterviewMode, ProductState } from "../../domain/types";
@@ -49,6 +49,12 @@ export function ThemesView({ state, review, yearlyReview, radar, onStart }: Them
         <div className="quote-line">下一年焦点：{yearlyReview.nextYearFocus}</div>
       </section>
       <div className="record-list">
+        {state.themes.length === 0 && (
+          <section className="panel empty-module">
+            <Layers size={22} />
+            <p>还没有主题线，随着专访推进会自动聚合出反复出现的主题。</p>
+          </section>
+        )}
         {state.themes.map((theme) => (
           <article className="record-row compact" key={theme.id}>
             <div>
