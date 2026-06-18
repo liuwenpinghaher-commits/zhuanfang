@@ -17,6 +17,13 @@ import { BAILIAN_PODCAST_TTS_MODEL, BAILIAN_PODCAST_TTS_VOICE } from "./bailian"
 
 const BAILIAN_WS_TTS_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/inference";
 
+/**
+ * Sample rate (Hz) of the raw PCM the cascade TTS streams. The browser sink
+ * (cascadedTtsSink) builds 16-bit PCM AudioBuffers at exactly this rate, so the
+ * two MUST agree. The proxy announces it to the browser in the tts.start frame.
+ */
+export const STREAMING_TTS_SAMPLE_RATE = 24000;
+
 // ── Public interface ──────────────────────────────────────────────────────────
 
 export interface BailianStreamingTtsClient {
@@ -141,8 +148,12 @@ function synthesizeStream(params: SynthesizeStreamParams): Promise<void> {
           parameters: {
             text_type: "PlainText",
             voice,
-            format: "mp3",
-            sample_rate: 24000
+            // PCM (raw s16le) not MP3: the cascade browser sink plays chunks with
+            // sample-accurate Web Audio scheduling. MP3 stream fragments don't fall on
+            // frame boundaries, so per-chunk decodeAudioData drops many chunks → choppy
+            // audio. Raw PCM concatenates seamlessly. (Spike: scripts/spike-tts-pcm.)
+            format: "pcm",
+            sample_rate: STREAMING_TTS_SAMPLE_RATE
           },
           input: {}
         }

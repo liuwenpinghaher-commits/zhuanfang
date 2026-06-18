@@ -5,6 +5,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import type { BailianRealtimeVoiceClient, BailianVoiceEnrollmentClient } from "../providers/bailian";
 import {
   createBailianStreamingTtsClient,
+  STREAMING_TTS_SAMPLE_RATE,
   type BailianStreamingTtsClient
 } from "../providers/bailian-streaming-tts";
 import type { ProductStateRepository } from "../product-state-repository";
@@ -399,6 +400,13 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
             abortController.abort();
             abortController = new AbortController();
             const signal = abortController.signal;
+
+            // Tell the browser how to decode the binary frames that follow: raw
+            // PCM (s16le, mono) at the streaming sample rate. The sink plays these
+            // with sample-accurate scheduling for gapless audio.
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "tts.start", format: "pcm", sampleRate: STREAMING_TTS_SAMPLE_RATE }));
+            }
 
             ttsClient
               .synthesizeStream(

@@ -9,22 +9,36 @@
  *   { type: "cancel" }
  *
  * Protocol (proxy → browser):
- *   <binary frame>         — raw MP3 audio chunk
- *   { type: "tts.done" }  — synthesis complete
+ *   { type: "tts.start", format: "pcm", sampleRate: number }  — announced before audio
+ *   <binary frame>                                            — raw PCM (s16le, mono) chunk
+ *   { type: "tts.done" }                                      — synthesis complete
  *   { type: "error", message: string }
+ *
+ * Why PCM + manual scheduling (not MP3 + decodeAudioData):
+ *   CosyVoice streams audio in many small chunks. MP3 stream fragments don't fall on
+ *   frame boundaries, so decoding each chunk independently fails for many of them
+ *   (silently dropped) → choppy, words missing. Raw PCM chunks are just samples: they
+ *   concatenate seamlessly. We build a 16-bit PCM AudioBuffer per chunk and schedule
+ *   each at a sample-accurate start time (previous end), so there are no gaps/clicks
+ *   between chunks the way onended-chaining produces.
  */
 import type { TtsSink } from "./cascadedPipeline";
+
+const DEFAULT_SAMPLE_RATE = 24000;
 
 export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink {
   let ws: WebSocket | null = null;
   let audioCtx: AudioContext | null = null;
-  // Queue of decoded AudioBuffers waiting to be played
-  let playQueue: AudioBuffer[] = [];
-  let currentSource: AudioBufferSourceNode | null = null;
-  let playing = false;
   let stopped = false;
 
-  // Lazy-init AudioContext (must be triggered by user gesture; cascade start qualifies)
+  // Sample-accurate playback scheduling.
+  let nextStartTime = 0; // in AudioContext time; next buffer starts here
+  const scheduledSources = new Set<AudioBufferSourceNode>();
+
+  // Decode state for the current utterance.
+  let sampleRate = DEFAULT_SAMPLE_RATE;
+  let leftoverByte: Uint8Array | null = null; // a half 16-bit sample split across chunks
+
   function getAudioContext(): AudioContext {
     if (!audioCtx || audioCtx.state === "closed") {
       audioCtx = new AudioContext();
@@ -35,31 +49,64 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
     return audioCtx;
   }
 
-  function playNext() {
-    if (stopped || playing || playQueue.length === 0) return;
+  /** Decode one raw PCM (s16le, mono) chunk into an AudioBuffer, carrying any odd
+   *  trailing byte over to the next chunk. Returns null if there's nothing playable yet. */
+  function decodePcmChunk(data: ArrayBuffer): AudioBuffer | null {
     const ctx = getAudioContext();
-    const buffer = playQueue.shift()!;
-    playing = true;
+    const incoming = new Uint8Array(data);
+    let bytes: Uint8Array;
+    if (leftoverByte) {
+      bytes = new Uint8Array(leftoverByte.length + incoming.length);
+      bytes.set(leftoverByte, 0);
+      bytes.set(incoming, leftoverByte.length);
+      leftoverByte = null;
+    } else {
+      bytes = incoming;
+    }
+    const usableLen = bytes.length - (bytes.length % 2);
+    if (usableLen < bytes.length) {
+      leftoverByte = bytes.slice(usableLen); // stash the 1 trailing byte
+    }
+    if (usableLen === 0) return null;
+
+    const sampleCount = usableLen / 2;
+    const view = new DataView(bytes.buffer, bytes.byteOffset, usableLen);
+    const buffer = ctx.createBuffer(1, sampleCount, sampleRate);
+    const channel = buffer.getChannelData(0);
+    for (let i = 0; i < sampleCount; i++) {
+      channel[i] = view.getInt16(i * 2, true) / 32768;
+    }
+    return buffer;
+  }
+
+  /** Schedule a decoded buffer to play immediately after whatever is already queued. */
+  function scheduleBuffer(buffer: AudioBuffer) {
+    if (stopped) return;
+    const ctx = getAudioContext();
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(ctx.destination);
-    currentSource = source;
-    source.onended = () => {
-      currentSource = null;
-      playing = false;
-      playNext();
-    };
-    source.start();
+    // Start exactly when the previous buffer ends (sample-accurate, gapless). If we've
+    // underrun (network stall), fall back to "now" — a small gap, not a crash.
+    const startAt = Math.max(ctx.currentTime, nextStartTime);
+    try {
+      source.start(startAt);
+    } catch {
+      return;
+    }
+    nextStartTime = startAt + buffer.duration;
+    scheduledSources.add(source);
+    source.onended = () => { scheduledSources.delete(source); };
   }
 
   function stopPlayback() {
     stopped = true;
-    playQueue = [];
-    if (currentSource) {
-      try { currentSource.stop(); } catch { /* already stopped */ }
-      currentSource = null;
+    for (const source of scheduledSources) {
+      try { source.stop(); } catch { /* already stopped */ }
     }
-    playing = false;
+    scheduledSources.clear();
+    nextStartTime = 0;
+    leftoverByte = null;
   }
 
   function openWs(): Promise<WebSocket> {
@@ -81,60 +128,74 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
 
   return {
     async speak(segments: string[], speakVoice?: string): Promise<void> {
+      // Fresh utterance: reset scheduling + decode state.
       stopped = false;
-      playQueue = [];
+      nextStartTime = 0;
+      leftoverByte = null;
+      sampleRate = DEFAULT_SAMPLE_RATE;
 
       const socket = await openWs();
       const ctx = getAudioContext();
 
       return new Promise<void>((resolve, reject) => {
-        const onMessage = async (event: MessageEvent) => {
+        let doneReceived = false;
+        let drainPoll: ReturnType<typeof setInterval> | null = null;
+
+        const cleanup = () => {
+          socket.removeEventListener("message", onMessage);
+          if (drainPoll !== null) { clearInterval(drainPoll); drainPoll = null; }
+        };
+
+        // Resolve once every scheduled buffer has finished playing.
+        const resolveWhenDrained = () => {
+          if (stopped || ctx.currentTime >= nextStartTime - 0.02) {
+            cleanup();
+            resolve();
+            return true;
+          }
+          return false;
+        };
+
+        const onMessage = (event: MessageEvent) => {
           if (stopped) {
-            socket.removeEventListener("message", onMessage);
+            cleanup();
             resolve();
             return;
           }
 
           if (event.data instanceof ArrayBuffer) {
-            // Binary frame: MP3 audio chunk — decode and enqueue
+            // Raw PCM chunk → decode + schedule (gapless).
             try {
-              const decoded = await ctx.decodeAudioData(event.data.slice(0));
-              if (!stopped) {
-                playQueue.push(decoded);
-                playNext();
-              }
+              const buffer = decodePcmChunk(event.data);
+              if (buffer && !stopped) scheduleBuffer(buffer);
             } catch {
-              // malformed audio chunk — skip
+              /* malformed chunk — skip */
             }
             return;
           }
 
-          // Text frame: JSON control message
-          let msg: { type?: string; message?: string };
+          let msg: { type?: string; message?: string; sampleRate?: number };
           try {
             msg = JSON.parse(event.data as string);
           } catch {
             return;
           }
 
-          if (msg.type === "tts.done") {
-            socket.removeEventListener("message", onMessage);
-            // Wait for the play queue to drain before resolving
-            if (playQueue.length === 0 && !playing) {
-              resolve();
-            } else {
-              // Poll until playback finishes
-              const poll = setInterval(() => {
-                if (playQueue.length === 0 && !playing) {
-                  clearInterval(poll);
-                  resolve();
-                }
-              }, 50);
+          if (msg.type === "tts.start") {
+            if (typeof msg.sampleRate === "number" && msg.sampleRate > 0) {
+              sampleRate = msg.sampleRate;
+            }
+          } else if (msg.type === "tts.done") {
+            doneReceived = true;
+            // All audio received; wait for the scheduled playback to drain.
+            if (!resolveWhenDrained()) {
+              drainPoll = setInterval(resolveWhenDrained, 50);
             }
           } else if (msg.type === "error") {
-            socket.removeEventListener("message", onMessage);
+            cleanup();
             reject(new Error(msg.message ?? "TTS error"));
           }
+          void doneReceived;
         };
 
         socket.addEventListener("message", onMessage);
