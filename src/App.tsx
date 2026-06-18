@@ -1027,12 +1027,16 @@ export default function App() {
 
             cascadePipelineRef.current = pipeline;
 
-            // Cascade opening: pass the scripted opening to startListening so
-            // the pipeline speaks it before entering the first listening window.
-            await pipeline.startListening(card.suggestedOpening || undefined);
+            // Render the recording UI IMMEDIATELY. The opening playback + mic open
+            // run in the BACKGROUND (not awaited): awaiting startListening here froze
+            // the page for the whole ~9s opening before setRecording ran, and the
+            // opening played while the UI was still stuck on "connecting".
+            // voiceStatus is driven by the pipeline's onStateChange (speaking → listening).
             setRecording(true);
-            setVoiceStatus("listening");
             setNotice(buildNotice("success", "实时语音会话已就绪", "级联模式 (ASR→分析→TTS) 已连接"));
+            void pipeline.startListening(card.suggestedOpening || undefined).catch((err) => {
+              setNotice(buildNotice("warning", "级联语音连接失败", err instanceof Error ? err.message : "请确认后端在线且 API key 已配置"));
+            });
             return;
           } catch (err) {
             setNotice(buildNotice("warning", "级联语音连接失败", err instanceof Error ? err.message : "请确认后端在线且 API key 已配置"));

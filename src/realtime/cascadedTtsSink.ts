@@ -25,6 +25,10 @@
 import type { TtsSink } from "./cascadedPipeline";
 
 const DEFAULT_SAMPLE_RATE = 24000;
+// Pre-roll before the first chunk plays. Gives the audio thread headroom so the
+// opening doesn't glitch/under-run at startup, and keeps the first scheduled time
+// safely in the future (a just-resumed context can have currentTime ~0).
+const STARTUP_LATENCY = 0.15;
 
 export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink {
   let ws: WebSocket | null = null;
@@ -33,6 +37,7 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
 
   // Sample-accurate playback scheduling.
   let nextStartTime = 0; // in AudioContext time; next buffer starts here
+  let firstChunkOfUtterance = true; // first chunk gets the STARTUP_LATENCY cushion
   const scheduledSources = new Set<AudioBufferSourceNode>();
 
   // Decode state for the current utterance.
@@ -91,9 +96,13 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(ctx.destination);
-    // Start exactly when the previous buffer ends (sample-accurate, gapless). If we've
-    // underrun (network stall), fall back to "now" — a small gap, not a crash.
-    const startAt = Math.max(ctx.currentTime, nextStartTime);
+    // First chunk: start a touch in the future (cushion). Thereafter start exactly
+    // when the previous buffer ends (sample-accurate, gapless). On under-run
+    // (network stall) fall back to "now" — a small gap, not a crash/garble.
+    const startAt = firstChunkOfUtterance
+      ? ctx.currentTime + STARTUP_LATENCY
+      : Math.max(ctx.currentTime, nextStartTime);
+    firstChunkOfUtterance = false;
     try {
       source.start(startAt);
     } catch {
@@ -136,11 +145,18 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
       // Fresh utterance: reset scheduling + decode state.
       stopped = false;
       nextStartTime = 0;
+      firstChunkOfUtterance = true;
       leftoverByte = null;
       sampleRate = DEFAULT_SAMPLE_RATE;
 
       const socket = await openWs();
       const ctx = getAudioContext();
+      // Ensure the context is actually RUNNING before we schedule against
+      // ctx.currentTime — a suspended context reports currentTime ~0, which would
+      // schedule every chunk in the past and garble playback once it resumes.
+      if (ctx.state !== "running") {
+        try { await ctx.resume(); } catch { /* best-effort */ }
+      }
 
       return new Promise<void>((resolve, reject) => {
         let doneReceived = false;
