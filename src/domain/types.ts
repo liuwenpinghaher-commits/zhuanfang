@@ -514,6 +514,8 @@ export interface InterviewSession {
   askedAnchor?: string;
   doNotSave?: boolean;
   interactionPreSignals?: InteractionPreSignals;
+  /** v2 软标签：本会话软归属的主题线（可多归属、可为空）。 */
+  relatedThemeIds?: string[];
 }
 
 export interface InterviewAgentContext {
@@ -570,6 +572,7 @@ export interface DualTrackNote {
   nextQuestions: string[];
   createdAt: string;
   feedback?: InterviewFeedback;
+  relatedThemeIds?: string[];
 }
 
 export type InterviewFeedbackTag =
@@ -632,6 +635,7 @@ export interface DecisionAsset {
   reviewAt: string;
   status: "待复盘" | "已复盘";
   updatedAt: string;
+  relatedThemeIds?: string[];
 }
 
 export interface KnowledgeDebt {
@@ -642,6 +646,7 @@ export interface KnowledgeDebt {
   status: AssetStatus;
   nextQuestion: string;
   updatedAt: string;
+  relatedThemeIds?: string[];
 }
 
 export interface ReadingAsset {
@@ -668,7 +673,16 @@ export interface LongTermTheme {
   appearances: number;
   nextQuestion: string;
   updatedAt: string;
+  // ── v2 Track 升级字段（可选以兼容 v1 数据；迁移函数补默认值）──
+  kind?: "journal" | "theme" | "subject" | "project";
+  pinned?: boolean;
+  createdAt?: string;
+  lastActiveAt?: string;
 }
+
+/** Track 是 LongTermTheme 升级后的对外概念名（软聚合主题线）。
+ *  存储字段名保持 `themes` 不变，避免 21 处 `.themes` 引用的机械改名。 */
+export type Track = LongTermTheme;
 
 export interface MonthlyReview {
   topTheme: string;
@@ -1178,6 +1192,8 @@ export interface ProductState {
   operationalChecks: OperationalCheckEvidence[];
   systemConfig: SystemConfig;
   revision: number;
+  /** 数据模型版本。v2 迁移后为 2；缺失视为 v1。 */
+  schemaVersion?: number;
 }
 
 /** A persistent intelligence-monitoring task (联网素材 → 自动化情报). */
