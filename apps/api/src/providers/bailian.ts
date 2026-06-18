@@ -165,6 +165,10 @@ interface BailianAudioTranscriptionClientOptions {
   languageHint?: string;
   pollAttempts?: number;
   pollIntervalMs?: number;
+  /** Total wall-clock timeout for the polling loop (ms). Defaults to 60 000 ms (60 s). */
+  maxPollTotalMs?: number;
+  /** Injectable clock function (returns ms since epoch). Defaults to Date.now. */
+  nowFn?: () => number;
   fetchImpl?: FetchLike;
 }
 
@@ -557,6 +561,10 @@ export function createBailianAudioTranscriptionClient(
   const languageHint = options.languageHint ?? "auto";
   const pollAttempts = options.pollAttempts ?? 20;
   const pollIntervalMs = options.pollIntervalMs ?? 500;
+  // ASR_POLL_TIMEOUT_MS: hard wall-clock cap on the entire polling loop.
+  // Whichever limit (attempts or total time) is reached first will stop the loop.
+  const maxPollTotalMs = options.maxPollTotalMs ?? 60_000;
+  const nowFn = options.nowFn ?? (() => Date.now());
   const fetchImpl = options.fetchImpl ?? fetch;
 
   return {
@@ -592,7 +600,17 @@ export function createBailianAudioTranscriptionClient(
         throw new Error("Bailian SenseVoice transcription response did not include a task id.");
       }
 
+      // Record the start time to enforce the total wall-clock timeout (maxPollTotalMs).
+      const pollStartMs = nowFn();
+
       for (let attempt = 0; attempt < pollAttempts; attempt += 1) {
+        // Check total elapsed time before each poll attempt (including the first).
+        // This ensures we stop as soon as the wall-clock cap is exceeded, regardless
+        // of how many attempts remain.
+        if (nowFn() - pollStartMs >= maxPollTotalMs) {
+          break;
+        }
+
         if (attempt > 0 && pollIntervalMs > 0) {
           await delay(pollIntervalMs);
         }

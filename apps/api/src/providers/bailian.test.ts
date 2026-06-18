@@ -129,6 +129,53 @@ describe("bailian provider client", () => {
     });
   });
 
+  it("stops polling when total elapsed time exceeds maxPollTotalMs even if pollAttempts allows more", async () => {
+    // 用 fake 时钟注入：模拟每次调用 nowFn 时时间快进
+    // 让 nowFn 第一次返回 0，之后每次返回 500ms 递增，超过 maxPollTotalMs=200ms 后轮询应终止
+    let callCount = 0;
+    const nowFn = () => {
+      // start=0; 首次检查 elapsed=0 (pass); 第一轮 poll 后再检查 elapsed=300 (>200 → stop)
+      const times = [0, 300];
+      return times[Math.min(callCount++, times.length - 1)];
+    };
+
+    // fetchImpl: submit 返回 task_id，后续 poll 始终返回 RUNNING（未完成）
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ output: { task_status: "PENDING", task_id: "task-timeout-test" } }),
+          { status: 200 }
+        )
+      )
+      // 所有后续轮询都返回 RUNNING（使用 mockImplementation 确保每次是新的 Response）
+      .mockImplementation(async () =>
+        new Response(
+          JSON.stringify({ output: { task_id: "task-timeout-test", task_status: "RUNNING" } }),
+          { status: 200 }
+        )
+      );
+
+    const client = createBailianAudioTranscriptionClient({
+      apiKey: "test-key",
+      fetchImpl,
+      // 给足够大的 attempts，确保是时间上限先触发
+      pollAttempts: 100,
+      pollIntervalMs: 0,
+      // 总时长上限 200ms，注入 nowFn 控制时间
+      maxPollTotalMs: 200,
+      nowFn
+    });
+
+    await expect(
+      client.transcribe({ sourceUrl: "https://example.com/audio.mp3" })
+    ).rejects.toThrow(/timeout/i);
+
+    // 确认并没有轮询 100 次（attempts 上限），证明是按时间停的
+    // submit(1) + 至多少量 poll 调用，远少于 100
+    expect(fetchImpl.mock.calls.length).toBeLessThan(10);
+  });
+
   it("submits and reads SenseVoice transcription tasks for imported audio", async () => {
     const fetchImpl = vi
       .fn()
