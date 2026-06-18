@@ -86,9 +86,10 @@ interface ProviderClients {
 
 export function buildApiServer(options: BuildApiServerOptions = {}) {
   const server = Fastify({ logger: false });
-  registerCors(server);
-  const productStateRepository = options.productStateRepository ?? createDefaultProductStateRepository(options.productStateDbPath);
   const runtimeEnv = options.env ?? process.env;
+  registerCors(server, runtimeEnv);
+  registerProductionAuth(server, runtimeEnv);
+  const productStateRepository = options.productStateRepository ?? createDefaultProductStateRepository(options.productStateDbPath);
   const providerClients: ProviderClients = {};
   const refreshProviderClients = () => refreshRuntimeProviderClients(providerClients, runtimeEnv, options);
   refreshProviderClients();
@@ -249,13 +250,33 @@ function refreshRuntimeProviderClients(
     (ttsApiKey ? createBailianStreamingTtsClient({ apiKey: ttsApiKey }) : undefined);
 }
 
-function registerCors(server: ReturnType<typeof Fastify>) {
+function registerCors(server: ReturnType<typeof Fastify>, env: Record<string, string | undefined>) {
+  // Build the allowed origins set. PRODUCT_WEB_ORIGINS is a comma-separated list
+  // of production origins (e.g. "https://app.example.com"). When absent, fall back
+  // to the Vite dev-server origins so local development stays zero-friction.
+  const extraOrigins = env.PRODUCT_WEB_ORIGINS
+    ? new Set(env.PRODUCT_WEB_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean))
+    : null;
+
+  const devOrigins = new Set(["http://127.0.0.1:5173", "http://localhost:5173"]);
+
   server.addHook("onRequest", async (request: FastifyRequest, reply: FastifyReply) => {
     const origin = request.headers.origin;
-    const allowedOrigin =
-      origin === "http://127.0.0.1:5173" || origin === "http://localhost:5173" ? origin : "http://127.0.0.1:5173";
 
-    reply.header("access-control-allow-origin", allowedOrigin);
+    let allowedOrigin: string | undefined;
+    if (origin) {
+      const allowedSet = extraOrigins ?? devOrigins;
+      if (allowedSet.has(origin)) {
+        allowedOrigin = origin;
+      } else if (!extraOrigins) {
+        // No PRODUCT_WEB_ORIGINS configured — keep old fallback for dev
+        allowedOrigin = "http://127.0.0.1:5173";
+      }
+    }
+
+    if (allowedOrigin) {
+      reply.header("access-control-allow-origin", allowedOrigin);
+    }
     reply.header("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
     reply.header("access-control-allow-headers", "content-type,authorization");
     reply.header("access-control-max-age", "86400");
@@ -263,6 +284,41 @@ function registerCors(server: ReturnType<typeof Fastify>) {
     if (request.method === "OPTIONS") {
       return reply.code(204).send();
     }
+  });
+}
+
+// Paths exempted from bearer auth in production profile (healthcheck, metrics, etc.)
+const AUTH_EXEMPT_PREFIXES = ["/api/health"];
+
+function registerProductionAuth(server: ReturnType<typeof Fastify>, env: Record<string, string | undefined>) {
+  const isProduction = env.DEPLOYMENT_PROFILE === "production";
+  const apiToken = env.PRODUCT_API_TOKEN;
+
+  // Auth guard is only active when both conditions hold: production profile AND a token configured.
+  // This keeps local development completely friction-free.
+  if (!isProduction || !apiToken) {
+    return;
+  }
+
+  server.addHook("onRequest", async (request: FastifyRequest, reply: FastifyReply) => {
+    const path = request.url.split("?")[0];
+
+    // Exempt health check (and any future non-/api paths are already not API routes)
+    if (AUTH_EXEMPT_PREFIXES.some((prefix) => path === prefix || path.startsWith(prefix + "/"))) {
+      return;
+    }
+
+    // Only guard /api/* routes; static assets served outside /api should pass through
+    if (!path.startsWith("/api/")) {
+      return;
+    }
+
+    const authHeader = request.headers.authorization;
+    if (authHeader === `Bearer ${apiToken}`) {
+      return;
+    }
+
+    return reply.code(401).send({ error: "Unauthorized" });
   });
 }
 

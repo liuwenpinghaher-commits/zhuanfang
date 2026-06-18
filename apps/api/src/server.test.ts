@@ -849,6 +849,168 @@ describe("Product API", () => {
     }
   });
 
+  describe("production-profile bearer auth (P0-5)", () => {
+    it("blocks unauthenticated requests to /api/state when DEPLOYMENT_PROFILE=production and PRODUCT_API_TOKEN is set", async () => {
+      const server = buildApiServer({
+        env: { DEPLOYMENT_PROFILE: "production", PRODUCT_API_TOKEN: "secret" }
+      });
+
+      const response = await server.inject({ method: "GET", url: "/api/state" });
+
+      expect(response.statusCode).toBe(401);
+    });
+
+    it("allows authenticated requests to /api/state with correct Bearer token in production profile", async () => {
+      const server = buildApiServer({
+        env: { DEPLOYMENT_PROFILE: "production", PRODUCT_API_TOKEN: "secret" }
+      });
+
+      const response = await server.inject({
+        method: "GET",
+        url: "/api/state",
+        headers: { authorization: "Bearer secret" }
+      });
+
+      expect(response.statusCode).toBe(200);
+    });
+
+    it("rejects requests with wrong Bearer token in production profile", async () => {
+      const server = buildApiServer({
+        env: { DEPLOYMENT_PROFILE: "production", PRODUCT_API_TOKEN: "secret" }
+      });
+
+      const response = await server.inject({
+        method: "GET",
+        url: "/api/state",
+        headers: { authorization: "Bearer wrong-token" }
+      });
+
+      expect(response.statusCode).toBe(401);
+    });
+
+    it("exempts /api/health from bearer auth in production profile (healthcheck use)", async () => {
+      const server = buildApiServer({
+        env: { DEPLOYMENT_PROFILE: "production", PRODUCT_API_TOKEN: "secret" }
+      });
+
+      const response = await server.inject({ method: "GET", url: "/api/health" });
+
+      expect(response.statusCode).toBe(200);
+    });
+
+    it("does not enforce auth when DEPLOYMENT_PROFILE is not set (local zero-friction)", async () => {
+      const server = buildApiServer({
+        env: { PRODUCT_API_TOKEN: "secret" }
+      });
+
+      const response = await server.inject({ method: "GET", url: "/api/state" });
+
+      expect(response.statusCode).toBe(200);
+    });
+
+    it("does not enforce auth when DEPLOYMENT_PROFILE is not 'production' (local zero-friction)", async () => {
+      const server = buildApiServer({
+        env: { DEPLOYMENT_PROFILE: "development", PRODUCT_API_TOKEN: "secret" }
+      });
+
+      const response = await server.inject({ method: "GET", url: "/api/state" });
+
+      expect(response.statusCode).toBe(200);
+    });
+
+    it("does not enforce auth when PRODUCT_API_TOKEN is not set even in production profile", async () => {
+      const server = buildApiServer({
+        env: { DEPLOYMENT_PROFILE: "production" }
+      });
+
+      const response = await server.inject({ method: "GET", url: "/api/state" });
+
+      expect(response.statusCode).toBe(200);
+    });
+  });
+
+  describe("CORS from PRODUCT_WEB_ORIGINS env (P1-3)", () => {
+    it("reflects a configured origin in access-control-allow-origin when Origin matches", async () => {
+      const server = buildApiServer({
+        env: { PRODUCT_WEB_ORIGINS: "http://x.com" }
+      });
+
+      const response = await server.inject({
+        method: "GET",
+        url: "/api/health",
+        headers: { origin: "http://x.com" }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["access-control-allow-origin"]).toBe("http://x.com");
+    });
+
+    it("reflects multiple configured origins when any one matches", async () => {
+      const server = buildApiServer({
+        env: { PRODUCT_WEB_ORIGINS: "http://x.com,https://y.com" }
+      });
+
+      const responseX = await server.inject({
+        method: "GET",
+        url: "/api/health",
+        headers: { origin: "http://x.com" }
+      });
+      const responseY = await server.inject({
+        method: "GET",
+        url: "/api/health",
+        headers: { origin: "https://y.com" }
+      });
+
+      expect(responseX.headers["access-control-allow-origin"]).toBe("http://x.com");
+      expect(responseY.headers["access-control-allow-origin"]).toBe("https://y.com");
+    });
+
+    it("does not set access-control-allow-origin for an origin not in PRODUCT_WEB_ORIGINS", async () => {
+      const server = buildApiServer({
+        env: { PRODUCT_WEB_ORIGINS: "http://x.com" }
+      });
+
+      const response = await server.inject({
+        method: "GET",
+        url: "/api/health",
+        headers: { origin: "http://evil.com" }
+      });
+
+      expect(response.headers["access-control-allow-origin"]).not.toBe("http://evil.com");
+    });
+
+    it("still allows Vite dev origins when PRODUCT_WEB_ORIGINS is not set", async () => {
+      const server = buildApiServer({ env: {} });
+
+      const response = await server.inject({
+        method: "GET",
+        url: "/api/health",
+        headers: { origin: "http://localhost:5173" }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["access-control-allow-origin"]).toBe("http://localhost:5173");
+    });
+
+    it("handles preflight OPTIONS for a configured PRODUCT_WEB_ORIGINS origin", async () => {
+      const server = buildApiServer({
+        env: { PRODUCT_WEB_ORIGINS: "http://x.com" }
+      });
+
+      const response = await server.inject({
+        method: "OPTIONS",
+        url: "/api/health",
+        headers: {
+          origin: "http://x.com",
+          "access-control-request-method": "GET"
+        }
+      });
+
+      expect(response.statusCode).toBe(204);
+      expect(response.headers["access-control-allow-origin"]).toBe("http://x.com");
+    });
+  });
+
   describe("PRODUCT_STATIC_DIR static file serving (P0-4)", () => {
     it("serves index.html from PRODUCT_STATIC_DIR when env is set", async () => {
       const staticDir = mkdtempSync(join(tmpdir(), "interview-static-"));
