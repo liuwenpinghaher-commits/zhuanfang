@@ -441,26 +441,9 @@ export function ConfigView({
                         }));
                       }}
                     >
-                      <option value="longyuan_v3">龙媛 (longyuan_v3)</option>
-                      <option value="longxiaochun_v2">龙小春 (longxiaochun_v2)</option>
-                      <option value="longxiaoxia_v2">龙小夏 (longxiaoxia_v2)</option>
-                      <option value="longxiaobai_v2">龙小白 (longxiaobai_v2)</option>
-                      <option value="longlaotie_v2">龙老铁 (longlaotie_v2)</option>
-                      <option value="longshu_v2">龙书 (longshu_v2)</option>
-                      <option value="longyu_v2">龙雨 (longyu_v2)</option>
-                      <option value="longyuer_v2">龙悦儿 (longyuer_v2)</option>
-                      <option value="longjing_v2">龙婧 (longjing_v2)</option>
-                      <option value="longmiao_v2">龙妙 (longmiao_v2)</option>
-                      <option value="longchen_v2">龙晨 (longchen_v2)</option>
-                      <option value="longda_v2">龙达 (longda_v2)</option>
-                      <option value="longye_v2">龙野 (longye_v2)</option>
-                      <option value="longtong_v2">龙彤 (longtong_v2)</option>
-                      <option value="longfei_v2">龙飞 (longfei_v2)</option>
-                      <option value="longjie_v2">龙杰 (longjie_v2)</option>
-                      <option value="longyan_v2">龙颜 (longyan_v2)</option>
-                      <option value="longhua_v2">龙华 (longhua_v2)</option>
-                      <option value="longxiang_v2">龙翔 (longxiang_v2)</option>
-                      <option value="longbo_v2">龙波 (longbo_v2)</option>
+                      {voices.map((v) => (
+                        <option key={v.voice} value={v.voice}>{v.name} ({v.voice})</option>
+                      ))}
                     </select>
                     <span className="field-help">影响播客工作台新建节目时的默认 voice。</span>
                   </label>

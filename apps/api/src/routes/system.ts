@@ -9,27 +9,16 @@ import {
 } from "../providers/bailian";
 import type { AnySearchClient } from "../providers/anysearch";
 
+// CosyVoice voices are model-locked: each CosyVoice model only accepts its OWN
+// voice set. The TTS path uses cosyvoice-v3-plus, which rejects every v2 voice
+// (longxiaochun_v2 …) AND some v3-named voices (longyuan_v3, longanhuan_v3,
+// longanli …) with engine error 418. The list below is the subset VERIFIED to
+// synthesize on this account's cosyvoice-v3-plus streaming endpoint
+// (scripts/spike-tts-proxy-voice). longanyang is the default fallback. Add more
+// only after spiking them green — an unverified entry is a 418 trap for the user.
 const COSYVOICE_PRESET_VOICES = [
-  { voice: "longyuan_v3", name: "龙媛" },
-  { voice: "longxiaochun_v2", name: "龙小春" },
-  { voice: "longxiaoxia_v2", name: "龙小夏" },
-  { voice: "longxiaobai_v2", name: "龙小白" },
-  { voice: "longlaotie_v2", name: "龙老铁" },
-  { voice: "longshu_v2", name: "龙书" },
-  { voice: "longyu_v2", name: "龙雨" },
-  { voice: "longyuer_v2", name: "龙悦儿" },
-  { voice: "longjing_v2", name: "龙婧" },
-  { voice: "longmiao_v2", name: "龙妙" },
-  { voice: "longchen_v2", name: "龙晨" },
-  { voice: "longda_v2", name: "龙达" },
-  { voice: "longye_v2", name: "龙野" },
-  { voice: "longtong_v2", name: "龙彤" },
-  { voice: "longfei_v2", name: "龙飞" },
-  { voice: "longjie_v2", name: "龙杰" },
-  { voice: "longyan_v2", name: "龙颜" },
-  { voice: "longhua_v2", name: "龙华" },
-  { voice: "longxiang_v2", name: "龙翔" },
-  { voice: "longbo_v2", name: "龙波" },
+  { voice: "longanyang", name: "龙安洋·阳光男声" },
+  { voice: "longanhuan", name: "龙安欢·元气女声" },
 ];
 import type {
   BailianAudioTranscriptionClient,

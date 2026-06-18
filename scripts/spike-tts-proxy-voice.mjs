@@ -45,7 +45,7 @@ function speak(sessionId, voice) {
 
 const sessionId = await newSession();
 console.log(`\n=== TTS 代理 voice spike（session ${sessionId}）===\n`);
-for (const v of ["longanyang", "longanhuan_v3", "longanrou_v3", "longcheng_v3", "longhua_v3", "longshu_v3"]) {
+for (const v of ["longanyang", "longanhuan", "longanli", "longanlang", "longanwen", "longanya"]) {
   const r = await speak(sessionId, v);
   const icon = r.verdict === "OK" ? "✅" : r.verdict === "ERROR" || r.verdict.includes("ERR") ? "❌" : "⚠️";
   console.log(`${icon} voice="${r.voice}" → ${r.verdict}  (${r.detail})`);

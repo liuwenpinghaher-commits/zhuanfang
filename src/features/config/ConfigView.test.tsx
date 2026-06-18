@@ -143,7 +143,13 @@ describe("ConfigView", () => {
 
     renderView(state, emptyCapabilities(), {
       section: "policies",
-      onSaveProductConfig
+      onSaveProductConfig,
+      // The voice dropdowns are data-driven from `voices` (verified cosyvoice-v3-plus
+      // presets); supply the ones the test selects.
+      voices: [
+        { voice: "longanyang", name: "龙安洋·阳光男声", description: "" },
+        { voice: "longanhuan", name: "龙安欢·元气女声", description: "" }
+      ]
     });
 
     const providerSelect = container?.querySelector<HTMLSelectElement>('select[name="search.activeProvider"]');
@@ -168,7 +174,7 @@ describe("ConfigView", () => {
       maxSourcesInput!.dispatchEvent(new Event("input", { bubbles: true }));
       webInInterviewSelect!.value = "false";
       webInInterviewSelect!.dispatchEvent(new Event("change", { bubbles: true }));
-      podcastVoiceSelect!.value = "longyuan_v3";
+      podcastVoiceSelect!.value = "longanhuan";
       podcastVoiceSelect!.dispatchEvent(new Event("change", { bubbles: true }));
       realtimeSelect!.value = "true";
       realtimeSelect!.dispatchEvent(new Event("change", { bubbles: true }));
@@ -190,7 +196,7 @@ describe("ConfigView", () => {
           allowWebInInterview: false
         }),
         voice: expect.objectContaining({
-          podcastVoice: "longyuan_v3",
+          podcastVoice: "longanhuan",
           realtimeEnabled: true
         }),
         interview: expect.objectContaining({
