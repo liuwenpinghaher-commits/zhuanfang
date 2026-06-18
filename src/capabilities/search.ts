@@ -172,6 +172,7 @@ function createProviderSources(topic: string, input: SearchProviderInput): Sourc
   return sourceTemplates.slice(0, limit).map((template, index) => ({
     id: `source-${input.providerId}-${Date.now()}-${index + 1}`,
     title: `${topic}：${template.suffix}`,
+    // ponytail: 本地降级占位 URL,非真实来源;真实来源由 provider 返回
     url: `https://example.local/${input.providerId}/${encodeURIComponent(topic)}/${index + 1}`,
     publisher: template.publisher,
     publishedAt: new Date(Date.UTC(2026, 5, Math.max(1, 10 - index))).toISOString(),

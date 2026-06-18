@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { ProductStateRepository } from "../product-state-repository";
 
 // Inlined from removed packages/mastra/src/evals/scorers.ts — simple deterministic scorers, no Mastra dependency
+// ponytail: 启发式确定性评分(关键词/长度/词频等规则),非 LLM 真评分;需要真评分再升级
 const scorers = {
   interviewNaturalness: (transcript: string): { score: number; feedback: string } => {
     const questions = (transcript.match(/\?/g) || []).length;
