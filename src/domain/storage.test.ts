@@ -317,6 +317,46 @@ describe("product state storage", () => {
     expect(normalized3.importSources[0].searchBriefId).toBeUndefined();
   });
 
+  describe("P2-11: defaultVoice validation", () => {
+    const VALID_VOICES = ["longanyang", "longanhuan"];
+
+    it("createInitialProductState returns a valid defaultVoice (longanyang or longanhuan)", () => {
+      const state = createInitialProductState();
+      expect(VALID_VOICES).toContain(state.systemConfig.voice.defaultVoice);
+    });
+
+    it("normalizeProductState falls back illegal defaultVoice to longanyang", () => {
+      const state = createInitialProductState();
+      const normalized = normalizeProductState({
+        ...state,
+        systemConfig: {
+          ...state.systemConfig,
+          voice: {
+            ...state.systemConfig.voice,
+            defaultVoice: "warm-interviewer" as string
+          }
+        }
+      });
+      expect(VALID_VOICES).toContain(normalized.systemConfig.voice.defaultVoice);
+      expect(normalized.systemConfig.voice.defaultVoice).toBe("longanyang");
+    });
+
+    it("normalizeProductState preserves a valid defaultVoice", () => {
+      const state = createInitialProductState();
+      const normalized = normalizeProductState({
+        ...state,
+        systemConfig: {
+          ...state.systemConfig,
+          voice: {
+            ...state.systemConfig.voice,
+            defaultVoice: "longanhuan"
+          }
+        }
+      });
+      expect(normalized.systemConfig.voice.defaultVoice).toBe("longanhuan");
+    });
+  });
+
   it("migrateWorkflowRuns: maps legacy mastra-runtime providerId to local-workflow-runtime", () => {
     const state = createInitialProductState();
     const legacyRun = {

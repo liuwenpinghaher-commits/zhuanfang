@@ -205,6 +205,8 @@ function normalizeSearchConfig(systemConfig: Partial<SystemConfig>, fallbackConf
   };
 }
 
+const VALID_COSYVOICE_PRESET_VOICES = new Set(["longanyang", "longanhuan"]);
+
 function normalizeVoiceConfig(systemConfig: Partial<SystemConfig>, fallbackConfig: SystemConfig) {
   const voiceConfig = {
     ...fallbackConfig.voice,
@@ -215,9 +217,17 @@ function normalizeVoiceConfig(systemConfig: Partial<SystemConfig>, fallbackConfi
   // eb5e4011). Force any persisted s2s config to bailian (default).
   const realtimeMode = (voiceConfig.realtimeMode as string) === "s2s" ? "bailian" : voiceConfig.realtimeMode;
 
+  // P2-11: Guard against illegal defaultVoice values (e.g. old semantic aliases
+  // like "warm-interviewer") that are rejected with HTTP 418 by the TTS backend.
+  // Only longanyang / longanhuan are confirmed valid on cosyvoice-v3-plus.
+  const defaultVoice = VALID_COSYVOICE_PRESET_VOICES.has(voiceConfig.defaultVoice as string)
+    ? voiceConfig.defaultVoice
+    : "longanyang";
+
   return {
     ...voiceConfig,
     realtimeMode,
+    defaultVoice,
     podcastFormat: voiceConfig.podcastFormat || fallbackConfig.voice.podcastFormat,
     ttsProvider: voiceConfig.ttsProvider === "local-demo" ? fallbackConfig.voice.ttsProvider : voiceConfig.ttsProvider
   };

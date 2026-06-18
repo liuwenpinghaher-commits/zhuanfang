@@ -208,8 +208,8 @@ export const initialProductState: ProductState = {
     },
     voice: {
       ttsProvider: "bailian",
-      defaultVoice: "warm-interviewer",
-      podcastVoice: "calm-host",
+      defaultVoice: "longanyang",
+      podcastVoice: "longanhuan",
       podcastFormat: "solo",
       realtimeEnabled: true,
       realtimeMode: "cascade"
