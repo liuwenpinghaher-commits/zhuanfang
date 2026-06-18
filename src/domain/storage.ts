@@ -1,4 +1,5 @@
 import { createInitialProductState, createEmptyProductState } from "./engine";
+import { withMemoryCandidateReview } from "./memoryReview";
 import type { ProductState, ProviderConfig, SearchBrief, SearchProviderId, SystemConfig } from "./types";
 
 const STORAGE_KEY = "interview-product-state-v1";
@@ -20,7 +21,7 @@ export function normalizeProductState(value: unknown): ProductState {
     normalizedVoiceConfig.ttsProvider
   );
 
-  return {
+  const normalized: ProductState = {
     ...fallback,
     ...candidate,
     profile: {
@@ -50,7 +51,9 @@ export function normalizeProductState(value: unknown): ProductState {
       : fallback.playbookPatches,
     readings: Array.isArray(candidate.readings) ? candidate.readings : fallback.readings,
     memoryRecords: Array.isArray(candidate.memoryRecords) ? candidate.memoryRecords : fallback.memoryRecords,
-    memoryCandidates: Array.isArray(candidate.memoryCandidates) ? candidate.memoryCandidates : fallback.memoryCandidates,
+    memoryCandidates: Array.isArray(candidate.memoryCandidates)
+      ? candidate.memoryCandidates.map((c) => withMemoryCandidateReview(c, { legacyBackfill: true, preserveExisting: true }))
+      : fallback.memoryCandidates,
     memoryEdges: Array.isArray(candidate.memoryEdges) ? candidate.memoryEdges : fallback.memoryEdges,
     importSources: Array.isArray(candidate.importSources) ? candidate.importSources : fallback.importSources,
     ragChunks: Array.isArray(candidate.ragChunks) ? candidate.ragChunks : fallback.ragChunks,
@@ -80,6 +83,7 @@ export function normalizeProductState(value: unknown): ProductState {
       }
     }
   };
+  return pruneDanglingThemeRefs(normalized);
 }
 
 function migrateThemesToTracks(value: unknown[]): import("./types").LongTermTheme[] {
@@ -241,6 +245,35 @@ function normalizeProviderActivation(
 
     return provider;
   });
+}
+
+/**
+ * P1-24: Remove dangling relatedThemeIds from all asset types.
+ * Called after themes have been migrated, so the valid id set is final.
+ */
+function pruneDanglingThemeRefs(state: ProductState): ProductState {
+  const validIds = new Set(state.themes.map((t) => t.id));
+
+  function pruneOptional(ids: string[] | undefined): string[] | undefined {
+    if (!Array.isArray(ids)) return ids;
+    return ids.filter((id) => validIds.has(id));
+  }
+
+  function pruneRequired(ids: string[]): string[] {
+    return ids.filter((id) => validIds.has(id));
+  }
+
+  return {
+    ...state,
+    sessions: state.sessions.map((s) => ({ ...s, relatedThemeIds: pruneOptional(s.relatedThemeIds) })),
+    notes: state.notes.map((n) => ({ ...n, relatedThemeIds: pruneOptional(n.relatedThemeIds) })),
+    points: state.points.map((p) => ({ ...p, relatedThemeIds: pruneRequired(p.relatedThemeIds) })),
+    questions: state.questions.map((q) => ({ ...q, relatedThemeIds: pruneRequired(q.relatedThemeIds) })),
+    decisions: state.decisions.map((d) => ({ ...d, relatedThemeIds: pruneOptional(d.relatedThemeIds) })),
+    debts: state.debts.map((d) => ({ ...d, relatedThemeIds: pruneOptional(d.relatedThemeIds) })),
+    readings: state.readings.map((r) => ({ ...r, relatedThemeIds: pruneRequired(r.relatedThemeIds) })),
+    intelTasks: state.intelTasks.map((t) => ({ ...t, relatedThemeIds: pruneRequired(t.relatedThemeIds) }))
+  };
 }
 
 /** Stable signature of state CONTENT, ignoring the revision field (used to detect real changes vs revision-only churn). */

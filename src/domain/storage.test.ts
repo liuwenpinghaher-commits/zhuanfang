@@ -198,6 +198,95 @@ describe("product state storage", () => {
     expect(twice.themes[0].pinned).toBe(once.themes[0].pinned);
   });
 
+  it("P1-24: prunes dangling relatedThemeIds across all asset types, preserves valid refs", () => {
+    const state = createInitialProductState();
+    const validThemeId = state.themes[0]?.id ?? "theme-real";
+    const ghostId = "theme-ghost-does-not-exist";
+
+    const normalized = normalizeProductState({
+      ...state,
+      themes: state.themes,
+      points: [
+        {
+          id: "pt-1",
+          title: "test point",
+          content: "content",
+          status: "active" as const,
+          confidence: "AI 推断" as const,
+          evidence: [],
+          relatedThemeIds: [validThemeId, ghostId],
+          important: false,
+          updatedAt: "2026-06-19T00:00:00.000Z"
+        }
+      ],
+      questions: [
+        {
+          id: "q-1",
+          question: "test question",
+          whyImportant: "why",
+          status: "active" as const,
+          appearances: 1,
+          relatedThemeIds: [ghostId],
+          nextPrompt: "",
+          important: false,
+          updatedAt: "2026-06-19T00:00:00.000Z"
+        }
+      ],
+      readings: [
+        {
+          id: "r-1",
+          title: "test reading",
+          url: "https://example.com",
+          publisher: "pub",
+          summary: "sum",
+          whyRead: "why",
+          status: "待了解" as const,
+          usage: "延伸阅读" as const,
+          relatedThemeIds: [validThemeId, ghostId],
+          important: false,
+          createdAt: "2026-06-19T00:00:00.000Z",
+          updatedAt: "2026-06-19T00:00:00.000Z"
+        }
+      ]
+    });
+
+    // 合法 id 保留，悬空 id 被剔除
+    expect(normalized.points[0].relatedThemeIds).toEqual([validThemeId]);
+    // 全部悬空时结果为空数组
+    expect(normalized.questions[0].relatedThemeIds).toEqual([]);
+    // readings 同样剪枝
+    expect(normalized.readings[0].relatedThemeIds).toEqual([validThemeId]);
+  });
+
+  it("P2-18: backfills missing reviewScore/reviewSignals on memoryCandidates via withMemoryCandidateReview", () => {
+    const state = createInitialProductState();
+    // 构造一个旧格式候选：缺少 reviewScore / reviewSignals
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const legacyCandidate: any = {
+      id: "mc-old",
+      text: "候选记忆文本",
+      status: "pending",
+      sourceType: "interview_session",
+      sourceId: "session-001",
+      evidenceQuote: "原话引用很长超过十二字符",
+      reason: "待用户确认",
+      sensitivity: "normal",
+      createdAt: "2026-06-19T00:00:00.000Z"
+      // 故意不提供 reviewScore / reviewSignals
+    };
+    const normalized = normalizeProductState({
+      ...state,
+      memoryCandidates: [legacyCandidate]
+    });
+
+    const candidate = normalized.memoryCandidates[0];
+    expect(typeof candidate.reviewScore).toBe("number");
+    expect(candidate.reviewScore).toBeGreaterThanOrEqual(0);
+    expect(candidate.reviewScore).toBeLessThanOrEqual(100);
+    expect(Array.isArray(candidate.reviewSignals)).toBe(true);
+    expect(candidate.reviewSignals.length).toBeGreaterThan(0);
+  });
+
   it("migrateWorkflowRuns: maps legacy mastra-runtime providerId to local-workflow-runtime", () => {
     const state = createInitialProductState();
     const legacyRun = {
