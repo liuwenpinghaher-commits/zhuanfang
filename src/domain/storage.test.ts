@@ -175,6 +175,29 @@ describe("product state storage", () => {
     expect(normalized.themes[0].lastActiveAt).toBe(normalized.themes[0].updatedAt);
   });
 
+  it("v1->v2 migration preserves all existing theme content (no data loss)", () => {
+    const v1 = createInitialProductState();
+    const v1Themes = v1.themes.map(({ kind, pinned, createdAt, lastActiveAt, ...rest }) => rest);
+    const normalized = normalizeProductState({ ...v1, themes: v1Themes });
+
+    // 现有字段必须逐一无损
+    expect(normalized.themes.map((t) => t.name)).toEqual(v1.themes.map((t) => t.name));
+    expect(normalized.themes.map((t) => t.summary)).toEqual(v1.themes.map((t) => t.summary));
+    expect(normalized.themes.map((t) => t.maturity)).toEqual(v1.themes.map((t) => t.maturity));
+    expect(normalized.themes.map((t) => t.appearances)).toEqual(v1.themes.map((t) => t.appearances));
+    // 其它资产数组不受影响
+    expect(normalized.notes).toHaveLength(v1.notes.length);
+    expect(normalized.points[0].relatedThemeIds).toEqual(v1.points[0].relatedThemeIds);
+  });
+
+  it("re-normalizing an already-v2 state is idempotent", () => {
+    const once = normalizeProductState(createInitialProductState());
+    const twice = normalizeProductState(once);
+    expect(twice.schemaVersion).toBe(2);
+    expect(twice.themes[0].kind).toBe(once.themes[0].kind);
+    expect(twice.themes[0].pinned).toBe(once.themes[0].pinned);
+  });
+
   it("migrateWorkflowRuns: maps legacy mastra-runtime providerId to local-workflow-runtime", () => {
     const state = createInitialProductState();
     const legacyRun = {
