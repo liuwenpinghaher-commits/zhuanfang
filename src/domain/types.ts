@@ -945,6 +945,8 @@ export interface RagChunk {
   sourceUrl?: string;
   usage: "interview-context" | "memory-candidate";
   createdAt: string;
+  /** 语义检索向量，由嵌入模型生成；缺省时退化为关键词检索 */
+  embedding?: number[];
 }
 
 export interface PodcastChapter {
