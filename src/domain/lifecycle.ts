@@ -98,7 +98,11 @@ function searchBriefKey(brief: SearchBrief): string {
 }
 
 function podcastEpisodeKey(episode: PodcastEpisode): string {
-  return `${episode.noteId}:${episode.format}:${normalizeKey(episode.voice)}:${normalizeKey(episode.title)}`;
+  const sourcePrefix =
+    episode.sourceType && episode.sourceId
+      ? `${episode.sourceType}:${episode.sourceId}`
+      : episode.noteId;
+  return `${sourcePrefix}:${episode.format}:${normalizeKey(episode.voice)}:${normalizeKey(episode.title)}`;
 }
 
 function corpusInsightKey(insight: CorpusInsight): string {

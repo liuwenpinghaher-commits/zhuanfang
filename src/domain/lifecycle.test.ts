@@ -12,6 +12,7 @@ import {
   deleteSearchBrief,
   dedupeGeneratedArtifacts
 } from "./lifecycle";
+import type { PodcastEpisode } from "./types";
 
 describe("generated artifact lifecycle", () => {
   it("deletes a search brief without mutating the previous state", () => {
@@ -89,5 +90,103 @@ describe("generated artifact lifecycle", () => {
     expect(result.nextState.podcastEpisodes).toHaveLength(1);
     expect(result.nextState.corpusInsights).toHaveLength(1);
     expect(result.nextState.corpusImports).toHaveLength(1);
+  });
+});
+
+describe("podcastEpisodeKey dedup — sourceType+sourceId priority (P2-20)", () => {
+  function makeEpisode(overrides: Partial<PodcastEpisode> & Pick<PodcastEpisode, "id">): PodcastEpisode {
+    return {
+      noteId: "shared-entity-id",
+      sourceType: "note",
+      sourceId: "shared-entity-id",
+      title: "播客：测试专访",
+      format: "solo",
+      voice: "calm-host",
+      status: "draft",
+      scriptReviewStatus: "待确认",
+      durationSec: 180,
+      script: "测试脚本内容",
+      chapters: [],
+      audioUrl: "local-audio://test.mp3",
+      shownotes: [],
+      createdAt: "2026-01-01T00:00:00.000Z",
+      ...overrides
+    };
+  }
+
+  it("keeps both episodes when noteId is the same but sourceType+sourceId differ (non-note id collision)", () => {
+    // 模拟场景:一个 note 来源 episode 和一个 search-brief 来源 episode
+    // 恰好拥有相同的实体 id(id 巧合碰撞),title/format/voice 也相同
+    // 旧 key 用 noteId 首段 → 两者 key 相同 → 误判重复 → 去重掉一个(BUG)
+    // 新 key 用 sourceType:sourceId → 不同 → 两者都保留(CORRECT)
+    const noteEpisode = makeEpisode({
+      id: "ep-1",
+      noteId: "shared-entity-id",
+      sourceType: "note",
+      sourceId: "shared-entity-id"
+    });
+    const searchBriefEpisode = makeEpisode({
+      id: "ep-2",
+      noteId: "shared-entity-id",   // 与 note episode 的 noteId 相同(碰撞场景)
+      sourceType: "search-brief",
+      sourceId: "shared-entity-id"  // sourceId 与 noteId 相同,但 sourceType 不同
+    });
+
+    const base = createInitialProductState();
+    const stateWithBoth: typeof base = {
+      ...base,
+      podcastEpisodes: [noteEpisode, searchBriefEpisode]
+    };
+
+    const result = dedupeGeneratedArtifacts(stateWithBoth);
+
+    // 两个 episode 来源不同,不应被去重 — 改前此断言 FAIL
+    expect(result.removed.podcastEpisodes).toBe(0);
+    expect(result.nextState.podcastEpisodes).toHaveLength(2);
+  });
+
+  it("deduplicates two identical-source episodes when sourceType+sourceId+format+voice+title all match", () => {
+    // 同 sourceType+sourceId 的真重复仍应被去重
+    const ep1 = makeEpisode({ id: "ep-3", sourceType: "note", sourceId: "note-abc", noteId: "note-abc" });
+    const ep2 = makeEpisode({ id: "ep-4", sourceType: "note", sourceId: "note-abc", noteId: "note-abc" });
+
+    const base = createInitialProductState();
+    const stateWithDups: typeof base = {
+      ...base,
+      podcastEpisodes: [ep1, ep2]
+    };
+
+    const result = dedupeGeneratedArtifacts(stateWithDups);
+
+    expect(result.removed.podcastEpisodes).toBe(1);
+    expect(result.nextState.podcastEpisodes).toHaveLength(1);
+  });
+
+  it("note-source episode key is stable — noteId still usable as fallback when sourceType/sourceId absent", () => {
+    // 兼容性:当 sourceType/sourceId 缺失时,回退到 noteId 逻辑
+    const epWithoutSource = makeEpisode({
+      id: "ep-5",
+      noteId: "legacy-note-id",
+      sourceType: undefined,
+      sourceId: undefined
+    });
+    const epWithoutSourceDup = makeEpisode({
+      id: "ep-6",
+      noteId: "legacy-note-id",
+      sourceType: undefined,
+      sourceId: undefined
+    });
+
+    const base = createInitialProductState();
+    const stateWithLegacy: typeof base = {
+      ...base,
+      podcastEpisodes: [epWithoutSource, epWithoutSourceDup]
+    };
+
+    const result = dedupeGeneratedArtifacts(stateWithLegacy);
+
+    // 无 sourceType/sourceId 的旧格式,noteId 相同时仍去重
+    expect(result.removed.podcastEpisodes).toBe(1);
+    expect(result.nextState.podcastEpisodes).toHaveLength(1);
   });
 });
