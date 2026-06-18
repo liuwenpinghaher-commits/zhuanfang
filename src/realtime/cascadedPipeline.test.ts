@@ -260,6 +260,47 @@ describe("connectCascadedPipeline", () => {
   });
 
   // -------------------------------------------------------------------------
+  // 2c. echo guard: while the AI's TTS is playing, the AI's own voice coming
+  //     back through the mic must NOT barge-in or start a new turn (the cause
+  //     of the "two voices talking over each other" loop).
+  // -------------------------------------------------------------------------
+  it("echo guard: speech during AI TTS playback does NOT barge-in or start a new turn", async () => {
+    asr.setExpressionState("concluding");
+    // A TTS that stays "playing" (pending) until we resolve it, so the pipeline
+    // holds the "speaking" state with the mic suppressed.
+    let resolveSpeak!: () => void;
+    const heldSpeak = vi.fn((_segs: string[]) => new Promise<void>((res) => { resolveSpeak = res; }));
+    const heldStop = vi.fn();
+    const heldTts = { speak: heldSpeak, stop: heldStop } as unknown as typeof tts;
+    const pipeline = connectCascadedPipeline(makeOpts({ tts: heldTts }));
+    await pipeline.startListening();
+
+    asr.pushDelta("我把一个想法说完了");
+    asr.pushSpeechStopped(1000); // concluding → respond → sendUserTurn → speaking + suppress + heldSpeak(pending)
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(heldSpeak).toHaveBeenCalledTimes(1); // AI is now speaking (held)
+
+    const sendCallsBefore = sendUserTurn.fn.mock.calls.length;
+    const stopCallsBefore = heldStop.mock.calls.length;
+
+    // Echo: the AI's own voice comes back through the mic while TTS plays.
+    asr.pushSpeechStarted();
+    asr.pushDelta("我理解你"); // echoed AI words — must be ignored
+    asr.pushSpeechStopped(1000);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The echo must NOT abort the AI (no extra stop) nor start a new turn.
+    expect(heldStop.mock.calls.length).toBe(stopCallsBefore);
+    expect(sendUserTurn.fn.mock.calls.length).toBe(sendCallsBefore);
+
+    resolveSpeak();
+    pipeline.close();
+  });
+
+  // -------------------------------------------------------------------------
   // 3. barge-in: speech_started while speaking → TTS stopped, LLM aborted
   // -------------------------------------------------------------------------
   it("barge-in: speech_started while thinking/speaking stops TTS and aborts LLM", async () => {

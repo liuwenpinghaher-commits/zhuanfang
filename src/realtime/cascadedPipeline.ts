@@ -140,6 +140,29 @@ export function connectCascadedPipeline(
     clearMaxWaitTimer();
   }
 
+  // ── Echo guard (half-duplex during AI speech) ─────────────────────────────
+  // While the AI is speaking (and ~ECHO_GUARD_MS after it stops), the mic hears
+  // the AI's own TTS output. Suppress ASR-driven turns/barge-in during that
+  // window so the AI does NOT barge in on / respond to its own voice — that
+  // feedback loop is what causes "two voices talking over each other".
+  let micSuppressed = false;
+  let echoGuardTimer: ReturnType<typeof setTimeout> | null = null;
+  const ECHO_GUARD_MS = 600;
+  function suppressMic() {
+    micSuppressed = true;
+    if (echoGuardTimer !== null) {
+      clearTimeout(echoGuardTimer);
+      echoGuardTimer = null;
+    }
+  }
+  function releaseMicAfterGuard() {
+    if (echoGuardTimer !== null) clearTimeout(echoGuardTimer);
+    echoGuardTimer = setTimeout(() => {
+      micSuppressed = false;
+      echoGuardTimer = null;
+    }, ECHO_GUARD_MS);
+  }
+
   // ── Barge-in ──────────────────────────────────────────────────────────────
   /**
    * Called when ASR fires speech_started.
@@ -147,6 +170,10 @@ export function connectCascadedPipeline(
    */
   function handleSpeechStarted(): boolean {
     if (closed) return false;
+    // Echo guard: while the AI's TTS is playing, the mic is hearing the AI's own
+    // voice — do NOT treat it as the user barging in. (Real user barge-in during
+    // the LLM "thinking" window — before any audio plays — is still honored.)
+    if (micSuppressed) return false;
     const wasActive = state === "thinking" || state === "speaking";
     if (wasActive) {
       // Abort in-flight LLM call
@@ -167,6 +194,8 @@ export function connectCascadedPipeline(
   // ── Speech stopped: analysis gate ─────────────────────────────────────────
   async function handleSpeechStopped(silenceMs: number) {
     if (closed) return;
+    // Echo guard: this speech_stopped is the tail of the AI's own TTS, not the user.
+    if (micSuppressed) return;
     // If already thinking / speaking, barge-in path handles it
     if (state === "thinking" || state === "speaking") return;
 
@@ -195,7 +224,9 @@ export function connectCascadedPipeline(
     if (decision.action === "backchannel") {
       clearMaxWaitTimer();
       const text = decision.backchannelText ?? "嗯。";
+      suppressMic();
       await tts.speak([text]);
+      releaseMicAfterGuard();
       // Stay in listening state; do NOT reset the accumulator
       return;
     }
@@ -253,10 +284,13 @@ export function connectCascadedPipeline(
     }
 
     setState("speaking");
+    suppressMic();
     try {
       await tts.speak(sentences);
     } catch {
       // TTS stopped (barge-in) — already handled; state will be "interrupted"/"listening"
+    } finally {
+      releaseMicAfterGuard();
     }
 
     // After TTS completes naturally, transition back to listening.
@@ -271,13 +305,13 @@ export function connectCascadedPipeline(
   // ── Register ASR handlers ──────────────────────────────────────────────────
   asr.register({
     onTranscriptDelta(text: string) {
-      if (closed) return;
+      if (closed || micSuppressed) return; // ignore the AI's own echoed transcription
       transcriptAccumulator += text;
       setState("transcribing");
       callbacks.onUserTranscript(transcriptAccumulator, false);
     },
     onSpeechStarted() {
-      if (closed) return;
+      if (closed || micSuppressed) return; // echo: AI is speaking, ignore its own voice
       // NB: call handleSpeechStarted BEFORE setState("listening") so that
       // the barge-in check (state === "thinking" | "speaking") still fires.
       const didBargeIn = handleSpeechStarted();
@@ -316,6 +350,11 @@ export function connectCascadedPipeline(
     close() {
       closed = true;
       clearMaxWaitTimer();
+      if (echoGuardTimer !== null) {
+        clearTimeout(echoGuardTimer);
+        echoGuardTimer = null;
+      }
+      micSuppressed = false;
       if (activeAbort) {
         activeAbort.abort();
         activeAbort = null;
