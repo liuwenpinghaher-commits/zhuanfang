@@ -202,7 +202,7 @@ function AssetDetail({ asset, onToggleImportant, onPointStatus, onQuestionStatus
         <div className="asset-detail-block">
           <span className="label">证据/线索</span>
           <ul>
-            {asset.evidence.map((item) => <li key={item}>{item}</li>)}
+            {asset.evidence.map((item, evIdx) => <li key={`${asset.id}-ev-${evIdx}`}>{item}</li>)}
           </ul>
         </div>
       )}

@@ -203,8 +203,8 @@ export function InterviewView({
             </div>
           </div>
           <div className="control-groups" aria-label="访谈控制">
-            {interviewControlGroups.map((group) => (
-              <section className="control-group" key={group.label} aria-label={group.description}>
+            {interviewControlGroups.map((group, groupIdx) => (
+              <section className="control-group" key={`group-${groupIdx}`} aria-label={group.description}>
                 <div className="control-group-heading">
                   <span>{group.label}</span>
                   <small>{group.description}</small>
@@ -264,8 +264,8 @@ export function InterviewView({
           <div className="context-block">
             <span>历史引用</span>
             <ul>
-              {historyReferences.slice(0, 2).map((reference) => (
-                <li key={reference}>{reference}</li>
+              {historyReferences.slice(0, 2).map((reference, refIdx) => (
+                <li key={`ref-${refIdx}`}>{reference}</li>
               ))}
             </ul>
           </div>

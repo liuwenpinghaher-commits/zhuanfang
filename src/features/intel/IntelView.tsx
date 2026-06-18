@@ -99,7 +99,7 @@ export function IntelView({
               <h2>{item.title}</h2>
               <p>{item.summary}</p>
               {item.claims.length > 0 && (
-                <ul>{item.claims.slice(0, 3).map((claim) => <li key={claim}>{claim}</li>)}</ul>
+                <ul>{item.claims.slice(0, 3).map((claim, claimIdx) => <li key={`${item.id}-claim-${claimIdx}`}>{claim}</li>)}</ul>
               )}
               <a className="quote-line" href={item.url} target="_blank" rel="noreferrer">{item.url}</a>
             </div>

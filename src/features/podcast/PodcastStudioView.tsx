@@ -209,8 +209,8 @@ export function PodcastStudioView({
                     <strong>{episode.chapters.length} 段</strong>
                   </div>
                   <div className="chapter-list">
-                    {episode.chapters.map((chapter) => (
-                      <div key={chapter.title}>
+                    {episode.chapters.map((chapter, chapterIdx) => (
+                      <div key={`chapter-${chapterIdx}`}>
                         <strong>{chapter.title}</strong>
                         <span>{formatPodcastTimestamp(chapter.startsAtSec)}</span>
                         <p>{chapter.summary}</p>
@@ -225,7 +225,7 @@ export function PodcastStudioView({
                     <strong>{episode.shownotes.length} 条</strong>
                   </div>
                   <ul className="shownotes-list">
-                    {episode.shownotes.map((item) => <li key={item}>{item}</li>)}
+                    {episode.shownotes.map((item, snIdx) => <li key={`shownote-${snIdx}`}>{item}</li>)}
                   </ul>
                 </section>
 

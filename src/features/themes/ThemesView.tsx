@@ -93,7 +93,7 @@ function ReviewList({ title, items }: { title: string; items: string[] }) {
   return (
     <div className="review-list">
       <strong>{title}</strong>
-      <ul>{items.map((item) => <li key={item}>{item}</li>)}</ul>
+      <ul>{items.map((item, itemIdx) => <li key={`${title}-item-${itemIdx}`}>{item}</li>)}</ul>
     </div>
   );
 }

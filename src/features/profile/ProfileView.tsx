@@ -33,7 +33,7 @@ export function ProfileView({ state, correctionText, onCorrectionText, onAddCorr
         <section className="panel">
           <div className="panel-title"><ShieldCheck size={18} /><h2>用户边界</h2></div>
           <ul className="clean-list">
-            {state.profile.explicitBoundaries.map((boundary) => <li key={boundary}>{boundary}</li>)}
+            {state.profile.explicitBoundaries.map((boundary, idx) => <li key={`boundary-${idx}`}>{boundary}</li>)}
           </ul>
         </section>
       </div>
@@ -43,11 +43,11 @@ export function ProfileView({ state, correctionText, onCorrectionText, onAddCorr
         <div className="memory-grid">
           <div>
             <span className="label">用户确认</span>
-            <ul>{state.profile.confirmedMemories.map((memory) => <li key={memory}>{memory}</li>)}</ul>
+            <ul>{state.profile.confirmedMemories.map((memory, idx) => <li key={`confirmed-${idx}`}>{memory}</li>)}</ul>
           </div>
           <div>
             <span className="label">AI 推断</span>
-            <ul>{state.profile.inferredMemories.map((memory) => <li key={memory}>{memory}</li>)}</ul>
+            <ul>{state.profile.inferredMemories.map((memory, idx) => <li key={`inferred-${idx}`}>{memory}</li>)}</ul>
           </div>
         </div>
       </section>

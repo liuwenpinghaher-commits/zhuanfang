@@ -35,16 +35,16 @@ export function NotesView({ state, onStart, onSaveQuestion }: NotesViewProps) {
             <div className="dual-track">
               <div>
                 <strong>我说了什么</strong>
-                <ul>{note.saidTrack.slice(0, 3).map((item) => <li key={item}>{item}</li>)}</ul>
+                <ul>{note.saidTrack.slice(0, 3).map((item, itemIdx) => <li key={`${note.id}-said-${itemIdx}`}>{item}</li>)}</ul>
               </div>
               <div>
                 <strong>我学到了什么</strong>
-                <ul>{note.learnedTrack.slice(0, 3).map((item) => <li key={item}>{item}</li>)}</ul>
+                <ul>{note.learnedTrack.slice(0, 3).map((item, itemIdx) => <li key={`${note.id}-learned-${itemIdx}`}>{item}</li>)}</ul>
               </div>
             </div>
             <div className="note-actions">
               {note.nextQuestions.slice(0, 2).map((question, index) => (
-                <button className="secondary-action" type="button" key={question} onClick={() => onSaveQuestion(note.id, index)}>
+                <button className="secondary-action" type="button" key={`${note.id}-q-${index}`} onClick={() => onSaveQuestion(note.id, index)}>
                   <CircleAlert size={16} />保存问题：{question}
                 </button>
               ))}

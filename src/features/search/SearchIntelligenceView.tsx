@@ -175,7 +175,7 @@ export function SearchIntelligenceView({
                 <MaterialList title="专访角度" items={brief.interviewAngles} />
               </div>
               <div className="topic-list">
-                {brief.discussionTopics.map((item) => <span key={item}>{item}</span>)}
+                {brief.discussionTopics.map((item, topicIdx) => <span key={`${brief.id}-topic-${topicIdx}`}>{item}</span>)}
               </div>
               <div className="record-actions">
                 <button className="secondary-action" type="button" onClick={() => onUseBrief(brief.id)}>
@@ -207,8 +207,8 @@ function MaterialList({ title, items }: { title: string; items: string[] }) {
     <section className="brief-material-block">
       <strong>{title}</strong>
       <ul>
-        {items.slice(0, 3).map((item) => (
-          <li key={item}>{item}</li>
+        {items.slice(0, 3).map((item, itemIdx) => (
+          <li key={`${title}-${itemIdx}`}>{item}</li>
         ))}
       </ul>
     </section>

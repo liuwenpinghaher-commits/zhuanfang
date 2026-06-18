@@ -163,7 +163,7 @@ export function ConfigView({
           <section className="panel">
             <div className="panel-title"><ShieldCheck size={18} /><h2>系统观测</h2></div>
             <ul className="clean-list">
-              {status.observations.map((item) => <li key={item}>{item}</li>)}
+              {status.observations.map((item, obsIdx) => <li key={`obs-${obsIdx}`}>{item}</li>)}
             </ul>
           </section>
           <section className="panel">

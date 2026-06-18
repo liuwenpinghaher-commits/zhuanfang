@@ -117,8 +117,8 @@ export function CorpusLearningView({
                 </button>
               </div>
               <div className="dimension-list">
-                {insight.dimensions.map((dimension) => (
-                  <div key={dimension.name}>
+                {insight.dimensions.map((dimension, dimIdx) => (
+                  <div key={`${insight.id}-dim-${dimIdx}`}>
                     <strong>{dimension.name} · {dimension.score}/5</strong>
                     <p>{dimension.finding}</p>
                     <small>{dimension.recommendedAction}</small>
@@ -132,7 +132,7 @@ export function CorpusLearningView({
                   <span className="status-pill">{patch.status}</span>
                   <h3>{patch.title}</h3>
                   <p>{patch.description}</p>
-                  <ul>{patch.rules.map((rule) => <li key={rule}>{rule}</li>)}</ul>
+                  <ul>{patch.rules.map((rule, ruleIdx) => <li key={`${patch.id}-rule-${ruleIdx}`}>{rule}</li>)}</ul>
                   <button className="secondary-action" type="button" onClick={() => onApprovePatch(patch.id)} disabled={patch.status === "applied"}>
                     <CheckCircle2 size={16} />确认影响引擎
                   </button>

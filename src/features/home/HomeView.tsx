@@ -44,8 +44,8 @@ export function HomeView({ state, card, monthlyReview, onStart }: HomeViewProps)
             <div className="quote-line">&ldquo;{card.historyReferences[0]}&rdquo;</div>
           )}
           <div className="inline-list">
-            {card.suggestedPerspectives.map((perspective) => (
-              <span key={perspective}>{perspective}</span>
+            {card.suggestedPerspectives.map((perspective, perspIdx) => (
+              <span key={`perspective-${perspIdx}`}>{perspective}</span>
             ))}
           </div>
         </section>
