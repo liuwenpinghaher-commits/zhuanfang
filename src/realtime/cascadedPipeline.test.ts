@@ -439,4 +439,109 @@ describe("connectCascadedPipeline", () => {
 
     pipeline.close();
   });
+
+  // -------------------------------------------------------------------------
+  // 8. completeness=complete → respond
+  // -------------------------------------------------------------------------
+  it("completeness=complete → respond", async () => {
+    asr.setExpressionState("fluent");
+    const pipeline = connectCascadedPipeline(makeOpts({ assessCompleteness: () => "complete" }));
+    await pipeline.startListening();
+    asr.pushDelta("我昨天去了公司");
+    asr.pushSpeechStopped(1000);
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(sendUserTurn.fn).toHaveBeenCalledOnce();
+    pipeline.close();
+  });
+
+  // -------------------------------------------------------------------------
+  // 9. completeness=incomplete → wait
+  // -------------------------------------------------------------------------
+  it("completeness=incomplete → wait", async () => {
+    asr.setExpressionState("fluent");
+    const pipeline = connectCascadedPipeline(makeOpts({ assessCompleteness: () => "incomplete" }));
+    await pipeline.startListening();
+    asr.pushDelta("我觉得吧，因为");
+    asr.pushSpeechStopped(1000);
+    await Promise.resolve(); await Promise.resolve();
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+    pipeline.close();
+  });
+
+  // -------------------------------------------------------------------------
+  // 10. ambiguous + classifyEndpoint done:true → respond
+  // -------------------------------------------------------------------------
+  it("ambiguous + classifyEndpoint done:true → respond", async () => {
+    asr.setExpressionState("fluent");
+    const classifyEndpoint = vi.fn(async () => ({ done: true, reason: "ok" }));
+    const pipeline = connectCascadedPipeline(makeOpts({ assessCompleteness: () => "ambiguous", classifyEndpoint }));
+    await pipeline.startListening();
+    asr.pushDelta("这件事挺复杂");
+    asr.pushSpeechStopped(1000);
+    await vi.waitFor(() => expect(classifyEndpoint).toHaveBeenCalled());
+    await Promise.resolve(); await Promise.resolve();
+    expect(sendUserTurn.fn).toHaveBeenCalledOnce();
+    pipeline.close();
+  });
+
+  // -------------------------------------------------------------------------
+  // 11. ambiguous + classifyEndpoint done:false → wait
+  // -------------------------------------------------------------------------
+  it("ambiguous + classifyEndpoint done:false → wait", async () => {
+    asr.setExpressionState("fluent");
+    const classifyEndpoint = vi.fn(async () => ({ done: false, reason: "not done" }));
+    const pipeline = connectCascadedPipeline(makeOpts({ assessCompleteness: () => "ambiguous", classifyEndpoint }));
+    await pipeline.startListening();
+    asr.pushDelta("这件事挺复杂");
+    asr.pushSpeechStopped(1000);
+    await vi.waitFor(() => expect(classifyEndpoint).toHaveBeenCalled());
+    await Promise.resolve(); await Promise.resolve();
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+    pipeline.close();
+  });
+
+  // -------------------------------------------------------------------------
+  // 12. classifyEndpoint 抛错 → 兜底 respond
+  // -------------------------------------------------------------------------
+  it("classifyEndpoint 抛错 → 兜底 respond", async () => {
+    asr.setExpressionState("fluent");
+    const classifyEndpoint = vi.fn(async () => { throw new Error("net"); });
+    const pipeline = connectCascadedPipeline(makeOpts({ assessCompleteness: () => "ambiguous", classifyEndpoint }));
+    await pipeline.startListening();
+    asr.pushDelta("这件事挺复杂");
+    asr.pushSpeechStopped(1000);
+    await vi.waitFor(() => expect(classifyEndpoint).toHaveBeenCalled());
+    await Promise.resolve(); await Promise.resolve();
+    expect(sendUserTurn.fn).toHaveBeenCalledOnce();
+    pipeline.close();
+  });
+
+  // -------------------------------------------------------------------------
+  // 13. onDecision 收到决策 trace
+  // -------------------------------------------------------------------------
+  it("onDecision 收到决策 trace", async () => {
+    asr.setExpressionState("fluent");
+    const traces: any[] = [];
+    const pipeline = connectCascadedPipeline(makeOpts({ assessCompleteness: () => "complete", onDecision: (t) => traces.push(t) }));
+    await pipeline.startListening();
+    asr.pushDelta("我昨天去了公司");
+    asr.pushSpeechStopped(1000);
+    await Promise.resolve(); await Promise.resolve();
+    expect(traces.length).toBeGreaterThan(0);
+    expect(traces[0]).toHaveProperty("action");
+    expect(traces[0]).toHaveProperty("reason");
+    pipeline.close();
+  });
+
+  // -------------------------------------------------------------------------
+  // 14. startListening(opening) 受控开场进 speaking
+  // -------------------------------------------------------------------------
+  it("startListening(opening) 受控开场进 speaking", async () => {
+    asr.setExpressionState("fluent");
+    const pipeline = connectCascadedPipeline(makeOpts());
+    await pipeline.startListening("上次你说要追的那个问题，现在怎么样了？");
+    expect(stateChanges).toContain("speaking");
+    expect(tts.segments.flat().join("")).toContain("上次你说要追的那个问题");
+    pipeline.close();
+  });
 });

@@ -13,6 +13,8 @@
 
 import type { ExpressionState, InteractionPreSignals } from "../domain/types";
 import { decideCascadeTurn } from "./cascadeTurnDecision";
+import { assessTurnCompleteness, type Completeness } from "./turnCompleteness";
+import { createBackchannelPicker } from "./backchannel";
 
 // ---------------------------------------------------------------------------
 // Public interfaces — shared between orchestrator, tests and Task 5 wiring
@@ -86,6 +88,16 @@ export interface CascadedPipelineCallbacks {
   onError: (e: Error) => void;
 }
 
+/** Trace emitted for each layer-0/1/2 turn decision, for logging / UI. */
+export interface DecisionTrace {
+  layer: 0 | 1 | 2;
+  action: string;
+  reason: string;
+  transcript: string;
+  silenceMs: number;
+  expressionState: ExpressionState;
+}
+
 export interface ConnectCascadedPipelineOptions {
   asr: AsrSource;
   tts: TtsSink;
@@ -96,10 +108,17 @@ export interface ConnectCascadedPipelineOptions {
   callbacks: CascadedPipelineCallbacks;
   preSignals?: InteractionPreSignals | null;
   decisionOpts?: { minPauseMs?: number; maxWaitMs?: number };
+  /** Layer-2 LLM endpoint: returns done=true when the transcript reads complete. */
+  classifyEndpoint?: (transcript: string, signal: AbortSignal) => Promise<{ done: boolean; reason?: string }>;
+  /** Called after every turn-taking decision with a structured trace. */
+  onDecision?: (trace: DecisionTrace) => void;
+  /** Override completeness assessment (default: assessTurnCompleteness). */
+  assessCompleteness?: (transcript: string) => Completeness;
 }
 
 export interface CascadedPipeline {
-  startListening(): Promise<void>;
+  startListening(openingText?: string): Promise<void>;
+  updatePreSignals(next: InteractionPreSignals | null): void;
   interrupt(): void;
   close(): void;
 }
@@ -119,8 +138,15 @@ function splitSentences(text: string): string[] {
 export function connectCascadedPipeline(
   opts: ConnectCascadedPipelineOptions
 ): CascadedPipeline {
-  const { asr, tts, sendUserTurn, callbacks, preSignals = null, decisionOpts = {} } = opts;
-  const { minPauseMs = 600, maxWaitMs = 3500 } = decisionOpts;
+  const {
+    asr, tts, sendUserTurn, callbacks, preSignals = null, decisionOpts = {},
+    classifyEndpoint, onDecision, assessCompleteness = assessTurnCompleteness,
+  } = opts;
+  const { minPauseMs = 600, maxWaitMs = 8000 } = decisionOpts;
+
+  const pickBackchannel = createBackchannelPicker();
+  let currentPreSignals: InteractionPreSignals | null = preSignals;
+  let classifyAbort: AbortController | null = null;
 
   let state: CascadePipelineState = "idle";
   let closed = false;
@@ -197,6 +223,9 @@ export function connectCascadedPipeline(
       }
       // Stop TTS playback
       tts.stop();
+      // Cancel any in-flight layer-2 classify call
+      classifyAbort?.abort();
+      classifyAbort = null;
       clearMaxWaitTimer();
       setState("interrupted");
     }
@@ -209,28 +238,27 @@ export function connectCascadedPipeline(
   // ── Speech stopped: analysis gate ─────────────────────────────────────────
   async function handleSpeechStopped(silenceMs: number) {
     if (closed) return;
-    // Echo guard: this speech_stopped is the tail of the AI's own TTS, not the user.
     if (micSuppressed) return;
-    // If already thinking / speaking, barge-in path handles it
     if (state === "thinking" || state === "speaking") return;
 
+    const transcript = (committedTranscript + partialTranscript).trim();
     const expressionState = asr.getExpressionState();
-    const decision = decideCascadeTurn({
-      expressionState,
-      silenceMs,
-      preSignals: preSignals ?? null,
-      minPauseMs,
-      maxWaitMs,
+    // "concluding" is a strong prosodic/semantic cue that the utterance is
+    // wrapping up — treat it as complete regardless of surface grammar analysis.
+    const completeness: Completeness =
+      expressionState === "concluding" ? "complete" : assessCompleteness(transcript);
+    const decision = decideCascadeTurn({ expressionState, silenceMs, completeness, minPauseMs, maxWaitMs });
+
+    onDecision?.({
+      layer: completeness === "ambiguous" ? 1 : (decision.action === "respond" && silenceMs >= maxWaitMs ? 0 : 1),
+      action: decision.action, reason: decision.reason, transcript, silenceMs, expressionState,
     });
 
     if (decision.action === "wait") {
-      // 留白: arm the max-wait safety-net timer if not already running
       if (maxWaitTimer === null) {
         maxWaitTimer = setTimeout(() => {
           maxWaitTimer = null;
-          if (!closed && state !== "thinking" && state !== "speaking") {
-            void doRespond();
-          }
+          if (!closed && state !== "thinking" && state !== "speaking") void doRespond();
         }, maxWaitMs);
       }
       return;
@@ -238,11 +266,47 @@ export function connectCascadedPipeline(
 
     if (decision.action === "backchannel") {
       clearMaxWaitTimer();
-      const text = decision.backchannelText ?? "嗯。";
+      const text = pickBackchannel(expressionState, currentPreSignals?.depthDirection?.guidance);
       suppressMic();
-      await tts.speak([text]);
+      try { await tts.speak([text]); } catch { /* stopped */ }
       releaseMicAfterGuard();
-      // Stay in listening state; do NOT reset the accumulator
+      return;
+    }
+
+    if (decision.action === "uncertain") {
+      clearMaxWaitTimer();
+      if (!classifyEndpoint) {
+        // No layer-2 endpoint — arm max-wait and hold
+        if (maxWaitTimer === null) {
+          maxWaitTimer = setTimeout(() => {
+            maxWaitTimer = null;
+            if (!closed && state !== "thinking" && state !== "speaking") void doRespond();
+          }, maxWaitMs);
+        }
+        return;
+      }
+      classifyAbort?.abort();
+      classifyAbort = new AbortController();
+      const sig = classifyAbort.signal;
+      let done = true; // fail safe: classify error → respond
+      try {
+        const r = await classifyEndpoint(transcript, sig);
+        if (sig.aborted || closed) return; // superseded by barge-in or close
+        done = r.done;
+        onDecision?.({ layer: 2, action: done ? "respond" : "wait", reason: r.reason ?? "llm endpoint", transcript, silenceMs, expressionState });
+      } catch {
+        if (sig.aborted || closed) return;
+        done = true; // classify failed → respond
+      } finally {
+        if (classifyAbort?.signal === sig) classifyAbort = null;
+      }
+      if (done) { await doRespond(); }
+      else if (maxWaitTimer === null) {
+        maxWaitTimer = setTimeout(() => {
+          maxWaitTimer = null;
+          if (!closed && state !== "thinking" && state !== "speaking") void doRespond();
+        }, maxWaitMs);
+      }
       return;
     }
 
@@ -355,16 +419,25 @@ export function connectCascadedPipeline(
 
   // ── Public API ─────────────────────────────────────────────────────────────
   return {
-    async startListening() {
+    async startListening(openingText?: string) {
       setState("listening");
+      if (openingText && openingText.trim()) {
+        setState("speaking");
+        suppressMic();
+        try { await tts.speak([openingText.trim()]); } catch { /* stopped */ }
+        releaseMicAfterGuard();
+        if (!closed) setState("listening");
+      }
       await asr.start();
     },
 
+    updatePreSignals(next: InteractionPreSignals | null) {
+      currentPreSignals = next;
+    },
+
     interrupt() {
-      if (activeAbort) {
-        activeAbort.abort();
-        activeAbort = null;
-      }
+      if (activeAbort) { activeAbort.abort(); activeAbort = null; }
+      classifyAbort?.abort(); classifyAbort = null;
       tts.stop();
       clearMaxWaitTimer();
       setState("interrupted");
@@ -373,15 +446,10 @@ export function connectCascadedPipeline(
     close() {
       closed = true;
       clearMaxWaitTimer();
-      if (echoGuardTimer !== null) {
-        clearTimeout(echoGuardTimer);
-        echoGuardTimer = null;
-      }
+      if (echoGuardTimer !== null) { clearTimeout(echoGuardTimer); echoGuardTimer = null; }
       micSuppressed = false;
-      if (activeAbort) {
-        activeAbort.abort();
-        activeAbort = null;
-      }
+      classifyAbort?.abort(); classifyAbort = null;
+      if (activeAbort) { activeAbort.abort(); activeAbort = null; }
       tts.stop();
       asr.stop();
     },
