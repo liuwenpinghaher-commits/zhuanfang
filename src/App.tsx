@@ -1000,28 +1000,16 @@ export default function App() {
                   else if (s === "idle") setVoiceStatus("idle");
                 },
                 onUserTranscript: (text, isFinal) => {
-                  setLiveUserTranscript(text);
-                  if (!isFinal || !text.trim() || !interviewId) return;
-                  // Record user turn on server for persistence (send already does this for final turns
-                  // that go through sendUserTurn; this covers partial/barge-in saves).
-                  productApiClient
-                    .recordInterviewTurn(interviewId, { role: "user", content: text })
-                    .then((r) => setSession(r.session))
-                    .catch(() => { /* best-effort */ });
+                  // Live transcript chip only. The final user turn is persisted
+                  // authoritatively by sendUserTurn → sendInterviewTurn (which adds
+                  // BOTH the user turn and the assistant reply). Recording it again
+                  // here was double-logging every turn (语音用户输入 + 用户表达).
+                  setLiveUserTranscript(isFinal ? "" : text);
                 },
-                onAssistantText: (text) => {
-                  if (!text.trim()) return;
-                  setSession((prev) => {
-                    if (!prev) return prev;
-                    // The sendInterviewTurn call already added the assistant turn;
-                    // ensure UI reflects the final text from the session update.
-                    return prev;
-                  });
-                  if (interviewId) {
-                    productApiClient
-                      .recordInterviewTurn(interviewId, { role: "assistant", content: text })
-                      .catch(() => { /* best-effort */ });
-                  }
+                onAssistantText: () => {
+                  // No-op: sendUserTurn already called setSession(r.session) with the
+                  // assistant turn. Recording it again here double-logged the reply
+                  // (百炼角色扮演追问 + 语音助手回应).
                 },
                 onError: (err) => {
                   setNotice(buildNotice("warning", "级联语音错误", err.message));

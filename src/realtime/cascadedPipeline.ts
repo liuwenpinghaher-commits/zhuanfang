@@ -23,7 +23,15 @@ import { decideCascadeTurn } from "./cascadeTurnDecision";
  * Matches the shape convention of livekitVoice / bailianWebsocket.
  */
 export interface AsrEventHandlers {
-  onTranscriptDelta: (text: string) => void;
+  /**
+   * Fired for each transcription update.
+   * @param text   For a delta (isFinal=false) this is the CUMULATIVE text-so-far
+   *               for the current segment (omni sends cumulative, not incremental,
+   *               deltas — so the orchestrator REPLACES the partial, never appends).
+   *               For a completed segment (isFinal=true) this is that segment's final text.
+   * @param isFinal true on conversation.item.input_audio_transcription.completed.
+   */
+  onTranscriptDelta: (text: string, isFinal: boolean) => void;
   onSpeechStarted: () => void;
   onSpeechStopped: (silenceMs: number) => void;
 }
@@ -116,7 +124,12 @@ export function connectCascadedPipeline(
 
   let state: CascadePipelineState = "idle";
   let closed = false;
-  let transcriptAccumulator = "";
+  // Turn transcript = committed (sum of finalized segments) + partial (latest
+  // cumulative delta of the in-progress segment). omni deltas are CUMULATIVE, so
+  // partial is REPLACED on each delta; appending would duplicate every word
+  // ("我今天的我今天的主题…"). On completed, the segment moves committed += text.
+  let committedTranscript = "";
+  let partialTranscript = "";
   // AbortController for the active LLM call (null when not thinking)
   let activeAbort: AbortController | null = null;
   // Max-wait safety-net timer handle
@@ -136,7 +149,8 @@ export function connectCascadedPipeline(
   }
 
   function resetTurn() {
-    transcriptAccumulator = "";
+    committedTranscript = "";
+    partialTranscript = "";
     clearMaxWaitTimer();
   }
 
@@ -187,7 +201,8 @@ export function connectCascadedPipeline(
       setState("interrupted");
     }
     // Reset accumulator — new utterance starts fresh
-    transcriptAccumulator = "";
+    committedTranscript = "";
+    partialTranscript = "";
     return wasActive;
   }
 
@@ -241,7 +256,7 @@ export function connectCascadedPipeline(
     if (closed) return;
     if (state === "thinking" || state === "speaking") return;
 
-    const fullTranscript = transcriptAccumulator.trim();
+    const fullTranscript = (committedTranscript + partialTranscript).trim();
     callbacks.onUserTranscript(fullTranscript, true);
 
     setState("thinking");
@@ -304,11 +319,19 @@ export function connectCascadedPipeline(
 
   // ── Register ASR handlers ──────────────────────────────────────────────────
   asr.register({
-    onTranscriptDelta(text: string) {
+    onTranscriptDelta(text: string, isFinal: boolean) {
       if (closed || micSuppressed) return; // ignore the AI's own echoed transcription
-      transcriptAccumulator += text;
+      if (isFinal) {
+        // Finalized segment: commit it and clear the in-progress partial.
+        committedTranscript += text;
+        partialTranscript = "";
+      } else {
+        // Cumulative delta: REPLACE the partial (appending duplicates every word,
+        // since each delta already carries the full text-so-far for this segment).
+        partialTranscript = text;
+      }
       setState("transcribing");
-      callbacks.onUserTranscript(transcriptAccumulator, false);
+      callbacks.onUserTranscript(committedTranscript + partialTranscript, false);
     },
     onSpeechStarted() {
       if (closed || micSuppressed) return; // echo: AI is speaking, ignore its own voice

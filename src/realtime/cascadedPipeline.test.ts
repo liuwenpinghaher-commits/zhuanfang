@@ -26,7 +26,7 @@ import type { ExpressionState } from "../domain/types";
 // ---------------------------------------------------------------------------
 function makeFakeAsr(fixedState: ExpressionState = "concluding"): AsrSource & {
   _handlers: AsrEventHandlers;
-  pushDelta(text: string): void;
+  pushDelta(text: string, isFinal?: boolean): void;
   pushSpeechStarted(): void;
   pushSpeechStopped(silenceMs: number): void;
   setExpressionState(s: ExpressionState): void;
@@ -58,8 +58,8 @@ function makeFakeAsr(fixedState: ExpressionState = "concluding"): AsrSource & {
     },
 
     // test helpers
-    pushDelta(text: string) {
-      handlers.onTranscriptDelta(text);
+    pushDelta(text: string, isFinal = false) {
+      handlers.onTranscriptDelta(text, isFinal);
     },
     pushSpeechStarted() {
       handlers.onSpeechStarted();
@@ -395,20 +395,34 @@ describe("connectCascadedPipeline", () => {
   });
 
   // -------------------------------------------------------------------------
-  // 6. user transcript accumulates across multiple deltas
+  // 6. cumulative deltas must NOT duplicate. omni sends the full text-so-far on
+  //    every delta, so the partial is REPLACED (not appended); .completed commits
+  //    the segment. Regresses "我今天的我今天的主题我今天的主题是…".
   // -------------------------------------------------------------------------
-  it("accumulates transcript deltas and calls onUserTranscript with isFinal=false", async () => {
-    asr.setExpressionState("organizing");
+  it("replaces cumulative deltas (no duplication) and commits the segment on isFinal", async () => {
+    asr.setExpressionState("concluding");
     const pipeline = connectCascadedPipeline(makeOpts());
     await pipeline.startListening();
 
-    asr.pushDelta("第一段");
-    asr.pushDelta("第二段");
+    // Cumulative deltas — each carries the full text-so-far for the segment.
+    asr.pushDelta("我");
+    asr.pushDelta("我今天");
+    asr.pushDelta("我今天的主题");
+    // The live partial is the LAST delta, never the concatenation.
+    expect(userTranscripts.at(-1)?.text).toBe("我今天的主题");
 
+    // .completed finalizes the segment; partial clears, committed holds the text.
+    asr.pushDelta("我今天的主题是什么？", true);
+    expect(userTranscripts.at(-1)?.text).toBe("我今天的主题是什么？");
+
+    asr.pushSpeechStopped(1000); // concluding → respond
+    await Promise.resolve();
+    await Promise.resolve();
     await Promise.resolve();
 
-    const partials = userTranscripts.filter((t) => !t.isFinal);
-    expect(partials.length).toBeGreaterThanOrEqual(2);
+    // The turn sent to the LLM is the clean, de-duplicated transcript.
+    expect(sendUserTurn.fn).toHaveBeenCalledOnce();
+    expect(sendUserTurn.fn.mock.calls[0][0]).toBe("我今天的主题是什么？");
 
     pipeline.close();
   });

@@ -243,7 +243,8 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
               const text = ((msg.text as string) ?? "") + ((msg.stash as string) ?? "");
               if (text) {
                 updateSemanticFlags(text);
-                handlers?.onTranscriptDelta(text);
+                // Cumulative partial — orchestrator REPLACES the partial with it.
+                handlers?.onTranscriptDelta(text, false);
               }
               break;
             }
@@ -252,7 +253,8 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
               const transcript = msg.transcript as string | undefined;
               if (transcript) {
                 updateSemanticFlags(transcript);
-                handlers?.onTranscriptDelta(transcript);
+                // Finalized segment — orchestrator commits it.
+                handlers?.onTranscriptDelta(transcript, true);
               }
               break;
             }
