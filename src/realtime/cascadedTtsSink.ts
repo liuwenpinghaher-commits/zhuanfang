@@ -39,6 +39,11 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
   let sampleRate = DEFAULT_SAMPLE_RATE;
   let leftoverByte: Uint8Array | null = null; // a half 16-bit sample split across chunks
 
+  // Settles the in-flight speak() promise. stop()/cancel must call this so the
+  // pipeline's `await tts.speak()` always resolves (else the echo guard never
+  // releases the mic). Cleared whenever no speak() is in flight.
+  let settleActiveSpeak: (() => void) | null = null;
+
   function getAudioContext(): AudioContext {
     if (!audioCtx || audioCtx.state === "closed") {
       audioCtx = new AudioContext();
@@ -144,7 +149,11 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
         const cleanup = () => {
           socket.removeEventListener("message", onMessage);
           if (drainPoll !== null) { clearInterval(drainPoll); drainPoll = null; }
+          settleActiveSpeak = null;
         };
+
+        // Allow stop() to resolve this promise even if no further frames arrive.
+        settleActiveSpeak = () => { cleanup(); resolve(); };
 
         // Resolve once every scheduled buffer has finished playing.
         const resolveWhenDrained = () => {
@@ -215,6 +224,8 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "cancel" }));
       }
+      // Resolve any in-flight speak() so the pipeline's await returns (releases mic).
+      if (settleActiveSpeak) settleActiveSpeak();
     }
   };
 }
