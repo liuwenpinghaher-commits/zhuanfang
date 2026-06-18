@@ -6,6 +6,7 @@ import {
   generatePodcastEpisodeFromTheme
 } from "../../../../src/domain/engine";
 import type { PodcastEpisode } from "../../../../src/domain/types";
+import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import type { BailianChatClient, BailianPodcastAudioClient } from "../providers/bailian";
 import type { ProductStateRepository } from "../product-state-repository";
 import { generatePodcastScript } from "../intelligence/podcast-script-llm";
@@ -21,6 +22,7 @@ interface PodcastEpisodeRequestPayload {
 interface PodcastRouteOptions {
   bailianPodcastAudioClient?: BailianPodcastAudioClient;
   bailianChatClient?: BailianChatClient;
+  llmBudget?: LlmBudget;
 }
 
 export async function registerPodcastRoutes(
@@ -28,6 +30,8 @@ export async function registerPodcastRoutes(
   repository: ProductStateRepository,
   options: PodcastRouteOptions = {}
 ) {
+  const budget = options.llmBudget ?? createLlmBudget();
+
   server.post("/api/podcast/episodes", async (request, reply) => {
     const state = repository.getState();
     const payload = normalizePayload(request.body);
@@ -69,13 +73,17 @@ export async function registerPodcastRoutes(
 
       // For the note path, if a chat client is available, attempt LLM script generation.
       // This happens BEFORE persist so the saved script is the LLM-generated one.
-      if (options.bailianChatClient) {
+      const allowLlm = !!options.bailianChatClient && budget.tryConsume("system");
+      if (!!options.bailianChatClient && !allowLlm) {
+        console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "podcast_script" }));
+      }
+      if (allowLlm) {
         const note = state.notes.find((n) => n.id === noteId) ?? state.notes[0];
         if (note) {
           try {
             const llmScript = await generatePodcastScript(
               { note, format },
-              options.bailianChatClient
+              options.bailianChatClient!
             );
             episode = {
               ...episode,

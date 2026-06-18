@@ -11,6 +11,7 @@ import {
 import { buildSearchBrief, createSearchBriefFromInput } from "../../../../src/domain/engine";
 import type { SearchBriefInput, SearchProviderId } from "../../../../src/domain/types";
 import { enrichBriefInput } from "../intelligence/search-synthesis-llm";
+import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import type { BailianChatClient } from "../providers/bailian";
 import type { ProductStateRepository } from "../product-state-repository";
 
@@ -27,6 +28,7 @@ interface SearchRouteOptions {
   bailianSearchClient?: BailianSearchClient;
   anySearchClient?: AnySearchClient;
   bailianChatClient?: BailianChatClient;
+  llmBudget?: LlmBudget;
 }
 
 export async function registerSearchRoutes(
@@ -34,6 +36,8 @@ export async function registerSearchRoutes(
   repository: ProductStateRepository,
   options: SearchRouteOptions = {}
 ) {
+  const budget = options.llmBudget ?? createLlmBudget();
+
   server.post("/api/search/briefs", async (request, reply) => {
     const state = repository.getState();
     const payload = normalizePayload(request.body);
@@ -65,7 +69,12 @@ export async function registerSearchRoutes(
 
     // Replace templated insights with LLM synthesis over the real sources
     // (no-op for bailian, which already synthesizes via its Responses API).
-    const enriched = await enrichBriefInput(run.result, options.bailianChatClient);
+    // Guard with budget to avoid uncapped LLM calls.
+    const allowLlm = !!options.bailianChatClient && budget.tryConsume("system");
+    if (!!options.bailianChatClient && !allowLlm) {
+      console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "search_briefs" }));
+    }
+    const enriched = await enrichBriefInput(run.result, allowLlm ? options.bailianChatClient : undefined);
     const { brief, nextState } = createSearchBriefFromInput(state, enriched);
     repository.replaceState(nextState);
     return { brief, state: nextState, task: run.task };
@@ -95,6 +104,12 @@ export async function registerSearchRoutes(
       recencyDays: state.systemConfig.search.recencyDays
     };
 
+    // Guard auto-brief LLM enrichment with budget.
+    const allowLlm = !!options.bailianChatClient && budget.tryConsume("system");
+    if (!!options.bailianChatClient && !allowLlm) {
+      console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "search_auto_briefs" }));
+    }
+
     // Actually run the configured provider so auto-briefs hit the live web
     // instead of returning the templated demo brief.
     try {
@@ -105,7 +120,7 @@ export async function registerSearchRoutes(
         result = await options.anySearchClient.createSearchBrief({ ...searchInput, providerId: "anysearch" });
       }
       if (result) {
-        const enriched = await enrichBriefInput(result, options.bailianChatClient);
+        const enriched = await enrichBriefInput(result, allowLlm ? options.bailianChatClient : undefined);
         const { brief, nextState } = createSearchBriefFromInput(state, enriched);
         repository.replaceState(nextState);
         return { brief, state: nextState };

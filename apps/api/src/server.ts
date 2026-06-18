@@ -30,6 +30,7 @@ import {
   type BailianStreamingTtsClient
 } from "./providers/bailian-streaming-tts";
 import { startIntelScheduler } from "./intel-scheduler";
+import { createLlmBudget } from "./llm-budget";
 import { registerAssetRoutes } from "./routes/assets";
 import { registerCorpusRoutes } from "./routes/corpus";
 import { registerGeneratedArtifactRoutes } from "./routes/generated-artifacts";
@@ -91,6 +92,11 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     effectiveDbPath && !isInMemoryDbPath(effectiveDbPath) ? "sqlite" : "memory";
   const envFilePath = options.envFilePath ?? join(process.cwd(), ".env.local");
 
+  // Single shared budget instance — covers all LLM entry points (interview turns,
+  // pre-signals, corpus insights, reviews, import, search enrichment, podcast script).
+  // Uses "system" key for non-session endpoints and session.id for session endpoints.
+  const sharedBudget = createLlmBudget();
+
   void server.register(registerHealthRoutes);
   void server.register(async (registeredServer) => {
     await registerSystemRoutes(registeredServer, productStateRepository, {
@@ -120,13 +126,22 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   });
   void server.register(registerStateRoutes, productStateRepository);
   void server.register(async (registeredServer) => {
-    await registerInterviewSessionRoutes(registeredServer, productStateRepository, providerClients);
+    await registerInterviewSessionRoutes(registeredServer, productStateRepository, {
+      ...providerClients,
+      llmBudget: sharedBudget
+    });
   });
   void server.register(async (registeredServer) => {
-    await registerSearchRoutes(registeredServer, productStateRepository, providerClients);
+    await registerSearchRoutes(registeredServer, productStateRepository, {
+      ...providerClients,
+      llmBudget: sharedBudget
+    });
   });
   void server.register(async (registeredServer) => {
-    await registerPodcastRoutes(registeredServer, productStateRepository, providerClients);
+    await registerPodcastRoutes(registeredServer, productStateRepository, {
+      ...providerClients,
+      llmBudget: sharedBudget
+    });
   });
   void server.register(async (registeredServer) => {
     await registerRealtimeVoiceRoutes(registeredServer, {
@@ -137,13 +152,22 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     });
   });
   void server.register(async (registeredServer) => {
-    await registerCorpusRoutes(registeredServer, productStateRepository, providerClients);
+    await registerCorpusRoutes(registeredServer, productStateRepository, {
+      ...providerClients,
+      llmBudget: sharedBudget
+    });
   });
   void server.register(async (registeredServer) => {
-    await registerReviewRoutes(registeredServer, productStateRepository, providerClients);
+    await registerReviewRoutes(registeredServer, productStateRepository, {
+      ...providerClients,
+      llmBudget: sharedBudget
+    });
   });
   void server.register(async (registeredServer) => {
-    await registerImportRoutes(registeredServer, productStateRepository, providerClients);
+    await registerImportRoutes(registeredServer, productStateRepository, {
+      ...providerClients,
+      llmBudget: sharedBudget
+    });
   });
   void server.register(async (registeredServer) => {
     await registerIntelRoutes(registeredServer, productStateRepository, providerClients);

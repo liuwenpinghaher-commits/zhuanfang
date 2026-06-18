@@ -1,11 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import { ingestImportSource, type ImportDocumentInput } from "../../../../src/domain/import";
 import { extractCandidateMemories } from "../intelligence/memory-extraction-llm";
+import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import type { BailianChatClient } from "../providers/bailian";
 import type { ProductStateRepository } from "../product-state-repository";
 
 interface ImportRouteOptions {
   bailianChatClient?: BailianChatClient;
+  llmBudget?: LlmBudget;
 }
 
 export async function registerImportRoutes(
@@ -13,6 +15,8 @@ export async function registerImportRoutes(
   repository: ProductStateRepository,
   options: ImportRouteOptions = {}
 ) {
+  const budget = options.llmBudget ?? createLlmBudget();
+
   server.post("/api/import/documents", async (request, reply) => {
     const input = normalizeImportInput(request.body);
     if (!input.content.trim()) {
@@ -23,10 +27,14 @@ export async function registerImportRoutes(
 
     // Extract candidate memories via LLM; on failure, still ingest the source
     // (chunked for RAG) with zero candidates so nothing is lost.
+    const allowLlm = !!options.bailianChatClient && budget.tryConsume("system");
+    if (!!options.bailianChatClient && !allowLlm) {
+      console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "import_documents" }));
+    }
     let candidates: Awaited<ReturnType<typeof extractCandidateMemories>> = [];
-    if (options.bailianChatClient) {
+    if (allowLlm) {
       try {
-        candidates = await extractCandidateMemories(input.title, input.content, options.bailianChatClient);
+        candidates = await extractCandidateMemories(input.title, input.content, options.bailianChatClient!);
       } catch (error) {
         console.warn("[import] memory extraction failed, ingesting source only:", error instanceof Error ? error.message : error);
       }

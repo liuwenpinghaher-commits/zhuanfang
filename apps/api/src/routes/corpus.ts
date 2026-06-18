@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { analyzeImportedInterview } from "../../../../src/domain/engine";
 import type { AudioTranscription, AudioTranscriptionInput, CorpusImportInput } from "../../../../src/domain/types";
 import { analyzeCorpusWithLlm } from "../intelligence/corpus-llm";
+import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import type { BailianAudioTranscriptionClient, BailianChatClient } from "../providers/bailian";
 import type { ProductStateRepository } from "../product-state-repository";
 
@@ -21,6 +22,7 @@ interface CorpusTranscriptionRequestPayload {
 interface CorpusRouteOptions {
   bailianTranscriptionClient?: BailianAudioTranscriptionClient;
   bailianChatClient?: BailianChatClient;
+  llmBudget?: LlmBudget;
 }
 
 export async function registerCorpusRoutes(
@@ -28,6 +30,8 @@ export async function registerCorpusRoutes(
   repository: ProductStateRepository,
   options: CorpusRouteOptions = {}
 ) {
+  const budget = options.llmBudget ?? createLlmBudget();
+
   server.post("/api/corpus/transcriptions", async (request, reply) => {
     const input = normalizeTranscriptionInput(request.body);
     if (!input.sourceUrl) {
@@ -79,7 +83,11 @@ export async function registerCorpusRoutes(
     }
 
     const state = repository.getState();
-    const { insight, nextState } = await analyzeCorpus(state, input, options.bailianChatClient);
+    const allowLlm = !!options.bailianChatClient && budget.tryConsume("system");
+    if (!!options.bailianChatClient && !allowLlm) {
+      console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "corpus_insights" }));
+    }
+    const { insight, nextState } = await analyzeCorpus(state, input, allowLlm ? options.bailianChatClient : undefined);
     repository.replaceState(nextState);
     return { insight, state: nextState };
   });
