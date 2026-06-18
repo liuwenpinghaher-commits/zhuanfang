@@ -1236,7 +1236,7 @@ export default function App() {
           )
         );
       }
-      return;      return;
+      return;
     } catch {
       setApiPersistenceEnabled(false);
     }

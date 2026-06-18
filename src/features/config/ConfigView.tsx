@@ -523,6 +523,7 @@ export function ConfigView({
                       }}
                     />
                     <span className="field-help">用于控制同一主题最多连续推进的追问层级。</span>
+                  </label>
                   <label className="field-stack runtime-setting-field" htmlFor="product-guidance-enabled">
                     <span className="field-label">主动引导</span>
                     <select
@@ -557,8 +558,6 @@ export function ConfigView({
                       <option value="high">高 — 积极介入，发现锚点即追问</option>
                     </select>
                     <span className="field-help">控制引导的积极程度。低频率更克制，高频率更主动。</span>
-                  </label>
-
                   </label>
                 </div>
               </section>
