@@ -287,6 +287,36 @@ describe("product state storage", () => {
     expect(candidate.reviewSignals.length).toBeGreaterThan(0);
   });
 
+  it("P2-19: normalizeImportSource — empty searchBriefId is normalized to undefined; non-empty value is preserved", () => {
+    const state = createInitialProductState();
+    const baseImportSource = {
+      id: "src-001",
+      title: "测试资料",
+      sourceType: "pdf" as const,
+      content: "内容",
+      status: "chunked" as const,
+      sensitivity: "normal" as const,
+      chunkIds: ["chunk-1"],
+      createdAt: "2026-06-19T00:00:00.000Z",
+      updatedAt: "2026-06-19T00:00:00.000Z"
+    };
+
+    // 旧数据：searchBriefId 为空串 → normalize 后应归一为 undefined（字段缺失）
+    const withEmptyId = { ...baseImportSource, searchBriefId: "" };
+    const normalized1 = normalizeProductState({ ...state, importSources: [withEmptyId] });
+    expect(normalized1.importSources[0].searchBriefId).toBeUndefined();
+
+    // 非空值保留
+    const withRealId = { ...baseImportSource, id: "src-002", searchBriefId: "brief-abc" };
+    const normalized2 = normalizeProductState({ ...state, importSources: [withRealId] });
+    expect(normalized2.importSources[0].searchBriefId).toBe("brief-abc");
+
+    // 字段缺失时同样归一为 undefined
+    const withoutId = { ...baseImportSource, id: "src-003" };
+    const normalized3 = normalizeProductState({ ...state, importSources: [withoutId] });
+    expect(normalized3.importSources[0].searchBriefId).toBeUndefined();
+  });
+
   it("migrateWorkflowRuns: maps legacy mastra-runtime providerId to local-workflow-runtime", () => {
     const state = createInitialProductState();
     const legacyRun = {

@@ -1,6 +1,6 @@
 import { createInitialProductState, createEmptyProductState } from "./engine";
 import { withMemoryCandidateReview } from "./memoryReview";
-import type { ProductState, ProviderConfig, SearchBrief, SearchProviderId, SystemConfig } from "./types";
+import type { ImportSource, ProductState, ProviderConfig, SearchBrief, SearchProviderId, SystemConfig } from "./types";
 
 const STORAGE_KEY = "interview-product-state-v1";
 
@@ -55,7 +55,7 @@ export function normalizeProductState(value: unknown): ProductState {
       ? candidate.memoryCandidates.map((c) => withMemoryCandidateReview(c, { legacyBackfill: true, preserveExisting: true }))
       : fallback.memoryCandidates,
     memoryEdges: Array.isArray(candidate.memoryEdges) ? candidate.memoryEdges : fallback.memoryEdges,
-    importSources: Array.isArray(candidate.importSources) ? candidate.importSources : fallback.importSources,
+    importSources: Array.isArray(candidate.importSources) ? normalizeImportSources(candidate.importSources) : fallback.importSources,
     ragChunks: Array.isArray(candidate.ragChunks) ? candidate.ragChunks : fallback.ragChunks,
     intelTasks: Array.isArray(candidate.intelTasks) ? candidate.intelTasks : fallback.intelTasks,
     intelItems: Array.isArray(candidate.intelItems) ? candidate.intelItems : fallback.intelItems,
@@ -122,6 +122,15 @@ function normalizeSearchBriefs(value: unknown[]): SearchBrief[] {
       opposingViews: normalizeBriefList(brief.opposingViews, ["需要补充反方观点，避免把外部素材直接当结论。"]),
       interviewAngles: normalizeBriefList(brief.interviewAngles, brief.discussionTopics ?? ["从外部素材切入，追问一个具体事件。"])
     })) as SearchBrief[];
+}
+
+function normalizeImportSources(value: unknown[]): ImportSource[] {
+  return value.map((item) => {
+    if (!item || typeof item !== "object") return item as ImportSource;
+    const src = item as ImportSource;
+    const searchBriefId = typeof src.searchBriefId === "string" && src.searchBriefId ? src.searchBriefId : undefined;
+    return { ...src, searchBriefId };
+  });
 }
 
 function normalizeBriefList(value: unknown, fallback: unknown) {

@@ -76,7 +76,7 @@ export function ingestImportSource(
     content: input.content,
     status: "chunked",
     sensitivity: candidates.some((candidate) => candidate.sensitivity === "sensitive") ? "sensitive" : "normal",
-    searchBriefId: "",
+    searchBriefId: undefined,
     chunkIds: ragChunks.map((chunk) => chunk.id),
     createdAt,
     updatedAt: createdAt

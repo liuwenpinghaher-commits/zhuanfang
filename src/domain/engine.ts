@@ -423,15 +423,15 @@ function buildWorkflowRunDetails(
         title: importSource.title,
         sourceType: importSource.sourceType,
         chunkCount: importSource.chunkIds.length,
-        searchBriefId: importSource.searchBriefId,
+        searchBriefId: importSource.searchBriefId ?? "",
         sourceUrlConfigured: Boolean(importSource.sourceUrl),
         sensitivity: importSource.sensitivity,
       };
 
       return {
         outputSummary:
-          `ImportIngestion 已同步：${importSource.title}，${metadata.chunkCount} 个 RAG 分块，` +
-          `资料包 ${importSource.searchBriefId} 可带入专访。`,
+          `ImportIngestion 已同步：${importSource.title}，${metadata.chunkCount} 个 RAG 分块` +
+          (importSource.searchBriefId ? `，资料包 ${importSource.searchBriefId} 可带入专访` : "") + "。",
         metadata,
       };
     }

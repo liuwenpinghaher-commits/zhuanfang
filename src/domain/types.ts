@@ -928,7 +928,7 @@ export interface ImportSource {
   content: string;
   status: "chunked";
   sensitivity: MemorySensitivity;
-  searchBriefId: string;
+  searchBriefId?: string;
   chunkIds: string[];
   createdAt: string;
   updatedAt: string;
