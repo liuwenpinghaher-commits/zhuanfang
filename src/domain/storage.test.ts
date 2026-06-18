@@ -162,6 +162,19 @@ describe("product state storage", () => {
     expect(normalizeProductState({ revision: 7 }).revision).toBe(7);
   });
 
+  it("migrates v1 themes to v2 Track fields and sets schemaVersion", () => {
+    const v1 = createInitialProductState();
+    // 模拟 v1 数据：剥掉 v2 新增字段
+    const v1Themes = v1.themes.map(({ kind, pinned, createdAt, lastActiveAt, ...rest }) => rest);
+    const normalized = normalizeProductState({ ...v1, themes: v1Themes, schemaVersion: undefined });
+
+    expect(normalized.schemaVersion).toBe(2);
+    expect(normalized.themes[0].kind).toBe("theme");
+    expect(normalized.themes[0].pinned).toBe(false);
+    expect(normalized.themes[0].createdAt).toBe(normalized.themes[0].updatedAt);
+    expect(normalized.themes[0].lastActiveAt).toBe(normalized.themes[0].updatedAt);
+  });
+
   it("migrateWorkflowRuns: maps legacy mastra-runtime providerId to local-workflow-runtime", () => {
     const state = createInitialProductState();
     const legacyRun = {

@@ -33,7 +33,7 @@ export function normalizeProductState(value: unknown): ProductState {
     questions: Array.isArray(candidate.questions) ? candidate.questions : fallback.questions,
     decisions: Array.isArray(candidate.decisions) ? candidate.decisions : fallback.decisions,
     debts: Array.isArray(candidate.debts) ? candidate.debts : fallback.debts,
-    themes: Array.isArray(candidate.themes) ? candidate.themes : fallback.themes,
+    themes: Array.isArray(candidate.themes) ? migrateThemesToTracks(candidate.themes) : fallback.themes,
     memoryCorrections: Array.isArray(candidate.memoryCorrections)
       ? candidate.memoryCorrections
       : fallback.memoryCorrections,
@@ -62,6 +62,7 @@ export function normalizeProductState(value: unknown): ProductState {
     workflowRuns: Array.isArray(candidate.workflowRuns) ? migrateWorkflowRuns(candidate.workflowRuns) : fallback.workflowRuns,
     operationalChecks: Array.isArray(candidate.operationalChecks) ? candidate.operationalChecks : fallback.operationalChecks,
     revision: typeof candidate.revision === "number" ? candidate.revision : fallback.revision,
+    schemaVersion: 2,
     systemConfig: {
       ...fallback.systemConfig,
       ...systemConfig,
@@ -79,6 +80,20 @@ export function normalizeProductState(value: unknown): ProductState {
       }
     }
   };
+}
+
+function migrateThemesToTracks(value: unknown[]): import("./types").LongTermTheme[] {
+  return value.map((theme) => {
+    if (!theme || typeof theme !== "object") return theme as import("./types").LongTermTheme;
+    const t = theme as import("./types").LongTermTheme;
+    return {
+      ...t,
+      kind: t.kind ?? "theme",
+      pinned: t.pinned ?? false,
+      createdAt: t.createdAt ?? t.updatedAt,
+      lastActiveAt: t.lastActiveAt ?? t.updatedAt
+    };
+  });
 }
 
 function migrateWorkflowRuns(value: unknown[]): import("./types").WorkflowRun[] {
