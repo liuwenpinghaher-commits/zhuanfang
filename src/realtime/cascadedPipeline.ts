@@ -236,7 +236,12 @@ export function connectCascadedPipeline(
       }
     }
 
-    if (closed) return;
+    // A barge-in may have superseded this turn while sendUserTurn was in flight.
+    // The REAL sendUserTurn is a non-abortable HTTP call that RESOLVES late (it
+    // does not throw AbortError), so the catch above won't fire — guard here so
+    // we never speak a stale/superseded reply. handleSpeechStarted calls
+    // ctrl.abort(), so ctrl.signal.aborted is the supersession signal.
+    if (closed || ctrl.signal.aborted) return;
 
     callbacks.onAssistantText(assistantText);
 

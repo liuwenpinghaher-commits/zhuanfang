@@ -225,6 +225,41 @@ describe("connectCascadedPipeline", () => {
   });
 
   // -------------------------------------------------------------------------
+  // 2b. barge-in supersedes a NON-abortable (late-resolving) sendUserTurn →
+  //     must NOT speak the stale reply. The real sendUserTurn is an HTTP call
+  //     that can't be cancelled; its promise RESOLVES late after the barge-in.
+  // -------------------------------------------------------------------------
+  it("does NOT speak a stale reply when barge-in supersedes a late-resolving sendUserTurn", async () => {
+    asr.setExpressionState("concluding");
+    let resolveLate!: (v: { assistantText: string }) => void;
+    const lateSend = vi.fn(
+      (_text: string, _signal: AbortSignal) =>
+        new Promise<{ assistantText: string }>((res) => {
+          resolveLate = res;
+        })
+    );
+    const pipeline = connectCascadedPipeline(makeOpts({ sendUserTurn: lateSend }));
+    await pipeline.startListening();
+
+    asr.pushDelta("我把一个完整的想法说完了");
+    asr.pushSpeechStopped(1000); // concluding → respond → lateSend called, awaiting (thinking)
+    await Promise.resolve();
+    expect(lateSend).toHaveBeenCalledOnce();
+
+    asr.pushSpeechStarted(); // BARGE-IN while thinking → ctrl.abort()
+    resolveLate({ assistantText: "这是被打断后才返回的陈旧回复。" }); // HTTP can't cancel → late resolve
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The stale, superseded reply must NOT be spoken nor surfaced.
+    expect(tts.segments.flat().join("")).not.toContain("陈旧");
+    expect(assistantTexts.join("")).not.toContain("陈旧");
+
+    pipeline.close();
+  });
+
+  // -------------------------------------------------------------------------
   // 3. barge-in: speech_started while speaking → TTS stopped, LLM aborted
   // -------------------------------------------------------------------------
   it("barge-in: speech_started while thinking/speaking stops TTS and aborts LLM", async () => {
