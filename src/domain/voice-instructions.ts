@@ -6,7 +6,11 @@ import type { InterviewCard, InterviewSession, MemoryCorrection } from "./types"
 const MAX_VOICE_PLAYBOOK_RULES = 3;
 const MAX_VOICE_CORRECTIONS = 10;
 
-function buildAppliedPlaybookRulesBlock(rules: string[]): string {
+// Exported so the cascade/text interview path (apps/api/.../bailian.ts:
+// buildCharacterSystemPrompt) injects the SAME "applied playbook技法 / 已纠正表述"
+// copy as the LiveKit voice path — one source of truth instead of two divergent
+// implementations.
+export function buildAppliedPlaybookRulesBlock(rules: string[]): string {
   const applied = rules.map((rule) => rule.trim()).filter(Boolean).slice(0, MAX_VOICE_PLAYBOOK_RULES);
   if (applied.length === 0) {
     return "";
@@ -15,7 +19,7 @@ function buildAppliedPlaybookRulesBlock(rules: string[]): string {
   return `已应用的提问技法（追问时请自然体现，不要照念）：${numbered}`;
 }
 
-function buildCorrectionsBlock(corrections: MemoryCorrection[]): string {
+export function buildCorrectionsBlock(corrections: MemoryCorrection[]): string {
   const recent = [...corrections]
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
     .slice(0, MAX_VOICE_CORRECTIONS)

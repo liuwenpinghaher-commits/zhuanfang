@@ -13,6 +13,7 @@ import type {
   InterviewSession,
   InterviewStrength,
   InterviewTurn,
+  MemoryCorrection,
   ProductState
 } from "../../../../src/domain/types";
 import { makeId, nowIso, withAuditEvent } from "../../../../src/domain/utils";
@@ -102,7 +103,12 @@ export async function registerInterviewSessionRoutes(
     if (!!options.bailianInterviewClient && !allowLlm) {
       console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "interview_turn", sessionId: session.id }));
     }
-    const updatedSession = await receiveTurn(session, content, allowLlm ? options.bailianInterviewClient : undefined);
+    const updatedSession = await receiveTurn(
+      session,
+      content,
+      allowLlm ? options.bailianInterviewClient : undefined,
+      state.memoryCorrections
+    );
     const { nextSession, preSignals } = updatedSession;
     const nextState = upsertSession(state, nextSession);
 
@@ -327,14 +333,15 @@ async function finalizeInterview(
 async function receiveTurn(
   session: InterviewSession,
   content: string,
-  bailianInterviewClient: BailianCharacterInterviewClient | undefined
+  bailianInterviewClient: BailianCharacterInterviewClient | undefined,
+  corrections: MemoryCorrection[] = []
 ): Promise<{ nextSession: InterviewSession; preSignals?: import("../../../../src/domain/types").InteractionPreSignals }> {
   if (!bailianInterviewClient) {
     return { nextSession: receiveUserTurn(session, content) };
   }
 
   try {
-    const assistant = await bailianInterviewClient.createAssistantTurn({ session, userText: content });
+    const assistant = await bailianInterviewClient.createAssistantTurn({ session, userText: content, corrections });
     const nextSession = receiveUserTurnWithAssistant(session, content, {
       content: assistant.content,
       intent: assistant.intent

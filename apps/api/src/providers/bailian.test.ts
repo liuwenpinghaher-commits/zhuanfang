@@ -425,6 +425,94 @@ describe("bailian provider client", () => {
     expect(result.preSignals).toBeUndefined();
   });
 
+  // S3 follow-up: the cascade/text interview path's REAL downstream prompt
+  // (createAssistantTurn → buildCharacterMessages → buildCharacterSystemPrompt →
+  // chatClient.complete) must carry applied playbook rules + recent corrections,
+  // not just the LiveKit voice path. We assert on the system message sent over
+  // the wire, not a pure-function return value.
+  it("injects applied playbook rules and recent corrections into the system prompt sent over the wire", async () => {
+    const state = createInitialProductState();
+    const session = createSessionDraft(state, "decision", "standard");
+    session.enginePolicy = {
+      ...session.enginePolicy!,
+      appliedPlaybookRules: [
+        "当用户使用抽象评价时，先追问一个具体时刻。",
+        "当用户已经给出具体例子后，再从机制、奖励和代价角度反问。"
+      ]
+    };
+    const corrections = [
+      { id: "corr-1", text: "我现在带的是 12 个人，不是 8 个人。", createdAt: "2026-06-01T00:00:00.000Z" },
+      { id: "corr-2", text: "上次说的那个项目其实已经停了。", createdAt: "2026-06-10T00:00:00.000Z" }
+    ];
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ choices: [{ message: { role: "assistant", content: "好的，我们继续。" } }] }),
+        { status: 200 }
+      )
+    );
+    const client = createBailianCharacterInterviewClient({ apiKey: "test-key", fetchImpl });
+
+    await client.createAssistantTurn({ session, userText: "我觉得团队还是不够主动。", corrections });
+
+    const requestBody = JSON.parse(getLastFetchCall(fetchImpl as FetchMock)[1]?.body as string);
+    const systemPrompt = requestBody.messages[0].content as string;
+    // applied playbook rules reached the prompt
+    expect(systemPrompt).toContain("已应用的提问技法");
+    expect(systemPrompt).toContain("先追问一个具体时刻");
+    expect(systemPrompt).toContain("从机制、奖励和代价角度反问");
+    // recent corrections reached the prompt
+    expect(systemPrompt).toContain("用户已纠正过的表述");
+    expect(systemPrompt).toContain("我现在带的是 12 个人");
+    expect(systemPrompt).toContain("上次说的那个项目其实已经停了");
+  });
+
+  it("omits the playbook/corrections sections from the system prompt when there are none", async () => {
+    const state = createInitialProductState();
+    const session = createSessionDraft(state, "decision", "standard");
+    // No applied playbook rules and no corrections.
+    session.enginePolicy = { ...session.enginePolicy!, appliedPlaybookRules: [] };
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ choices: [{ message: { role: "assistant", content: "好的。" } }] }),
+        { status: 200 }
+      )
+    );
+    const client = createBailianCharacterInterviewClient({ apiKey: "test-key", fetchImpl });
+
+    await client.createAssistantTurn({ session, userText: "我们聊点别的。" });
+
+    const requestBody = JSON.parse(getLastFetchCall(fetchImpl as FetchMock)[1]?.body as string);
+    const systemPrompt = requestBody.messages[0].content as string;
+    expect(systemPrompt).not.toContain("已应用的提问技法");
+    expect(systemPrompt).not.toContain("用户已纠正过的表述");
+    // base craft rules still present (sanity: prompt wasn't broken)
+    expect(systemPrompt).toContain("专访主持人");
+  });
+
+  it("caps injected playbook rules at 3 in the system prompt", async () => {
+    const state = createInitialProductState();
+    const session = createSessionDraft(state, "decision", "standard");
+    session.enginePolicy = {
+      ...session.enginePolicy!,
+      appliedPlaybookRules: ["规则甲", "规则乙", "规则丙", "规则丁不应出现"]
+    };
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ choices: [{ message: { role: "assistant", content: "好的。" } }] }),
+        { status: 200 }
+      )
+    );
+    const client = createBailianCharacterInterviewClient({ apiKey: "test-key", fetchImpl });
+
+    await client.createAssistantTurn({ session, userText: "继续。" });
+
+    const requestBody = JSON.parse(getLastFetchCall(fetchImpl as FetchMock)[1]?.body as string);
+    const systemPrompt = requestBody.messages[0].content as string;
+    expect(systemPrompt).toContain("规则甲");
+    expect(systemPrompt).toContain("规则丙");
+    expect(systemPrompt).not.toContain("规则丁不应出现");
+  });
+
   it("proxies WebRTC SDP exchange for qwen omni realtime without exposing the API key", async () => {
     const fetchImpl = vi.fn(async () => new Response("answer-sdp", { status: 200 }));
     const client = createBailianRealtimeVoiceClient({

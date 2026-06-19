@@ -10,7 +10,7 @@ BACKEND_URL = os.getenv("INTERVIEW_BACKEND_URL", "http://127.0.0.1:8787")
 async def get_interview_context(
     context: RunContext, interview_session_id: str
 ) -> dict:
-    """Fetch the full interview context including instructions, history, and active strategies.
+    """Fetch the full interview context including instructions and conversation history.
     Call this at the start of every conversation turn to get the latest context.
 
     Args:

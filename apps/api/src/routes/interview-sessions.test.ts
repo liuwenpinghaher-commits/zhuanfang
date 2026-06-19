@@ -3,6 +3,7 @@ import { buildApiServer } from "../server";
 import { registerInterviewSessionRoutes } from "./interview-sessions";
 import { createInMemoryProductStateRepository } from "../product-state-repository";
 import { createLlmBudget } from "../llm-budget";
+import { createInitialProductState } from "../../../../src/domain/engine";
 import Fastify from "fastify";
 
 describe("interview-sessions routes", () => {
@@ -61,6 +62,50 @@ describe("interview-sessions routes", () => {
     expect(body2.session).toBeDefined();
     const userTurns = body2.session.turns.filter((t: any) => t.role === "user");
     expect(userTurns.length).toBeGreaterThanOrEqual(2);
+
+    await server.close();
+  });
+
+  // S3 follow-up: /turns must pull state.memoryCorrections out of the repository
+  // and hand them to the interview client, so the cascade/text path's LLM prompt
+  // carries them (the LiveKit path already had them; this path didn't).
+  it("/turns passes the repository's memoryCorrections to createAssistantTurn", async () => {
+    const capturedCorrections: unknown[] = [];
+    const mockInterviewClient = {
+      createAssistantTurn: vi.fn(async (input: any) => {
+        capturedCorrections.push(input.corrections);
+        return {
+          providerId: "bailian-character" as const,
+          model: "test-model",
+          content: "好的，我们继续。",
+          intent: "百炼角色扮演追问" as const
+        };
+      })
+    };
+
+    const seededState = {
+      ...createInitialProductState(),
+      memoryCorrections: [
+        { id: "corr-1", text: "我现在带的是 12 个人。", createdAt: "2026-06-01T00:00:00.000Z" }
+      ]
+    };
+    const repo = createInMemoryProductStateRepository(seededState);
+    const server = Fastify({ logger: false });
+    await registerInterviewSessionRoutes(server, repo, {
+      bailianInterviewClient: mockInterviewClient,
+      llmBudget: createLlmBudget({ maxCallsPerSession: 5 })
+    });
+
+    const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "daily" } })).json();
+    const id = created.session.id;
+
+    const res = await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/turns`, payload: { content: "团队还是不够主动。" } });
+    expect(res.statusCode).toBe(200);
+
+    expect(mockInterviewClient.createAssistantTurn).toHaveBeenCalledTimes(1);
+    expect(capturedCorrections[0]).toEqual([
+      { id: "corr-1", text: "我现在带的是 12 个人。", createdAt: "2026-06-01T00:00:00.000Z" }
+    ]);
 
     await server.close();
   });

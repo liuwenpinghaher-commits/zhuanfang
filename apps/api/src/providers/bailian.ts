@@ -1,6 +1,7 @@
 import { SpanStatusCode, trace } from "@opentelemetry/api";
-import type { InteractionPreSignals, InterviewSession, SearchBriefInput, SearchProviderId, SourceHighlight } from "../../../../src/domain/types";
+import type { InteractionPreSignals, InterviewSession, MemoryCorrection, SearchBriefInput, SearchProviderId, SourceHighlight } from "../../../../src/domain/types";
 import { INTERVIEWER_CRAFT_RULES } from "../../../../src/domain/interviewer-craft";
+import { buildAppliedPlaybookRulesBlock, buildCorrectionsBlock } from "../../../../src/domain/voice-instructions";
 
 export const BAILIAN_DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 export const BAILIAN_DEFAULT_AUDIO_BASE_URL = "https://dashscope.aliyuncs.com";
@@ -71,6 +72,12 @@ export interface BailianSearchBriefRequest {
 export interface BailianCharacterInterviewRequest {
   session: InterviewSession;
   userText: string;
+  /**
+   * Most-recent user corrections (lives on ProductState, not the session). The
+   * route handler passes state.memoryCorrections so the cascade/text path gets
+   * the same "别再当成已确认事实" guidance the LiveKit voice path already had.
+   */
+  corrections?: MemoryCorrection[];
 }
 
 export interface BailianCharacterInterviewResult {
@@ -396,7 +403,7 @@ export function createBailianCharacterInterviewClient(
   return {
     async createAssistantTurn(input) {
       const rawContent = await chatClient.complete({
-        messages: buildCharacterMessages(input.session, input.userText),
+        messages: buildCharacterMessages(input.session, input.userText, input.corrections ?? []),
         maxTokens: 800
       });
 
@@ -791,11 +798,15 @@ function buildSearchPrompt(input: BailianSearchBriefRequest) {
   ].join("\n");
 }
 
-function buildCharacterMessages(session: InterviewSession, userText: string): BailianChatMessage[] {
+function buildCharacterMessages(
+  session: InterviewSession,
+  userText: string,
+  corrections: MemoryCorrection[] = []
+): BailianChatMessage[] {
   return [
     {
       role: "system",
-      content: buildCharacterSystemPrompt(session)
+      content: buildCharacterSystemPrompt(session, corrections)
     },
     {
       role: "assistant",
@@ -812,7 +823,10 @@ function buildCharacterMessages(session: InterviewSession, userText: string): Ba
   ];
 }
 
-function buildCharacterSystemPrompt(session: InterviewSession) {
+// Exported for unit tests that assert the system prompt carries applied playbook
+// rules + recent corrections — the cascade/text interview path's real downstream
+// (createAssistantTurn → buildCharacterMessages → here → chatClient.complete).
+export function buildCharacterSystemPrompt(session: InterviewSession, corrections: MemoryCorrection[] = []) {
   const guide = session.guide;
   const lines: string[] = [
     INTERVIEWER_CRAFT_RULES,
@@ -851,6 +865,19 @@ function buildCharacterSystemPrompt(session: InterviewSession) {
     if (guide.recommendedPerspectives?.length) {
       lines.push(`【建议引入的认知视角】（以一个自然问题呈现，绝不要讲理论课）：${guide.recommendedPerspectives.slice(0, 3).join("、")}`);
     }
+  }
+
+  // Applied playbook rules + recent corrections — reuse the SAME copy as the
+  // LiveKit voice path (voice-instructions.ts). Empty inputs return "" so no
+  // blank section is appended. Rules live on the session; corrections come from
+  // ProductState (passed in by the route handler).
+  const playbookBlock = buildAppliedPlaybookRulesBlock(session.enginePolicy?.appliedPlaybookRules ?? []);
+  if (playbookBlock) {
+    lines.push(playbookBlock);
+  }
+  const correctionsBlock = buildCorrectionsBlock(corrections);
+  if (correctionsBlock) {
+    lines.push(correctionsBlock);
   }
 
   lines.push(

@@ -1030,7 +1030,7 @@ export default function App() {
     try {
       const voiceSession = await productApiClient.createRealtimeVoiceSession({
         ...(session ? { interviewSessionId: session.id } : {}),
-        instructions: buildRealtimeVoiceInstructions(session, card),
+        instructions: buildRealtimeVoiceInstructions(session, card, productState.memoryCorrections ?? []),
         voice: productState.systemConfig.voice.defaultVoice
       });
       setRealtimeVoiceSession(voiceSession);
