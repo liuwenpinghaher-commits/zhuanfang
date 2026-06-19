@@ -102,10 +102,7 @@ function migrateThemesToTracks(value: unknown[]): import("./types").LongTermThem
     const t = theme as import("./types").LongTermTheme;
     return {
       ...t,
-      kind: t.kind ?? "theme",
-      pinned: t.pinned ?? false,
-      createdAt: t.createdAt ?? t.updatedAt,
-      lastActiveAt: t.lastActiveAt ?? t.updatedAt
+      createdAt: t.createdAt ?? t.updatedAt
     };
   });
 }

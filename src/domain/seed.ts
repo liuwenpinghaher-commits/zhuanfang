@@ -93,10 +93,7 @@ export const initialProductState: ProductState = {
       appearances: 5,
       nextQuestion: "如果你允许短期失控，最坏会发生什么？",
       updatedAt: "2026-06-05T09:00:00.000Z",
-      kind: "theme",
-      pinned: true,
-      createdAt: "2026-06-05T09:00:00.000Z",
-      lastActiveAt: "2026-06-05T09:00:00.000Z"
+      createdAt: "2026-06-05T09:00:00.000Z"
     },
     {
       id: "theme-role",
@@ -107,10 +104,7 @@ export const initialProductState: ProductState = {
       appearances: 3,
       nextQuestion: "你说的问题定义权，具体包括哪些不可让渡的判断？",
       updatedAt: "2026-06-08T09:00:00.000Z",
-      kind: "theme",
-      pinned: false,
-      createdAt: "2026-06-08T09:00:00.000Z",
-      lastActiveAt: "2026-06-08T09:00:00.000Z"
+      createdAt: "2026-06-08T09:00:00.000Z"
     }
   ],
   memoryCorrections: [],

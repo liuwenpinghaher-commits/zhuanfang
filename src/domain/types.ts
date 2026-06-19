@@ -659,10 +659,7 @@ export interface LongTermTheme {
   nextQuestion: string;
   updatedAt: string;
   // ── v2 Track 升级字段（可选以兼容 v1 数据；迁移函数补默认值）──
-  kind?: "journal" | "theme" | "subject" | "project";
-  pinned?: boolean;
   createdAt?: string;
-  lastActiveAt?: string;
 }
 
 /** Track 是 LongTermTheme 升级后的对外概念名（软聚合主题线）。

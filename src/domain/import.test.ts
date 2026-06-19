@@ -225,10 +225,7 @@ describe("ingestImportSource — relatedThemeIds 软标签", () => {
       appearances: 1,
       nextQuestion: "",
       updatedAt: "2026-01-01T00:00:00.000Z",
-      kind: "theme",
-      pinned: false,
-      createdAt: "2026-01-01T00:00:00.000Z",
-      lastActiveAt: "2026-01-01T00:00:00.000Z"
+      createdAt: "2026-01-01T00:00:00.000Z"
     };
     return { ...base, themes: [theme] };
   }

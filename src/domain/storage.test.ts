@@ -164,20 +164,17 @@ describe("product state storage", () => {
 
   it("migrates v1 themes to v2 Track fields and sets schemaVersion", () => {
     const v1 = createInitialProductState();
-    // 模拟 v1 数据：剥掉 v2 新增字段
-    const v1Themes = v1.themes.map(({ kind, pinned, createdAt, lastActiveAt, ...rest }) => rest);
+    // 模拟 v1 数据：剥掉 v2 新增字段（kind/pinned/lastActiveAt 已删；只剩 createdAt）
+    const v1Themes = v1.themes.map(({ createdAt, ...rest }) => rest);
     const normalized = normalizeProductState({ ...v1, themes: v1Themes, schemaVersion: undefined });
 
     expect(normalized.schemaVersion).toBe(2);
-    expect(normalized.themes[0].kind).toBe("theme");
-    expect(normalized.themes[0].pinned).toBe(false);
     expect(normalized.themes[0].createdAt).toBe(normalized.themes[0].updatedAt);
-    expect(normalized.themes[0].lastActiveAt).toBe(normalized.themes[0].updatedAt);
   });
 
   it("v1->v2 migration preserves all existing theme content (no data loss)", () => {
     const v1 = createInitialProductState();
-    const v1Themes = v1.themes.map(({ kind, pinned, createdAt, lastActiveAt, ...rest }) => rest);
+    const v1Themes = v1.themes.map(({ createdAt, ...rest }) => rest);
     const normalized = normalizeProductState({ ...v1, themes: v1Themes });
 
     // 现有字段必须逐一无损
@@ -194,8 +191,7 @@ describe("product state storage", () => {
     const once = normalizeProductState(createInitialProductState());
     const twice = normalizeProductState(once);
     expect(twice.schemaVersion).toBe(2);
-    expect(twice.themes[0].kind).toBe(once.themes[0].kind);
-    expect(twice.themes[0].pinned).toBe(once.themes[0].pinned);
+    expect(twice.themes[0].createdAt).toBe(once.themes[0].createdAt);
   });
 
   it("P1-24: prunes dangling relatedThemeIds across all asset types, preserves valid refs", () => {
