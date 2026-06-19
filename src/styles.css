@@ -2376,3 +2376,225 @@ select:focus-visible {
   0%, 100% { opacity: 0.4; transform: scale(0.8); }
   50% { opacity: 1; transform: scale(1.2); }
 }
+
+/* ── record-row clickable variant (ThemesView → TrackWorkspaceView) ── */
+.record-row-clickable {
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  position: relative;
+}
+
+.record-row-clickable:hover {
+  border-color: var(--action-primary);
+  background: rgba(139, 92, 246, 0.04);
+}
+
+.record-row-clickable:focus-visible {
+  outline: 2px solid var(--action-primary);
+  outline-offset: 2px;
+}
+
+.record-row-arrow {
+  position: absolute;
+  right: 18px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+}
+
+/* ── TrackWorkspaceView ─────────────────────────────────────────────────────── */
+
+.track-workspace-missing {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  min-height: 320px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.track-workspace-missing h2 {
+  margin: 0;
+  font-size: 20px;
+  color: var(--text-primary);
+}
+
+.track-workspace-missing p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+/* ── Header ── */
+.track-workspace-header {
+  position: relative;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-panel);
+  box-shadow: var(--shadow-panel);
+  padding: 24px 28px;
+}
+
+.track-back-btn {
+  margin-bottom: 18px;
+  color: var(--text-muted);
+}
+
+.track-hero {
+  max-width: 800px;
+}
+
+.track-hero-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.track-appearances {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.track-title {
+  margin: 0 0 8px;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  line-height: 1.25;
+}
+
+.track-summary {
+  margin: 0 0 14px;
+  font-size: 16px;
+  color: var(--text-secondary);
+  line-height: 1.65;
+}
+
+.track-quote {
+  margin: 0;
+}
+
+.track-hero-action {
+  margin-top: 20px;
+}
+
+.track-continue-btn {
+  min-width: 148px;
+}
+
+/* ── Maturity badge colors ── */
+.track-maturity.maturity-sprout  { background: rgba(34, 197, 94, 0.12);  color: #16a34a; }
+.track-maturity.maturity-repeat  { background: rgba(59, 130, 246, 0.12); color: #2563eb; }
+.track-maturity.maturity-focus   { background: rgba(139, 92, 246, 0.14); color: var(--action-primary); }
+.track-maturity.maturity-formed  { background: rgba(245, 158, 11, 0.12); color: #d97706; }
+.track-maturity.maturity-change  { background: rgba(239, 68, 68, 0.12);  color: #dc2626; }
+.track-maturity.maturity-closed  { background: rgba(100, 116, 139, 0.12); color: #64748b; }
+
+/* ── Grid columns ── */
+.track-workspace-grid {
+  align-items: start;
+}
+
+/* ── Count badge ── */
+.track-count {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: rgba(139, 92, 246, 0.1);
+  color: var(--action-primary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* ── Item list ── */
+.track-item-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.track-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: var(--surface-raised, rgba(255,255,255,0.03));
+  border: 1px solid var(--border-subtle, rgba(255,255,255,0.06));
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.track-item-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.track-session-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.track-mode-pill {
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
+}
+
+/* ── Outputs ── */
+.track-outputs {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.track-output-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.track-output-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ── Responsive: mobile single column ── */
+@media (max-width: 760px) {
+  .track-workspace-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .track-workspace-header {
+    padding: 18px;
+  }
+
+  .track-title {
+    font-size: 22px;
+  }
+}

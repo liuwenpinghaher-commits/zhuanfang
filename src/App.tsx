@@ -87,8 +87,10 @@ import { PodcastStudioView } from "./features/podcast/PodcastStudioView";
 import { ProfileView } from "./features/profile/ProfileView";
 import { SearchIntelligenceView } from "./features/search/SearchIntelligenceView";
 import { ThemesView } from "./features/themes/ThemesView";
+import { TrackWorkspaceView } from "./features/track/TrackWorkspaceView";
 import { MemoryGovernanceView } from "./features/memory/MemoryGovernanceView";
 import { IntelView } from "./features/intel/IntelView";
+import { buildTrackWorkspace } from "./domain/timeline";
 import {
   buildNotice,
   groupedNavigation,
@@ -134,6 +136,7 @@ export default function App() {
   const [assetFilter, setAssetFilter] = useState<AssetFilter>("all");
   const [selectedAssetKey, setSelectedAssetKey] = useState<string | undefined>(undefined);
   const [configSection, setConfigSection] = useState<ConfigSection>("overview");
+  const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const [recording, setRecording] = useState(false);
   const [realtimeVoiceSession, setRealtimeVoiceSession] = useState<RealtimeVoiceSessionResponse | null>(null);
   const [realtimeVoiceConnection, setRealtimeVoiceConnection] = useState<BailianRealtimeWebrtcConnection | BailianRealtimeWebsocketConnection | LivekitVoiceSession | null>(null);
@@ -457,6 +460,12 @@ export default function App() {
     setSession(null);
     closeRealtimeVoiceSession();
     setView("interview");
+  }
+
+  /** 打开单条主题线工作区。 */
+  function openTrack(id: string) {
+    setSelectedTrackId(id);
+    setView("track");
   }
 
   /** 一键开始：直接传参给 startInterview，不依赖 setState 后的值。 */
@@ -1398,7 +1407,14 @@ export default function App() {
             onDebtStatus={(assetId, status) => setProductState(updateKnowledgeDebtStatus(productState, assetId, status))}
           />
         )}
-        {view === "themes" && <ThemesView state={productState} review={monthlyReview} yearlyReview={yearlyReview} radar={radar} onStart={launchInterview} />}
+        {view === "themes" && <ThemesView state={productState} review={monthlyReview} yearlyReview={yearlyReview} radar={radar} onStart={launchInterview} onOpenTrack={openTrack} />}
+        {view === "track" && (
+          <TrackWorkspaceView
+            workspace={buildTrackWorkspace(productState, selectedTrackId ?? "")}
+            onBack={() => setView("home")}
+            onContinue={() => launchInterview("long-term")}
+          />
+        )}
         {view === "memory" && (
           <MemoryGovernanceView
             state={productState}

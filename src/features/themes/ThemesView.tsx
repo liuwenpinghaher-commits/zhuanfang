@@ -1,4 +1,4 @@
-import { Brain, ChartNoAxesCombined, History, Layers, TimerReset } from "lucide-react";
+import { Brain, ChartNoAxesCombined, ChevronRight, History, Layers, TimerReset } from "lucide-react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { buildCognitiveRadar, buildMonthlyReview, buildYearlyReview } from "../../domain/engine";
 import type { InterviewMode, ProductState } from "../../domain/types";
@@ -9,9 +9,10 @@ interface ThemesViewProps {
   yearlyReview: ReturnType<typeof buildYearlyReview>;
   radar: ReturnType<typeof buildCognitiveRadar>;
   onStart: (mode?: InterviewMode) => void;
+  onOpenTrack?: (id: string) => void;
 }
 
-export function ThemesView({ state, review, yearlyReview, radar, onStart }: ThemesViewProps) {
+export function ThemesView({ state, review, yearlyReview, radar, onStart, onOpenTrack }: ThemesViewProps) {
   return (
     <section className="view-stack">
       <HeaderBlock
@@ -56,17 +57,31 @@ export function ThemesView({ state, review, yearlyReview, radar, onStart }: Them
           </section>
         )}
         {state.themes.map((theme) => (
-          <article className="record-row compact" key={theme.id}>
+          <article
+            className={["record-row compact", onOpenTrack ? "record-row-clickable" : ""].filter(Boolean).join(" ")}
+            key={theme.id}
+            onClick={onOpenTrack ? () => onOpenTrack(theme.id) : undefined}
+            role={onOpenTrack ? "button" : undefined}
+            tabIndex={onOpenTrack ? 0 : undefined}
+            onKeyDown={onOpenTrack ? (e) => {
+              if (e.key === "Enter" || e.key === " ") onOpenTrack(theme.id);
+            } : undefined}
+          >
             <div>
               <span className="status-pill">{theme.maturity}</span>
               <h2>{theme.name}</h2>
               <p>{theme.summary}</p>
-              <div className="quote-line">“{theme.representativeQuote}”</div>
+              <div className="quote-line">&ldquo;{theme.representativeQuote}&rdquo;</div>
             </div>
             <div className="theme-next">
               <span className="label">下次追问</span>
               <p>{theme.nextQuestion}</p>
             </div>
+            {onOpenTrack && (
+              <div className="record-row-arrow" aria-hidden="true">
+                <ChevronRight size={16} />
+              </div>
+            )}
           </article>
         ))}
       </div>
