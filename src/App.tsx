@@ -111,7 +111,8 @@ const navIconByView: Record<View, typeof Compass> = {
   themes: Brain,
   memory: Brain,
   config: SlidersHorizontal,
-  profile: Settings
+  profile: Settings,
+  track: Brain
 };
 
 export default function App() {

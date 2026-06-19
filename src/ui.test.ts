@@ -13,18 +13,18 @@ import {
 
 describe("ui helpers", () => {
   it("groups top-level navigation into task-oriented sections", () => {
-    expect(groupedNavigation.map((group) => group.label)).toEqual(["今日", "素材", "资产", "系统"]);
+    expect(groupedNavigation.map((group) => group.label)).toEqual(["访谈工作台", "认知资产", "系统"]);
     expect(groupedNavigation.flatMap((group) => group.items.map((item) => item.id))).toEqual([
       "home",
       "interview",
+      "themes",
+      "notes",
+      "assets",
+      "memory",
       "search",
       "intel",
       "corpus",
       "podcast",
-      "notes",
-      "assets",
-      "themes",
-      "memory",
       "config",
       "profile"
     ]);

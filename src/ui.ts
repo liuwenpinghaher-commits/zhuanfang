@@ -13,7 +13,8 @@ export type View =
   | "themes"
   | "memory"
   | "config"
-  | "profile";
+  | "profile"
+  | "track";
 
 export type NoticeKind = "success" | "info" | "warning" | "danger";
 
@@ -72,28 +73,23 @@ export interface PodcastProductionSection {
 
 export const groupedNavigation: NavigationGroup[] = [
   {
-    label: "今日",
+    label: "访谈工作台",
     items: [
       { id: "home", label: "今日访谈台" },
-      { id: "interview", label: "实时专访" }
+      { id: "interview", label: "实时专访" },
+      { id: "themes", label: "主题线" }
     ]
   },
   {
-    label: "素材",
+    label: "认知资产",
     items: [
+      { id: "notes", label: "双轨笔记" },
+      { id: "assets", label: "资产库" },
+      { id: "memory", label: "记忆治理" },
       { id: "search", label: "联网素材" },
       { id: "intel", label: "情报中心" },
       { id: "corpus", label: "语料学习" },
       { id: "podcast", label: "播客工作台" }
-    ]
-  },
-  {
-    label: "资产",
-    items: [
-      { id: "notes", label: "双轨笔记" },
-      { id: "assets", label: "资产库" },
-      { id: "themes", label: "长期追踪" },
-      { id: "memory", label: "记忆治理" }
     ]
   },
   {
