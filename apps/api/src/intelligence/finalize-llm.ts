@@ -15,6 +15,7 @@ import type {
   InterviewSession,
   KnowledgeDebt,
   LongTermTheme,
+  MemoryCandidate,
   PointAsset,
   ProductState,
   QuestionAsset
@@ -48,7 +49,8 @@ interface ParsedFinalize {
 export async function finalizeSessionWithLlm(
   state: ProductState,
   session: InterviewSession,
-  chatClient: BailianChatClient
+  chatClient: BailianChatClient,
+  providedCandidates?: MemoryCandidate[]
 ): Promise<FinalizeResult> {
   const completedAt = nowIso();
   const raw = await chatClient.complete({
@@ -62,7 +64,7 @@ export async function finalizeSessionWithLlm(
 
   const parsed = parseFinalizeJson(raw, session);
   const content = mapToFinalizeContent(parsed, state, session, completedAt);
-  return mergeFinalizedState(state, session, content, completedAt);
+  return mergeFinalizedState(state, session, content, completedAt, providedCandidates);
 }
 
 function buildFinalizePrompt(state: ProductState, session: InterviewSession): string {

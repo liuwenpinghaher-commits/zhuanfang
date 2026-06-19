@@ -323,4 +323,102 @@ describe("interview-sessions routes", () => {
 
     await server.close();
   });
+
+  // --- /end: LLM memory extraction (M1b) wires real candidates into finalize ---
+
+  // The /end finalize path makes TWO kinds of chat calls: (1) the diary
+  // synthesis (finalizeSessionWithLlm) and (2) the long-term memory extraction
+  // (extractCandidateMemories). This fake routes each by the system prompt so we
+  // can assert the extracted candidates actually land in state.memoryCandidates.
+  function makeDualPurposeChatClient(extractedCandidates: Array<{ text: string; evidenceQuote: string; sensitivity?: "normal" | "sensitive" }>) {
+    const finalizeJson = JSON.stringify({
+      summary: "这次对话推进了团队管理的判断",
+      keyQuote: "我现在带的是 12 个人，最难的是放权",
+      saidTrack: ["谈了带团队的现状", "点出放权是最大难题"],
+      learnedTrack: ["放权不是一次性动作", "需要建立信任机制"],
+      nextQuestions: ["下次如何具体推进放权？"],
+      points: [],
+      questions: [],
+      decisions: [],
+      debts: [],
+      themes: []
+    });
+    const extractJson = JSON.stringify({
+      candidates: extractedCandidates.map((c) => ({
+        text: c.text,
+        evidenceQuote: c.evidenceQuote,
+        sensitivity: c.sensitivity ?? "normal"
+      }))
+    });
+    const complete = vi.fn(async (opts: any) => {
+      const system = (opts?.messages ?? [])
+        .filter((m: any) => m?.role === "system")
+        .map((m: any) => String(m?.content ?? ""))
+        .join("\n");
+      // extractCandidateMemories' system prompt talks about 候选记忆 from 导入的资料.
+      if (system.includes("候选记忆")) {
+        return extractJson;
+      }
+      return finalizeJson;
+    });
+    return { complete };
+  }
+
+  async function seedEndableSession(server: ReturnType<typeof Fastify>) {
+    const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "decision" } })).json();
+    const id = created.session.id as string;
+    // Two real user turns so the transcript carries content to extract from.
+    await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/record-turn`, payload: { role: "user", content: "我现在带的是 12 个人，最难的是放权。" } });
+    await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/record-turn`, payload: { role: "assistant", content: "放权具体卡在哪一步？" } });
+    await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/record-turn`, payload: { role: "user", content: "我总想自己复核，结果反而成了瓶颈。" } });
+    return id;
+  }
+
+  it("/end (with chatClient): LLM-extracted memories become state.memoryCandidates", async () => {
+    const chatClient = makeDualPurposeChatClient([
+      { text: "用户目前带领一支 12 人的团队。", evidenceQuote: "我现在带的是 12 个人", sensitivity: "normal" },
+      { text: "用户认为放权是当前最大的管理难题。", evidenceQuote: "最难的是放权", sensitivity: "normal" }
+    ]);
+    const repo = createInMemoryProductStateRepository();
+    const server = Fastify({ logger: false });
+    await registerInterviewSessionRoutes(server, repo, {
+      bailianChatClient: chatClient as any,
+      llmBudget: createLlmBudget({ maxCallsPerSession: 5 })
+    });
+
+    const id = await seedEndableSession(server);
+    const res = await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/end` });
+    expect(res.statusCode).toBe(200);
+
+    const candidates = repo.getState().memoryCandidates;
+    // At least the 2 LLM-extracted ones (vs. the single heuristic template candidate).
+    expect(candidates.length).toBeGreaterThanOrEqual(2);
+    const texts = candidates.map((c) => c.text);
+    expect(texts).toContain("用户目前带领一支 12 人的团队。");
+    expect(texts).toContain("用户认为放权是当前最大的管理难题。");
+    // The extracted candidates must be wired to the session as their source.
+    const wired = candidates.filter((c) => c.sourceType === "interview_session" && c.sourceId === id && c.status === "pending");
+    expect(wired.length).toBeGreaterThanOrEqual(2);
+    // Review scoring must run (reviewScore set, signals non-empty).
+    expect(wired.every((c) => Number.isFinite(c.reviewScore) && c.reviewSignals.length > 0)).toBe(true);
+
+    await server.close();
+  });
+
+  it("/end (no chatClient): still produces the heuristic candidate and does not crash", async () => {
+    const repo = createInMemoryProductStateRepository();
+    const server = Fastify({ logger: false });
+    await registerInterviewSessionRoutes(server, repo, {}); // deterministic path, no LLM
+
+    const id = await seedEndableSession(server);
+    const res = await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/end` });
+    expect(res.statusCode).toBe(200);
+
+    const candidates = repo.getState().memoryCandidates;
+    // Task 1 heuristic: exactly one session-derived candidate, no crash.
+    expect(candidates.length).toBeGreaterThanOrEqual(1);
+    expect(candidates.some((c) => c.sourceType === "interview_session" && c.sourceId === id)).toBe(true);
+
+    await server.close();
+  });
 });

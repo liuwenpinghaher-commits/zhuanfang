@@ -14,11 +14,13 @@ import type {
   InterviewSession,
   InterviewStrength,
   InterviewTurn,
+  MemoryCandidate,
   MemoryCorrection,
   ProductState
 } from "../../../../src/domain/types";
 import { makeId, nowIso, withAuditEvent } from "../../../../src/domain/utils";
 import { finalizeSessionWithLlm } from "../intelligence/finalize-llm";
+import { extractCandidateMemories, toSessionMemoryCandidates } from "../intelligence/memory-extraction-llm";
 import { generatePreSignals } from "../intelligence/pre-signals-llm";
 import { classifyTurnComplete } from "../intelligence/turn-endpoint-llm";
 import type { ProductStateRepository } from "../product-state-repository";
@@ -160,7 +162,12 @@ export async function registerInterviewSessionRoutes(
       ...state,
       sessions: state.sessions.filter((item) => item.id !== session.id)
     };
-    const result = await finalizeInterview(baseState, session, options.bailianChatClient);
+    // M1b: when an LLM is available, extract real long-term memory candidates from
+    // the conversation and hand them to finalize (replacing the heuristic template
+    // candidate). On budget exhaustion / extraction failure we pass nothing and
+    // mergeFinalizedState falls back to the Task-1 session heuristic.
+    const providedCandidates = await extractSessionMemoryCandidates(session, options.bailianChatClient, budget);
+    const result = await finalizeInterview(baseState, session, options.bailianChatClient, providedCandidates);
     const completedSession = result.nextState.sessions.find((item) => item.id === session.id) ?? session;
 
     repository.replaceState(result.nextState);
@@ -329,16 +336,62 @@ function upsertSession(state: ProductState, session: InterviewSession): ProductS
 async function finalizeInterview(
   state: ProductState,
   session: InterviewSession,
-  chatClient: BailianChatClient | undefined
+  chatClient: BailianChatClient | undefined,
+  providedCandidates?: MemoryCandidate[]
 ): Promise<FinalizeResult> {
   if (chatClient) {
     try {
-      return await finalizeSessionWithLlm(state, session, chatClient);
+      return await finalizeSessionWithLlm(state, session, chatClient, providedCandidates);
     } catch (error) {
       console.warn(JSON.stringify({ event: "llm_fallback", capability: "finalize", error: error instanceof Error ? error.message : String(error) }));
     }
   }
-  return finalizeSession(state, session);
+  return finalizeSession(state, session, providedCandidates);
+}
+
+// M1b: LLM extraction of long-term memory candidates from the actual conversation,
+// converted into session-sourced reviewable candidates. Budget-gated and fully
+// fail-safe: any miss (no client / budget exhausted / extraction error / empty
+// result) returns undefined so finalize falls back to the deterministic heuristic.
+async function extractSessionMemoryCandidates(
+  session: InterviewSession,
+  chatClient: BailianChatClient | undefined,
+  budget: LlmBudget
+): Promise<MemoryCandidate[] | undefined> {
+  if (!chatClient) {
+    return undefined;
+  }
+  if (!budget.tryConsume(session.id)) {
+    console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "memory_extraction", sessionId: session.id }));
+    return undefined;
+  }
+  const transcript = buildSessionTranscript(session);
+  if (!transcript.trim()) {
+    return undefined;
+  }
+  try {
+    const extracted = await extractCandidateMemories(session.title, transcript, chatClient);
+    if (extracted.length === 0) {
+      return undefined;
+    }
+    return toSessionMemoryCandidates(extracted, session.id, session.title, nowIso());
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: "memory_extraction_fallback",
+      sessionId: session.id,
+      error: error instanceof Error ? error.message : String(error)
+    }));
+    return undefined;
+  }
+}
+
+// Join the conversation into a 用户/主持人 transcript (same shape finalize-llm uses),
+// capped to the last 60 turns so the extraction prompt stays bounded.
+function buildSessionTranscript(session: InterviewSession): string {
+  return session.turns
+    .slice(-60)
+    .map((turn) => `${turn.role === "user" ? "用户" : "主持人"}：${turn.content}`)
+    .join("\n");
 }
 
 async function receiveTurn(

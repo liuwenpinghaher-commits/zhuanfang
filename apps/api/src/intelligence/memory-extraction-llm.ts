@@ -2,6 +2,9 @@
 // Returns reviewable candidates (the user approves each before it's stored).
 import type { ImportedMemoryCandidate } from "../../../../src/domain/import";
 import { sanitizeExternalMaterialBlock } from "../../../../src/domain/engine";
+import { withMemoryCandidateReview } from "../../../../src/domain/memoryReview";
+import type { MemoryCandidate } from "../../../../src/domain/types";
+import { makeId } from "../../../../src/domain/utils";
 import type { BailianChatClient } from "../providers/bailian";
 import { asArray, asObject, asString, parseJsonObject } from "./llm-json";
 
@@ -51,4 +54,29 @@ export async function extractCandidateMemories(
     })
     .filter((candidate) => candidate.text.length > 0)
     .slice(0, 20);
+}
+
+// Turn LLM-extracted candidates into reviewable MemoryCandidates sourced from an
+// interview session. Mirrors the import-source conversion (ingestImportSource),
+// but stamps sourceType="interview_session"/sourceId so the candidate links back
+// to the conversation it came from. withMemoryCandidateReview scores each one.
+export function toSessionMemoryCandidates(
+  candidates: ImportedMemoryCandidate[],
+  sessionId: string,
+  sessionTitle: string,
+  createdAt: string
+): MemoryCandidate[] {
+  return candidates.map((candidate) =>
+    withMemoryCandidateReview({
+      id: makeId("memory-candidate"),
+      text: candidate.text,
+      status: "pending" as const,
+      sourceType: "interview_session" as const,
+      sourceId: sessionId,
+      evidenceQuote: candidate.evidenceQuote,
+      reason: `从专访《${sessionTitle}》的对话中抽取，需你确认后才进入长期记忆。`,
+      sensitivity: candidate.sensitivity,
+      createdAt
+    })
+  );
 }

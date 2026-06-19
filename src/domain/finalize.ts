@@ -68,10 +68,14 @@ export interface FinalizeContent {
   themes: FinalizeThemeUpsert[];
 }
 
-export function finalizeSession(state: ProductState, session: InterviewSession): FinalizeResult {
+export function finalizeSession(
+  state: ProductState,
+  session: InterviewSession,
+  providedCandidates?: MemoryCandidate[]
+): FinalizeResult {
   const completedAt = nowIso();
   const content = buildDeterministicFinalizeContent(session, completedAt);
-  return mergeFinalizedState(state, session, content, completedAt);
+  return mergeFinalizedState(state, session, content, completedAt, providedCandidates);
 }
 
 /**
