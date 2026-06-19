@@ -23,8 +23,16 @@ function buildMemoryCandidateFromSession(
   keyQuote: string,
   createdAt: string
 ): MemoryCandidate {
-  const anchor = extractAnchor(keyQuote);
-  const text = `用户反复关注"${anchor}"背后的判断责任和机制代价。`;
+  // Derive salient text from actual user turns rather than a fixed template.
+  // Take the last 1-2 user turns as the primary source; fall back to keyQuote.
+  const userTurns = session.turns.filter((t) => t.role === "user");
+  const recentUserContents = userTurns.slice(-2).map((t) => t.content.trim()).filter(Boolean);
+  const salient = recentUserContents.length
+    ? recentUserContents.join("…")
+    : keyQuote;
+  // Cap at ~160 chars to keep the candidate compact.
+  const truncated = salient.length > 160 ? salient.slice(0, 157) + "…" : salient;
+  const text = `用户在《${note.title}》中表达：${truncated}`;
   return withMemoryCandidateReview({
     id: makeId("memory-candidate"),
     text,
@@ -104,7 +112,8 @@ export function mergeFinalizedState(
   state: ProductState,
   session: InterviewSession,
   content: FinalizeContent,
-  completedAt: string
+  completedAt: string,
+  providedCandidates?: MemoryCandidate[]
 ): FinalizeResult {
   const { note } = content;
   const completedSession: InterviewSession = {
@@ -132,7 +141,11 @@ export function mergeFinalizedState(
   nextState.sessions = [completedSession, ...nextState.sessions];
   nextState.searchBriefs = markSearchBriefAppliedToSession(nextState.searchBriefs, completedSession);
   nextState.notes = [note, ...nextState.notes];
-  if (note.keyQuote.trim()) {
+  if (providedCandidates && providedCandidates.length > 0) {
+    // Use externally provided candidates (e.g. from LLM extraction in Task 2+).
+    nextState.memoryCandidates = [...providedCandidates, ...(nextState.memoryCandidates ?? [])];
+  } else if (note.keyQuote.trim()) {
+    // Derive candidate from actual session content (deterministic fallback).
     const memoryCandidate = buildMemoryCandidateFromSession(session, note, note.keyQuote, completedAt);
     nextState.memoryCandidates = [memoryCandidate, ...(nextState.memoryCandidates ?? [])];
   }
