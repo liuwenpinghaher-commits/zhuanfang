@@ -3,7 +3,7 @@ import { expectNoHorizontalOverflow, openView, resetDemoState } from "./helpers"
 
 test("creates an AnySearch degraded brief with structured material and can delete it", async ({ page }) => {
   await resetDemoState(page);
-  await openView(page, "联网素材", "主动搜集热点、素材和可讨论主题");
+  await openView(page, "外部调研", "主动搜集热点、素材和可讨论主题");
 
   await page.getByLabel("追踪主题").fill("AI 产品商业化热点");
   await page.getByRole("button", { name: "AnySearch", exact: true }).click();
@@ -28,7 +28,7 @@ test("creates an AnySearch degraded brief with structured material and can delet
 
 test("sets the default search provider from the search workspace", async ({ page }) => {
   await resetDemoState(page);
-  await openView(page, "联网素材", "主动搜集热点、素材和可讨论主题");
+  await openView(page, "外部调研", "主动搜集热点、素材和可讨论主题");
 
   await page.getByRole("button", { name: "设为默认：AnySearch" }).click();
 

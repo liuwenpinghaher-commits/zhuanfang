@@ -96,7 +96,10 @@ test("transcribes an audio source before corpus analysis", async ({ page }) => {
 test("generates and deletes a podcast episode from the first note", async ({ page }) => {
   const voice = `narrator-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
   await resetDemoState(page);
-  await openView(page, "播客工作台", "把一次专访生成可收听的语音节目");
+  // R2: 播客工作台已移出顶层导航，通过"我的资产"档案卡"生成播客"按钮进入。
+  await openView(page, "我的资产", "专访档案与认知资产库");
+  await page.getByRole("button", { name: "生成播客" }).first().click();
+  await expect(page.getByText("把一次专访生成可收听的语音节目")).toBeVisible();
 
   await page.getByLabel("声音配置").fill(voice);
   await page.getByRole("button", { name: "生成脚本" }).click();
@@ -124,7 +127,10 @@ test("saves the current podcast voice as the default product voice", async ({ pa
   // /api/realtime-voice/voices (working cosyvoice-v3-plus presets only). Use a valid preset.
   const voice = "longanyang";
   await resetDemoState(page);
-  await openView(page, "播客工作台", "把一次专访生成可收听的语音节目");
+  // R2: 播客工作台已移出顶层导航，通过"我的资产"档案卡"生成播客"按钮进入。
+  await openView(page, "我的资产", "专访档案与认知资产库");
+  await page.getByRole("button", { name: "生成播客" }).first().click();
+  await expect(page.getByText("把一次专访生成可收听的语音节目")).toBeVisible();
 
   await page.getByLabel("声音配置").fill(voice);
   await page.getByRole("button", { name: "保存为默认声音" }).click();

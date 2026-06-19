@@ -1,16 +1,20 @@
 import { expect, test } from "@playwright/test";
 import { expectNoHorizontalOverflow, openView, resetDemoState, useMobileViewport } from "./helpers";
 
+// R2 导航重构后的 9 项导航（3 区各 3 项）:
+// 访谈工作台: 今日访谈台 / 实时专访 / 主题线
+// 认知资产:   我的资产 / 外部调研 / 记忆
+// 系统:       系统配置 / 语料学习 / 个人档案
+// 播客工作台/双轨笔记/资产库/情报中心 不再是顶层导航项。
 const views = [
   ["今日访谈台", "一键开始"],
   ["实时专访", "专访启动"],
-  ["联网素材", "主动搜集热点、素材和可讨论主题"],
-  ["语料学习", "从外部专访中学习提问逻辑"],
-  ["播客工作台", "把一次专访生成可收听的语音节目"],
-  ["双轨笔记", "从访谈沉淀认知资产"],
-  ["资产库", "观点、问题、决策和知识债"],
   ["主题线", "看见反复主题和观点变化"],
+  ["我的资产", "专访档案与认知资产库"],
+  ["外部调研", "主动搜集热点、素材和可讨论主题"],
+  ["记忆", "导入资料，审核长期记忆"],
   ["系统配置", "底层能力、provider 和引擎策略"],
+  ["语料学习", "从外部专访中学习提问逻辑"],
   ["个人档案", "产品负责人 · AI 产品 / 创业"]
 ] as const;
 
@@ -215,11 +219,16 @@ test.describe("primary navigation", () => {
     await page.getByRole("button", { name: "保存产品策略" }).click();
 
     await expect(page.getByText("产品策略已保存")).toBeVisible();
-    await page.getByRole("button", { name: "播客工作台" }).click();
+    // 播客工作台已移出顶层导航，从"我的资产"档案卡点击"生成播客"进入。
+    // demo state 中 notes[0] 存在，点击后 App 跳转至 podcast view。
+    await page.getByRole("button", { name: "我的资产" }).click();
+    await expect(page.getByText("专访档案与认知资产库")).toBeVisible();
+    await page.getByRole("button", { name: "生成播客" }).first().click();
     // The free-text 声音配置 input in PodcastStudioView is seeded from systemConfig.voice.podcastVoice
     await expect(page.getByLabel("声音配置")).toHaveValue(voice);
 
-    await page.getByRole("button", { name: "联网素材" }).click();
+    // 联网素材已重命名为"外部调研"
+    await page.getByRole("button", { name: "外部调研" }).click();
     await expect(page.getByText("当前默认 provider：anysearch")).toBeVisible();
     await expect(page.getByText("会中引用：关闭")).toBeVisible();
     await expect(page.getByText("最大来源：4")).toBeVisible();

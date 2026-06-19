@@ -5,8 +5,10 @@
  * app tried to render views with an empty ProductState. Tests:
  *   1. Clears demo data via the 个人档案 danger-zone button (window.confirm accepted).
  *   2. App does NOT blank-screen after clearing.
- *   3. Empty-state copies render correctly in 今日访谈台, 双轨笔记, 资产库.
+ *   3. Empty-state copies render correctly in 今日访谈台, 我的资产(档案tab), 我的资产(资产tab).
  *   4. User can still start a fresh interview from the empty state.
+ *
+ * R2 导航更新: 双轨笔记/资产库 已并入"我的资产"(archive/assets tab)。
  */
 import { expect, test } from "@playwright/test";
 import { resetDemoState } from "./helpers";
@@ -39,15 +41,17 @@ test("清空示例 clears demo data and leaves app usable", async ({ page }) => 
   // With no themes, HomeView shows empty-hint: "还没有主题线，完成专访后会自动浮现。"
   await expect(page.getByText("还没有主题线，完成专访后会自动浮现。")).toBeVisible();
 
-  // ── Step 4: 双轨笔记 view — no notes, no crash ────────────────────────────
-  await page.getByRole("button", { name: "双轨笔记" }).click();
-  await expect(page.getByText("从访谈沉淀认知资产")).toBeVisible();
-  // No note cards should be present (empty state — the record-list exists but empty).
+  // ── Step 4: 我的资产 → 档案 tab — no archive entries, no crash ────────────
+  // R2: 双轨笔记/资产库 已并入"我的资产"(archive/assets tab)，无独立导航按钮。
+  await page.getByRole("button", { name: "我的资产" }).click();
+  await expect(page.getByText("专访档案与认知资产库")).toBeVisible();
+  // 档案 tab 为默认 tab；清空后无档案条目。
   await expect(page.locator("article.record-row")).toHaveCount(0);
 
-  // ── Step 5: 资产库 view — empty state, no crash ───────────────────────────
+  // ── Step 5: 我的资产 → 资产 tab — empty state, no crash ─────────────────
   await page.getByRole("button", { name: "资产库" }).click();
-  await expect(page.getByText("观点、问题、决策和知识债")).toBeVisible();
+  // AssetsView renders h1 "观点、问题、决策和知识债" (use heading role to avoid subtitle collision)
+  await expect(page.getByRole("heading", { name: "观点、问题、决策和知识债" })).toBeVisible();
   // AssetsView shows "当前筛选下没有资产" when empty.
   await expect(page.getByText("当前筛选下没有资产。")).toBeVisible();
 

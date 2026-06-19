@@ -59,8 +59,8 @@ test("full interview lifecycle: start, submit 3 turns, end, assert diary note", 
   // App navigates to "notes" view after finishing.
   await expect(page.getByText("从访谈沉淀认知资产")).toBeVisible();
 
-  // ── Step 6: assert a note card was produced in 双轨笔记 ───────────────────
-  // NotesView renders each note as <article class="record-row">.
+  // ── Step 6: assert a note card was produced (NotesView / 档案视图) ─────────
+  // App.finishInterview calls setView("notes") — NotesView renders each note as <article class="record-row">.
   await expect(page.locator("article.record-row").first()).toBeVisible();
 
   // ── Step 7: cross-view consistency — notes count increased after interview ─
