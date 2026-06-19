@@ -335,7 +335,7 @@ describe("interview business engine", () => {
 describe("createEmptyProductState", () => {
   it("clears all assets but keeps systemConfig + profile config", () => {
     const empty = createEmptyProductState();
-    for (const k of ["notes", "points", "questions", "decisions", "debts", "themes", "sessions", "memoryRecords", "memoryCandidates", "intelTasks", "intelItems", "searchBriefs"] as const) {
+    for (const k of ["notes", "points", "questions", "decisions", "debts", "themes", "sessions", "memoryRecords", "memoryCandidates", "searchBriefs"] as const) {
       expect(empty[k]).toEqual([]);
     }
     expect(empty.profile.confirmedMemories).toEqual([]);

@@ -534,7 +534,7 @@ export function createEmptyProductState(): ProductState {
     sessions: [], notes: [], points: [], questions: [], decisions: [], debts: [], themes: [],
     memoryCorrections: [], memoryRecords: [], memoryCandidates: [], memoryEdges: [],
     searchBriefs: [], podcastEpisodes: [], corpusImports: [], corpusInsights: [], playbookPatches: [],
-    importSources: [], ragChunks: [], intelTasks: [], intelItems: [],
+    importSources: [], ragChunks: [],
     configVersions: [], auditEvents: [], aiRunEvents: [], workflowRuns: [], operationalChecks: [],
     profile: { ...base.profile, confirmedMemories: [], inferredMemories: [] },
     revision: 0

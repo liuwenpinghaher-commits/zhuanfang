@@ -56,8 +56,6 @@ export function normalizeProductState(value: unknown): ProductState {
     memoryEdges: Array.isArray(candidate.memoryEdges) ? candidate.memoryEdges : fallback.memoryEdges,
     importSources: Array.isArray(candidate.importSources) ? normalizeImportSources(candidate.importSources) : fallback.importSources,
     ragChunks: Array.isArray(candidate.ragChunks) ? candidate.ragChunks : fallback.ragChunks,
-    intelTasks: Array.isArray(candidate.intelTasks) ? candidate.intelTasks : fallback.intelTasks,
-    intelItems: Array.isArray(candidate.intelItems) ? candidate.intelItems : fallback.intelItems,
     configVersions: Array.isArray(candidate.configVersions) ? candidate.configVersions : fallback.configVersions,
     auditEvents: Array.isArray(candidate.auditEvents) ? candidate.auditEvents : fallback.auditEvents,
     aiRunEvents: Array.isArray(candidate.aiRunEvents) ? candidate.aiRunEvents : fallback.aiRunEvents,
@@ -82,6 +80,10 @@ export function normalizeProductState(value: unknown): ProductState {
       }
     }
   };
+  // R3: intel 子系统已删除。`...candidate` spread 会带入历史 intelTasks/intelItems,显式丢弃。
+  const legacy = normalized as unknown as Record<string, unknown>;
+  delete legacy.intelTasks;
+  delete legacy.intelItems;
   return pruneDanglingThemeRefs(normalized);
 }
 
@@ -309,7 +311,6 @@ function pruneDanglingThemeRefs(state: ProductState): ProductState {
     questions: state.questions.map((q) => ({ ...q, relatedThemeIds: pruneRequired(q.relatedThemeIds) })),
     decisions: state.decisions.map((d) => ({ ...d, relatedThemeIds: pruneOptional(d.relatedThemeIds) })),
     debts: state.debts.map((d) => ({ ...d, relatedThemeIds: pruneOptional(d.relatedThemeIds) })),
-    intelTasks: state.intelTasks.map((t) => ({ ...t, relatedThemeIds: pruneRequired(t.relatedThemeIds) })),
     importSources: state.importSources.map((src) => ({ ...src, relatedThemeIds: pruneOptional(src.relatedThemeIds) }))
   };
 }

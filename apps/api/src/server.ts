@@ -32,14 +32,12 @@ import {
   createBailianStreamingTtsClient,
   type BailianStreamingTtsClient
 } from "./providers/bailian-streaming-tts";
-import { startIntelScheduler } from "./intel-scheduler";
 import { createLlmBudget } from "./llm-budget";
 import { registerAssetRoutes } from "./routes/assets";
 import { registerCorpusRoutes } from "./routes/corpus";
 import { registerGeneratedArtifactRoutes } from "./routes/generated-artifacts";
 import { registerHealthRoutes } from "./routes/health";
 import { registerImportRoutes } from "./routes/import";
-import { registerIntelRoutes } from "./routes/intel";
 import { registerInterviewSessionRoutes } from "./routes/interview-sessions";
 import { registerMemoryRecordRoutes } from "./routes/memory-records";
 import { registerMemoryCandidateRoutes } from "./routes/memory-candidates";
@@ -175,9 +173,6 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
       ...providerClients,
       llmBudget: sharedBudget
     });
-  });
-  void server.register(async (registeredServer) => {
-    await registerIntelRoutes(registeredServer, productStateRepository, providerClients);
   });
   void server.register(async (registeredServer) => {
     await registerMemoryRecordRoutes(registeredServer, productStateRepository);
@@ -347,24 +342,11 @@ export async function startServer() {
   // Tests call buildApiServer() directly (no dbPath) and stay in-memory/isolated.
   const productStateDbPath = process.env.PRODUCT_STATE_DB_PATH ?? join(process.cwd(), ".data", "product-state.db");
 
-  // Build the repository and provider clients here so we can share them with
-  // the in-process scheduler (startIntelScheduler is ONLY wired in startServer,
-  // never in buildApiServer, so tests stay timer-free).
   const repository = createSqliteProductStateRepository({ dbPath: productStateDbPath });
-  const schedulerClients = {
-    bailianSearchClient: createBailianSearchClientFromEnv(process.env),
-    anySearchClient: createAnySearchClientFromEnv(process.env),
-    bailianChatClient: createBailianChatClientFromEnv(process.env)
-  };
-
   const server = buildApiServer({ productStateDbPath, productStateRepository: repository });
   const port = Number(process.env.PORT ?? 8787);
   const host = process.env.HOST ?? "127.0.0.1";
   await server.listen({ host, port });
-
-  // Start the scheduler after the server is listening. It reads/writes through
-  // the same repository instance, so state stays consistent.
-  startIntelScheduler(repository, schedulerClients);
 
   return server;
 }

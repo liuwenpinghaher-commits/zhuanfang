@@ -29,8 +29,6 @@ function makeMinimalState(overrides: Partial<ProductState> = {}): ProductState {
     searchBriefs: [],
     importSources: [],
     ragChunks: [],
-    intelTasks: [],
-    intelItems: [],
     podcastEpisodes: [],
     corpusImports: [],
     corpusInsights: [],

@@ -38,7 +38,7 @@ describe("domain types", () => {
       sessions: [], notes: [], points: [], questions: [], decisions: [], debts: [], themes: [],
       memoryCorrections: [], searchBriefs: [], podcastEpisodes: [], corpusImports: [], corpusInsights: [], playbookPatches: [],
       memoryRecords: [], memoryCandidates: [], memoryEdges: [],
-      importSources: [], ragChunks: [], intelTasks: [], intelItems: [], configVersions: [],
+      importSources: [], ragChunks: [], configVersions: [],
       auditEvents: [], aiRunEvents: [], workflowRuns: [], operationalChecks: [],
       revision: 0,
       systemConfig: {

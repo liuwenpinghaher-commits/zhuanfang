@@ -131,8 +131,6 @@ export const initialProductState: ProductState = {
     }
   ],
   ragChunks: [],
-  intelTasks: [],
-  intelItems: [],
   configVersions: [],
   auditEvents: [],
   aiRunEvents: [],

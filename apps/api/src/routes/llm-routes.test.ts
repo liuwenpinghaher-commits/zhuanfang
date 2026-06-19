@@ -5,7 +5,6 @@
  *
  * 1. No-key fallback: build the server with no provider clients (env: {}).
  *    For every LLM-backed route, drive it and assert 200 + deterministic fallback.
- *    Exception: /api/intel/tasks/:id/run with no search client → 503 by design.
  *
  * 2. LLM path: inject minimal mock clients. Drive the same routes and assert
  *    the response is structurally correct (LLM path used).
@@ -116,38 +115,6 @@ describe("No-key fallback (env: {})", () => {
     expect(typeof body.sourceId).toBe("string");
     // No LLM → candidates always 0 (route still succeeds)
     expect(typeof body.candidateCount).toBe("number");
-    await server.close();
-  });
-
-  it("/api/intel/tasks (POST) → 200 creates task", async () => {
-    const server = buildNoKeyServer();
-    await server.ready();
-
-    const resp = await inject(server, "POST", "/api/intel/tasks", {
-      name: "AI 监控任务",
-      keywords: ["AI", "LLM"]
-    });
-
-    expect(resp.statusCode).toBe(200);
-    const body = JSON.parse(resp.payload) as { task: { id: string } };
-    expect(typeof body.task.id).toBe("string");
-    await server.close();
-  });
-
-  it("/api/intel/tasks/:id/run with no search client → 503 (documented behavior)", async () => {
-    const server = buildNoKeyServer();
-    await server.ready();
-
-    // First create a task
-    const createResp = await inject(server, "POST", "/api/intel/tasks", {
-      name: "监控任务",
-      keywords: ["测试关键词"]
-    });
-    const { task } = JSON.parse(createResp.payload) as { task: { id: string } };
-
-    // Run with no search/chat client → 503 (no provider configured)
-    const runResp = await inject(server, "POST", `/api/intel/tasks/${task.id}/run`);
-    expect(runResp.statusCode).toBe(503);
     await server.close();
   });
 

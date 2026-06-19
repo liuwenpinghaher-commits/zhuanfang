@@ -5,7 +5,6 @@ export type View =
   | "home"
   | "interview"
   | "search"
-  | "intel"
   | "corpus"
   | "podcast"
   | "notes"

@@ -593,4 +593,27 @@ describe("product state storage", () => {
       expect(normalized.importSources[0].relatedThemeIds).toEqual([]);
     });
   });
+
+  describe("R3 外部调研合并", () => {
+    it("丢弃历史 intel 数据(intelTasks/intelItems 不再是字段)", () => {
+      const state = createInitialProductState();
+      const legacy = {
+        ...state,
+        intelTasks: [{ id: "t1", name: "监控", keywords: ["AI"] }],
+        intelItems: [{ id: "i1", taskId: "t1", relevance: 50 }]
+      } as unknown as Parameters<typeof normalizeProductState>[0];
+      const normalized = normalizeProductState(legacy) as unknown as Record<string, unknown>;
+      expect(normalized.intelTasks).toBeUndefined();
+      expect(normalized.intelItems).toBeUndefined();
+      expect(normalized.themes).toBeDefined();
+      expect(normalized.searchBriefs).toBeDefined();
+    });
+
+    it("searchBrief 的 tracked 标志往返保留", () => {
+      const state = createInitialProductState();
+      const brief = { ...(state.searchBriefs[0] ?? {}), id: "brief-tracked", topic: "AI agent", tracked: true };
+      const normalized = normalizeProductState({ ...state, searchBriefs: [brief as never] });
+      expect(normalized.searchBriefs[0].tracked).toBe(true);
+    });
+  });
 });
