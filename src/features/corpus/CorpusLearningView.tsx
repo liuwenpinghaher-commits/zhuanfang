@@ -1,10 +1,12 @@
 import { CheckCircle2, ChevronDown, ClipboardList, FileAudio2, Info, LoaderCircle, Plus, Sparkles, Trash2, Upload, X } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { CorpusImportInput, PlaybookPatch, ProductState } from "../../domain/types";
 import { ANALYSIS_DIMENSIONS, ANALYSIS_OUTPUTS, ANALYSIS_PATHS, ANALYSIS_PRINCIPLES } from "./analysisMethod";
 
 const FOCUS_MAX = 280;
+// 本地音频文件上限：25 MB。与后端 /api/corpus/transcriptions 的 base64 护栏一致。
+const MAX_AUDIO_FILE_BYTES = 25 * 1024 * 1024;
 
 interface CorpusLearningViewProps {
   state: ProductState;
@@ -14,11 +16,14 @@ interface CorpusLearningViewProps {
   content: string;
   focus: string;
   transcribing: boolean;
+  audioFileName: string;
   onMediaType: (value: CorpusImportInput["mediaType"]) => void;
   onTitle: (value: string) => void;
   onSourceUrl: (value: string) => void;
   onContent: (value: string) => void;
   onFocus: (value: string) => void;
+  onSelectAudioFile: (audioBase64: string, fileName: string) => void;
+  onClearAudioFile: () => void;
   onTranscribeAudio: () => void;
   onAnalyze: () => void;
   onApprovePatch: (patchId: string, rules: string[]) => void;
@@ -33,11 +38,14 @@ export function CorpusLearningView({
   content,
   focus,
   transcribing,
+  audioFileName,
   onMediaType,
   onTitle,
   onSourceUrl,
   onContent,
   onFocus,
+  onSelectAudioFile,
+  onClearAudioFile,
   onTranscribeAudio,
   onAnalyze,
   onApprovePatch,
@@ -46,6 +54,48 @@ export function CorpusLearningView({
   const importById = new Map(state.corpusImports.map((item) => [item.id, item]));
   const contentLabel = mediaType === "audio" ? "音频转写稿或摘要" : "专访文本或转写稿";
   const [methodOpen, setMethodOpen] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [fileSizeLabel, setFileSizeLabel] = useState("");
+  const [fileError, setFileError] = useState("");
+
+  function clearSelectedFile() {
+    setFileError("");
+    setFileSizeLabel("");
+    if (fileRef.current) fileRef.current.value = "";
+    onClearAudioFile();
+  }
+
+  async function handleFileChange(file: File | null) {
+    setFileError("");
+    if (!file) {
+      clearSelectedFile();
+      return;
+    }
+    if (file.size > MAX_AUDIO_FILE_BYTES) {
+      // 不读取、不上传：超过 25 MB 直接拦截并提示。
+      setFileSizeLabel("");
+      if (fileRef.current) fileRef.current.value = "";
+      onClearAudioFile();
+      setFileError(`文件过大（${formatBytes(file.size)}），上限为 25 MB。请压缩后重试，或改用公网音频 URL。`);
+      return;
+    }
+    try {
+      const reader = new FileReader();
+      const base64 = await new Promise<string>((resolve, reject) => {
+        reader.onload = () => {
+          const result = reader.result as string;
+          const commaIdx = result.indexOf(",");
+          resolve(commaIdx >= 0 ? result.slice(commaIdx + 1) : result);
+        };
+        reader.onerror = () => reject(new Error("文件读取失败"));
+        reader.readAsDataURL(file);
+      });
+      setFileSizeLabel(formatBytes(file.size));
+      onSelectAudioFile(base64, file.name);
+    } catch (err) {
+      setFileError(err instanceof Error ? err.message : "文件读取失败");
+    }
+  }
 
   return (
     <section className="view-stack">
@@ -144,23 +194,63 @@ export function CorpusLearningView({
             <input id="corpus-title" value={title} onChange={(event) => onTitle(event.target.value)} placeholder="样本标题" />
           </label>
           {mediaType === "audio" && (
-            <div className="field-stack">
-              <label className="field-label" htmlFor="corpus-source-url">音频来源 URL</label>
-              <input
-                id="corpus-source-url"
-                value={sourceUrl}
-                onChange={(event) => onSourceUrl(event.target.value)}
-                placeholder="https://example.com/interview-audio.mp3"
-              />
-              <span className="field-help">公网音频 URL 可先生成转写稿，再进入语料分析。</span>
+            <div className="field-stack corpus-audio-source">
+              <span className="field-label">音频来源</span>
+              <span className="field-help">两种方式任选其一：粘贴公网音频 URL，或从本地选择音频文件。</span>
+
+              <div className="corpus-audio-block">
+                <label className="corpus-audio-sublabel" htmlFor="corpus-source-url">公网音频 URL</label>
+                <input
+                  id="corpus-source-url"
+                  value={sourceUrl}
+                  onChange={(event) => onSourceUrl(event.target.value)}
+                  placeholder="https://example.com/interview-audio.mp3"
+                />
+                <span className="field-help">公网音频 URL 可由百炼 SenseVoice 自动转写为转写稿。</span>
+              </div>
+
+              <div className="corpus-audio-divider"><span>或</span></div>
+
+              <div className="corpus-audio-block">
+                <span className="corpus-audio-sublabel">本地音频文件</span>
+                <input
+                  ref={fileRef}
+                  className="corpus-audio-file-input"
+                  type="file"
+                  accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.flac"
+                  aria-label="选择本地音频文件"
+                  onChange={(event) => handleFileChange(event.target.files?.[0] ?? null)}
+                />
+                {audioFileName && (
+                  <div className="corpus-audio-file-chip">
+                    <FileAudio2 size={14} />
+                    <span className="corpus-audio-file-name">{audioFileName}</span>
+                    {fileSizeLabel && <span className="corpus-audio-file-size">{fileSizeLabel}</span>}
+                    <button
+                      className="icon-button"
+                      type="button"
+                      onClick={clearSelectedFile}
+                      aria-label="清除已选音频文件"
+                      title="清除已选音频文件"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                )}
+                <span className="field-help">
+                  本地文件最大 25 MB。受转写引擎约束，本地文件不会自动转写——上传后请手动补全转写稿，或改用公网 URL。
+                </span>
+                {fileError && <p className="form-error">{fileError}</p>}
+              </div>
+
               <button
                 className="secondary-action compact-action"
                 type="button"
                 onClick={onTranscribeAudio}
-                disabled={!sourceUrl.trim() || transcribing}
+                disabled={(!sourceUrl.trim() && !audioFileName) || transcribing}
               >
                 {transcribing ? <LoaderCircle size={16} /> : <FileAudio2 size={16} />}
-                {transcribing ? "正在转写" : "生成转写稿"}
+                {transcribing ? "正在处理" : "生成转写稿"}
               </button>
             </div>
           )}
@@ -232,6 +322,13 @@ export function CorpusLearningView({
       </div>
     </section>
   );
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
 interface EditablePatchCardProps {

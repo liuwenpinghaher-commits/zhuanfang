@@ -3454,3 +3454,86 @@ select:focus-visible {
   color: var(--accent-rose, #f43f5e);
   font-size: 13px;
 }
+
+/* ===== 语料学习：音频来源（公网 URL / 本地文件二选一） ===== */
+.corpus-audio-source {
+  gap: 10px;
+}
+
+.corpus-audio-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.corpus-audio-sublabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-label);
+}
+
+.corpus-audio-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 2px 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.corpus-audio-divider::before,
+.corpus-audio-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border-default);
+}
+
+.corpus-audio-file-input {
+  width: 100%;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border-default);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.corpus-audio-file-input::file-selector-button {
+  margin-right: 8px;
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border-soft);
+  background: var(--surface-muted);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.corpus-audio-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-soft);
+  background: var(--surface-muted);
+  color: var(--text-primary);
+  font-size: 13px;
+  max-width: 100%;
+}
+
+.corpus-audio-file-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+}
+
+.corpus-audio-file-size {
+  color: var(--text-muted);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+/* ===== END 语料学习：音频来源 ===== */

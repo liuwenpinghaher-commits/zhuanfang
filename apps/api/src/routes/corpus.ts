@@ -18,7 +18,14 @@ interface CorpusTranscriptionRequestPayload {
   title?: unknown;
   sourceUrl?: unknown;
   languageHint?: unknown;
+  audioBase64?: unknown;
+  fileName?: unknown;
 }
+
+// Upper bound on a locally uploaded audio file's base64 payload. 25 MB of base64
+// (~18 MB of raw audio) keeps a single JSON request reasonable; larger files should
+// use a public URL.
+const MAX_AUDIO_BASE64_BYTES = 25 * 1024 * 1024;
 
 interface CorpusRouteOptions {
   bailianTranscriptionClient?: BailianAudioTranscriptionClient;
@@ -35,8 +42,26 @@ export async function registerCorpusRoutes(
 
   server.post("/api/corpus/transcriptions", async (request, reply) => {
     const input = normalizeTranscriptionInput(request.body);
+
+    // Local file upload branch. There is no inline-base64 transcription path on the
+    // backend: SenseVoice 录音转写只接受公网 file_urls，唯一的 base64 音频能力是浏览器
+    // 侧流式实时 ASR（omni-realtime，不是一次性的“收 base64 → 返回文字”接口）。因此我们
+    // 诚实地确认收到文件并降级，绝不冒充真转写。
+    if (input.audioBase64) {
+      if (input.audioBase64.length > MAX_AUDIO_BASE64_BYTES) {
+        return reply
+          .code(422)
+          .send({ error: "上传的音频文件过大（base64 超过 25 MB），请压缩后重试或改用公网音频 URL。" });
+      }
+      const approxMb = (estimateBase64Bytes(input.audioBase64) / (1024 * 1024)).toFixed(1);
+      const fileLabel = input.fileName ?? "你上传的音频文件";
+      return {
+        transcription: buildLocalFileTranscription(input, fileLabel, approxMb)
+      };
+    }
+
     if (!input.sourceUrl) {
-      return reply.code(422).send({ error: "Audio source URL is required." });
+      return reply.code(422).send({ error: "Audio source URL or an uploaded audio file is required." });
     }
 
     if (!isSupportedAudioSourceUrl(input.sourceUrl)) {
@@ -130,11 +155,21 @@ function normalizeCorpusInput(value: unknown): CorpusImportInput {
 
 function normalizeTranscriptionInput(value: unknown): AudioTranscriptionInput {
   const payload = normalizeTranscriptionPayload(value);
+  const audioBase64 = typeof payload.audioBase64 === "string" && payload.audioBase64.trim() ? payload.audioBase64.trim() : undefined;
+  const fileName = typeof payload.fileName === "string" && payload.fileName.trim() ? payload.fileName.trim() : undefined;
   return {
     title: normalizeText(payload.title, "未命名音频专访样本"),
     sourceUrl: typeof payload.sourceUrl === "string" && payload.sourceUrl.trim() ? payload.sourceUrl.trim() : "",
-    languageHint: typeof payload.languageHint === "string" && payload.languageHint.trim() ? payload.languageHint.trim() : undefined
+    languageHint: typeof payload.languageHint === "string" && payload.languageHint.trim() ? payload.languageHint.trim() : undefined,
+    ...(audioBase64 ? { audioBase64 } : {}),
+    ...(fileName ? { fileName } : {})
   };
+}
+
+/** Approximate decoded byte length of a base64 string (ignoring padding). */
+function estimateBase64Bytes(base64: string): number {
+  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
 }
 
 function normalizePayload(value: unknown): CorpusInsightRequestPayload {
@@ -172,6 +207,34 @@ function buildFallbackTranscription(input: AudioTranscriptionInput, degradedReas
       "主持人：补齐后我会重点分析它如何索要具体时刻、推动反方观点，以及控制追问节奏。"
     ].join("\n"),
     degradedReason,
+    createdAt: new Date().toISOString()
+  };
+}
+
+/**
+ * Honest degradation for a locally uploaded audio file. We acknowledge the exact
+ * file we received, then state plainly that automatic transcription needs a public
+ * URL — and seed an editable draft that carries the file name into context. This is
+ * a deliberate constraint of SenseVoice 录音转写 (file_urls only); we never return a
+ * fabricated transcript dressed up as the real thing.
+ */
+function buildLocalFileTranscription(
+  input: AudioTranscriptionInput,
+  fileLabel: string,
+  approxMb: string
+): AudioTranscription {
+  return {
+    providerId: "local-fallback",
+    model: "manual-transcript-required",
+    status: "degraded",
+    title: input.title,
+    sourceUrl: input.sourceUrl,
+    text: [
+      `主持人：这段专访音频来自本地文件「${fileLabel}」，目前还没有自动转写。`,
+      "被访者：请在这里补充被访者的关键原话、停顿和情绪变化。",
+      "主持人：补齐后我会分析这段专访如何索要具体时刻、推进反方观点和控制节奏。"
+    ].join("\n"),
+    degradedReason: `已接收文件「${fileLabel}」（约 ${approxMb} MB）。当前转写引擎（百炼 SenseVoice）需要可公网访问的音频 URL，本地文件暂不能自动转写——请直接粘贴/手敲转写稿，或改用公网音频 URL。`,
     createdAt: new Date().toISOString()
   };
 }

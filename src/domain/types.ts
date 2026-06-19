@@ -976,8 +976,21 @@ export interface CorpusImportInput {
 
 export interface AudioTranscriptionInput {
   title: string;
+  /**
+   * Public audio URL (http/https/oss). Required for real SenseVoice transcription,
+   * which only accepts `file_urls`. Empty when the user uploads a local file instead.
+   */
   sourceUrl: string;
   languageHint?: string;
+  /**
+   * Base64 payload of a locally selected audio file (no data-uri prefix). There is
+   * no inline transcription path on the backend (SenseVoice needs a public URL and
+   * the only base64 audio capability is the streaming realtime ASR pipeline), so a
+   * local file is acknowledged and honestly degraded — never faked into a transcript.
+   */
+  audioBase64?: string;
+  /** Original file name of the uploaded local file, surfaced in the degraded notice. */
+  fileName?: string;
 }
 
 export interface AudioTranscription {

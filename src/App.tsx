@@ -167,6 +167,9 @@ export default function App() {
   const [corpusMediaType, setCorpusMediaType] = useState<CorpusImportInput["mediaType"]>("text");
   const [corpusTitle, setCorpusTitle] = useState("优秀专访样本");
   const [corpusSourceUrl, setCorpusSourceUrl] = useState("");
+  // 本地上传音频文件的 base64 + 文件名。两种音频来源（公网 URL / 本地文件）任选其一。
+  const [corpusAudioBase64, setCorpusAudioBase64] = useState("");
+  const [corpusAudioFileName, setCorpusAudioFileName] = useState("");
   const [corpusTranscribing, setCorpusTranscribing] = useState(false);
   const [corpusContent, setCorpusContent] = useState(
     "主持人：你刚才说增长很难，能不能讲一个具体时刻？\n被访者：真正困难是团队不敢暴露坏消息。\n主持人：如果反过来看，是不是机制奖励了报喜不报忧？"
@@ -779,8 +782,9 @@ export default function App() {
 
   async function transcribeCorpusAudio() {
     const sourceUrl = corpusSourceUrl.trim();
-    if (!sourceUrl) {
-      setNotice(buildNotice("warning", "需要音频 URL", "请先填写可公网访问的音频文件地址。"));
+    const hasLocalFile = !!corpusAudioBase64 && !!corpusAudioFileName;
+    if (!sourceUrl && !hasLocalFile) {
+      setNotice(buildNotice("warning", "需要音频来源", "请填写公网音频 URL，或从本地选择一个音频文件。"));
       return;
     }
 
@@ -788,12 +792,13 @@ export default function App() {
     setCorpusMediaType("audio");
     setCorpusTranscribing(true);
 
+    // 公网 URL 走真转写（SenseVoice）；本地文件没有可行的内联转写路径，后端会诚实降级。
+    const request = sourceUrl
+      ? { title, sourceUrl, languageHint: "zh" }
+      : { title, sourceUrl: "", languageHint: "zh", audioBase64: corpusAudioBase64, fileName: corpusAudioFileName };
+
     try {
-      const apiRun = await productApiClient.transcribeCorpusAudio({
-        title,
-        sourceUrl,
-        languageHint: "zh"
-      });
+      const apiRun = await productApiClient.transcribeCorpusAudio(request);
       setCorpusContent(apiRun.transcription.text);
       setNotice(
         apiRun.transcription.status === "ready"
@@ -803,11 +808,24 @@ export default function App() {
       return;
     } catch {
       setApiPersistenceEnabled(false);
-      setCorpusContent(buildLocalAudioTranscriptionDraft(sourceUrl));
+      setCorpusContent(buildLocalAudioTranscriptionDraft(sourceUrl || `本地文件「${corpusAudioFileName}」`));
       setNotice(buildNotice("warning", "音频转写暂不可用", "Product API 未连接，已生成可编辑的手工转写模板。"));
     } finally {
       setCorpusTranscribing(false);
     }
+  }
+
+  function selectCorpusAudioFile(audioBase64: string, fileName: string) {
+    setCorpusAudioBase64(audioBase64);
+    setCorpusAudioFileName(fileName);
+    setCorpusMediaType("audio");
+    // 选了本地文件就清掉 URL，确保两种来源互斥、来源单一可预测。
+    setCorpusSourceUrl("");
+  }
+
+  function clearCorpusAudioFile() {
+    setCorpusAudioBase64("");
+    setCorpusAudioFileName("");
   }
 
   function removeCorpusInsight(insightId: string) {
@@ -1018,6 +1036,8 @@ export default function App() {
     setPodcastEditingScript("");
     setCorpusMediaType("text");
     setCorpusSourceUrl("");
+    setCorpusAudioBase64("");
+    setCorpusAudioFileName("");
     setNotice(buildNotice("warning", "示例数据已清空", "可以开始记录你自己的真实访谈了。"));
     setView("home");
   }
@@ -1442,11 +1462,14 @@ export default function App() {
             content={corpusContent}
             focus={corpusFocus}
             transcribing={corpusTranscribing}
+            audioFileName={corpusAudioFileName}
             onMediaType={setCorpusMediaType}
             onTitle={setCorpusTitle}
             onSourceUrl={setCorpusSourceUrl}
             onContent={setCorpusContent}
             onFocus={setCorpusFocus}
+            onSelectAudioFile={selectCorpusAudioFile}
+            onClearAudioFile={clearCorpusAudioFile}
             onTranscribeAudio={transcribeCorpusAudio}
             onAnalyze={analyzeCorpus}
             onApprovePatch={applyPlaybookPatch}

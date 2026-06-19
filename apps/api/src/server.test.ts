@@ -559,6 +559,72 @@ describe("Product API", () => {
     });
   });
 
+  it("honestly degrades a locally uploaded audio file instead of faking a transcript", async () => {
+    // SenseVoice 录音转写只接受公网 file_urls；本地文件没有可行的 base64 内联转写路径。
+    // 即使 ASR client 已配置，本地文件上传也必须诚实降级 —— 绝不冒充真转写。
+    let asrCalled = false;
+    const server = buildApiServer({
+      bailianTranscriptionClient: {
+        async transcribe() {
+          asrCalled = true;
+          throw new Error("ASR should never be called for a local file upload.");
+        }
+      }
+    });
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/corpus/transcriptions",
+      payload: {
+        title: "本地音频专访样本",
+        audioBase64: Buffer.from("fake-audio-bytes").toString("base64"),
+        fileName: "interview.m4a"
+      }
+    });
+
+    expect(asrCalled).toBe(false);
+    expect(response.statusCode).toBe(200);
+    const transcription = response.json().transcription;
+    expect(transcription.status).toBe("degraded");
+    expect(transcription.providerId).toBe("local-fallback");
+    // 诚实文案：说明已收到文件、点名转写引擎需要公网 URL、给出可执行的下一步。
+    expect(transcription.degradedReason).toContain("interview.m4a");
+    expect(transcription.degradedReason).toContain("公网");
+    // 草稿把文件名带入上下文，且不假装这就是转写结果。
+    expect(transcription.text).toContain("interview.m4a");
+  });
+
+  it("rejects an oversized locally uploaded audio file with a 422", async () => {
+    const server = buildApiServer();
+    // 26 MB of base64 payload — above the 25 MB guard.
+    const oversized = "A".repeat(26 * 1024 * 1024);
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/corpus/transcriptions",
+      payload: {
+        title: "超大音频",
+        audioBase64: oversized,
+        fileName: "huge.wav"
+      }
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json().error).toContain("25");
+  });
+
+  it("rejects a transcription request with neither a source URL nor an uploaded file", async () => {
+    const server = buildApiServer();
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/corpus/transcriptions",
+      payload: { title: "缺少来源" }
+    });
+
+    expect(response.statusCode).toBe(422);
+  });
+
   it("runs an interview session through the Product API and persists the generated note", async () => {
     const server = buildApiServer();
 

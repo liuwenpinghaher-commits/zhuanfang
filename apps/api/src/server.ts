@@ -82,8 +82,14 @@ interface ProviderClients {
   embeddingClient?: BailianEmbeddingClient;
 }
 
+// 28 MB request body cap. Local audio uploads for corpus transcription are base64
+// (~33% larger than raw) with a 25 MB base64 product cap, plus JSON overhead — this
+// keeps the route-level 25 MB guard (which returns an actionable 422) the meaningful
+// boundary, rather than Fastify's default 1 MB limit rejecting with a terse 413.
+const REQUEST_BODY_LIMIT_BYTES = 28 * 1024 * 1024;
+
 export function buildApiServer(options: BuildApiServerOptions = {}) {
-  const server = Fastify({ logger: false });
+  const server = Fastify({ logger: false, bodyLimit: REQUEST_BODY_LIMIT_BYTES });
   const runtimeEnv = options.env ?? process.env;
   registerCors(server, runtimeEnv);
   registerProductionAuth(server, runtimeEnv);
