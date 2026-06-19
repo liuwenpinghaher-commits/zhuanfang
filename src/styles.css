@@ -3537,3 +3537,31 @@ select:focus-visible {
   flex-shrink: 0;
 }
 /* ===== END 语料学习：音频来源 ===== */
+
+/* ── 语料学习：阶段进度提示 ── */
+.corpus-stage-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.corpus-stage-hint::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--action-primary);
+  opacity: 0.7;
+  flex-shrink: 0;
+  animation: dot-pulse 1.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .corpus-stage-hint::before {
+    animation: none;
+    opacity: 0.5;
+  }
+}

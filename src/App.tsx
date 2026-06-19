@@ -171,6 +171,7 @@ export default function App() {
   const [corpusAudioBase64, setCorpusAudioBase64] = useState("");
   const [corpusAudioFileName, setCorpusAudioFileName] = useState("");
   const [corpusTranscribing, setCorpusTranscribing] = useState(false);
+  const [corpusAnalyzing, setCorpusAnalyzing] = useState(false);
   const [corpusContent, setCorpusContent] = useState(
     "主持人：你刚才说增长很难，能不能讲一个具体时刻？\n被访者：真正困难是团队不敢暴露坏消息。\n主持人：如果反过来看，是不是机制奖励了报喜不报忧？"
   );
@@ -758,6 +759,7 @@ export default function App() {
       ...(corpusSourceUrl.trim() ? { sourceUrl: corpusSourceUrl.trim() } : {})
     };
 
+    setCorpusAnalyzing(true);
     try {
       const apiRun = await productApiClient.analyzeCorpusImport(input, corpusFocus.trim() || undefined);
       setProductState(apiRun.state);
@@ -767,6 +769,8 @@ export default function App() {
       return;
     } catch {
       setApiPersistenceEnabled(false);
+    } finally {
+      setCorpusAnalyzing(false);
     }
 
     const { nextState } = analyzeImportedInterview(productState, {
@@ -1462,6 +1466,7 @@ export default function App() {
             content={corpusContent}
             focus={corpusFocus}
             transcribing={corpusTranscribing}
+            analyzing={corpusAnalyzing}
             audioFileName={corpusAudioFileName}
             onMediaType={setCorpusMediaType}
             onTitle={setCorpusTitle}

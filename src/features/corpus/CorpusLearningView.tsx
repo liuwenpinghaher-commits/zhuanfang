@@ -16,6 +16,7 @@ interface CorpusLearningViewProps {
   content: string;
   focus: string;
   transcribing: boolean;
+  analyzing: boolean;
   audioFileName: string;
   onMediaType: (value: CorpusImportInput["mediaType"]) => void;
   onTitle: (value: string) => void;
@@ -38,6 +39,7 @@ export function CorpusLearningView({
   content,
   focus,
   transcribing,
+  analyzing,
   audioFileName,
   onMediaType,
   onTitle,
@@ -250,8 +252,13 @@ export function CorpusLearningView({
                 disabled={(!sourceUrl.trim() && !audioFileName) || transcribing}
               >
                 {transcribing ? <LoaderCircle size={16} /> : <FileAudio2 size={16} />}
-                {transcribing ? "正在处理" : "生成转写稿"}
+                {transcribing ? "正在转写…" : "生成转写稿"}
               </button>
+              {transcribing && (
+                <p className="corpus-stage-hint">
+                  正在转写音频，可能需要 1-2 分钟……后端 SenseVoice 轮询中，请耐心等待。
+                </p>
+              )}
             </div>
           )}
           <label className="field-stack" htmlFor="corpus-content">
@@ -274,9 +281,20 @@ export function CorpusLearningView({
               <span className="char-count">{focus.length}/{FOCUS_MAX}</span>
             </div>
           </label>
-          <button className="primary-action" type="button" onClick={onAnalyze}>
-            <Sparkles size={18} />分析并生成建议
+          <button
+            className={analyzing ? "primary-action btn-loading" : "primary-action"}
+            type="button"
+            onClick={onAnalyze}
+            disabled={analyzing || transcribing}
+          >
+            {analyzing ? <span className="spinner" /> : <Sparkles size={18} />}
+            {analyzing ? "分析中…" : "分析并生成建议"}
           </button>
+          {analyzing && (
+            <p className="corpus-stage-hint">
+              正在提炼提问技法，通常需要 10-30 秒……
+            </p>
+          )}
         </div>
       </section>
 
