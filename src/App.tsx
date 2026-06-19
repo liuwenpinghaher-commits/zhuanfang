@@ -348,6 +348,20 @@ export default function App() {
   const editCandidate = (id: string, text: string) => withMemoryAction(() => productApiClient.updateMemoryCandidate(id, text));
   const deprecateRecord = (id: string) => withMemoryAction(() => productApiClient.deprecateMemoryRecord(id));
   const deleteRecord = (id: string) => withMemoryAction(() => productApiClient.deleteMemoryRecord(id));
+  const consolidateMemory = () =>
+    productApiClient
+      .consolidateMemory()
+      .then((res) => {
+        setProductState(res.state);
+        setNotice(
+          buildNotice(
+            "success",
+            "记忆已整理",
+            res.deprecated > 0 ? `合并了 ${res.deprecated} 条近重复记忆。` : "没有发现可合并的近重复记忆。"
+          )
+        );
+      })
+      .catch(() => setNotice(buildNotice("warning", "操作失败", "整理记忆需要后端在线。")));
 
   const assetResults = useMemo(() => searchProductAssets(productState, assetQuery), [productState, assetQuery]);
   const systemStatus = useMemo(() => buildSystemStatus(productState), [productState]);
@@ -1558,6 +1572,7 @@ export default function App() {
             onEditCandidate={editCandidate}
             onDeprecate={deprecateRecord}
             onDeleteRecord={deleteRecord}
+            onConsolidate={consolidateMemory}
           />
         )}
         {view === "config" && (

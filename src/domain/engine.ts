@@ -87,7 +87,7 @@ export {
 } from "./search-brief";
 
 export {
-  approveMemoryCandidate, deleteMemoryRecord, deprecateMemoryRecord,
+  approveMemoryCandidate, dedupeMemoryRecords, deleteMemoryRecord, deprecateMemoryRecord,
   planMemoryUpdate, rejectMemoryCandidate, updateMemoryCandidateText, updateMemoryRecordText,
 } from "./memory";
 

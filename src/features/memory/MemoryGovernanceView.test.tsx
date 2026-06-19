@@ -99,6 +99,7 @@ describe("SSR render guard", () => {
           onEditCandidate={noop}
           onDeprecate={noop}
           onDeleteRecord={noop}
+          onConsolidate={noop}
         />
       )
     ).not.toThrow();
@@ -120,6 +121,7 @@ describe("SSR render guard", () => {
           onEditCandidate={noop}
           onDeprecate={noop}
           onDeleteRecord={noop}
+          onConsolidate={noop}
         />
       )
     ).not.toThrow();
@@ -140,6 +142,7 @@ describe("empty states", () => {
         onEditCandidate={noop}
         onDeprecate={noop}
         onDeleteRecord={noop}
+        onConsolidate={noop}
       />
     );
     const emptyStates = container.querySelectorAll(".empty-state");
@@ -158,6 +161,7 @@ describe("empty states", () => {
         onEditCandidate={noop}
         onDeprecate={noop}
         onDeleteRecord={noop}
+        onConsolidate={noop}
       />
     );
     expect(container.textContent).toContain("暂无待审候选");
@@ -175,6 +179,7 @@ describe("empty states", () => {
         onEditCandidate={noop}
         onDeprecate={noop}
         onDeleteRecord={noop}
+        onConsolidate={noop}
       />
     );
     expect(container.textContent).toContain("还没有确认的长期记忆");
@@ -197,6 +202,7 @@ describe("sensitive icon", () => {
         onEditCandidate={noop}
         onDeprecate={noop}
         onDeleteRecord={noop}
+        onConsolidate={noop}
       />
     );
     expect(html).not.toContain("🔒"); // 🔒 unicode
@@ -217,6 +223,7 @@ describe("sensitive icon", () => {
         onEditCandidate={noop}
         onDeprecate={noop}
         onDeleteRecord={noop}
+        onConsolidate={noop}
       />
     );
     expect(html).toContain("<svg");
@@ -236,6 +243,7 @@ describe("sensitive icon", () => {
         onEditCandidate={noop}
         onDeprecate={noop}
         onDeleteRecord={noop}
+        onConsolidate={noop}
       />
     );
     expect(html).toContain("敏感");
@@ -257,6 +265,7 @@ describe("sensitive icon", () => {
         onEditCandidate={noop}
         onDeprecate={noop}
         onDeleteRecord={noop}
+        onConsolidate={noop}
       />
     );
     expect(html).not.toContain("🔒");
@@ -279,6 +288,7 @@ describe("inline edit", () => {
         onEditCandidate={noop}
         onDeprecate={noop}
         onDeleteRecord={noop}
+        onConsolidate={noop}
       />
     );
 
@@ -315,6 +325,7 @@ describe("inline edit", () => {
         onEditCandidate={noop}
         onDeprecate={noop}
         onDeleteRecord={noop}
+        onConsolidate={noop}
       />
     );
 
@@ -362,6 +373,7 @@ describe("inline edit", () => {
         onEditCandidate={onEditCandidate}
         onDeprecate={noop}
         onDeleteRecord={noop}
+        onConsolidate={noop}
       />
     );
 
@@ -414,6 +426,7 @@ describe("inline edit", () => {
         onEditCandidate={onEditCandidate}
         onDeprecate={noop}
         onDeleteRecord={noop}
+        onConsolidate={noop}
       />
     );
 
@@ -453,6 +466,7 @@ describe("approval actions", () => {
         onEditCandidate={noop}
         onDeprecate={noop}
         onDeleteRecord={noop}
+        onConsolidate={noop}
       />
     );
 
@@ -481,6 +495,7 @@ describe("approval actions", () => {
         onEditCandidate={noop}
         onDeprecate={noop}
         onDeleteRecord={noop}
+        onConsolidate={noop}
       />
     );
 
@@ -513,6 +528,7 @@ describe("import content length guard", () => {
         onEditCandidate={noop}
         onDeprecate={noop}
         onDeleteRecord={noop}
+        onConsolidate={noop}
       />
     );
 
@@ -547,6 +563,7 @@ describe("import content length guard", () => {
         onEditCandidate={noop}
         onDeprecate={noop}
         onDeleteRecord={noop}
+        onConsolidate={noop}
       />
     );
 
@@ -569,6 +586,7 @@ describe("import content length guard", () => {
         onEditCandidate={noop}
         onDeprecate={noop}
         onDeleteRecord={noop}
+        onConsolidate={noop}
       />
     );
 

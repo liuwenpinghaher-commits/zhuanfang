@@ -110,6 +110,94 @@ function tokenOverlapRatio(a: Set<string>, b: Set<string>): number {
 }
 
 /**
+ * M5: lightweight consolidation — borrows Generative Agents' "reflection/merge"
+ * idea but at the smallest useful scope: a manual "整理记忆" pass that de-dups
+ * near-identical CONFIRMED records, deprecating the weaker of each near-dup pair
+ * so the long-term store stops carrying two phrasings of the same fact.
+ *
+ * Pure & synchronous — like {@link planMemoryUpdate} it never calls Date.now()/
+ * embed; similarity reuses embedding cosine when BOTH sides carry a vector,
+ * otherwise token-overlap (Jaccard) over the shared tokenizer. Only `confirmed`
+ * records participate; already-deprecated/deleted records are returned untouched.
+ *
+ * Merge policy for a near-dup pair (score strictly > `threshold`, default 0.9):
+ * keep the stronger by `importance` (`?? 5`, matching scoreMemoryForRetrieval),
+ * breaking ties toward the more recent `createdAt`; the loser is flagged
+ * `status:"deprecated"` with a `deprecatedReason` pointing at the kept record id.
+ * A record already chosen as a loser cannot later be kept, so we never deprecate
+ * the stronger member of a cluster via a chained comparison.
+ *
+ * @returns a NEW array (input is never mutated). Optional LLM summarization of a
+ *          merged cluster is done in the route layer (it has the chat client);
+ *          this function only makes the deterministic, offline-safe dedup decision.
+ */
+export function dedupeMemoryRecords(
+  records: MemoryRecord[],
+  opts: { threshold?: number } = {}
+): MemoryRecord[] {
+  const threshold = opts.threshold ?? 0.9;
+  // recordId -> kept record id that supersedes it (the merge target).
+  const deprecatedBy = new Map<string, string>();
+
+  const confirmed = records.filter((record) => record.status === "confirmed");
+  for (let i = 0; i < confirmed.length; i += 1) {
+    for (let j = i + 1; j < confirmed.length; j += 1) {
+      const a = confirmed[i];
+      const b = confirmed[j];
+      // A record already marked a loser is out of the running on both sides:
+      // it can neither be kept nor re-deprecated.
+      if (deprecatedBy.has(a.id) || deprecatedBy.has(b.id)) {
+        continue;
+      }
+      if (recordSimilarity(a, b) <= threshold) {
+        continue;
+      }
+      const keeper = strongerRecord(a, b);
+      const loser = keeper.id === a.id ? b : a;
+      deprecatedBy.set(loser.id, keeper.id);
+    }
+  }
+
+  if (deprecatedBy.size === 0) {
+    return records.map((record) => ({ ...record }));
+  }
+  return records.map((record) => {
+    const keptId = deprecatedBy.get(record.id);
+    if (!keptId) {
+      return { ...record };
+    }
+    return {
+      ...record,
+      status: "deprecated",
+      deprecatedReason: `记忆整理：与 ${keptId} 合并`
+    };
+  });
+}
+
+// Embedding cosine when both records carry a vector; otherwise token overlap.
+// Mirrors scoreCandidateAgainstRecord but for two stored records.
+function recordSimilarity(a: MemoryRecord, b: MemoryRecord): number {
+  const hasA = Array.isArray(a.embedding) && a.embedding.length > 0;
+  const hasB = Array.isArray(b.embedding) && b.embedding.length > 0;
+  if (hasA && hasB) {
+    return cosineSimilarity(a.embedding as number[], b.embedding as number[]);
+  }
+  return tokenOverlapRatio(tokenizeMemoryGraphText(a.text), tokenizeMemoryGraphText(b.text));
+}
+
+// The record to KEEP from a near-dup pair: higher importance wins; on a tie the
+// more recent createdAt wins (so consolidation prefers the freshest phrasing).
+// importance defaults to 5, matching scoreMemoryForRetrieval's `importance ?? 5`.
+function strongerRecord(a: MemoryRecord, b: MemoryRecord): MemoryRecord {
+  const importanceA = a.importance ?? 5;
+  const importanceB = b.importance ?? 5;
+  if (importanceA !== importanceB) {
+    return importanceA > importanceB ? a : b;
+  }
+  return a.createdAt >= b.createdAt ? a : b;
+}
+
+/**
  * M3c: approve a candidate into a confirmed MemoryRecord.
  *
  * Pure & synchronous — embeddings are computed asynchronously in the route layer

@@ -39,6 +39,7 @@ export interface ProductApiClient {
   confirmDecision(id: string): Promise<ProductState>;
   approveMemoryCandidate(id: string): Promise<ProductState>;
   rejectMemoryCandidate(id: string, reviewNote?: string): Promise<ProductState>;
+  consolidateMemory(): Promise<{ state: ProductState; deprecated: number }>;
   updateMemoryCandidate(id: string, text: string): Promise<ProductState>;
   deprecateMemoryRecord(id: string, reason?: string): Promise<ProductState>;
   deleteMemoryRecord(id: string): Promise<ProductState>;
@@ -413,6 +414,13 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         body: JSON.stringify({ reviewNote })
       })) as { state: ProductState };
       return normalizeProductState(response.state);
+    },
+    async consolidateMemory() {
+      const response = (await requestJson("/api/memory/consolidate", { method: "POST" })) as {
+        state: ProductState;
+        summary: { deprecated: number };
+      };
+      return { state: normalizeProductState(response.state), deprecated: response.summary?.deprecated ?? 0 };
     },
     async updateMemoryCandidate(id, text) {
       const response = (await requestJson(`/api/memory-candidates/${id}`, {

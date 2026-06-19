@@ -12,6 +12,7 @@ interface MemoryGovernanceViewProps {
   onEditCandidate: (candidateId: string, text: string) => void;
   onDeprecate: (recordId: string) => void;
   onDeleteRecord: (recordId: string) => void;
+  onConsolidate: () => void | Promise<void>;
 }
 
 type ActionState = "idle" | "loading" | "done" | "error";
@@ -42,11 +43,13 @@ export function MemoryGovernanceView({
   onReject,
   onEditCandidate,
   onDeprecate,
-  onDeleteRecord
+  onDeleteRecord,
+  onConsolidate
 }: MemoryGovernanceViewProps) {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [contentError, setContentError] = useState("");
+  const [consolidating, setConsolidating] = useState(false);
 
   // per-candidate inline edit: id -> draft text (null = not editing)
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -390,7 +393,28 @@ export function MemoryGovernanceView({
 
       {/* Confirmed records — 真双列布局（左内容右操作），保留 record-row */}
       <div className="record-list">
-        <h2>已确认的长期记忆（{confirmed.length}）</h2>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <h2>已确认的长期记忆（{confirmed.length}）</h2>
+          {confirmed.length >= 2 && (
+            <button
+              type="button"
+              className={consolidating ? "secondary-action btn-loading" : "secondary-action"}
+              disabled={consolidating}
+              title="合并近重复的记忆，保留更重要的一条"
+              onClick={async () => {
+                setConsolidating(true);
+                try {
+                  await onConsolidate();
+                } finally {
+                  setConsolidating(false);
+                }
+              }}
+            >
+              {consolidating ? <span className="spinner" /> : <GitMerge size={16} aria-hidden="true" />}
+              {consolidating ? "整理中…" : "整理记忆"}
+            </button>
+          )}
+        </div>
         {confirmed.length === 0 ? (
           <div className="empty-state">
             <span className="empty-icon"><Lock size={32} /></span>

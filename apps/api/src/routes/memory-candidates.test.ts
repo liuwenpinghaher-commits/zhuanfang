@@ -3,7 +3,19 @@ import Fastify from "fastify";
 import { registerMemoryCandidateRoutes } from "./memory-candidates";
 import { createInMemoryProductStateRepository } from "../product-state-repository";
 import { createEmptyProductState } from "../../../../src/domain/engine";
-import type { MemoryCandidate, ProductState } from "../../../../src/domain/types";
+import type { MemoryCandidate, MemoryRecord, ProductState } from "../../../../src/domain/types";
+
+function confirmedRecord(partial: Partial<MemoryRecord> & { id: string; text: string }): MemoryRecord {
+  return {
+    status: "confirmed",
+    sourceType: "interview_session",
+    sourceId: "s1",
+    evidenceQuote: "",
+    createdAt: "2026-06-20T00:00:00.000Z",
+    updatedAt: "2026-06-20T00:00:00.000Z",
+    ...partial
+  } as MemoryRecord;
+}
 
 // Task 5 (M3c): approving a candidate must enrich the new MemoryRecord with a
 // semantic embedding (computed in the route via the embeddingClient) and an
@@ -98,6 +110,113 @@ describe("memory-candidates approve (M3c embedding enrichment)", () => {
     const record = res.json().record;
     expect(record).toBeDefined();
     expect(record.embedding).toBeUndefined();
+
+    await server.close();
+  });
+});
+
+// M5: lightweight consolidation — POST /api/memory/consolidate de-dups
+// near-identical confirmed records (deprecate the weaker) and persists the
+// result. With a chat client it may additionally emit a pending summary
+// candidate for HITL; without one it just de-dups (offline-safe).
+function seedNearDuplicateRecords(): ProductState {
+  return {
+    ...createEmptyProductState(),
+    memoryRecords: [
+      confirmedRecord({ id: "rec-keep", text: "用户偏好先小范围验证再放权", importance: 8, embedding: [0.1, 0.2, 0.3] }),
+      confirmedRecord({ id: "rec-weak", text: "用户喜欢先验证再授权", importance: 3, embedding: [0.1, 0.2, 0.31] })
+    ]
+  };
+}
+
+describe("memory consolidate (M5 lightweight consolidation)", () => {
+  it("deprecates the weaker of a near-duplicate pair and reports the count", async () => {
+    const repo = createInMemoryProductStateRepository(seedNearDuplicateRecords());
+    const server = Fastify({ logger: false });
+    await registerMemoryCandidateRoutes(server, repo, {});
+
+    const res = await server.inject({ method: "POST", url: "/api/memory/consolidate" });
+    expect(res.statusCode).toBe(200);
+
+    const body = res.json();
+    expect(body.summary.deprecated).toBe(1);
+
+    // The weaker record is deprecated in the persisted state; the stronger stays.
+    const persisted = repo.getState();
+    expect(persisted.memoryRecords.find((r) => r.id === "rec-weak")?.status).toBe("deprecated");
+    expect(persisted.memoryRecords.find((r) => r.id === "rec-keep")?.status).toBe("confirmed");
+    expect(body.state.memoryRecords.find((r: MemoryRecord) => r.id === "rec-weak")?.status).toBe("deprecated");
+
+    await server.close();
+  });
+
+  it("no near-duplicates → deprecates nothing", async () => {
+    const repo = createInMemoryProductStateRepository({
+      ...createEmptyProductState(),
+      memoryRecords: [
+        confirmedRecord({ id: "a", text: "喜欢喝咖啡" }),
+        confirmedRecord({ id: "b", text: "讨厌开会" })
+      ]
+    });
+    const server = Fastify({ logger: false });
+    await registerMemoryCandidateRoutes(server, repo, {});
+
+    const res = await server.inject({ method: "POST", url: "/api/memory/consolidate" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().summary.deprecated).toBe(0);
+    expect(repo.getState().memoryRecords.every((r) => r.status === "confirmed")).toBe(true);
+
+    await server.close();
+  });
+
+  it("without a chat client: de-dups but emits no summary candidate", async () => {
+    const repo = createInMemoryProductStateRepository(seedNearDuplicateRecords());
+    const server = Fastify({ logger: false });
+    await registerMemoryCandidateRoutes(server, repo, {}); // no bailianChatClient
+
+    const res = await server.inject({ method: "POST", url: "/api/memory/consolidate" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().summary.deprecated).toBe(1);
+    // No LLM → no new pending candidate is created.
+    expect(repo.getState().memoryCandidates.length).toBe(0);
+
+    await server.close();
+  });
+
+  it("with a chat client: emits a pending summary candidate for the merged cluster (HITL)", async () => {
+    const complete = vi.fn(async () => "用户偏好先小范围验证后再逐步授权放权。");
+    const repo = createInMemoryProductStateRepository(seedNearDuplicateRecords());
+    const server = Fastify({ logger: false });
+    await registerMemoryCandidateRoutes(server, repo, { bailianChatClient: { complete } });
+
+    const res = await server.inject({ method: "POST", url: "/api/memory/consolidate" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().summary.deprecated).toBe(1);
+
+    expect(complete).toHaveBeenCalledTimes(1);
+    const candidates = repo.getState().memoryCandidates;
+    // A single pending summary candidate is queued for human review.
+    expect(candidates.length).toBe(1);
+    expect(candidates[0].status).toBe("pending");
+    expect(candidates[0].text).toContain("授权");
+
+    await server.close();
+  });
+
+  it("chat client failure degrades to dedup-only (no crash, no candidate)", async () => {
+    const complete = vi.fn(async () => {
+      throw new Error("chat service down");
+    });
+    const repo = createInMemoryProductStateRepository(seedNearDuplicateRecords());
+    const server = Fastify({ logger: false });
+    await registerMemoryCandidateRoutes(server, repo, { bailianChatClient: { complete } });
+
+    const res = await server.inject({ method: "POST", url: "/api/memory/consolidate" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().summary.deprecated).toBe(1);
+    expect(repo.getState().memoryRecords.find((r) => r.id === "rec-weak")?.status).toBe("deprecated");
+    // Summary failed → no candidate, but consolidation still persisted.
+    expect(repo.getState().memoryCandidates.length).toBe(0);
 
     await server.close();
   });

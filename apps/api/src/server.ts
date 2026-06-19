@@ -184,8 +184,11 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   });
   void server.register(async (registeredServer) => {
     // M3c: candidate approval embeds the new long-term record (semantic recall).
+    // M5: consolidation (POST /api/memory/consolidate) reuses the chat client to
+    // optionally summarize merged clusters into pending HITL candidates.
     await registerMemoryCandidateRoutes(registeredServer, productStateRepository, {
-      embeddingClient: providerClients.embeddingClient
+      embeddingClient: providerClients.embeddingClient,
+      bailianChatClient: providerClients.bailianChatClient
     });
   });
   void server.register(async (registeredServer) => {

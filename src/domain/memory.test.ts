@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { planMemoryUpdate } from "./memory";
+import { dedupeMemoryRecords, planMemoryUpdate } from "./memory";
 import type { MemoryRecord } from "./types";
 
 function confirmedRecord(partial: Partial<MemoryRecord> & { id: string; text: string }): MemoryRecord {
@@ -84,5 +84,80 @@ describe("planMemoryUpdate (extract-then-update dedup hint, HITL surfaced)", () 
     );
     expect(plan.op).toBe("update");
     expect(plan.similarToRecordId).toBe("m-high");
+  });
+});
+
+describe("dedupeMemoryRecords (lightweight consolidation, M5)", () => {
+  it("merges near-identical confirmed memories, keeping the stronger", () => {
+    const recs = [
+      { id: "a", text: "先验证再放权", status: "confirmed", importance: 8, createdAt: "2026-06-19T00:00:00Z", embedding: [0.1, 0.2] },
+      { id: "b", text: "先验证再授权", status: "confirmed", importance: 3, createdAt: "2026-05-01T00:00:00Z", embedding: [0.1, 0.21] }
+    ] as any;
+    const out = dedupeMemoryRecords(recs, { threshold: 0.9 });
+    expect(out.find((r: MemoryRecord) => r.id === "b")?.status).toBe("deprecated"); // 弱者(importance 低/更旧)被弃
+    expect(out.find((r: MemoryRecord) => r.id === "a")?.status).toBe("confirmed"); // 强者留
+  });
+
+  it("keeps unrelated memories untouched", () => {
+    const recs = [
+      { id: "a", text: "喜欢喝咖啡", status: "confirmed" },
+      { id: "b", text: "讨厌开会", status: "confirmed" }
+    ] as any;
+    const out = dedupeMemoryRecords(recs, { threshold: 0.9 });
+    expect(out.every((r: MemoryRecord) => r.status === "confirmed")).toBe(true);
+  });
+
+  it("does not mutate the input array (immutable)", () => {
+    const recs = [
+      confirmedRecord({ id: "a", text: "先验证再放权", importance: 8, embedding: [0.1, 0.2] }),
+      confirmedRecord({ id: "b", text: "先验证再授权", importance: 3, embedding: [0.1, 0.21] })
+    ];
+    const out = dedupeMemoryRecords(recs, { threshold: 0.9 });
+    expect(out).not.toBe(recs);
+    expect(recs.every((r) => r.status === "confirmed")).toBe(true); // 原数组不被改
+    expect(out.find((r) => r.id === "b")?.status).toBe("deprecated");
+  });
+
+  it("records a consolidation reason that points at the kept record", () => {
+    const recs = [
+      confirmedRecord({ id: "keep", text: "先验证再放权", importance: 8, embedding: [0.1, 0.2] }),
+      confirmedRecord({ id: "weak", text: "先验证再授权", importance: 3, embedding: [0.1, 0.21] })
+    ];
+    const out = dedupeMemoryRecords(recs, { threshold: 0.9 });
+    const weak = out.find((r) => r.id === "weak");
+    expect(weak?.status).toBe("deprecated");
+    expect(weak?.deprecatedReason).toContain("记忆整理");
+    expect(weak?.deprecatedReason).toContain("keep"); // 指向保留者 id
+  });
+
+  it("on importance tie, deprecates the older record", () => {
+    const recs = [
+      confirmedRecord({ id: "newer", text: "先验证再放权", importance: 5, createdAt: "2026-06-19T00:00:00Z", embedding: [0.1, 0.2] }),
+      confirmedRecord({ id: "older", text: "先验证再授权", importance: 5, createdAt: "2026-05-01T00:00:00Z", embedding: [0.1, 0.21] })
+    ];
+    const out = dedupeMemoryRecords(recs, { threshold: 0.9 });
+    expect(out.find((r) => r.id === "older")?.status).toBe("deprecated");
+    expect(out.find((r) => r.id === "newer")?.status).toBe("confirmed");
+  });
+
+  it("merges near-duplicates via token overlap when embeddings are absent", () => {
+    const recs = [
+      confirmedRecord({ id: "keep", text: "用户偏好先小范围验证再放权后扩大试点", importance: 7 }),
+      confirmedRecord({ id: "weak", text: "用户偏好先小范围验证再放权后扩大", importance: 2 })
+    ];
+    const out = dedupeMemoryRecords(recs, { threshold: 0.5 });
+    expect(out.find((r) => r.id === "weak")?.status).toBe("deprecated");
+    expect(out.find((r) => r.id === "keep")?.status).toBe("confirmed");
+  });
+
+  it("ignores non-confirmed records (only confirmed are consolidated)", () => {
+    const recs = [
+      confirmedRecord({ id: "a", text: "先验证再放权", importance: 8, embedding: [0.1, 0.2] }),
+      confirmedRecord({ id: "b", text: "先验证再授权", importance: 3, status: "deprecated", embedding: [0.1, 0.21] })
+    ];
+    const out = dedupeMemoryRecords(recs, { threshold: 0.9 });
+    // b is already deprecated → untouched, a stays confirmed (nothing to merge against)
+    expect(out.find((r) => r.id === "a")?.status).toBe("confirmed");
+    expect(out.find((r) => r.id === "b")?.status).toBe("deprecated");
   });
 });
