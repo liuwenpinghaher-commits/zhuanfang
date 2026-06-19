@@ -136,10 +136,10 @@ export function mergeFinalizedState(
     const memoryCandidate = buildMemoryCandidateFromSession(session, note, note.keyQuote, completedAt);
     nextState.memoryCandidates = [memoryCandidate, ...(nextState.memoryCandidates ?? [])];
   }
-  nextState.points = [...content.points, ...nextState.points];
-  nextState.questions = [...content.questions, ...nextState.questions];
-  nextState.decisions = [...content.decisions, ...nextState.decisions];
-  nextState.debts = [...content.debts, ...nextState.debts];
+  nextState.points = [...content.points.map(p => ({ ...p, sourceSessionId: session.id })), ...nextState.points];
+  nextState.questions = [...content.questions.map(q => ({ ...q, sourceSessionId: session.id })), ...nextState.questions];
+  nextState.decisions = [...content.decisions.map(d => ({ ...d, sourceSessionId: session.id })), ...nextState.decisions];
+  nextState.debts = [...content.debts.map(db => ({ ...db, sourceSessionId: session.id })), ...nextState.debts];
   nextState.themes = upsertFinalizeThemes(nextState.themes, content.themes, completedAt);
 
   return {

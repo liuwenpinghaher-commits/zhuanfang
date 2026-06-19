@@ -609,6 +609,8 @@ export interface PointAsset {
   relatedThemeIds: string[];
   important: boolean;
   updatedAt: string;
+  /** 产出该资产的专访会话 id */
+  sourceSessionId?: string;
 }
 
 export interface QuestionAsset {
@@ -621,6 +623,8 @@ export interface QuestionAsset {
   nextPrompt: string;
   important: boolean;
   updatedAt: string;
+  /** 产出该资产的专访会话 id */
+  sourceSessionId?: string;
 }
 
 export interface DecisionAsset {
@@ -635,6 +639,8 @@ export interface DecisionAsset {
   status: "待复盘" | "已复盘";
   updatedAt: string;
   relatedThemeIds?: string[];
+  /** 产出该资产的专访会话 id */
+  sourceSessionId?: string;
 }
 
 export interface KnowledgeDebt {
@@ -646,6 +652,8 @@ export interface KnowledgeDebt {
   nextQuestion: string;
   updatedAt: string;
   relatedThemeIds?: string[];
+  /** 产出该资产的专访会话 id */
+  sourceSessionId?: string;
 }
 
 
