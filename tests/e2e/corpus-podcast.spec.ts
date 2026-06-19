@@ -37,7 +37,7 @@ test("analyzes imported audio interview transcripts with source metadata", async
 
   await page.getByLabel("样本类型").selectOption("audio");
   await page.getByLabel("样本标题").fill(sampleTitle);
-  await page.getByLabel("音频来源 URL").fill(sourceUrl);
+  await page.getByLabel("公网音频 URL").fill(sourceUrl);
   await page.getByLabel("音频转写稿或摘要").fill([
     "主持人：你说团队不愿意承担判断，能不能讲一个真实会议？",
     "被访者：他们只等我拍板。",
@@ -84,7 +84,7 @@ test("transcribes an audio source before corpus analysis", async ({ page }) => {
 
   await page.getByLabel("样本类型").selectOption("audio");
   await page.getByLabel("样本标题").fill(sampleTitle);
-  await page.getByLabel("音频来源 URL").fill(sourceUrl);
+  await page.getByLabel("公网音频 URL").fill(sourceUrl);
   await page.getByRole("button", { name: "生成转写稿" }).click();
 
   await expect(page.getByText("音频转写已完成")).toBeVisible();
