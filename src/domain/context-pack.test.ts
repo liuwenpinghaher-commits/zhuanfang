@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { buildInterviewCard, buildInterviewContextPack, buildInterviewGuide, buildSemanticRagContext } from "./context-pack";
+import { buildInterviewCard, buildInterviewContextPack, buildInterviewGuide, buildSemanticRagContext, scoreMemoryForRetrieval } from "./context-pack";
 import { createInitialProductState } from "./engine";
-import type { MemoryCorrection, RagChunk, ImportSource, SearchBrief } from "./types";
+import type { MemoryCorrection, MemoryRecord, RagChunk, ImportSource, SearchBrief } from "./types";
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -99,6 +99,113 @@ describe("buildSemanticRagContext — cosine retrieval", () => {
     state.ragChunks = [];
     const result = buildSemanticRagContext(state, "授权", 5, [1, 0, 0]);
     expect(result.chunks).toHaveLength(0);
+  });
+});
+
+// ─── M3b: scoreMemoryForRetrieval — relevance + recency + importance ───────────
+
+describe("scoreMemoryForRetrieval (M3b)", () => {
+  it("ranks by relevance+recency+importance; substring fallback without embedding", () => {
+    const now = "2026-06-20T00:00:00Z";
+    const recent = {
+      id: "a",
+      text: "放权 信任",
+      importance: 9,
+      createdAt: "2026-06-19T00:00:00Z",
+      lastAccessedAt: "2026-06-19T00:00:00Z"
+    } as unknown as MemoryRecord;
+    const old = {
+      id: "b",
+      text: "放权 信任",
+      importance: 2,
+      createdAt: "2026-01-01T00:00:00Z",
+      lastAccessedAt: "2026-01-01T00:00:00Z"
+    } as unknown as MemoryRecord;
+    expect(scoreMemoryForRetrieval(recent, { topicTokens: ["放权"], now })).toBeGreaterThan(
+      scoreMemoryForRetrieval(old, { topicTokens: ["放权"], now })
+    );
+  });
+
+  it("uses cosine when both query and record embeddings present", () => {
+    const now = "2026-06-20T00:00:00Z";
+    const near = {
+      id: "a",
+      text: "x",
+      embedding: [0.1, 0.2, 0.3],
+      importance: 5,
+      createdAt: now,
+      lastAccessedAt: now
+    } as unknown as MemoryRecord;
+    const far = {
+      id: "b",
+      text: "x",
+      embedding: [0.9, -0.2, 0.0],
+      importance: 5,
+      createdAt: now,
+      lastAccessedAt: now
+    } as unknown as MemoryRecord;
+    const q = [0.1, 0.2, 0.31];
+    expect(scoreMemoryForRetrieval(near, { topicTokens: [], queryEmbedding: q, now })).toBeGreaterThan(
+      scoreMemoryForRetrieval(far, { topicTokens: [], queryEmbedding: q, now })
+    );
+  });
+
+  it("recency uses lastAccessedAt, falls back to createdAt, and tolerates missing/invalid timestamps", () => {
+    const now = "2026-06-20T00:00:00Z";
+    // no lastAccessedAt → falls back to createdAt (recent)
+    const fallbackToCreated = {
+      id: "a",
+      text: "放权",
+      importance: 5,
+      createdAt: "2026-06-19T00:00:00Z"
+    } as unknown as MemoryRecord;
+    // unparseable timestamps → recency floored to 0, but relevance+importance still scored
+    const badTimestamps = {
+      id: "b",
+      text: "放权",
+      importance: 5,
+      createdAt: "not-a-date",
+      lastAccessedAt: "also-bad"
+    } as unknown as MemoryRecord;
+    const goodScore = scoreMemoryForRetrieval(fallbackToCreated, { topicTokens: ["放权"], now });
+    const badScore = scoreMemoryForRetrieval(badTimestamps, { topicTokens: ["放权"], now });
+    expect(Number.isFinite(goodScore)).toBe(true);
+    expect(Number.isFinite(badScore)).toBe(true);
+    // recent createdAt beats unparseable (recency floored to 0)
+    expect(goodScore).toBeGreaterThan(badScore);
+  });
+});
+
+// ─── M3b: collectRelevantMemories surfaces importance via buildInterviewGuide ──
+
+describe("collectRelevantMemories — confirmed memories ranked by score (M3b)", () => {
+  it("a high-importance recent confirmed memory matching the topic appears in guide.relevantMemories", () => {
+    const state = createInitialProductState();
+    state.notes = []; state.points = []; state.questions = []; state.debts = [];
+    // Theme drives the topicHint
+    state.themes = [{
+      id: "t1", name: "授权", summary: "团队授权",
+      maturity: "聚焦", representativeQuote: "我要学会放手",
+      appearances: 5, nextQuestion: "你最近放权了吗？", updatedAt: "2026-06-19T00:00:00.000Z"
+    }];
+    const salient: MemoryRecord = {
+      id: "m-salient",
+      text: "用户反复强调：授权团队后自己更焦虑",
+      status: "confirmed",
+      sourceType: "interview_session",
+      sourceId: "s1",
+      evidenceQuote: "授权团队后自己更焦虑",
+      sensitivity: "normal",
+      createdAt: "2026-06-19T00:00:00.000Z",
+      updatedAt: "2026-06-19T00:00:00.000Z",
+      importance: 9,
+      lastAccessedAt: "2026-06-19T00:00:00.000Z"
+    };
+    state.memoryRecords = [salient];
+
+    const guide = buildInterviewGuide(state);
+    expect(guide.relevantMemories.length).toBeGreaterThan(0);
+    expect(guide.relevantMemories.some((m) => m.includes("授权团队后自己更焦虑"))).toBe(true);
   });
 });
 

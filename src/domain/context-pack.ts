@@ -24,7 +24,7 @@ import type {
 import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, formatSearchTraceSourceLabel, getReferenceMaterialPublisher, daysBetween, modeLabels, removedExternalInstruction } from "./utils";
 
 import { buildInterviewEnginePolicy } from "./strategy";
-import { topKByCosine } from "./vector";
+import { cosineSimilarity, topKByCosine } from "./vector";
 
 // ponytail: 有界常量 — 上下文包中最多携带的 corrections 条数
 const MAX_CONTEXT_CORRECTIONS = 20;
@@ -466,7 +466,9 @@ export function buildInterviewGuide(state: ProductState, options: InterviewGuide
   const perspectiveCoverage = buildPerspectiveCoverage(state);
   const missingPerspectives = defaultPerspectiveOrder.filter((perspective) => perspectiveCoverage[perspective] === 0);
   const recommendedPerspectives = chooseRecommendedPerspectives(topicHint, searchBrief, perspectiveCoverage, missingPerspectives);
-  const relevantMemories = collectRelevantMemories(state, topicHint, contextPack);
+  // M3b: now 由编排层注入纯函数评分器，scoreMemoryForRetrieval 自身不触碰时钟。
+  // 主访谈流程按关键词召回（见上方 ponytail 注释），不穿 queryEmbedding。
+  const relevantMemories = collectRelevantMemories(state, topicHint, contextPack, undefined, nowIso());
   const statedPositions = state.points.slice(0, 4).map((point) => `${point.title}：${point.content}`);
   const openingQuestion = searchBrief
     ? explicitTopicHint
@@ -832,15 +834,44 @@ function collectConfirmedMemoryTexts(state: ProductState) {
     ])
   );
 }
-function collectRelevantMemories(state: ProductState, topicHint: string, contextPack: InterviewContextPack) {
-  const memoryCandidates = [
-    ...contextPack.confirmedMemories,
+function collectRelevantMemories(
+  state: ProductState,
+  topicHint: string,
+  contextPack: InterviewContextPack,
+  queryEmbedding?: number[],
+  now: string = nowIso()
+) {
+  const topicTokens = splitTopicTokens(topicHint);
+
+  // 1) confirmed 长期记忆：用三因子评分（relevance + recency + importance）排序。
+  //    无 embedding 时 relevance 退回子串命中率，行为与旧子串逻辑一致。
+  const rankedMemoryTexts = [...contextPack.memoryRecords]
+    .map((record) => ({
+      text: record.text,
+      score: scoreMemoryForRetrieval(record, { topicTokens, ...(queryEmbedding ? { queryEmbedding } : {}), now })
+    }))
+    .sort((a, b) => b.score - a.score)
+    .map((item) => item.text);
+
+  // 2) 其余资产（笔记/观点/问题/主题）无 MemoryRecord 元数据，沿用子串排序。
+  const otherCandidates = [
     ...state.notes.map((note) => `${note.title}：${note.summary}`),
     ...state.points.map((point) => `${point.title}：${point.content}`),
     ...state.questions.map((question) => `${question.question}：${question.whyImportant}`),
     ...state.themes.map((theme) => `${theme.name}：${theme.summary}`)
   ];
-  return rankMemoryTexts(memoryCandidates, topicHint).slice(0, 5);
+  const rankedOthers = rankMemoryTexts(otherCandidates, topicHint);
+
+  // 记忆优先于其余资产，去重后取前 5。
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  for (const text of [...rankedMemoryTexts, ...rankedOthers]) {
+    if (!seen.has(text)) {
+      seen.add(text);
+      merged.push(text);
+    }
+  }
+  return merged.slice(0, 5);
 }
 function countOccurrences(text: string, signal: string) {
   return text.split(signal).length - 1;
@@ -1028,6 +1059,57 @@ function rankMemoryTexts(memoryCandidates: string[], topicHint: string) {
   return scored
     .filter((item, index) => item.score > 0 || index < 3)
     .map((item) => item.memory);
+}
+
+/**
+ * M3b: 记忆检索三因子评分（借鉴 Generative Agents：relevance + recency + importance）。
+ *
+ * 纯函数 — 不调用 `Date.now()`/`new Date()`，当前时间通过 `opts.now`（ISO 字符串）传入。
+ * 时间字符串用 `Date.parse` 解析；解析失败（NaN）或未来时间导致的负 hoursSince 一律按 0 兜底。
+ *
+ * - relevance：同时有 `queryEmbedding` 与 `record.embedding` 时走 cosine（负值截 0，落到 0..1）；
+ *   否则退回子串/token 命中率（命中 token 数 / 总 token 数，0..1），与旧的 `rankMemoryTexts` 子串逻辑一致。
+ * - recency：`0.995^hoursSince`，基于 `lastAccessedAt ?? createdAt`。
+ * - importance：`(importance ?? 5) / 10`。
+ *
+ * @returns 加权得分（默认权重 0.6/0.25/0.15）。
+ */
+export function scoreMemoryForRetrieval(
+  record: MemoryRecord,
+  opts: { topicTokens: string[]; queryEmbedding?: number[]; now: string; alpha?: number; beta?: number; gamma?: number }
+): number {
+  const { topicTokens, queryEmbedding, now } = opts;
+  const alpha = opts.alpha ?? 0.6;
+  const beta = opts.beta ?? 0.25;
+  const gamma = opts.gamma ?? 0.15;
+
+  // relevance ∈ [0,1]
+  let relevance: number;
+  if (queryEmbedding && queryEmbedding.length > 0 && record.embedding && record.embedding.length > 0) {
+    relevance = Math.max(0, cosineSimilarity(queryEmbedding, record.embedding));
+  } else {
+    const tokens = topicTokens.filter((token) => token.length > 0);
+    if (tokens.length === 0) {
+      relevance = 0;
+    } else {
+      const hits = tokens.reduce((count, token) => count + (record.text.includes(token) ? 1 : 0), 0);
+      relevance = hits / tokens.length;
+    }
+  }
+
+  // recency ∈ (0,1]，未来/不可解析时间兜底为 0
+  const referenceTime = Date.parse(record.lastAccessedAt ?? record.createdAt);
+  const nowTime = Date.parse(now);
+  let recency = 0;
+  if (Number.isFinite(referenceTime) && Number.isFinite(nowTime)) {
+    const hoursSince = (nowTime - referenceTime) / 3.6e6;
+    recency = hoursSince >= 0 ? Math.pow(0.995, hoursSince) : 0;
+  }
+
+  // importance ∈ [0,1]
+  const importance = (record.importance ?? 5) / 10;
+
+  return alpha * relevance + beta * recency + gamma * importance;
 }
 function resolveInterviewContextSearchBrief(state: ProductState, options: InterviewGuideOptions = {}) {
   const explicitTopicHint = options.topicHint?.trim();
