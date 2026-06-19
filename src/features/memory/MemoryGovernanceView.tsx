@@ -52,6 +52,9 @@ export function MemoryGovernanceView({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftText, setDraftText] = useState("");
 
+  // brief "已保存" feedback after save
+  const [savedId, setSavedId] = useState<string | null>(null);
+
   // per-candidate action states
   const [candidateOps, setCandidateOps] = useState<Record<string, CandidateOp>>({});
 
@@ -66,6 +69,13 @@ export function MemoryGovernanceView({
       textareaRef.current.setSelectionRange(len, len);
     }
   }, [editingId]);
+
+  // Auto-clear "已保存" feedback after 1.5s
+  useEffect(() => {
+    if (!savedId) return;
+    const t = setTimeout(() => setSavedId(null), 1500);
+    return () => clearTimeout(t);
+  }, [savedId]);
 
   const pending = state.memoryCandidates.filter((c) => c.status === "pending");
   const confirmed = state.memoryRecords.filter((r) => r.status === "confirmed");
@@ -122,6 +132,7 @@ export function MemoryGovernanceView({
     try {
       await Promise.resolve(onEditCandidate(candidateId, next));
       setOp(candidateId, { save: "done" });
+      setSavedId(candidateId);
     } catch {
       setOp(candidateId, { save: "error" });
     } finally {
@@ -159,10 +170,10 @@ export function MemoryGovernanceView({
         subtitle="导入的资料会抽取成候选记忆；只有你确认后才进入长期记忆。敏感内容默认不写入上下文。"
       />
 
-      {/* Import card */}
-      <article className="record-row">
-        <div className="record-main">
-          <label className="label" htmlFor="memory-import-title">资料标题</label>
+      {/* Import card — 单列 form-card，修复 record-row 双列重叠问题 */}
+      <div className="form-card">
+        <div className="form-row">
+          <label className="field-label" htmlFor="memory-import-title">资料标题</label>
           <input
             id="memory-import-title"
             type="text"
@@ -170,7 +181,9 @@ export function MemoryGovernanceView({
             placeholder="例如：我的产品笔记 / 一篇访谈稿"
             onChange={(e) => setTitle(e.target.value)}
           />
-          <label className="label" htmlFor="memory-import-content">
+        </div>
+        <div className="form-row">
+          <label className="field-label" htmlFor="memory-import-content">
             资料内容（粘贴文本，或读取 .txt/.md 文件）
           </label>
           <textarea
@@ -181,40 +194,43 @@ export function MemoryGovernanceView({
             onChange={(e) => handleContentChange(e.target.value)}
             aria-describedby={contentError ? "import-content-error" : undefined}
           />
+          {content.length > 0 && (
+            <span className="char-count">{content.length.toLocaleString()} / {MAX_IMPORT_CHARS.toLocaleString()} 字</span>
+          )}
           {contentError && (
-            <p id="import-content-error" className="label" style={{ color: "var(--color-error, #f87171)", marginTop: 4 }}>
+            <p id="import-content-error" className="form-error">
               {contentError}
             </p>
           )}
-          <div className="note-actions">
-            <label className="secondary-action" style={{ cursor: "pointer" }}>
-              <FileUp size={16} />选择 .txt/.md 文件
-              <input
-                type="file"
-                accept=".txt,.md,.markdown,text/plain"
-                style={{ display: "none" }}
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (!file) return;
-                  if (!title.trim()) setTitle(file.name.replace(/\.[^.]+$/, ""));
-                  file.text().then((text) => handleContentChange(text));
-                }}
-              />
-            </label>
-            <button
-              className={`primary-action${importing ? " btn-loading" : ""}`}
-              type="button"
-              disabled={importing || !content.trim() || content.length > MAX_IMPORT_CHARS}
-              onClick={handleImport}
-              aria-busy={importing}
-            >
-              {importing && <span className="spinner" aria-hidden="true" />}
-              <FileUp size={16} />
-              {importing ? "抽取中…" : "导入并抽取候选记忆"}
-            </button>
-          </div>
         </div>
-      </article>
+        <div className="form-actions">
+          <label className="secondary-action" style={{ cursor: "pointer" }}>
+            <FileUp size={16} />选择 .txt/.md 文件
+            <input
+              type="file"
+              accept=".txt,.md,.markdown,text/plain"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                if (!title.trim()) setTitle(file.name.replace(/\.[^.]+$/, ""));
+                file.text().then((text) => handleContentChange(text));
+              }}
+            />
+          </label>
+          <button
+            className={`primary-action${importing ? " btn-loading" : ""}`}
+            type="button"
+            disabled={importing || !content.trim() || content.length > MAX_IMPORT_CHARS}
+            onClick={handleImport}
+            aria-busy={importing}
+          >
+            {importing && <span className="spinner" aria-hidden="true" />}
+            <FileUp size={16} />
+            {importing ? "抽取中…" : "导入并抽取候选记忆"}
+          </button>
+        </div>
+      </div>
 
       {/* Pending candidates */}
       <div className="record-list">
@@ -232,9 +248,13 @@ export function MemoryGovernanceView({
             const isRejecting = op.reject === "loading";
             const isSaving = op.save === "loading";
             const anyLoading = isApproving || isRejecting || isSaving;
+            const justSaved = savedId === candidate.id;
 
             return (
-              <article className="record-row" key={candidate.id}>
+              <article
+                className={`record-row${isEditing ? " edit-active" : ""}`}
+                key={candidate.id}
+              >
                 <div className="record-main">
                   <span className="label">
                     评分 {candidate.reviewScore} &middot;{" "}
@@ -255,11 +275,14 @@ export function MemoryGovernanceView({
                   {candidate.reviewSignals?.length > 0 && (
                     <span className="label">{candidate.reviewSignals.join(" · ")}</span>
                   )}
+                  {justSaved && (
+                    <span className="label" style={{ color: "var(--accent-green)" }}>已保存</span>
+                  )}
 
                   {/* Inline edit area */}
                   {isEditing && (
                     <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-                      <label className="label" htmlFor={`edit-candidate-${candidate.id}`}>
+                      <label className="field-label" htmlFor={`edit-candidate-${candidate.id}`}>
                         修正内容（{draftText.length} 字）
                       </label>
                       <textarea
@@ -332,7 +355,7 @@ export function MemoryGovernanceView({
         )}
       </div>
 
-      {/* Confirmed records */}
+      {/* Confirmed records — 真双列布局（左内容右操作），保留 record-row */}
       <div className="record-list">
         <h2>已确认的长期记忆（{confirmed.length}）</h2>
         {confirmed.length === 0 ? (
