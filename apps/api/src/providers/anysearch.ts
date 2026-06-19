@@ -1,4 +1,5 @@
 import type { SearchBriefInput, SearchProviderId, SourceHighlight } from "../../../../src/domain/types";
+import { fetchWithTimeout, resolveRequestTimeoutMs } from "../request-timeout";
 
 export const ANYSEARCH_DEFAULT_BASE_URL = "https://api.anysearch.com";
 
@@ -21,6 +22,7 @@ interface AnySearchClientOptions {
   language?: string;
   zone?: "cn" | "intl";
   fetchImpl?: FetchLike;
+  requestTimeoutMs?: number;
 }
 
 interface AnySearchResponse {
@@ -47,6 +49,7 @@ export function createAnySearchClient(options: AnySearchClientOptions = {}): Any
   const baseUrl = (options.baseUrl ?? ANYSEARCH_DEFAULT_BASE_URL).replace(/\/$/, "");
   const language = options.language ?? "zh-CN";
   const fetchImpl = options.fetchImpl ?? fetch;
+  const requestTimeoutMs = options.requestTimeoutMs;
 
   return {
     async createSearchBrief(input) {
@@ -57,7 +60,7 @@ export function createAnySearchClient(options: AnySearchClientOptions = {}): Any
         headers.authorization = `Bearer ${options.apiKey.trim()}`;
       }
 
-      const response = await fetchImpl(`${baseUrl}/v1/search`, {
+      const response = await fetchWithTimeout(fetchImpl, `${baseUrl}/v1/search`, {
         method: "POST",
         headers,
         body: JSON.stringify({
@@ -70,7 +73,7 @@ export function createAnySearchClient(options: AnySearchClientOptions = {}): Any
             recency_days: input.recencyDays
           }
         })
-      });
+      }, requestTimeoutMs);
 
       if (!response.ok) {
         throw new Error(`AnySearch API request failed: ${response.status}`);
@@ -117,7 +120,8 @@ export function createAnySearchClientFromEnv(env: Record<string, string | undefi
     apiKey,
     baseUrl: env.ANYSEARCH_BASE_URL,
     language: env.ANYSEARCH_LANGUAGE,
-    zone: normalizeZone(env.ANYSEARCH_ZONE)
+    zone: normalizeZone(env.ANYSEARCH_ZONE),
+    requestTimeoutMs: resolveRequestTimeoutMs(env, "SEARCH_REQUEST_TIMEOUT_MS")
   });
 }
 
