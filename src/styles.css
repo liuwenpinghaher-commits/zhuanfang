@@ -3142,6 +3142,23 @@ select:focus-visible {
   text-align: right;
 }
 
+/* help 文案与字数计数同排:左右对齐 */
+.field-row-foot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.field-row-foot .field-help {
+  margin: 0;
+}
+
+.field-row-foot .char-count {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
 /* 候选编辑态高亮 */
 .edit-active {
   border-color: var(--action-primary);

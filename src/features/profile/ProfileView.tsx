@@ -144,10 +144,14 @@ export function ProfileView({
             <input
               id="memory-correction"
               value={correctionText}
+              maxLength={500}
               onChange={(event) => onCorrectionText(event.target.value)}
               placeholder="例：不要把我对项目的不满写成对团队成员的否定。"
             />
-            <span className="field-help">这会作为长期边界保留，不会直接覆盖用户确认记忆。</span>
+            <div className="field-row-foot">
+              <span className="field-help">这会作为长期边界保留，不会直接覆盖用户确认记忆。</span>
+              <span className="char-count">{correctionText.length}/500</span>
+            </div>
           </label>
           <button className="primary-action" type="button" onClick={onAddCorrection}>保存修正</button>
         </div>

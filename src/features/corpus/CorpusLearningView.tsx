@@ -86,7 +86,7 @@ export function CorpusLearningView({
           )}
           <label className="field-stack" htmlFor="corpus-content">
             <span className="field-label">{contentLabel}</span>
-            <textarea id="corpus-content" value={content} onChange={(event) => onContent(event.target.value)} />
+            <textarea id="corpus-content" rows={10} value={content} onChange={(event) => onContent(event.target.value)} />
             <span className="field-help">建议使用“主持人：问题 / 被访者：回答”的格式，系统会据此识别追问动作。</span>
           </label>
           <button className="primary-action" type="button" onClick={onAnalyze}>
