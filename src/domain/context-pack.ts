@@ -26,6 +26,9 @@ import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, formatSearc
 import { buildInterviewEnginePolicy } from "./strategy";
 import { topKByCosine } from "./vector";
 
+// ponytail: 有界常量 — 上下文包中最多携带的 corrections 条数
+const MAX_CONTEXT_CORRECTIONS = 20;
+
 type SemanticRagContext = {
   chunks: RagChunk[];
   sourceHighlights: SourceHighlight[];
@@ -321,7 +324,10 @@ export function buildInterviewContextPack(state: ProductState, options: Intervie
     confirmedMemories,
     memoryRecords,
     pendingCandidates,
-    corrections: state.memoryCorrections,
+    // ponytail: 有界,防无界直传 — 只取最近 MAX_CONTEXT_CORRECTIONS 条
+    corrections: [...state.memoryCorrections]
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, MAX_CONTEXT_CORRECTIONS),
     memoryEdges,
     graphReferences,
     searchBriefs: searchBrief ? [searchBrief] : [],

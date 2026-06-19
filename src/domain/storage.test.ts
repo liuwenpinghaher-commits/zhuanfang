@@ -638,4 +638,76 @@ describe("product state storage", () => {
       expect(normalized.memoryEdges).toEqual(simplified);
     });
   });
+
+  describe("R4: memoryCandidates 有界裁剪", () => {
+    function makeCandidate(id: string, status: "pending" | "approved" | "rejected", dayOffset: number) {
+      return {
+        id,
+        text: `candidate ${id}`,
+        status,
+        sourceType: "interview_session" as const,
+        sourceId: "session-1",
+        evidenceQuote: "quote",
+        reason: "reason",
+        sensitivity: "normal" as const,
+        reviewScore: 80,
+        reviewSignals: ["signal"],
+        createdAt: new Date(Date.UTC(2026, 0, dayOffset + 1)).toISOString()
+      };
+    }
+
+    it("超过 200 条 approved 候选时只保留最近 200 条", () => {
+      const state = createInitialProductState();
+      const approved = Array.from({ length: 210 }, (_, i) =>
+        makeCandidate(`approved-${i + 1}`, "approved", i)
+      );
+      const normalized = normalizeProductState({ ...state, memoryCandidates: approved as never });
+      const approvedResult = normalized.memoryCandidates.filter((c) => c.status === "approved");
+      expect(approvedResult.length).toBeLessThanOrEqual(200);
+    });
+
+    it("所有 pending 候选无论数量全部保留", () => {
+      const state = createInitialProductState();
+      const pending = Array.from({ length: 50 }, (_, i) =>
+        makeCandidate(`pending-${i + 1}`, "pending", i)
+      );
+      const approved = Array.from({ length: 210 }, (_, i) =>
+        makeCandidate(`approved-${i + 1}`, "approved", i + 50)
+      );
+      const normalized = normalizeProductState({
+        ...state,
+        memoryCandidates: [...pending, ...approved] as never
+      });
+      const pendingResult = normalized.memoryCandidates.filter((c) => c.status === "pending");
+      const approvedResult = normalized.memoryCandidates.filter((c) => c.status !== "pending");
+      expect(pendingResult.length).toBe(50);
+      expect(approvedResult.length).toBeLessThanOrEqual(200);
+    });
+
+    it("保留的是最近的 200 条已审候选（createdAt 最大）", () => {
+      const state = createInitialProductState();
+      // 210 条 approved，day 0..209；最近 200 条应为 day 10..209
+      const approved = Array.from({ length: 210 }, (_, i) =>
+        makeCandidate(`approved-${i + 1}`, "approved", i)
+      );
+      const normalized = normalizeProductState({ ...state, memoryCandidates: approved as never });
+      const ids = normalized.memoryCandidates.map((c) => c.id);
+      // 最旧 10 条(approved-1..approved-10)应被裁掉，最新的应保留
+      expect(ids).toContain("approved-210");
+      expect(ids).toContain("approved-11");
+      expect(ids).not.toContain("approved-1");
+      expect(ids).not.toContain("approved-10");
+    });
+
+    it("候选不足 200 条时全部保留（幂等）", () => {
+      const state = createInitialProductState();
+      const candidates = [
+        makeCandidate("p1", "pending", 0),
+        makeCandidate("a1", "approved", 1),
+        makeCandidate("r1", "rejected", 2)
+      ];
+      const normalized = normalizeProductState({ ...state, memoryCandidates: candidates as never });
+      expect(normalized.memoryCandidates.length).toBe(3);
+    });
+  });
 });

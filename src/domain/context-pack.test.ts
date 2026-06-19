@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildInterviewCard, buildInterviewContextPack, buildInterviewGuide, buildSemanticRagContext } from "./context-pack";
 import { createInitialProductState } from "./engine";
-import type { RagChunk, ImportSource, SearchBrief } from "./types";
+import type { MemoryCorrection, RagChunk, ImportSource, SearchBrief } from "./types";
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -215,5 +215,55 @@ describe("tracked SearchBrief → buildInterviewContextPack", () => {
     const contextPack = buildInterviewContextPack(state, {});
     expect(contextPack.searchBriefs.length).toBeGreaterThan(0);
     expect(contextPack.searchBriefs[0].id).toBe(untrackedBrief.id);
+  });
+});
+
+describe("R4: corrections 有界化", () => {
+  it("超过 20 条 memoryCorrections 时 context pack 中最多保留 20 条", () => {
+    const state = createInitialProductState();
+    // 构造 25 条 corrections，createdAt 各不相同
+    const corrections: MemoryCorrection[] = Array.from({ length: 25 }, (_, i) => ({
+      id: `corr-${i + 1}`,
+      text: `correction ${i + 1}`,
+      createdAt: new Date(Date.UTC(2026, 0, i + 1)).toISOString()
+    }));
+    state.memoryCorrections = corrections;
+
+    const contextPack = buildInterviewContextPack(state, {});
+
+    expect(contextPack.corrections.length).toBeLessThanOrEqual(20);
+  });
+
+  it("保留的是最近的 20 条（createdAt 最大的）", () => {
+    const state = createInitialProductState();
+    const corrections: MemoryCorrection[] = Array.from({ length: 25 }, (_, i) => ({
+      id: `corr-${i + 1}`,
+      text: `correction ${i + 1}`,
+      createdAt: new Date(Date.UTC(2026, 0, i + 1)).toISOString() // day 1..25
+    }));
+    state.memoryCorrections = corrections;
+
+    const contextPack = buildInterviewContextPack(state, {});
+
+    // 最近的 20 条应为 day 6..25（id corr-6 到 corr-25）
+    const ids = contextPack.corrections.map((c) => c.id);
+    expect(ids).toContain("corr-25");
+    expect(ids).toContain("corr-6");
+    expect(ids).not.toContain("corr-5");
+    expect(ids).not.toContain("corr-1");
+  });
+
+  it("corrections 不足 20 条时全部保留", () => {
+    const state = createInitialProductState();
+    const corrections: MemoryCorrection[] = Array.from({ length: 10 }, (_, i) => ({
+      id: `corr-${i + 1}`,
+      text: `correction ${i + 1}`,
+      createdAt: new Date(Date.UTC(2026, 0, i + 1)).toISOString()
+    }));
+    state.memoryCorrections = corrections;
+
+    const contextPack = buildInterviewContextPack(state, {});
+
+    expect(contextPack.corrections.length).toBe(10);
   });
 });

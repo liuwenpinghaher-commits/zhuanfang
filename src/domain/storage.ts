@@ -3,6 +3,8 @@ import { withMemoryCandidateReview } from "./memoryReview";
 import type { ImportSource, ProductState, ProviderConfig, SearchBrief, SearchProviderId, SystemConfig } from "./types";
 
 const STORAGE_KEY = "interview-product-state-v1";
+// ponytail: 有界常量 — normalize 时保留的最大已审 candidate 数(pending 全留)
+const MAX_REVIEWED_CANDIDATES = 200;
 
 export function normalizeProductState(value: unknown): ProductState {
   const fallback = createInitialProductState();
@@ -51,7 +53,18 @@ export function normalizeProductState(value: unknown): ProductState {
       : fallback.playbookPatches,
     memoryRecords: Array.isArray(candidate.memoryRecords) ? candidate.memoryRecords : fallback.memoryRecords,
     memoryCandidates: Array.isArray(candidate.memoryCandidates)
-      ? candidate.memoryCandidates.map((c) => withMemoryCandidateReview(c, { legacyBackfill: true, preserveExisting: true }))
+      ? (() => {
+          // ponytail: pending 全留 + 最近 200 已审,防 state 膨胀
+          const mapped = candidate.memoryCandidates.map((c) =>
+            withMemoryCandidateReview(c, { legacyBackfill: true, preserveExisting: true })
+          );
+          const pending = mapped.filter((c) => c.status === "pending");
+          const reviewed = mapped
+            .filter((c) => c.status !== "pending")
+            .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""))
+            .slice(0, MAX_REVIEWED_CANDIDATES);
+          return [...pending, ...reviewed];
+        })()
       : fallback.memoryCandidates,
     memoryEdges: Array.isArray(candidate.memoryEdges) ? migrateMemoryEdges(candidate.memoryEdges) : fallback.memoryEdges,
     importSources: Array.isArray(candidate.importSources) ? normalizeImportSources(candidate.importSources) : fallback.importSources,
