@@ -19,12 +19,15 @@
   --accent-amber: #f59e0b;
   --accent-green: #22c55e;
   --accent-rose: #f43f5e;
-  --focus-ring: #8b5cf6;
+  --focus-ring: 0 0 0 3px rgba(139, 92, 246, 0.45);
+  --border-strong: #52525b;
   --radius-sm: 12px;
   --radius-lg: 16px;
   --shadow-panel: 0 8px 32px rgba(0, 0, 0, 0.4);
   --shadow-glow: 0 0 20px rgba(139, 92, 246, 0.15);
   --duration-fast: 180ms;
+  --transition-fast: 150ms ease;
+  --transition: 200ms ease;
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
   font-family: Inter, "SF Pro Text", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
   color: var(--text-primary);
@@ -73,8 +76,8 @@ button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
 select:focus-visible {
-  outline: 3px solid var(--focus-ring);
-  outline-offset: 2px;
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 .skip-link {
@@ -406,10 +409,23 @@ select:focus-visible {
   box-shadow: var(--shadow-glow);
 }
 
+.primary-action:active,
+.secondary-action:active {
+  transform: translateY(1px);
+}
+
+.primary-action:focus-visible,
+.secondary-action:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
 .primary-action:disabled,
 .secondary-action:disabled {
   cursor: not-allowed;
   opacity: 0.4;
+  filter: grayscale(0.3);
+  transform: none;
 }
 
 .secondary-action {
@@ -420,7 +436,7 @@ select:focus-visible {
 
 .secondary-action:hover {
   border-color: var(--border-glow);
-  background: rgba(139, 92, 246, 0.08);
+  background: rgba(139, 92, 246, 0.14);
 }
 
 .compact-action {
@@ -1106,11 +1122,13 @@ select:focus-visible {
 }
 
 .empty-state {
-  display: grid;
-  min-height: 240px;
-  place-items: center;
-  align-content: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   gap: 12px;
+  min-height: 120px;
+  padding: 24px;
   color: var(--text-muted);
   text-align: center;
 }
@@ -1119,6 +1137,17 @@ select:focus-visible {
   max-width: 560px;
   margin: 0;
   line-height: 1.7;
+}
+
+/* Optional icon slot */
+.empty-state .empty-icon {
+  opacity: 0.5;
+  flex-shrink: 0;
+}
+
+/* Optional CTA button slot within empty-state */
+.empty-state .empty-cta {
+  margin-top: 4px;
 }
 
 .composer {
@@ -2207,11 +2236,17 @@ select:focus-visible {
   white-space: pre-wrap;
 }
 
+/* .empty-module → alias to .empty-state layout (inline variant: row align) */
 .empty-module {
   display: flex;
+  flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 12px;
+  min-height: 120px;
+  padding: 24px;
   color: var(--text-muted);
+  text-align: center;
 }
 
 @media (max-width: 1160px) {
@@ -2631,8 +2666,8 @@ select:focus-visible {
 }
 
 .track-chip:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 .track-chip-dot {
@@ -2729,8 +2764,8 @@ select:focus-visible {
 }
 
 .timeline-content:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
+  outline: none;
+  box-shadow: var(--focus-ring);
   border-radius: 8px;
 }
 
@@ -2839,12 +2874,85 @@ select:focus-visible {
   }
 }
 
-/* ── my-assets: tab header ── */
+/* ── Reusable segment tab system (.seg-tabs / .seg-tab) ── */
+.seg-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.seg-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  position: relative;
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+/* Count badge: pinned to right */
+.seg-tab > .seg-tab-count {
+  margin-left: auto;
+  min-width: 20px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.seg-tab:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.seg-tab:hover > .seg-tab-count {
+  color: var(--text-secondary);
+}
+
+.seg-tab.active {
+  border-color: var(--action-primary);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+}
+
+/* Bottom accent underline on active */
+.seg-tab.active::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: var(--action-primary);
+}
+
+.seg-tab.active > .seg-tab-count {
+  color: var(--action-primary);
+}
+
+.seg-tab:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* ── my-assets: tab header (alias → .seg-tabs / .seg-tab) ── */
 .my-assets-tabs {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
-  margin-bottom: 4px;
+  margin-bottom: 14px;
 }
 
 .my-assets-tab {
@@ -2859,13 +2967,20 @@ select:focus-visible {
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s, color 0.15s;
   text-align: left;
+  position: relative;
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast),
+    color var(--transition-fast);
 }
 
 .my-assets-tab strong {
   margin-left: auto;
+  min-width: 20px;
+  text-align: center;
   font-size: 13px;
+  font-weight: 600;
   color: var(--text-muted);
 }
 
@@ -2874,14 +2989,33 @@ select:focus-visible {
   color: var(--text-primary);
 }
 
+.my-assets-tab:hover strong {
+  color: var(--text-secondary);
+}
+
 .my-assets-tab.active {
   border-color: var(--action-primary);
-  background: rgba(139, 92, 246, 0.08);
+  background: var(--surface-raised);
   color: var(--text-primary);
+}
+
+.my-assets-tab.active::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: var(--action-primary);
 }
 
 .my-assets-tab.active strong {
   color: var(--action-primary);
+}
+
+.my-assets-tab:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 /* ── my-assets: archive card ── */
@@ -2934,8 +3068,74 @@ select:focus-visible {
     grid-template-columns: 1fr 1fr;
   }
 
+  .seg-tabs {
+    grid-template-columns: 1fr 1fr;
+  }
+
   .archive-card-footer {
     flex-direction: column;
     align-items: flex-start;
+  }
+}
+
+/* ── Spinner keyframes ── */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+/* Button loading state: shows spinner, disables interaction */
+.btn-loading {
+  position: relative;
+  cursor: not-allowed;
+  opacity: 0.75;
+  pointer-events: none;
+}
+
+.btn-loading .spinner {
+  width: 14px;
+  height: 14px;
+}
+
+/* ── Row-clickable: generic clickable card/row ── */
+.row-clickable {
+  cursor: pointer;
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.row-clickable:hover {
+  border-color: var(--action-primary);
+  background: rgba(139, 92, 246, 0.05);
+}
+
+.row-clickable:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* ── reduced-motion: spinner + livekit animations degraded ── */
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+    border-top-color: currentColor;
+    border-right-color: currentColor;
+    opacity: 0.6;
+  }
+
+  .voice-status-label .status-dot.livekit-connecting {
+    animation: none;
+    opacity: 0.75;
   }
 }
