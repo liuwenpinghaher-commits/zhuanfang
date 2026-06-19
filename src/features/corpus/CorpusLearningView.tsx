@@ -1,6 +1,8 @@
-import { CheckCircle2, ClipboardList, FileAudio2, LoaderCircle, Sparkles, Trash2, Upload } from "lucide-react";
+import { CheckCircle2, ChevronDown, ClipboardList, FileAudio2, Info, LoaderCircle, Sparkles, Trash2, Upload } from "lucide-react";
+import { useState } from "react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { CorpusImportInput, ProductState } from "../../domain/types";
+import { ANALYSIS_DIMENSIONS, ANALYSIS_OUTPUTS, ANALYSIS_PATHS, ANALYSIS_PRINCIPLES } from "./analysisMethod";
 
 interface CorpusLearningViewProps {
   state: ProductState;
@@ -37,6 +39,7 @@ export function CorpusLearningView({
 }: CorpusLearningViewProps) {
   const importById = new Map(state.corpusImports.map((item) => [item.id, item]));
   const contentLabel = mediaType === "audio" ? "音频转写稿或摘要" : "专访文本或转写稿";
+  const [methodOpen, setMethodOpen] = useState(false);
 
   return (
     <section className="view-stack">
@@ -45,6 +48,77 @@ export function CorpusLearningView({
         title="从外部专访中学习提问逻辑"
         subtitle="导入文本或转写稿后，系统分析追问动作、节奏控制和可应用的 PlaybookPatch。"
       />
+
+      {/* 分析方法透明化 — 可折叠披露区 */}
+      <section className="panel corpus-method-panel">
+        <button
+          className="corpus-method-toggle"
+          type="button"
+          aria-expanded={methodOpen}
+          onClick={() => setMethodOpen((prev) => !prev)}
+        >
+          <span className="corpus-method-toggle-label">
+            <Info size={16} />
+            分析方法：它如何读你的样本
+          </span>
+          <ChevronDown size={16} className={methodOpen ? "corpus-method-chevron open" : "corpus-method-chevron"} />
+        </button>
+
+        {methodOpen && (
+          <div className="corpus-method-body">
+            <section className="corpus-method-section">
+              <h3 className="corpus-method-heading">分析什么</h3>
+              <p className="corpus-method-desc">系统从样本中识别以下五个提问技法维度，每个维度给出 1-5 分评分：</p>
+              <ul className="corpus-method-list">
+                {ANALYSIS_DIMENSIONS.map((dim) => (
+                  <li key={dim.name}>
+                    <strong>{dim.name}</strong>
+                    <span>{dim.description}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+
+            <section className="corpus-method-section">
+              <h3 className="corpus-method-heading">产出什么</h3>
+              <ul className="corpus-method-list corpus-method-list-outputs">
+                {ANALYSIS_OUTPUTS.map((output) => (
+                  <li key={output.key}>
+                    <strong>{output.label}</strong>
+                    <span>{output.detail}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+
+            <section className="corpus-method-section">
+              <h3 className="corpus-method-heading">分析原则</h3>
+              <ul className="corpus-method-list corpus-method-list-principles">
+                {ANALYSIS_PRINCIPLES.map((principle) => (
+                  <li key={principle}>{principle}</li>
+                ))}
+              </ul>
+            </section>
+
+            <section className="corpus-method-section corpus-method-paths">
+              <h3 className="corpus-method-heading">两条分析路径</h3>
+              <div className="corpus-method-path-grid">
+                <div className="corpus-method-path">
+                  <span className="corpus-method-path-badge corpus-method-path-badge-llm">{ANALYSIS_PATHS.llm.label}</span>
+                  <span className="corpus-method-path-cond">条件：{ANALYSIS_PATHS.llm.condition}</span>
+                  <p>{ANALYSIS_PATHS.llm.description}</p>
+                </div>
+                <div className="corpus-method-path">
+                  <span className="corpus-method-path-badge corpus-method-path-badge-det">{ANALYSIS_PATHS.deterministic.label}</span>
+                  <span className="corpus-method-path-cond">条件：{ANALYSIS_PATHS.deterministic.condition}</span>
+                  <p>{ANALYSIS_PATHS.deterministic.description}</p>
+                </div>
+              </div>
+            </section>
+          </div>
+        )}
+      </section>
+
       <section className="panel action-panel">
         <div className="panel-title"><Upload size={18} /><h2>导入专访样本</h2></div>
         <div className="stacked-form">
@@ -87,7 +161,7 @@ export function CorpusLearningView({
           <label className="field-stack" htmlFor="corpus-content">
             <span className="field-label">{contentLabel}</span>
             <textarea id="corpus-content" rows={10} value={content} onChange={(event) => onContent(event.target.value)} />
-            <span className="field-help">建议使用“主持人：问题 / 被访者：回答”的格式，系统会据此识别追问动作。</span>
+            <span className="field-help">建议使用"主持人：问题 / 被访者：回答"的格式，系统会据此识别追问动作。</span>
           </label>
           <button className="primary-action" type="button" onClick={onAnalyze}>
             <Sparkles size={18} />分析并生成建议

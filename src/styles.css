@@ -3203,6 +3203,190 @@ select:focus-visible {
   background: rgba(139, 92, 246, 0.06);
 }
 
+/* ===== 语料学习：分析方法透明化披露面板 ===== */
+
+.corpus-method-panel {
+  padding: 0;
+  overflow: hidden;
+}
+
+.corpus-method-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 14px 20px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  gap: 8px;
+  transition: color 0.15s;
+}
+
+.corpus-method-toggle:hover {
+  color: var(--text-primary);
+}
+
+.corpus-method-toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.corpus-method-chevron {
+  flex-shrink: 0;
+  transition: transform 0.2s;
+  color: var(--text-muted);
+}
+
+.corpus-method-chevron.open {
+  transform: rotate(180deg);
+}
+
+.corpus-method-body {
+  padding: 0 20px 20px;
+  border-top: 1px solid var(--border-default);
+  display: grid;
+  gap: 20px;
+}
+
+.corpus-method-section {
+  display: grid;
+  gap: 8px;
+}
+
+.corpus-method-heading {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  padding-top: 16px;
+}
+
+.corpus-method-desc {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.corpus-method-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+
+.corpus-method-list li {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.corpus-method-list li strong {
+  color: var(--text-primary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.corpus-method-list li strong::after {
+  content: " —";
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.corpus-method-list li span {
+  color: var(--text-secondary);
+}
+
+.corpus-method-list-outputs li {
+  grid-template-columns: 1fr;
+  gap: 2px;
+}
+
+.corpus-method-list-principles li {
+  grid-template-columns: 1fr;
+  color: var(--text-secondary);
+  padding-left: 12px;
+  position: relative;
+}
+
+.corpus-method-list-principles li::before {
+  content: "·";
+  position: absolute;
+  left: 0;
+  color: var(--text-muted);
+}
+
+.corpus-method-paths {
+  border-top: 1px solid var(--border-default);
+  padding-top: 4px;
+}
+
+.corpus-method-path-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+@media (max-width: 600px) {
+  .corpus-method-path-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.corpus-method-path {
+  padding: 12px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+  display: grid;
+  gap: 4px;
+}
+
+.corpus-method-path p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.corpus-method-path-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  width: fit-content;
+}
+
+.corpus-method-path-badge-llm {
+  background: rgba(139, 92, 246, 0.15);
+  color: var(--action-primary);
+}
+
+.corpus-method-path-badge-det {
+  background: rgba(20, 184, 166, 0.12);
+  color: var(--accent-teal);
+}
+
+.corpus-method-path-cond {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ===== END 语料学习：分析方法透明化披露面板 ===== */
+
 /* 表单错误提示 — 使用 --accent-rose 确保对比清晰 */
 .form-error {
   color: var(--accent-rose, #f43f5e);
