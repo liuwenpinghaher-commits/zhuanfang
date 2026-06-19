@@ -2598,3 +2598,243 @@ select:focus-visible {
     font-size: 22px;
   }
 }
+
+/* ─── Track chip row (主题线横排) ─────────────────────────────────────── */
+
+.track-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.track-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 13px;
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  background: var(--surface-muted);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-standard),
+              background var(--duration-fast) var(--ease-standard);
+  text-align: left;
+}
+
+.track-chip:hover {
+  border-color: var(--border-glow);
+  background: rgba(139, 92, 246, 0.07);
+}
+
+.track-chip:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.track-chip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.track-chip-name {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.track-chip-badge {
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: rgba(139, 92, 246, 0.12);
+  color: var(--action-primary-hover);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.track-chip-count {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.track-chip-add {
+  border-style: dashed;
+  color: var(--text-secondary);
+  gap: 6px;
+}
+
+.track-chip-add:hover {
+  color: var(--action-primary-hover);
+}
+
+/* ─── Timeline (时间轴叙事流) ─────────────────────────────────────────── */
+
+.hero-quote {
+  margin: 0;
+}
+
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.timeline-item {
+  display: grid;
+  grid-template-columns: 36px 1fr;
+  gap: 0 12px;
+  padding-bottom: 24px;
+}
+
+.timeline-item-last {
+  padding-bottom: 0;
+}
+
+.timeline-spine {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 3px;
+}
+
+.timeline-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  z-index: 1;
+}
+
+.timeline-line {
+  flex: 1;
+  width: 2px;
+  margin-top: 6px;
+  background: var(--border-default);
+  border-radius: 1px;
+}
+
+.timeline-content {
+  padding: 2px 0 0;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background var(--duration-fast) var(--ease-standard);
+}
+
+.timeline-content:hover {
+  background: rgba(139, 92, 246, 0.04);
+}
+
+.timeline-content:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+.timeline-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+.timeline-date {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 32px;
+}
+
+.timeline-kind-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.timeline-title {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+
+.timeline-summary {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.timeline-outputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.timeline-output-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-default);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.timeline-empty {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 8px 0 4px;
+  color: var(--text-muted);
+}
+
+.timeline-empty > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  opacity: 0.45;
+}
+
+.timeline-empty p {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.55;
+}
+
+.empty-hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+@media (max-width: 760px) {
+  .track-chip-row {
+    gap: 8px;
+  }
+
+  .timeline-item {
+    grid-template-columns: 28px 1fr;
+    gap: 0 8px;
+    padding-bottom: 20px;
+  }
+
+  .timeline-dot {
+    width: 10px;
+    height: 10px;
+  }
+}

@@ -1312,7 +1312,14 @@ export default function App() {
           </section>
         )}
         {view === "home" && (
-          <HomeView state={productState} card={card} monthlyReview={monthlyReview} onStart={launchInterview} />
+          <HomeView
+            state={productState}
+            card={card}
+            monthlyReview={monthlyReview}
+            onStart={launchInterview}
+            onOpenTrack={openTrack}
+            onNavigate={(v) => setView(v as Parameters<typeof setView>[0])}
+          />
         )}
         {view === "interview" && (
           <InterviewView

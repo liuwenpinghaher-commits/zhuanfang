@@ -37,7 +37,7 @@ describe("empty-state render guards", () => {
     ).not.toThrow();
   });
 
-  it("HomeView empty state shows placeholder copy instead of crashing", () => {
+  it("HomeView empty state shows timeline empty copy", () => {
     const s = createEmptyProductState();
     const html = renderToString(
       <HomeView
@@ -47,8 +47,38 @@ describe("empty-state render guards", () => {
         onStart={() => {}}
       />
     );
-    expect(html).toContain("还没有长期主题");
-    expect(html).toContain("还没有知识债");
+    expect(html).toContain("开始第一次专访");
+    expect(html).toContain("你的记录会在这里形成时间轴");
+  });
+
+  it("HomeView empty state shows track chip row empty copy", () => {
+    const s = createEmptyProductState();
+    const html = renderToString(
+      <HomeView
+        state={s}
+        card={buildInterviewCard(s)}
+        monthlyReview={buildMonthlyReview(s)}
+        onStart={() => {}}
+      />
+    );
+    expect(html).toContain("还没有主题线");
+    expect(html).toContain("完成专访后会自动浮现");
+  });
+
+  it("HomeView with onOpenTrack and onNavigate renders without throwing", () => {
+    const s = createEmptyProductState();
+    expect(() =>
+      renderToString(
+        <HomeView
+          state={s}
+          card={buildInterviewCard(s)}
+          monthlyReview={buildMonthlyReview(s)}
+          onStart={() => {}}
+          onOpenTrack={() => {}}
+          onNavigate={() => {}}
+        />
+      )
+    ).not.toThrow();
   });
 
   it("SearchIntelligenceView renders on empty state without throwing", () => {

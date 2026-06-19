@@ -1,6 +1,6 @@
-import { ChevronRight, ClipboardList, History, Play, Sparkles, Target, TimerReset } from "lucide-react";
+import { BookOpen, Clock, Plus, Play, Sparkles, Target, TrendingUp } from "lucide-react";
 import { HeaderBlock } from "../../components/HeaderBlock";
-import { Metric } from "../../components/Metric";
+import { buildTimeline } from "../../domain/timeline";
 import type { buildInterviewCard, buildMonthlyReview } from "../../domain/engine";
 import type { InterviewMode, ProductState } from "../../domain/types";
 
@@ -13,74 +13,227 @@ const modeOptions: Array<{ id: InterviewMode; label: string; detail: string }> =
   { id: "long-term", label: "长期主题", detail: "回访一个反复出现的问题" }
 ];
 
+const MATURITY_DOT_COLOR: Record<string, string> = {
+  "萌芽": "var(--accent-teal)",
+  "重复": "var(--accent-amber)",
+  "聚焦": "var(--action-primary)",
+  "成型": "var(--accent-green)",
+  "变化": "var(--accent-rose)",
+  "关闭": "var(--text-muted)",
+};
+
+const KIND_LABEL: Record<string, string> = {
+  session: "专访",
+  note: "笔记",
+  theme: "主题线",
+};
+
+const KIND_COLOR: Record<string, string> = {
+  session: "var(--action-primary)",
+  note: "var(--accent-teal)",
+  theme: "var(--accent-amber)",
+};
+
+function formatAt(iso: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
 interface HomeViewProps {
   state: ProductState;
   card: ReturnType<typeof buildInterviewCard>;
   monthlyReview: ReturnType<typeof buildMonthlyReview>;
   onStart: (mode?: InterviewMode) => void;
+  onOpenTrack?: (themeId: string) => void;
+  onNavigate?: (view: string) => void;
 }
 
-export function HomeView({ state, card, monthlyReview, onStart }: HomeViewProps) {
-  const openDebt = state.debts.find((debt) => debt.status === "待了解") ?? state.debts[0];
-  const topTheme = state.themes[0];
+export function HomeView({ state, card, monthlyReview: _monthlyReview, onStart, onOpenTrack, onNavigate }: HomeViewProps) {
+  const timelineEvents = buildTimeline(state, 20);
+
+  function handleEventClick(ev: (typeof timelineEvents)[number]) {
+    if (ev.href.view === "track" && ev.href.trackId) {
+      onOpenTrack?.(ev.href.trackId);
+    } else {
+      onNavigate?.(ev.href.view);
+    }
+  }
 
   return (
     <section className="view-stack">
+
+      {/* ① Hero */}
       <HeaderBlock
         eyebrow="今日访谈台"
         title={card.title}
-        subtitle="系统已根据长期主题、知识债和历史原话准备本次专访方向。"
-        action={<button className="primary-action" type="button" onClick={() => onStart("decision")}><Play size={18} />开始聊这个</button>}
+        subtitle={card.whyNow}
+        action={
+          <button
+            className="primary-action"
+            type="button"
+            onClick={() => onStart("decision")}
+          >
+            <Play size={18} />
+            一键开始
+          </button>
+        }
       />
 
-      <div className="dashboard-grid">
-        <section className="panel span-2">
-          <div className="panel-title">
-            <Sparkles size={18} />
-            <h2>今日主建议</h2>
-          </div>
-          <p className="lead">{card.whyNow}</p>
-          {card.historyReferences[0] && (
-            <div className="quote-line">&ldquo;{card.historyReferences[0]}&rdquo;</div>
-          )}
-          <div className="inline-list">
-            {card.suggestedPerspectives.map((perspective, perspIdx) => (
-              <span key={`perspective-${perspIdx}`}>{perspective}</span>
-            ))}
-          </div>
-        </section>
+      {card.historyReferences[0] && (
+        <div className="quote-line hero-quote">
+          &ldquo;{card.historyReferences[0]}&rdquo;
+        </div>
+      )}
 
-        <section className="panel">
-          <div className="panel-title">
-            <TimerReset size={18} />
-            <h2>继续追踪</h2>
-          </div>
-          {topTheme ? (
-            <>
-              <p>{topTheme.nextQuestion}</p>
-              <button className="text-button" type="button" onClick={() => onStart("long-term")}>继续长期主题 <ChevronRight size={16} /></button>
-            </>
-          ) : (
-            <p className="empty-hint">还没有长期主题，开始第一次专访后会自动出现在这里。</p>
-          )}
-        </section>
+      {card.suggestedPerspectives.length > 0 && (
+        <div className="inline-list">
+          {card.suggestedPerspectives.map((p, i) => (
+            <span key={`perspective-${i}`}>{p}</span>
+          ))}
+        </div>
+      )}
 
-        <section className="panel">
-          <div className="panel-title">
-            <ClipboardList size={18} />
-            <h2>知识债</h2>
-          </div>
-          {openDebt ? (
-            <>
-              <p>{openDebt.concept}</p>
-              <small>{openDebt.nextQuestion}</small>
-            </>
-          ) : (
-            <p className="empty-hint">还没有知识债，专访中会自动识别并记录。</p>
-          )}
-        </section>
-      </div>
+      {/* ② 主题线横排 */}
+      <section className="panel">
+        <div className="panel-title">
+          <TrendingUp size={18} />
+          <h2>主题线</h2>
+        </div>
 
+        {state.themes.length === 0 ? (
+          <p className="empty-hint">
+            还没有主题线，完成专访后会自动浮现。
+          </p>
+        ) : (
+          <div className="track-chip-row">
+            {state.themes.map((theme) => {
+              const dotColor = MATURITY_DOT_COLOR[theme.maturity] ?? "var(--text-muted)";
+              return (
+                <button
+                  key={theme.id}
+                  className="track-chip"
+                  type="button"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => onOpenTrack?.(theme.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      onOpenTrack?.(theme.id);
+                    }
+                  }}
+                >
+                  <span
+                    className="track-chip-dot"
+                    style={{ background: dotColor }}
+                    aria-hidden="true"
+                  />
+                  <span className="track-chip-name">{theme.name}</span>
+                  <span className="track-chip-badge">{theme.maturity}</span>
+                  <span className="track-chip-count">{theme.appearances}次</span>
+                </button>
+              );
+            })}
+            <button
+              className="track-chip track-chip-add"
+              type="button"
+              onClick={() => onStart("long-term")}
+            >
+              <Plus size={14} />
+              新建主题线
+            </button>
+          </div>
+        )}
+      </section>
+
+      {/* ③ 时间轴叙事流 */}
+      <section className="panel">
+        <div className="panel-title">
+          <Clock size={18} />
+          <h2>时间轴</h2>
+        </div>
+
+        {timelineEvents.length === 0 ? (
+          <div className="timeline-empty">
+            <BookOpen size={28} />
+            <div>
+              <p>开始第一次专访，你的记录会在这里形成时间轴。</p>
+              <button
+                className="primary-action compact-action"
+                type="button"
+                style={{ marginTop: "12px" }}
+                onClick={() => onStart()}
+              >
+                <Play size={15} />
+                开始第一次专访
+              </button>
+            </div>
+          </div>
+        ) : (
+          <ol className="timeline" aria-label="时间轴">
+            {timelineEvents.map((ev, idx) => {
+              const dotColor = KIND_COLOR[ev.kind] ?? "var(--text-muted)";
+              const kindLabel = KIND_LABEL[ev.kind] ?? ev.kind;
+              const dateStr = formatAt(ev.at);
+              const isLast = idx === timelineEvents.length - 1;
+              return (
+                <li
+                  key={ev.id}
+                  className={`timeline-item${isLast ? " timeline-item-last" : ""}`}
+                >
+                  <div className="timeline-spine">
+                    <span
+                      className="timeline-dot"
+                      style={{ background: dotColor, boxShadow: `0 0 0 3px rgba(0,0,0,0.4), 0 0 6px ${dotColor}55` }}
+                      aria-hidden="true"
+                    />
+                    {!isLast && <span className="timeline-line" aria-hidden="true" />}
+                  </div>
+                  <div
+                    className="timeline-content"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => handleEventClick(ev)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        handleEventClick(ev);
+                      }
+                    }}
+                  >
+                    <div className="timeline-meta">
+                      {dateStr && <span className="timeline-date">{dateStr}</span>}
+                      <span
+                        className="timeline-kind-badge"
+                        style={{ background: `${dotColor}20`, color: dotColor }}
+                      >
+                        {kindLabel}
+                      </span>
+                    </div>
+                    <p className="timeline-title">{ev.title}</p>
+                    {ev.summary && (
+                      <p className="timeline-summary">{ev.summary}</p>
+                    )}
+                    {ev.outputs.length > 0 && (
+                      <div className="timeline-outputs">
+                        {ev.outputs.map((o) => (
+                          <span key={`${ev.id}-${o.label}`} className="timeline-output-chip">
+                            &rarr; {o.count} {o.label}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+        )}
+      </section>
+
+      {/* 底部：选择访谈模式（次级入口） */}
       <section className="panel">
         <div className="panel-title">
           <Target size={18} />
@@ -88,25 +241,16 @@ export function HomeView({ state, card, monthlyReview, onStart }: HomeViewProps)
         </div>
         <div className="mode-grid">
           {modeOptions.map((mode) => (
-            <button className="mode-option" key={mode.id} type="button" onClick={() => onStart(mode.id)}>
+            <button
+              className="mode-option"
+              key={mode.id}
+              type="button"
+              onClick={() => onStart(mode.id)}
+            >
               <strong>{mode.label}</strong>
               <span>{mode.detail}</span>
             </button>
           ))}
-        </div>
-      </section>
-
-      <section className="panel">
-        <div className="panel-title">
-          <History size={18} />
-          <h2>本月信号</h2>
-        </div>
-        <div className="metric-row">
-          <Metric label="笔记" value={monthlyReview.metrics.notes} />
-          <Metric label="观点" value={monthlyReview.metrics.points} />
-          <Metric label="问题" value={monthlyReview.metrics.questions} />
-          <Metric label="知识债" value={monthlyReview.metrics.knowledgeDebts} />
-          <Metric label="长期主题" value={monthlyReview.metrics.themes} />
         </div>
       </section>
     </section>
