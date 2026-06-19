@@ -55,6 +55,34 @@ describe("planMemoryUpdate (extract-then-update dedup hint, HITL surfaced)", () 
     expect(plan.similarToRecordId).toBe("m1");
   });
 
+  it("fires the offline hint for near-identical finalize candidates from different sessions (prefix stripped)", () => {
+    // Same insight resurfaces in two sessions: identical salient content, different 《title》.
+    // Stripping the shared "用户在《title》中表达：" boilerplate plus the lower no-embedding token
+    // threshold makes the dedup hint fire offline — it stayed silent before (boilerplate diluted overlap,
+    // default 0.88 was unreachable for token-Jaccard). Token overlap only catches near-literal repeats;
+    // true paraphrase dedup still needs embeddings.
+    const existing: MemoryRecord[] = [
+      confirmedRecord({ id: "m1", text: "用户在《放权的纠结》中表达：先小范围验证再放权，避免一次性把审批权全部交出去" })
+    ];
+    const plan = planMemoryUpdate(
+      { text: "用户在《今天的复盘》中表达：先小范围验证再放权，避免一次性把审批权全部交出去" },
+      existing
+    );
+    expect(plan.op).toBe("update");
+    expect(plan.similarToRecordId).toBe("m1");
+  });
+
+  it("does not falsely match two finalize candidates that share only the template prefix", () => {
+    const existing: MemoryRecord[] = [
+      confirmedRecord({ id: "m1", text: "用户在《放权》中表达：喜欢在清晨独自散步思考" })
+    ];
+    const plan = planMemoryUpdate(
+      { text: "用户在《产品复盘》中表达：讨厌冗长的跨部门对齐会议" },
+      existing
+    );
+    expect(plan.op).toBe("add"); // shared prefix alone must not trigger a merge hint
+  });
+
   it("ignores non-confirmed records when planning", () => {
     const existing: MemoryRecord[] = [
       confirmedRecord({ id: "m1", text: "用户偏好先小范围验证再放权", status: "deprecated", embedding: [0.1, 0.2, 0.3] })

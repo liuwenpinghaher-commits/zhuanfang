@@ -768,7 +768,8 @@ export interface MemoryRecord {
   embedding?: number[];
   /** M3: 显著性评分 1–10，消费侧缺省按 5 处理 */
   importance?: number;
-  /** M3: 最近被检索时间，用于衰减排序 */
+  /** M3: 最近访问/确认时间，用于检索 recency 衰减。当前在确认(approve)时写入；
+   *  按每次召回回写为后续增强（domain 纯函数不持时钟，回写需在路由层做）。 */
   lastAccessedAt?: string;
 }
 

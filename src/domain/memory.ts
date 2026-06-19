@@ -11,8 +11,21 @@ import { cosineSimilarity } from "./vector";
 
 import { withMemoryCandidateReview } from "./memoryReview";
 
-/** Default similarity above which a candidate is treated as a near-duplicate of an existing record. */
-const DEFAULT_DEDUP_THRESHOLD = 0.88;
+/** Cosine threshold above which a candidate is a near-duplicate of an existing record (both embedded). */
+const DEDUP_COSINE_THRESHOLD = 0.88;
+/** Token-Jaccard is far stricter than cosine, and finalize/import candidates carry no embedding,
+ *  so the no-embedding path needs a lower bar or the M2 dedup hint would never fire offline. */
+const DEDUP_TOKEN_THRESHOLD = 0.45;
+/** M5 consolidation actually deprecates the weaker record, so it is more conservative than the M2 hint. */
+const DEDUP_MERGE_COSINE_THRESHOLD = 0.9;
+const DEDUP_MERGE_TOKEN_THRESHOLD = 0.5;
+
+/** Strip the deterministic finalize candidate prefix ("用户在《title》中表达：") so similarity
+ *  compares the real content, not the shared boilerplate that otherwise dilutes token overlap. */
+function stripMemoryTemplatePrefix(text: string): string {
+  const stripped = text.replace(/^用户在《[^》]*》中表达：/, "").trim();
+  return stripped.length > 0 ? stripped : text;
+}
 
 /**
  * The dedup decision surfaced to the HITL reviewer (Task 6 / M2).
@@ -50,48 +63,56 @@ export function planMemoryUpdate(
   existingRecords: MemoryRecord[],
   opts: { threshold?: number } = {}
 ): MemoryUpdatePlan {
-  const threshold = opts.threshold ?? DEFAULT_DEDUP_THRESHOLD;
   const candidateText = candidate.text?.trim() ?? "";
   if (!candidateText) {
     return { op: "add" };
   }
 
-  const candidateTokens = tokenizeMemoryGraphText(candidateText);
+  const candidateTokens = tokenizeMemoryGraphText(stripMemoryTemplatePrefix(candidateText));
   const hasCandidateEmbedding = Array.isArray(candidate.embedding) && candidate.embedding.length > 0;
 
-  let best: { id: string; score: number } | undefined;
+  let best: { id: string; score: number; usedEmbedding: boolean } | undefined;
   for (const record of existingRecords) {
     if (record.status !== "confirmed") {
       continue;
     }
-    const score = scoreCandidateAgainstRecord(
+    const { score, usedEmbedding } = scoreCandidateAgainstRecord(
       candidate,
       candidateTokens,
       hasCandidateEmbedding,
       record
     );
     if (!best || score > best.score) {
-      best = { id: record.id, score };
+      best = { id: record.id, score, usedEmbedding };
     }
   }
 
-  if (best && best.score > threshold) {
-    return { op: "update", similarToRecordId: best.id };
+  if (best) {
+    // Token-Jaccard is far stricter than cosine, so the no-embedding path uses a lower bar.
+    const threshold =
+      opts.threshold ?? (best.usedEmbedding ? DEDUP_COSINE_THRESHOLD : DEDUP_TOKEN_THRESHOLD);
+    if (best.score > threshold) {
+      return { op: "update", similarToRecordId: best.id };
+    }
   }
   return { op: "add" };
 }
 
-// Embedding cosine when both sides have a vector; otherwise normalized token overlap.
+// Embedding cosine when both sides have a vector; otherwise normalized token overlap
+// (template prefix stripped so it compares real content, not the shared boilerplate).
 function scoreCandidateAgainstRecord(
   candidate: { text: string; embedding?: number[] },
   candidateTokens: Set<string>,
   hasCandidateEmbedding: boolean,
   record: MemoryRecord
-): number {
+): { score: number; usedEmbedding: boolean } {
   if (hasCandidateEmbedding && Array.isArray(record.embedding) && record.embedding.length > 0) {
-    return cosineSimilarity(candidate.embedding as number[], record.embedding);
+    return { score: cosineSimilarity(candidate.embedding as number[], record.embedding), usedEmbedding: true };
   }
-  return tokenOverlapRatio(candidateTokens, tokenizeMemoryGraphText(record.text));
+  return {
+    score: tokenOverlapRatio(candidateTokens, tokenizeMemoryGraphText(stripMemoryTemplatePrefix(record.text))),
+    usedEmbedding: false
+  };
 }
 
 // Jaccard similarity over token sets: |A∩B| / |A∪B|, 0 when either side is empty.
@@ -135,7 +156,6 @@ export function dedupeMemoryRecords(
   records: MemoryRecord[],
   opts: { threshold?: number } = {}
 ): MemoryRecord[] {
-  const threshold = opts.threshold ?? 0.9;
   // recordId -> kept record id that supersedes it (the merge target).
   const deprecatedBy = new Map<string, string>();
 
@@ -149,7 +169,12 @@ export function dedupeMemoryRecords(
       if (deprecatedBy.has(a.id) || deprecatedBy.has(b.id)) {
         continue;
       }
-      if (recordSimilarity(a, b) <= threshold) {
+      const { score, usedEmbedding } = recordSimilarity(a, b);
+      // M5 merge deprecates a record, so it is more conservative than the M2 hint;
+      // token-Jaccard path uses a lower bar than cosine since Jaccard is far stricter.
+      const pairThreshold =
+        opts.threshold ?? (usedEmbedding ? DEDUP_MERGE_COSINE_THRESHOLD : DEDUP_MERGE_TOKEN_THRESHOLD);
+      if (score <= pairThreshold) {
         continue;
       }
       const keeper = strongerRecord(a, b);
@@ -176,13 +201,19 @@ export function dedupeMemoryRecords(
 
 // Embedding cosine when both records carry a vector; otherwise token overlap.
 // Mirrors scoreCandidateAgainstRecord but for two stored records.
-function recordSimilarity(a: MemoryRecord, b: MemoryRecord): number {
+function recordSimilarity(a: MemoryRecord, b: MemoryRecord): { score: number; usedEmbedding: boolean } {
   const hasA = Array.isArray(a.embedding) && a.embedding.length > 0;
   const hasB = Array.isArray(b.embedding) && b.embedding.length > 0;
   if (hasA && hasB) {
-    return cosineSimilarity(a.embedding as number[], b.embedding as number[]);
+    return { score: cosineSimilarity(a.embedding as number[], b.embedding as number[]), usedEmbedding: true };
   }
-  return tokenOverlapRatio(tokenizeMemoryGraphText(a.text), tokenizeMemoryGraphText(b.text));
+  return {
+    score: tokenOverlapRatio(
+      tokenizeMemoryGraphText(stripMemoryTemplatePrefix(a.text)),
+      tokenizeMemoryGraphText(stripMemoryTemplatePrefix(b.text))
+    ),
+    usedEmbedding: false
+  };
 }
 
 // The record to KEEP from a near-dup pair: higher importance wins; on a tie the
@@ -233,7 +264,10 @@ export function approveMemoryCandidate(
     importance,
     ...(opts.embedding && opts.embedding.length > 0 ? { embedding: opts.embedding } : {}),
     createdAt: reviewedAt,
-    updatedAt: reviewedAt
+    updatedAt: reviewedAt,
+    // Seed lastAccessedAt at confirm time so retrieval recency has a real value to decay
+    // from (route-side write-back on each recall is a later enhancement).
+    lastAccessedAt: reviewedAt
   };
   const clonedState = cloneState(state);
   const projectedState: ProductState = {
