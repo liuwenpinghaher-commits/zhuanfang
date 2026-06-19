@@ -459,4 +459,92 @@ describe("product api client", () => {
 
     await expect(client.health()).resolves.toBe(false);
   });
+
+  it("fetches export/backup rehearsal report from the API", async () => {
+    const report = {
+      schemaVersion: 1,
+      generatedAt: "2026-06-19T00:00:00.000Z",
+      strategy: "json-export-import-rehearsal",
+      summary: { passed: 5, warning: 1, failed: 0 },
+      package: {
+        product: "interview-product-mvp",
+        format: "product-state-json",
+        exportedAt: "2026-06-19T00:00:00.000Z",
+        stateBytes: 12345,
+        stateDigest: "abc123",
+        restoredDigest: "abc123",
+        privacyReportIncluded: true,
+        providerSecretsExcluded: true
+      },
+      privacyReport: {
+        generatedAt: "2026-06-19T00:00:00.000Z",
+        totalRecords: 10,
+        hasPersonalData: true,
+        inventory: [],
+        operations: {
+          exportAvailable: true,
+          importAvailable: true,
+          purgeAvailable: true,
+          resetToDemoAvailable: true,
+          providerSecretsExcluded: true,
+          runtimeEnvPreservedOnPurge: true
+        },
+        retentionNotes: []
+      },
+      migrationManifest: { checks: [], runbook: [] },
+      checks: [],
+      runbook: []
+    };
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify(report), { status: 200 }));
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+
+    const result = await client.exportState();
+
+    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:8787/api/state/export", { method: "GET" });
+    expect(result.schemaVersion).toBe(1);
+    expect(result.strategy).toBe("json-export-import-rehearsal");
+    expect(result.package.privacyReportIncluded).toBe(true);
+  });
+
+  it("fetches privacy report from the API", async () => {
+    const report = {
+      generatedAt: "2026-06-19T00:00:00.000Z",
+      totalRecords: 42,
+      hasPersonalData: true,
+      inventory: [
+        { id: "profile", label: "显性档案与边界", count: 5, detail: "...", exported: true, purged: true },
+        { id: "interviews", label: "专访与双轨笔记", count: 3, detail: "...", exported: true, purged: true }
+      ],
+      operations: {
+        exportAvailable: true,
+        importAvailable: true,
+        purgeAvailable: true,
+        resetToDemoAvailable: true,
+        providerSecretsExcluded: true,
+        runtimeEnvPreservedOnPurge: true
+      },
+      retentionNotes: ["注意1", "注意2"]
+    };
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify(report), { status: 200 }));
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+
+    const result = await client.getPrivacyReport();
+
+    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:8787/api/state/privacy-report", { method: "GET" });
+    expect(result.totalRecords).toBe(42);
+    expect(result.hasPersonalData).toBe(true);
+    expect(result.inventory).toHaveLength(2);
+    expect(result.inventory[0].id).toBe("profile");
+  });
+
+  it("purges personal data through the API and returns normalized state", async () => {
+    const state = createInitialProductState();
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify(state), { status: 200 }));
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+
+    const result = await client.purgeState();
+
+    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:8787/api/state/purge", { method: "POST" });
+    expect(result.profile.name).toBe("Mia");
+  });
 });

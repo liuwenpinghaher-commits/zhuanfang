@@ -972,6 +972,24 @@ export default function App() {
     setCorrectionText("");
   }
 
+  async function exportData() {
+    return productApiClient.exportState();
+  }
+
+  async function showPrivacyReport() {
+    return productApiClient.getPrivacyReport();
+  }
+
+  async function purgeData() {
+    const nextState = await productApiClient.purgeState();
+    setApiPersistenceEnabled(true);
+    saveProductState(nextState);
+    setSession(null);
+    closeRealtimeVoiceSession();
+    setNotice(buildNotice("warning", "个人数据已彻底清空", "所有专访、记忆与资产已删除，Provider 配置已保留。"));
+    return nextState;
+  }
+
   async function resetData() {
     if (typeof window !== "undefined" && !window.confirm("确定清空示例数据，开始你自己的真实记录吗？这会移除内置示例的访谈、资产和记忆，且无法撤销。")) {
       return;
@@ -1537,6 +1555,10 @@ export default function App() {
             onCorrectionText={setCorrectionText}
             onAddCorrection={addCorrection}
             onReset={resetData}
+            onExport={exportData}
+            onPrivacyReport={showPrivacyReport}
+            onPurge={purgeData}
+            onSetProductState={setProductState}
           />
         )}
       </main>

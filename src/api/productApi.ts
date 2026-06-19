@@ -1,4 +1,6 @@
 import { normalizeProductState } from "../domain/storage";
+import type { BackupRestoreRehearsalReport } from "../domain/backup";
+import type { PrivacyReport } from "../domain/privacy";
 import type { CapabilityTask } from "../capabilities/task";
 import type {
   AudioTranscription,
@@ -25,6 +27,9 @@ type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface ProductApiClient {
   health(): Promise<boolean>;
+  exportState(): Promise<BackupRestoreRehearsalReport>;
+  getPrivacyReport(): Promise<PrivacyReport>;
+  purgeState(): Promise<ProductState>;
   getSystemCapabilities(): Promise<SystemCapabilitiesResponse>;
   getSystemConfig(): Promise<SystemConfigResponse>;
   updateSystemConfig(updates: SystemConfigUpdateRequest): Promise<SystemConfigUpdateResponse>;
@@ -356,6 +361,15 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
       } catch {
         return false;
       }
+    },
+    async exportState() {
+      return (await requestJson("/api/state/export", { method: "GET" })) as BackupRestoreRehearsalReport;
+    },
+    async getPrivacyReport() {
+      return (await requestJson("/api/state/privacy-report", { method: "GET" })) as PrivacyReport;
+    },
+    async purgeState() {
+      return normalizeProductState(await requestJson("/api/state/purge", { method: "POST" }));
     },
     async getSystemCapabilities() {
       return (await requestJson("/api/system/capabilities", { method: "GET" })) as SystemCapabilitiesResponse;
