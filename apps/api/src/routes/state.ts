@@ -9,7 +9,9 @@ export async function registerStateRoutes(server: FastifyInstance, repository: P
   server.put("/api/state", async (request, reply) => {
     const stored = repository.getState();
     const incomingRevision = (request.body as { revision?: unknown })?.revision;
-    if (typeof incomingRevision === "number" && incomingRevision !== stored.revision) {
+    // Require revision field to be present and exactly equal to stored.
+    // Absent revision is treated as a conflict (409) to prevent zero-cost optimistic-lock bypass.
+    if (typeof incomingRevision !== "number" || incomingRevision !== stored.revision) {
       return reply.code(409).send({ error: "stale revision", current: stored });
     }
     return repository.replaceState(normalizeProductState(request.body));

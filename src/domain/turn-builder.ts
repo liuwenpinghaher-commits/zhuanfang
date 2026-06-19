@@ -11,7 +11,7 @@ import type {
   InterviewTurn,
 } from "./types";
 
-import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, extractAnchor, isLongUserAnswer, buildMirroredFollowUp, findPendingControlAction, applyPendingControlToFollowUp } from "./utils";
+import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, extractAnchor, isLongUserAnswer, buildMirroredFollowUp, findPendingControlAction, applyPendingControlToFollowUp, sanitizeExternalMaterialText } from "./utils";
 import { decideInterviewStrategy } from "./strategy";
 import { buildRealtimeVoiceInstructions } from "./voice-instructions";
 
@@ -142,9 +142,12 @@ export function receiveUserTurn(session: InterviewSession, userText: string): In
     return session;
   }
 
-  const assistant = buildAssistantTurn(session, trimmed);
+  // ponytail: 启发式注入清洗，非安全边界；模型侧仍需防御
+  const sanitized = sanitizeExternalMaterialText(trimmed, trimmed);
 
-  return receiveUserTurnWithAssistant(session, trimmed, {
+  const assistant = buildAssistantTurn(session, sanitized);
+
+  return receiveUserTurnWithAssistant(session, sanitized, {
     content: assistant.content,
     intent: assistant.intent,
     referencedMemory: assistant.referencedMemory,

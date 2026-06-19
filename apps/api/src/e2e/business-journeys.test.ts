@@ -506,23 +506,16 @@ describe("Journey 5: state integrity / optimistic concurrency", () => {
     expect(afterFreshGet.json().profile.currentFocus).toBe("optimistic concurrency test");
 
     // Step 4: PUT with FORGED high revision (9999) but "old" content
-    // The route rejects only when incomingRevision < stored.revision.
-    // A forged number HIGHER than stored revision will pass the check and overwrite.
-    // Read the exact behavior from routes/state.ts:
-    //   if (typeof incomingRevision === "number" && incomingRevision < stored.revision) → 409
-    //   otherwise → replaceState(normalizeProductState(request.body))
-    // So 9999 > stored → it WILL succeed (this is the documented behavior).
-    // We just assert the server stays alive and responds authoritatively.
+    // Fixed (P1-18): route now requires incomingRevision === stored.revision exactly.
+    // A forged number HIGHER than stored revision is now rejected with 409.
     const stateBeforeForge = afterFreshGet.json() as Record<string, unknown>;
     const forgedRes = await server.inject({
       method: "PUT",
       url: "/api/state",
       payload: { ...stateBeforeForge, revision: 9999 }
     });
-    // According to state.ts implementation: 9999 > storedRevisionNow → passes, replaces state
-    // The key invariant: server must NOT crash (non-500)
-    expect(forgedRes.statusCode).not.toBe(500);
-    expect([200, 409]).toContain(forgedRes.statusCode);
+    // Must-equal check: 9999 !== storedRevisionNow → 409 conflict
+    expect(forgedRes.statusCode).toBe(409);
 
     // Step 5: POST /api/state/reset → empty state
     const resetRes = await server.inject({ method: "POST", url: "/api/state/reset" });

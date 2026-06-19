@@ -1,6 +1,7 @@
 // OpenTelemetry must be initialized before any other imports
 import "./telemetry";
 
+import { timingSafeEqual } from "node:crypto";
 import Fastify, { type FastifyRequest, type FastifyReply } from "fastify";
 import fastifyStatic from "@fastify/static";
 import { join } from "node:path";
@@ -291,7 +292,8 @@ function registerCors(server: ReturnType<typeof Fastify>, env: Record<string, st
 const AUTH_EXEMPT_PREFIXES = ["/api/health"];
 
 function registerProductionAuth(server: ReturnType<typeof Fastify>, env: Record<string, string | undefined>) {
-  const isProduction = env.DEPLOYMENT_PROFILE === "production";
+  // Case-insensitive comparison prevents "Production"/"PRODUCTION" silently bypassing auth (fix: P0-5)
+  const isProduction = (env.DEPLOYMENT_PROFILE ?? "").trim().toLowerCase() === "production";
   const apiToken = env.PRODUCT_API_TOKEN;
 
   // Auth guard is only active when both conditions hold: production profile AND a token configured.
@@ -314,7 +316,12 @@ function registerProductionAuth(server: ReturnType<typeof Fastify>, env: Record<
     }
 
     const authHeader = request.headers.authorization;
-    if (authHeader === `Bearer ${apiToken}`) {
+    // Timing-safe comparison prevents timing-oracle attacks on the bearer token (fix: P0-5)
+    const expected = `Bearer ${apiToken}`;
+    const actual = authHeader ?? "";
+    const expectedBuf = Buffer.from(expected);
+    const actualBuf = Buffer.from(actual.padEnd(expected.length, "\0").slice(0, expected.length));
+    if (actual.length === expected.length && timingSafeEqual(expectedBuf, actualBuf)) {
       return;
     }
 

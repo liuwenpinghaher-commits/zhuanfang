@@ -18,6 +18,24 @@ describe("state routes", () => {
     await server.close();
   });
 
+  it("rejects a PUT with omitted revision field with 409 — absent revision cannot bypass lock (P1-18)", async () => {
+    const server = buildApiServer();
+    const cur = (await server.inject({ method: "GET", url: "/api/state" })).json();
+    // Omit revision entirely; old code skipped the check and let it through
+    const { revision: _omit, ...stateWithoutRevision } = cur as Record<string, unknown>;
+    const res = await server.inject({
+      method: "PUT",
+      url: "/api/state",
+      payload: stateWithoutRevision,
+    });
+    expect(res.statusCode).toBe(409);
+    const body = res.json();
+    expect(body.error).toContain("stale");
+    expect(body.current).toBeDefined();
+    expect(body.current.revision).toBe(cur.revision);
+    await server.close();
+  });
+
   it("rejects a forged-future revision (N+5) with 409 — must-equal check (P1-18)", async () => {
     const server = buildApiServer();
     const cur = (await server.inject({ method: "GET", url: "/api/state" })).json();

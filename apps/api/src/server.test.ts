@@ -927,6 +927,41 @@ describe("Product API", () => {
 
       expect(response.statusCode).toBe(200);
     });
+
+    it("blocks unauthenticated requests when DEPLOYMENT_PROFILE='Production' (case-insensitive, security fix)", async () => {
+      const server = buildApiServer({
+        env: { DEPLOYMENT_PROFILE: "Production", PRODUCT_API_TOKEN: "secret" }
+      });
+
+      const response = await server.inject({ method: "GET", url: "/api/state" });
+
+      expect(response.statusCode).toBe(401);
+    });
+
+    it("blocks unauthenticated requests when DEPLOYMENT_PROFILE='PRODUCTION' (case-insensitive, security fix)", async () => {
+      const server = buildApiServer({
+        env: { DEPLOYMENT_PROFILE: "PRODUCTION", PRODUCT_API_TOKEN: "secret" }
+      });
+
+      const response = await server.inject({ method: "GET", url: "/api/state" });
+
+      expect(response.statusCode).toBe(401);
+    });
+
+    it("rejects a Bearer token that differs only by timing-exploitable length from correct token (security fix)", async () => {
+      const server = buildApiServer({
+        env: { DEPLOYMENT_PROFILE: "production", PRODUCT_API_TOKEN: "mysecret" }
+      });
+
+      // Wrong token of same length to exercise timing-safe path
+      const response = await server.inject({
+        method: "GET",
+        url: "/api/state",
+        headers: { authorization: "Bearer wrongsec" }
+      });
+
+      expect(response.statusCode).toBe(401);
+    });
   });
 
   describe("CORS from PRODUCT_WEB_ORIGINS env (P1-3)", () => {
