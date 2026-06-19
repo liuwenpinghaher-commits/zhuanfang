@@ -6,9 +6,108 @@ import type {
 } from "./types";
 
 import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent } from "./utils";
-import { buildMemoryEdgesForRecord, formatMemoryGraphTargetLabel } from "./context-pack";
+import { buildMemoryEdgesForRecord, formatMemoryGraphTargetLabel, tokenizeMemoryGraphText } from "./context-pack";
+import { cosineSimilarity } from "./vector";
 
 import { withMemoryCandidateReview } from "./memoryReview";
+
+/** Default similarity above which a candidate is treated as a near-duplicate of an existing record. */
+const DEFAULT_DEDUP_THRESHOLD = 0.88;
+
+/**
+ * The dedup decision surfaced to the HITL reviewer (Task 6 / M2).
+ *
+ * `op` mirrors `MemoryCandidate.suggestedUpdate`; this task only emits `add`/`update`
+ * deterministically. `conflict`/`noop` are reserved on the candidate type but NOT
+ * auto-decided here: without an LLM we cannot reliably tell "contradicts existing"
+ * from "refines existing", and silently classifying a near-duplicate as a conflict
+ * would mislead the reviewer. So we stop at "looks like X — you decide" and leave
+ * the merge/keep/discard call to the human via the existing approve/reject controls.
+ */
+export interface MemoryUpdatePlan {
+  op: "add" | "update";
+  /** When op === "update", the confirmed record this candidate most resembles. */
+  similarToRecordId?: string;
+}
+
+/**
+ * Borrowed from Mem0's extract-then-update idea, but HITL-first: instead of mutating
+ * the store, we score a fresh candidate against already-confirmed memories and hand
+ * the reviewer a "似已有记忆 X" hint. The store is never changed automatically — that
+ * matches this system's human-in-the-loop philosophy and stays safe with no API key.
+ *
+ * Pure & synchronous. Similarity is embedding cosine when BOTH sides carry an
+ * embedding; otherwise it falls back to normalized token overlap (Jaccard over the
+ * shared `tokenizeMemoryGraphText` tokenizer), which is what candidates at finalize/
+ * import time actually have (they're produced without embeddings). Only `confirmed`
+ * records are considered as merge targets.
+ *
+ * @returns `{op:"update", similarToRecordId}` when the closest confirmed record scores
+ *          strictly above `threshold` (default 0.88); otherwise `{op:"add"}`.
+ */
+export function planMemoryUpdate(
+  candidate: { text: string; embedding?: number[] },
+  existingRecords: MemoryRecord[],
+  opts: { threshold?: number } = {}
+): MemoryUpdatePlan {
+  const threshold = opts.threshold ?? DEFAULT_DEDUP_THRESHOLD;
+  const candidateText = candidate.text?.trim() ?? "";
+  if (!candidateText) {
+    return { op: "add" };
+  }
+
+  const candidateTokens = tokenizeMemoryGraphText(candidateText);
+  const hasCandidateEmbedding = Array.isArray(candidate.embedding) && candidate.embedding.length > 0;
+
+  let best: { id: string; score: number } | undefined;
+  for (const record of existingRecords) {
+    if (record.status !== "confirmed") {
+      continue;
+    }
+    const score = scoreCandidateAgainstRecord(
+      candidate,
+      candidateTokens,
+      hasCandidateEmbedding,
+      record
+    );
+    if (!best || score > best.score) {
+      best = { id: record.id, score };
+    }
+  }
+
+  if (best && best.score > threshold) {
+    return { op: "update", similarToRecordId: best.id };
+  }
+  return { op: "add" };
+}
+
+// Embedding cosine when both sides have a vector; otherwise normalized token overlap.
+function scoreCandidateAgainstRecord(
+  candidate: { text: string; embedding?: number[] },
+  candidateTokens: Set<string>,
+  hasCandidateEmbedding: boolean,
+  record: MemoryRecord
+): number {
+  if (hasCandidateEmbedding && Array.isArray(record.embedding) && record.embedding.length > 0) {
+    return cosineSimilarity(candidate.embedding as number[], record.embedding);
+  }
+  return tokenOverlapRatio(candidateTokens, tokenizeMemoryGraphText(record.text));
+}
+
+// Jaccard similarity over token sets: |A∩B| / |A∪B|, 0 when either side is empty.
+function tokenOverlapRatio(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) {
+    return 0;
+  }
+  let intersection = 0;
+  for (const token of a) {
+    if (b.has(token)) {
+      intersection += 1;
+    }
+  }
+  const union = a.size + b.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
 
 /**
  * M3c: approve a candidate into a confirmed MemoryRecord.

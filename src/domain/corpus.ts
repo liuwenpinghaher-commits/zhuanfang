@@ -8,7 +8,7 @@ import type {
 } from "./types";
 
 import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, sanitizeExternalMaterialText, sanitizeExternalMaterialBlock, pickSearchBriefText } from "./utils";
-import { withGeneratedArtifactWorkflowRun, withSystemConfigVersion, removeVersionSuffix } from "./engine";
+import { planMemoryUpdate, withGeneratedArtifactWorkflowRun, withSystemConfigVersion, removeVersionSuffix } from "./engine";
 import { withMemoryCandidateReview } from "./memoryReview";
 
 /** LLM-produced analysis content. When supplied, it replaces the deterministic
@@ -382,9 +382,13 @@ function withExternalCorpusMemoryCandidate(
     return state;
   }
 
+  const text = `用户正在把《${input.title}》作为外部专访样本，用来改进自己的专访追问逻辑和节奏判断。`;
+  // M2 (Task 6): extract-then-update dedup hint for the HITL reviewer (token overlap;
+  // corpus candidates carry no embedding). Annotation only — the store is untouched.
+  const plan = planMemoryUpdate({ text }, state.memoryRecords);
   const candidate = withMemoryCandidateReview({
     id: makeId("memory-candidate"),
-    text: `用户正在把《${input.title}》作为外部专访样本，用来改进自己的专访追问逻辑和节奏判断。`,
+    text,
     status: "pending",
     sourceType: "corpus_import",
     sourceId: importId,
@@ -394,7 +398,9 @@ function withExternalCorpusMemoryCandidate(
     ),
     reason: `外部语料样本《${input.title}》已生成 PlaybookPatch；根据当前记忆策略，只生成待审核候选，用户确认后才进入长期记忆。`,
     sensitivity: "normal",
-    createdAt
+    createdAt,
+    suggestedUpdate: plan.op,
+    ...(plan.op === "update" && plan.similarToRecordId ? { similarToRecordId: plan.similarToRecordId } : {})
   });
 
   return {

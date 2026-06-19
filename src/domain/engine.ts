@@ -88,7 +88,7 @@ export {
 
 export {
   approveMemoryCandidate, deleteMemoryRecord, deprecateMemoryRecord,
-  rejectMemoryCandidate, updateMemoryCandidateText, updateMemoryRecordText,
+  planMemoryUpdate, rejectMemoryCandidate, updateMemoryCandidateText, updateMemoryRecordText,
 } from "./memory";
 
 export {

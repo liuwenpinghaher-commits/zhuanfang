@@ -14,8 +14,30 @@ import type {
 
 import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, extractAnchor } from "./utils";
 import { withMemoryCandidateReview } from "./memoryReview";
-import { buildInterviewQualityReport, tokenizeMemoryGraphText } from "./engine";
+import { buildInterviewQualityReport, planMemoryUpdate, tokenizeMemoryGraphText } from "./engine";
 import { uniqueStrings } from "./signals";
+
+/**
+ * M2 (Task 6): tag each fresh candidate with an extract-then-update dedup hint
+ * against already-confirmed memories, so the HITL reviewer sees "似已有记忆 X".
+ * Pure: candidates carry no embedding at finalize time, so planMemoryUpdate uses
+ * its token-overlap fallback. Never mutates the store — only annotates candidates.
+ */
+function annotateCandidatesWithDedupHint(
+  candidates: MemoryCandidate[],
+  records: ProductState["memoryRecords"]
+): MemoryCandidate[] {
+  if (!records || records.length === 0) {
+    return candidates;
+  }
+  return candidates.map((candidate) => {
+    const plan = planMemoryUpdate({ text: candidate.text }, records);
+    if (plan.op === "update" && plan.similarToRecordId) {
+      return { ...candidate, suggestedUpdate: "update", similarToRecordId: plan.similarToRecordId };
+    }
+    return { ...candidate, suggestedUpdate: "add" };
+  });
+}
 
 function buildMemoryCandidateFromSession(
   session: InterviewSession,
@@ -147,11 +169,13 @@ export function mergeFinalizedState(
   nextState.notes = [note, ...nextState.notes];
   if (providedCandidates && providedCandidates.length > 0) {
     // Use externally provided candidates (e.g. from LLM extraction in Task 2+).
-    nextState.memoryCandidates = [...providedCandidates, ...(nextState.memoryCandidates ?? [])];
+    const annotated = annotateCandidatesWithDedupHint(providedCandidates, nextState.memoryRecords);
+    nextState.memoryCandidates = [...annotated, ...(nextState.memoryCandidates ?? [])];
   } else if (note.keyQuote.trim()) {
     // Derive candidate from actual session content (deterministic fallback).
     const memoryCandidate = buildMemoryCandidateFromSession(session, note, note.keyQuote, completedAt);
-    nextState.memoryCandidates = [memoryCandidate, ...(nextState.memoryCandidates ?? [])];
+    const [annotated] = annotateCandidatesWithDedupHint([memoryCandidate], nextState.memoryRecords);
+    nextState.memoryCandidates = [annotated, ...(nextState.memoryCandidates ?? [])];
   }
   nextState.points = [...content.points.map(p => ({ ...p, sourceSessionId: session.id })), ...nextState.points];
   nextState.questions = [...content.questions.map(q => ({ ...q, sourceSessionId: session.id })), ...nextState.questions];

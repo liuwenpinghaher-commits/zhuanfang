@@ -5,6 +5,7 @@
 import type { ImportSource, MemorySensitivity, ProductState, RagChunk } from "./types";
 import { cloneState, makeId, nowIso, withAuditEvent } from "./utils";
 import { withMemoryCandidateReview } from "./memoryReview";
+import { planMemoryUpdate } from "./memory";
 import { tagSourceThemes } from "./theme-tagging";
 
 export interface ImportedMemoryCandidate {
@@ -157,8 +158,11 @@ export async function ingestImportSource(
     updatedAt: createdAt
   };
 
-  const memoryCandidates = candidates.map((candidate) =>
-    withMemoryCandidateReview({
+  const memoryCandidates = candidates.map((candidate) => {
+    // M2 (Task 6): surface an extract-then-update dedup hint to the HITL reviewer.
+    // Candidates have no embedding here, so planMemoryUpdate uses token overlap.
+    const plan = planMemoryUpdate({ text: candidate.text }, state.memoryRecords);
+    return withMemoryCandidateReview({
       id: makeId("memory-candidate"),
       text: candidate.text,
       status: "pending" as const,
@@ -167,9 +171,11 @@ export async function ingestImportSource(
       evidenceQuote: candidate.evidenceQuote,
       reason: `从导入资料《${input.title}》中抽取，需你确认后才进入长期记忆。`,
       sensitivity: candidate.sensitivity,
-      createdAt
-    })
-  );
+      createdAt,
+      suggestedUpdate: plan.op,
+      ...(plan.op === "update" && plan.similarToRecordId ? { similarToRecordId: plan.similarToRecordId } : {})
+    });
+  });
 
   const next = cloneState(state);
   next.importSources = [importSource, ...next.importSources];

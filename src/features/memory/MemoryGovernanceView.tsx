@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, FileUp, Inbox, Lock, Pencil, ShieldAlert, Trash2, X } from "lucide-react";
+import { Check, FileUp, GitMerge, Inbox, Lock, Pencil, ShieldAlert, Trash2, X } from "lucide-react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { ProductState } from "../../domain/types";
 
@@ -79,6 +79,16 @@ export function MemoryGovernanceView({
 
   const pending = state.memoryCandidates.filter((c) => c.status === "pending");
   const confirmed = state.memoryRecords.filter((r) => r.status === "confirmed");
+
+  // M2 (Task 6): resolve a candidate's dedup hint to the confirmed record it
+  // resembles, so the reviewer can decide to merge or still add it as new.
+  const recordTextById = new Map(confirmed.map((r) => [r.id, r.text] as const));
+  function dedupHint(candidate: (typeof pending)[number]): string | null {
+    if (candidate.suggestedUpdate !== "update" || !candidate.similarToRecordId) return null;
+    const text = recordTextById.get(candidate.similarToRecordId);
+    if (!text) return null;
+    return text.length > 40 ? text.slice(0, 40) + "…" : text;
+  }
 
   function getOp(id: string): CandidateOp {
     return candidateOps[id] ?? { approve: "idle", reject: "idle", save: "idle" };
@@ -249,6 +259,7 @@ export function MemoryGovernanceView({
             const isSaving = op.save === "loading";
             const anyLoading = isApproving || isRejecting || isSaving;
             const justSaved = savedId === candidate.id;
+            const hint = dedupHint(candidate);
 
             return (
               <article
@@ -274,6 +285,28 @@ export function MemoryGovernanceView({
                   )}
                   {candidate.reviewSignals?.length > 0 && (
                     <span className="label">{candidate.reviewSignals.join(" · ")}</span>
+                  )}
+                  {hint && (
+                    <div
+                      className="dedup-hint"
+                      style={{
+                        marginTop: 8,
+                        display: "flex",
+                        alignItems: "flex-start",
+                        gap: 6,
+                        padding: "6px 10px",
+                        borderRadius: 8,
+                        background: "var(--surface-muted, rgba(120,120,140,0.08))",
+                        fontSize: "0.85em",
+                        lineHeight: 1.45,
+                        color: "var(--text-secondary, #555)"
+                      }}
+                    >
+                      <GitMerge size={14} aria-hidden="true" style={{ flexShrink: 0, marginTop: 2 }} />
+                      <span>
+                        似已有记忆：<span style={{ fontStyle: "italic" }}>{hint}</span> —— 可合并或仍新增。
+                      </span>
+                    </div>
                   )}
                   {justSaved && (
                     <span className="label" style={{ color: "var(--accent-green)" }}>已保存</span>
