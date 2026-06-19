@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Check, FileUp, Pencil, Trash2, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Check, FileUp, Inbox, Lock, Pencil, ShieldAlert, Trash2, X } from "lucide-react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { ProductState } from "../../domain/types";
 
@@ -14,6 +14,26 @@ interface MemoryGovernanceViewProps {
   onDeleteRecord: (recordId: string) => void;
 }
 
+type ActionState = "idle" | "loading" | "done" | "error";
+
+interface CandidateOp {
+  approve: ActionState;
+  reject: ActionState;
+  save: ActionState;
+}
+
+const MAX_IMPORT_CHARS = 20000;
+
+function SensitiveIcon() {
+  return (
+    <ShieldAlert
+      size={14}
+      aria-label="敏感内容，默认不写入上下文"
+      style={{ display: "inline", verticalAlign: "text-bottom", marginRight: 3 }}
+    />
+  );
+}
+
 export function MemoryGovernanceView({
   state,
   importing,
@@ -26,21 +46,108 @@ export function MemoryGovernanceView({
 }: MemoryGovernanceViewProps) {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
+  const [contentError, setContentError] = useState("");
 
-  const pending = state.memoryCandidates.filter((candidate) => candidate.status === "pending");
-  const confirmed = state.memoryRecords.filter((record) => record.status === "confirmed");
+  // per-candidate inline edit: id -> draft text (null = not editing)
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draftText, setDraftText] = useState("");
+
+  // per-candidate action states
+  const [candidateOps, setCandidateOps] = useState<Record<string, CandidateOp>>({});
+
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Auto-focus textarea when entering edit mode
+  useEffect(() => {
+    if (editingId && textareaRef.current) {
+      textareaRef.current.focus();
+      // place cursor at end
+      const len = textareaRef.current.value.length;
+      textareaRef.current.setSelectionRange(len, len);
+    }
+  }, [editingId]);
+
+  const pending = state.memoryCandidates.filter((c) => c.status === "pending");
+  const confirmed = state.memoryRecords.filter((r) => r.status === "confirmed");
+
+  function getOp(id: string): CandidateOp {
+    return candidateOps[id] ?? { approve: "idle", reject: "idle", save: "idle" };
+  }
+
+  function setOp(id: string, patch: Partial<CandidateOp>) {
+    setCandidateOps((prev) => ({
+      ...prev,
+      [id]: { ...getOp(id), ...patch }
+    }));
+  }
 
   function handleImport() {
     if (!content.trim()) return;
+    if (content.length > MAX_IMPORT_CHARS) {
+      setContentError(`内容超过 ${MAX_IMPORT_CHARS.toLocaleString()} 字，请裁减后再导入。`);
+      return;
+    }
+    setContentError("");
     onImport(title.trim() || "未命名导入资料", content.trim());
     setTitle("");
     setContent("");
   }
 
-  function handleEdit(candidateId: string, currentText: string) {
-    const next = window.prompt("修正这条候选记忆（AI 理解错了就改这里）：", currentText);
-    if (next && next.trim() && next.trim() !== currentText) {
-      onEditCandidate(candidateId, next.trim());
+  function handleContentChange(value: string) {
+    setContent(value);
+    if (value.length > MAX_IMPORT_CHARS) {
+      setContentError(`内容超过 ${MAX_IMPORT_CHARS.toLocaleString()} 字，请裁减后再导入。`);
+    } else {
+      setContentError("");
+    }
+  }
+
+  function startEdit(candidateId: string, currentText: string) {
+    setEditingId(candidateId);
+    setDraftText(currentText);
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setDraftText("");
+  }
+
+  async function handleSave(candidateId: string, originalText: string) {
+    const next = draftText.trim();
+    if (!next || next === originalText) {
+      cancelEdit();
+      return;
+    }
+    setOp(candidateId, { save: "loading" });
+    try {
+      await Promise.resolve(onEditCandidate(candidateId, next));
+      setOp(candidateId, { save: "done" });
+    } catch {
+      setOp(candidateId, { save: "error" });
+    } finally {
+      // Always close edit mode regardless of outcome
+      setEditingId(null);
+      setDraftText("");
+    }
+  }
+
+  async function handleApprove(candidateId: string) {
+    setOp(candidateId, { approve: "loading" });
+    try {
+      await Promise.resolve(onApprove(candidateId));
+      setOp(candidateId, { approve: "done" });
+    } catch {
+      setOp(candidateId, { approve: "error" });
+    }
+  }
+
+  async function handleReject(candidateId: string) {
+    setOp(candidateId, { reject: "loading" });
+    try {
+      await Promise.resolve(onReject(candidateId));
+      setOp(candidateId, { reject: "done" });
+    } catch {
+      setOp(candidateId, { reject: "error" });
     }
   }
 
@@ -52,6 +159,7 @@ export function MemoryGovernanceView({
         subtitle="导入的资料会抽取成候选记忆；只有你确认后才进入长期记忆。敏感内容默认不写入上下文。"
       />
 
+      {/* Import card */}
       <article className="record-row">
         <div className="record-main">
           <label className="label" htmlFor="memory-import-title">资料标题</label>
@@ -60,16 +168,24 @@ export function MemoryGovernanceView({
             type="text"
             value={title}
             placeholder="例如：我的产品笔记 / 一篇访谈稿"
-            onChange={(event) => setTitle(event.target.value)}
+            onChange={(e) => setTitle(e.target.value)}
           />
-          <label className="label" htmlFor="memory-import-content">资料内容（粘贴文本，或读取 .txt/.md 文件）</label>
+          <label className="label" htmlFor="memory-import-content">
+            资料内容（粘贴文本，或读取 .txt/.md 文件）
+          </label>
           <textarea
             id="memory-import-content"
             rows={6}
             value={content}
             placeholder="把要导入的资料粘贴到这里…"
-            onChange={(event) => setContent(event.target.value)}
+            onChange={(e) => handleContentChange(e.target.value)}
+            aria-describedby={contentError ? "import-content-error" : undefined}
           />
+          {contentError && (
+            <p id="import-content-error" className="label" style={{ color: "var(--color-error, #f87171)", marginTop: 4 }}>
+              {contentError}
+            </p>
+          )}
           <div className="note-actions">
             <label className="secondary-action" style={{ cursor: "pointer" }}>
               <FileUp size={16} />选择 .txt/.md 文件
@@ -77,74 +193,182 @@ export function MemoryGovernanceView({
                 type="file"
                 accept=".txt,.md,.markdown,text/plain"
                 style={{ display: "none" }}
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
                   if (!file) return;
                   if (!title.trim()) setTitle(file.name.replace(/\.[^.]+$/, ""));
-                  file.text().then((text) => setContent(text));
+                  file.text().then((text) => handleContentChange(text));
                 }}
               />
             </label>
-            <button className="primary-action" type="button" disabled={importing || !content.trim()} onClick={handleImport}>
-              <FileUp size={16} />{importing ? "抽取中…" : "导入并抽取候选记忆"}
+            <button
+              className={`primary-action${importing ? " btn-loading" : ""}`}
+              type="button"
+              disabled={importing || !content.trim() || content.length > MAX_IMPORT_CHARS}
+              onClick={handleImport}
+              aria-busy={importing}
+            >
+              {importing && <span className="spinner" aria-hidden="true" />}
+              <FileUp size={16} />
+              {importing ? "抽取中…" : "导入并抽取候选记忆"}
             </button>
           </div>
         </div>
       </article>
 
+      {/* Pending candidates */}
       <div className="record-list">
         <h2>待审候选记忆（{pending.length}）</h2>
-        {pending.length === 0 && <p className="label">暂无待审候选。导入资料或完成一次专访后会产生候选记忆。</p>}
-        {pending.map((candidate) => (
-          <article className="record-row" key={candidate.id}>
-            <div className="record-main">
-              <span className="label">
-                评分 {candidate.reviewScore} ·{" "}
-                {candidate.sensitivity === "sensitive" ? "🔒 敏感（默认不入上下文）" : "普通"} · 来源 {candidate.sourceType}
-              </span>
-              <p>{candidate.text}</p>
-              {candidate.evidenceQuote && <div className="quote-line">“{candidate.evidenceQuote}”</div>}
-              {candidate.reviewSignals?.length > 0 && (
-                <span className="label">{candidate.reviewSignals.join(" · ")}</span>
-              )}
-            </div>
-            <div className="note-actions">
-              <button className="primary-action" type="button" onClick={() => onApprove(candidate.id)}>
-                <Check size={16} />确认记住
-              </button>
-              <button className="secondary-action" type="button" onClick={() => handleEdit(candidate.id, candidate.text)}>
-                <Pencil size={16} />修正
-              </button>
-              <button className="secondary-action" type="button" onClick={() => onReject(candidate.id)}>
-                <X size={16} />不要记
-              </button>
-            </div>
-          </article>
-        ))}
+        {pending.length === 0 ? (
+          <div className="empty-state">
+            <span className="empty-icon"><Inbox size={32} /></span>
+            <p>暂无待审候选。导入资料或完成一次专访后会产生候选记忆。</p>
+          </div>
+        ) : (
+          pending.map((candidate) => {
+            const op = getOp(candidate.id);
+            const isEditing = editingId === candidate.id;
+            const isApproving = op.approve === "loading";
+            const isRejecting = op.reject === "loading";
+            const isSaving = op.save === "loading";
+            const anyLoading = isApproving || isRejecting || isSaving;
+
+            return (
+              <article className="record-row" key={candidate.id}>
+                <div className="record-main">
+                  <span className="label">
+                    评分 {candidate.reviewScore} &middot;{" "}
+                    {candidate.sensitivity === "sensitive" ? (
+                      <>
+                        <SensitiveIcon />
+                        敏感（默认不入上下文）
+                      </>
+                    ) : (
+                      "普通"
+                    )}
+                    {" "}&middot; 来源 {candidate.sourceType}
+                  </span>
+                  <p>{candidate.text}</p>
+                  {candidate.evidenceQuote && (
+                    <div className="quote-line">"{candidate.evidenceQuote}"</div>
+                  )}
+                  {candidate.reviewSignals?.length > 0 && (
+                    <span className="label">{candidate.reviewSignals.join(" · ")}</span>
+                  )}
+
+                  {/* Inline edit area */}
+                  {isEditing && (
+                    <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                      <label className="label" htmlFor={`edit-candidate-${candidate.id}`}>
+                        修正内容（{draftText.length} 字）
+                      </label>
+                      <textarea
+                        id={`edit-candidate-${candidate.id}`}
+                        ref={textareaRef}
+                        rows={4}
+                        value={draftText}
+                        onChange={(e) => setDraftText(e.target.value)}
+                        aria-label="修正候选记忆内容"
+                      />
+                      <div className="note-actions">
+                        <button
+                          className={`primary-action${isSaving ? " btn-loading" : ""}`}
+                          type="button"
+                          disabled={isSaving || !draftText.trim()}
+                          onClick={() => handleSave(candidate.id, candidate.text)}
+                          aria-busy={isSaving}
+                        >
+                          {isSaving && <span className="spinner" aria-hidden="true" />}
+                          <Check size={16} />保存修正
+                        </button>
+                        <button
+                          className="secondary-action"
+                          type="button"
+                          disabled={isSaving}
+                          onClick={cancelEdit}
+                        >
+                          <X size={16} />取消
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {!isEditing && (
+                  <div className="note-actions">
+                    <button
+                      className={`primary-action${isApproving ? " btn-loading" : ""}`}
+                      type="button"
+                      disabled={anyLoading}
+                      onClick={() => handleApprove(candidate.id)}
+                      aria-busy={isApproving}
+                    >
+                      {isApproving && <span className="spinner" aria-hidden="true" />}
+                      <Check size={16} />确认记住
+                    </button>
+                    <button
+                      className="secondary-action"
+                      type="button"
+                      disabled={anyLoading}
+                      onClick={() => startEdit(candidate.id, candidate.text)}
+                    >
+                      <Pencil size={16} />修正
+                    </button>
+                    <button
+                      className={`secondary-action${isRejecting ? " btn-loading" : ""}`}
+                      type="button"
+                      disabled={anyLoading}
+                      onClick={() => handleReject(candidate.id)}
+                      aria-busy={isRejecting}
+                    >
+                      {isRejecting && <span className="spinner" aria-hidden="true" />}
+                      <X size={16} />不要记
+                    </button>
+                  </div>
+                )}
+              </article>
+            );
+          })
+        )}
       </div>
 
+      {/* Confirmed records */}
       <div className="record-list">
         <h2>已确认的长期记忆（{confirmed.length}）</h2>
-        {confirmed.length === 0 && <p className="label">还没有确认的长期记忆。</p>}
-        {confirmed.map((record) => (
-          <article className="record-row" key={record.id}>
-            <div className="record-main">
-              <span className="label">
-                {record.sensitivity === "sensitive" ? "🔒 敏感 · " : ""}来源 {record.sourceType}
-              </span>
-              <p>{record.text}</p>
-              {record.evidenceQuote && <div className="quote-line">“{record.evidenceQuote}”</div>}
-            </div>
-            <div className="note-actions">
-              <button className="secondary-action" type="button" onClick={() => onDeprecate(record.id)}>
-                撤销（停止引用）
-              </button>
-              <button className="secondary-action" type="button" onClick={() => onDeleteRecord(record.id)}>
-                <Trash2 size={16} />删除
-              </button>
-            </div>
-          </article>
-        ))}
+        {confirmed.length === 0 ? (
+          <div className="empty-state">
+            <span className="empty-icon"><Lock size={32} /></span>
+            <p>还没有确认的长期记忆。审批候选记忆后，它们会出现在这里。</p>
+          </div>
+        ) : (
+          confirmed.map((record) => (
+            <article className="record-row" key={record.id}>
+              <div className="record-main">
+                <span className="label">
+                  {record.sensitivity === "sensitive" && (
+                    <>
+                      <SensitiveIcon />
+                      敏感 &middot;{" "}
+                    </>
+                  )}
+                  来源 {record.sourceType}
+                </span>
+                <p>{record.text}</p>
+                {record.evidenceQuote && (
+                  <div className="quote-line">"{record.evidenceQuote}"</div>
+                )}
+              </div>
+              <div className="note-actions">
+                <button className="secondary-action" type="button" onClick={() => onDeprecate(record.id)}>
+                  撤销（停止引用）
+                </button>
+                <button className="secondary-action" type="button" onClick={() => onDeleteRecord(record.id)}>
+                  <Trash2 size={16} />删除
+                </button>
+              </div>
+            </article>
+          ))
+        )}
       </div>
     </section>
   );
