@@ -553,4 +553,109 @@ describe("Full cross-feature business journey: 团队授权与控制感", () => 
 
     await server.close();
   });
+
+  // =========================================================================
+  // 补充：系统模块真实业务段 —
+  //   配置保存(PATCH env + 产品策略) → 语料分析 → 应用 patch
+  //   → 断言 appliedPlaybookRules/ruleType 进入引擎策略与实时语音指令
+  //   → 数据治理：导出有内容 / 隐私报告分类 / purge 后个人数据清空但结构在
+  // =========================================================================
+  it("system module: config save, corpus patch reaches engine+voice, data governance round-trip", async () => {
+    // 注入空 env 对象，PATCH 写入它而非 process.env（隔离 + 可断言）
+    const env: Record<string, string | undefined> = {};
+    const server = buildApiServer({ env });
+
+    await server.inject({ method: "POST", url: "/api/state/reset" });
+
+    // -----------------------------------------------------------------------
+    // A. 配置保存（env）— 写入生效 + 复核
+    // -----------------------------------------------------------------------
+    const patchCfg = await server.inject({
+      method: "PATCH",
+      url: "/api/system/config",
+      payload: { updates: { ANYSEARCH_LANGUAGE: "en-US" } }
+    });
+    expect(patchCfg.statusCode).toBe(200);
+    expect(patchCfg.json().settingsUpdated).toContain("ANYSEARCH_LANGUAGE");
+    expect(env.ANYSEARCH_LANGUAGE).toBe("en-US");
+    const cfgGet = (await server.inject({ method: "GET", url: "/api/system/config" })).json();
+    const langSetting = cfgGet.sections
+      .flatMap((s: any) => s.settings)
+      .find((x: any) => x.key === "ANYSEARCH_LANGUAGE");
+    expect(langSetting.value).toBe("en-US");
+
+    // -----------------------------------------------------------------------
+    // B. 语料分析 → 应用 patch → 进入引擎策略 + 实时语音指令
+    // -----------------------------------------------------------------------
+    const insights = await server.inject({
+      method: "POST",
+      url: "/api/corpus/insights",
+      payload: {
+        title: "优秀决策专访样本",
+        content:
+          "主持人：你提到团队最近很乱，能不能讲一个最近一次具体时刻？\n" +
+          "被访者：上周一次上线，三个人都在等我拍板。\n" +
+          "主持人：如果反过来看，是不是机制一直奖励大家等你拍板，让放手要付出代价？"
+      }
+    });
+    expect(insights.statusCode).toBe(200);
+    const patch = insights.json().insight.recommendedPatches[0];
+    expect(patch.status).toBe("proposed");
+    expect(patch.ruleTypes.length).toBe(patch.rules.length);
+    const firstRule = patch.rules[0] as string;
+
+    const applyRes = await server.inject({ method: "POST", url: `/api/playbook-patches/${patch.id}/apply` });
+    expect(applyRes.statusCode).toBe(200);
+    expect(applyRes.json().patch.status).toBe("applied");
+
+    // 新会话引擎策略纳入规则与 ruleType
+    const sysSession = (await server.inject({
+      method: "POST",
+      url: "/api/interview-sessions",
+      payload: { mode: "decision" }
+    })).json().session;
+    expect(sysSession.enginePolicy.appliedPlaybookRules).toContain(firstRule);
+    expect(sysSession.enginePolicy.appliedPlaybookRuleTypes).toContain("concrete-moment");
+
+    // 规则穿透到实时语音主持指令
+    const agentCtx = (await server.inject({
+      method: "GET",
+      url: `/api/realtime-voice/agent-context/${sysSession.id}`
+    })).json();
+    expect(agentCtx.instructions).toContain("已应用的提问技法");
+    expect(agentCtx.instructions).toContain(firstRule);
+
+    // -----------------------------------------------------------------------
+    // C. 数据治理：导出有内容 → 隐私报告分类 → purge 后清空但结构在
+    // -----------------------------------------------------------------------
+    const exp = (await server.inject({ method: "GET", url: "/api/state/export" })).json();
+    expect(exp.schemaVersion).toBe(1);
+    expect(exp.package.restoredDigest).toBe(exp.package.stateDigest); // 恢复摘要一致
+    expect(exp.package.providerSecretsExcluded).toBe(true);
+    expect(exp.checks.find((c: any) => c.id === "provider-secrets").status).toBe("passed");
+
+    const privBefore = (await server.inject({ method: "GET", url: "/api/state/privacy-report" })).json();
+    expect(privBefore.hasPersonalData).toBe(true);
+    expect(privBefore.inventory.map((i: any) => i.id)).toContain("corpus_learning");
+    // 语料学习类目应反映导入样本 + patch（count > 0）
+    expect(privBefore.inventory.find((i: any) => i.id === "corpus_learning").count).toBeGreaterThan(0);
+
+    const purged = (await server.inject({ method: "POST", url: "/api/state/purge" })).json();
+    // 个人数据清空
+    expect(purged.profile.name).toBe("");
+    expect(purged.sessions).toHaveLength(0);
+    expect(purged.corpusImports).toHaveLength(0);
+    expect(purged.playbookPatches).toHaveLength(0);
+    // 结构保留 + 一条清空审计 + 配置保留
+    expect(Array.isArray(purged.themes)).toBe(true);
+    expect(purged.auditEvents).toHaveLength(1);
+    expect(purged.auditEvents[0].type).toBe("privacy_data_purged");
+    expect(purged.systemConfig).toBeDefined();
+
+    // 清空后隐私报告：无个人数据
+    const privAfter = (await server.inject({ method: "GET", url: "/api/state/privacy-report" })).json();
+    expect(privAfter.hasPersonalData).toBe(false);
+
+    await server.close();
+  });
 });
