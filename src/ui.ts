@@ -10,6 +10,7 @@ export type View =
   | "podcast"
   | "notes"
   | "assets"
+  | "my-assets"
   | "themes"
   | "memory"
   | "config"
@@ -83,19 +84,16 @@ export const groupedNavigation: NavigationGroup[] = [
   {
     label: "认知资产",
     items: [
-      { id: "notes", label: "双轨笔记" },
-      { id: "assets", label: "资产库" },
-      { id: "memory", label: "记忆治理" },
-      { id: "search", label: "联网素材" },
-      { id: "intel", label: "情报中心" },
-      { id: "corpus", label: "语料学习" },
-      { id: "podcast", label: "播客工作台" }
+      { id: "my-assets", label: "我的资产" },
+      { id: "search", label: "外部调研" },
+      { id: "memory", label: "记忆" }
     ]
   },
   {
     label: "系统",
     items: [
       { id: "config", label: "系统配置" },
+      { id: "corpus", label: "语料学习" },
       { id: "profile", label: "个人档案" }
     ]
   }

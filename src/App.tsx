@@ -110,6 +110,7 @@ const navIconByView: Record<View, typeof Compass> = {
   podcast: Headphones,
   notes: BookOpen,
   assets: Archive,
+  "my-assets": Archive,
   themes: Brain,
   memory: Brain,
   config: SlidersHorizontal,

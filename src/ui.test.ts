@@ -18,14 +18,11 @@ describe("ui helpers", () => {
       "home",
       "interview",
       "themes",
-      "notes",
-      "assets",
-      "memory",
+      "my-assets",
       "search",
-      "intel",
-      "corpus",
-      "podcast",
+      "memory",
       "config",
+      "corpus",
       "profile"
     ]);
   });
