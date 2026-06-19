@@ -33,6 +33,7 @@ export interface ProductApiClient {
   getState(): Promise<ProductState>;
   getReviews(): Promise<ReviewsResponse>;
   importDocument(input: ImportDocumentRequest): Promise<ImportDocumentResponse>;
+  confirmDecision(id: string): Promise<ProductState>;
   approveMemoryCandidate(id: string): Promise<ProductState>;
   rejectMemoryCandidate(id: string, reviewNote?: string): Promise<ProductState>;
   updateMemoryCandidate(id: string, text: string): Promise<ProductState>;
@@ -374,6 +375,10 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         body: JSON.stringify(input)
       })) as ImportDocumentResponse;
       return { ...response, state: normalizeProductState(response.state) };
+    },
+    async confirmDecision(id) {
+      const response = (await requestJson(`/api/assets/decisions/${id}/confirm`, { method: "POST" })) as { state: ProductState };
+      return normalizeProductState(response.state);
     },
     async approveMemoryCandidate(id) {
       const response = (await requestJson(`/api/memory-candidates/${id}/approve`, { method: "POST" })) as { state: ProductState };

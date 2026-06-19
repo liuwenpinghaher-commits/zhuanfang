@@ -330,6 +330,13 @@ export default function App() {
       .then((next) => setProductState(next))
       .catch(() => setNotice(buildNotice("warning", "操作失败", "记忆治理需要后端在线。")));
   }
+  function confirmDecision(id: string) {
+    productApiClient
+      .confirmDecision(id)
+      .then((next) => setProductState(next))
+      .catch(() => setNotice(buildNotice("warning", "操作失败", "确认决策需要后端在线。")));
+  }
+
   const approveCandidate = (id: string) => withMemoryAction(() => productApiClient.approveMemoryCandidate(id));
   const rejectCandidate = (id: string) => withMemoryAction(() => productApiClient.rejectMemoryCandidate(id));
   const editCandidate = (id: string, text: string) => withMemoryAction(() => productApiClient.updateMemoryCandidate(id, text));
@@ -1421,6 +1428,7 @@ export default function App() {
             onPointStatus={(assetId, status) => setProductState(updatePointStatus(productState, assetId, status))}
             onQuestionStatus={(assetId, status) => setProductState(updateQuestionStatus(productState, assetId, status))}
             onDebtStatus={(assetId, status) => setProductState(updateKnowledgeDebtStatus(productState, assetId, status))}
+            onDecisionConfirm={confirmDecision}
           />
         )}
         {view === "themes" && <ThemesView state={productState} review={monthlyReview} yearlyReview={yearlyReview} radar={radar} onStart={launchInterview} onOpenTrack={openTrack} />}

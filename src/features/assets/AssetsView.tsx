@@ -1,4 +1,4 @@
-import { Archive, Flag, Search } from "lucide-react";
+import { Archive, CheckCircle, Flag, Search } from "lucide-react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import { StatusButtons } from "../../components/StatusButtons";
 import type { searchProductAssets } from "../../domain/engine";
@@ -17,6 +17,7 @@ interface AssetsViewProps {
   onPointStatus: (assetId: string, status: Extract<AssetStatus, "临时想法" | "稳定观点" | "被挑战中" | "已修正" | "已放弃">) => void;
   onQuestionStatus: (assetId: string, status: Extract<AssetStatus, "开放" | "反复出现" | "正在聚焦" | "阶段性回答">) => void;
   onDebtStatus: (assetId: string, status: Extract<AssetStatus, "待了解" | "能复述" | "已应用" | "不相关">) => void;
+  onDecisionConfirm: (assetId: string) => void;
 }
 
 export function AssetsView({
@@ -30,7 +31,8 @@ export function AssetsView({
   onToggleImportant,
   onPointStatus,
   onQuestionStatus,
-  onDebtStatus
+  onDebtStatus,
+  onDecisionConfirm
 }: AssetsViewProps) {
   const allAssets = buildUnifiedAssets(results);
   const assets = allAssets.filter((asset) => filter === "all" || asset.type === filter);
@@ -101,6 +103,7 @@ export function AssetsView({
               onPointStatus={onPointStatus}
               onQuestionStatus={onQuestionStatus}
               onDebtStatus={onDebtStatus}
+              onDecisionConfirm={onDecisionConfirm}
             />
           ) : (
             <div className="empty-module">
@@ -125,6 +128,7 @@ type UnifiedAsset = {
   status: string;
   important: boolean;
   evidence: string[];
+  confirmationStatus?: string;
 };
 
 function buildUnifiedAssets(results: ReturnType<typeof searchProductAssets>): UnifiedAsset[] {
@@ -163,7 +167,8 @@ function buildUnifiedAssets(results: ReturnType<typeof searchProductAssets>): Un
       detail: `选择：${decision.choice}。风险假设：${decision.riskHypothesis}`,
       status: decision.status,
       important: decision.status === "待复盘",
-      evidence: [`复盘时间：${decision.reviewAt}`]
+      evidence: [`复盘时间：${decision.reviewAt}`],
+      confirmationStatus: decision.confirmationStatus
     })),
     ...results.debts.map((debt): UnifiedAsset => ({
       key: `debts:${debt.id}`,
@@ -186,9 +191,10 @@ interface AssetDetailProps {
   onPointStatus: (assetId: string, status: Extract<AssetStatus, "临时想法" | "稳定观点" | "被挑战中" | "已修正" | "已放弃">) => void;
   onQuestionStatus: (assetId: string, status: Extract<AssetStatus, "开放" | "反复出现" | "正在聚焦" | "阶段性回答">) => void;
   onDebtStatus: (assetId: string, status: Extract<AssetStatus, "待了解" | "能复述" | "已应用" | "不相关">) => void;
+  onDecisionConfirm: (assetId: string) => void;
 }
 
-function AssetDetail({ asset, onToggleImportant, onPointStatus, onQuestionStatus, onDebtStatus }: AssetDetailProps) {
+function AssetDetail({ asset, onToggleImportant, onPointStatus, onQuestionStatus, onDebtStatus, onDecisionConfirm }: AssetDetailProps) {
   return (
     <article className="asset-detail">
       <span className="status-pill">{asset.typeLabel} · {asset.status}</span>
@@ -210,6 +216,14 @@ function AssetDetail({ asset, onToggleImportant, onPointStatus, onQuestionStatus
         <button className="secondary-action" type="button" onClick={() => onToggleImportant(asset.id)}>
           <Flag size={16} />{asset.important ? "取消重要" : "标记重要"}
         </button>
+      )}
+      {asset.type === "decisions" && asset.confirmationStatus === "待用户确认" && (
+        <button className="secondary-action" type="button" onClick={() => onDecisionConfirm(asset.id)}>
+          <CheckCircle size={16} />确认决策
+        </button>
+      )}
+      {asset.type === "decisions" && asset.confirmationStatus === "用户确认" && (
+        <span className="status-pill">已用户确认</span>
       )}
       {asset.type === "points" && (
         <StatusButtons

@@ -440,6 +440,17 @@ describe("product api client", () => {
     expect(answerSdp).toBe("answer-sdp");
   });
 
+  it("confirms a decision candidate through the API", async () => {
+    const state = createInitialProductState();
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify(state), { status: 200 }));
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+
+    const result = await client.confirmDecision("decision-123");
+
+    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:8787/api/assets/decisions/decision-123/confirm", { method: "POST" });
+    expect(result.profile.name).toBe("Mia");
+  });
+
   it("reports unavailable API health without throwing", async () => {
     const fetchImpl = vi.fn(async () => {
       throw new TypeError("fetch failed");
