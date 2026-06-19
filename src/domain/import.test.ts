@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createInitialProductState } from "./engine";
 import { chunkDocument, ingestImportSource, EMBED_BATCH_SIZE, MAX_EMBEDDED_CHUNKS } from "./import";
 import type { BailianEmbeddingClient } from "../../apps/api/src/providers/bailian";
+import type { LongTermTheme, ProductState } from "./types";
 
 describe("chunkDocument", () => {
   it("splits on paragraphs and caps chunk size", () => {
@@ -208,5 +209,49 @@ describe("ingestImportSource", () => {
     // 超出部分无 embedding（走关键词召回）
     expect(withoutEmbed.length).toBeGreaterThan(0);
     expect(withEmbed.length + withoutEmbed.length).toBe(newChunks.length);
+  });
+});
+
+describe("ingestImportSource — relatedThemeIds 软标签", () => {
+  function makeStateWithTheme(): ProductState {
+    const base = createInitialProductState();
+    // 确保有一条"控制感"主题线（seed 已有 theme-control，但显式构造避免耦合）
+    const theme: LongTermTheme = {
+      id: "theme-test-control",
+      name: "控制感",
+      summary: "test",
+      maturity: "聚焦",
+      representativeQuote: "",
+      appearances: 1,
+      nextQuestion: "",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      kind: "theme",
+      pinned: false,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      lastActiveAt: "2026-01-01T00:00:00.000Z"
+    };
+    return { ...base, themes: [theme] };
+  }
+
+  it("内容含主题名时 source.relatedThemeIds 包含对应 themeId", async () => {
+    const state = makeStateWithTheme();
+    const { nextState, sourceId } = await ingestImportSource(
+      state,
+      { title: "团队授权与控制感", content: "控制感是核心议题。", sourceType: "text" },
+      []
+    );
+    const src = nextState.importSources.find((s) => s.id === sourceId);
+    expect(src?.relatedThemeIds).toContain("theme-test-control");
+  });
+
+  it("内容不含主题名时 source.relatedThemeIds 为空数组", async () => {
+    const state = makeStateWithTheme();
+    const { nextState, sourceId } = await ingestImportSource(
+      state,
+      { title: "完全无关的话题", content: "跑步训练计划。", sourceType: "text" },
+      []
+    );
+    const src = nextState.importSources.find((s) => s.id === sourceId);
+    expect(src?.relatedThemeIds).toEqual([]);
   });
 });

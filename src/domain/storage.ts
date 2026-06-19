@@ -140,7 +140,9 @@ function normalizeImportSources(value: unknown[]): ImportSource[] {
     if (!item || typeof item !== "object") return item as ImportSource;
     const src = item as ImportSource;
     const searchBriefId = typeof src.searchBriefId === "string" && src.searchBriefId ? src.searchBriefId : undefined;
-    return { ...src, searchBriefId };
+    // v2 软标签：旧数据无此字段时补空数组
+    const relatedThemeIds = Array.isArray(src.relatedThemeIds) ? src.relatedThemeIds : [];
+    return { ...src, searchBriefId, relatedThemeIds };
   });
 }
 
@@ -312,7 +314,8 @@ function pruneDanglingThemeRefs(state: ProductState): ProductState {
     decisions: state.decisions.map((d) => ({ ...d, relatedThemeIds: pruneOptional(d.relatedThemeIds) })),
     debts: state.debts.map((d) => ({ ...d, relatedThemeIds: pruneOptional(d.relatedThemeIds) })),
     readings: state.readings.map((r) => ({ ...r, relatedThemeIds: pruneRequired(r.relatedThemeIds) })),
-    intelTasks: state.intelTasks.map((t) => ({ ...t, relatedThemeIds: pruneRequired(t.relatedThemeIds) }))
+    intelTasks: state.intelTasks.map((t) => ({ ...t, relatedThemeIds: pruneRequired(t.relatedThemeIds) })),
+    importSources: state.importSources.map((src) => ({ ...src, relatedThemeIds: pruneOptional(src.relatedThemeIds) }))
   };
 }
 

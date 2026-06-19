@@ -132,10 +132,7 @@ export interface TrackWorkspaceOutputs {
 
 export interface TrackWorkspace {
   theme: LongTermTheme | undefined;
-  /**
-   * 资料来源列表。
-   * ponytail: 数据模型暂无资料↔主题线关联,留空状态;后续接软标签
-   */
+  /** 资料来源列表：通过 relatedThemeIds 软标签归属到本主题线的 ImportSource。 */
   sources: ImportSource[];
   sessions: InterviewSession[];
   outputs: TrackWorkspaceOutputs;
@@ -153,12 +150,15 @@ export function buildTrackWorkspace(state: ProductState, themeId: string): Track
   if (!theme) {
     return {
       theme: undefined,
-      // ponytail: 数据模型暂无资料↔主题线关联,留空状态;后续接软标签
       sources: [],
       sessions: [],
       outputs: { points: [], questions: [], decisions: [], debts: [] },
     };
   }
+
+  const sources = state.importSources.filter((src) =>
+    (src.relatedThemeIds ?? []).includes(themeId)
+  );
 
   const sessions = state.sessions.filter((s) =>
     (s.relatedThemeIds ?? []).includes(themeId)
@@ -182,8 +182,7 @@ export function buildTrackWorkspace(state: ProductState, themeId: string): Track
 
   return {
     theme,
-    // ponytail: 数据模型暂无资料↔主题线关联,留空状态;后续接软标签
-    sources: [],
+    sources,
     sessions,
     outputs: { points, questions, decisions, debts },
   };

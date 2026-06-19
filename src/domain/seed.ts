@@ -123,7 +123,20 @@ export const initialProductState: ProductState = {
   memoryRecords: [],
   memoryCandidates: [],
   memoryEdges: [],
-  importSources: [],
+  importSources: [
+    {
+      id: "source-control-note",
+      title: "团队授权与控制感：一篇随手记",
+      sourceType: "text",
+      content: "在团队授权和亲自下场之间反复摇摆，控制感是核心议题。不想每次都替团队兜底，又怕短期失控。授权意味着接受短暂的不确定性，而不是放弃判断权。",
+      status: "chunked",
+      sensitivity: "normal",
+      relatedThemeIds: ["theme-control"],
+      chunkIds: [],
+      createdAt: "2026-06-06T09:00:00.000Z",
+      updatedAt: "2026-06-06T09:00:00.000Z"
+    }
+  ],
   ragChunks: [],
   intelTasks: [],
   intelItems: [],

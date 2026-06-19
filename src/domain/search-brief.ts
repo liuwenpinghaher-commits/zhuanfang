@@ -23,6 +23,7 @@ import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, formatSearc
 import { formatSearchBriefSourceLabel, buildSearchBriefSourceEvidence, pickSearchBriefText, sanitizeExternalMaterialText, sanitizeExternalMaterialBlock, sanitizeExternalMaterialList, sanitizeExternalSource, withGeneratedArtifactWorkflowRun } from "./engine";
 
 import { withMemoryCandidateReview } from "./memoryReview";
+import { tagSourceThemes } from "./theme-tagging";
 
 function buildDefaultSearchBriefSourceTrace(input: SearchBriefInput): SearchBriefSourceTrace[] {
   const sources = input.sources.filter((source) => source.id.trim());
@@ -574,6 +575,7 @@ export function importReferenceMaterial(
     sensitivity: input.sensitivity === "sensitive" ? "sensitive" : "normal",
     searchBriefId: brief.id,
     chunkIds: chunks.map((chunk) => chunk.id),
+    relatedThemeIds: tagSourceThemes(`${title} ${content}`, state.themes),
     createdAt,
     updatedAt: createdAt
   };

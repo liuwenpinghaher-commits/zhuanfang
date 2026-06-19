@@ -568,4 +568,51 @@ describe("product state storage", () => {
       expect(twice.sessions[0].status).toBe("active");
     });
   });
+
+  describe("v2 软标签 — importSources.relatedThemeIds normalize + prune", () => {
+    const baseSource = {
+      id: "src-label-1",
+      title: "资料",
+      sourceType: "text" as const,
+      content: "内容",
+      status: "chunked" as const,
+      sensitivity: "normal" as const,
+      chunkIds: [],
+      createdAt: "2026-06-06T00:00:00.000Z",
+      updatedAt: "2026-06-06T00:00:00.000Z"
+    };
+
+    it("旧数据无 relatedThemeIds 字段 → normalize 后为 []", () => {
+      const state = createInitialProductState();
+      const normalized = normalizeProductState({
+        ...state,
+        importSources: [baseSource] // 没有 relatedThemeIds
+      });
+      expect(normalized.importSources[0].relatedThemeIds).toEqual([]);
+    });
+
+    it("含悬空 themeId 的 source → prune 后被剔除", () => {
+      const state = createInitialProductState();
+      const validId = state.themes[0]?.id ?? "theme-control";
+      const ghostId = "theme-ghost-xyz";
+      const normalized = normalizeProductState({
+        ...state,
+        importSources: [
+          { ...baseSource, relatedThemeIds: [validId, ghostId] }
+        ]
+      });
+      expect(normalized.importSources[0].relatedThemeIds).toEqual([validId]);
+    });
+
+    it("全部悬空时 relatedThemeIds 为 []", () => {
+      const state = createInitialProductState();
+      const normalized = normalizeProductState({
+        ...state,
+        importSources: [
+          { ...baseSource, id: "src-label-2", relatedThemeIds: ["theme-ghost-a", "theme-ghost-b"] }
+        ]
+      });
+      expect(normalized.importSources[0].relatedThemeIds).toEqual([]);
+    });
+  });
 });

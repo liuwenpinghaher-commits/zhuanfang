@@ -933,6 +933,8 @@ export interface ImportSource {
   chunkIds: string[];
   createdAt: string;
   updatedAt: string;
+  /** v2 软标签：软归属的主题线（与 points/notes 等一致的模式） */
+  relatedThemeIds?: string[];
 }
 
 export interface RagChunk {

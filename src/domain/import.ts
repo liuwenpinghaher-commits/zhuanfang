@@ -5,6 +5,7 @@
 import type { ImportSource, MemorySensitivity, ProductState, RagChunk } from "./types";
 import { cloneState, makeId, nowIso, withAuditEvent } from "./utils";
 import { withMemoryCandidateReview } from "./memoryReview";
+import { tagSourceThemes } from "./theme-tagging";
 
 export interface ImportedMemoryCandidate {
   text: string;
@@ -151,6 +152,7 @@ export async function ingestImportSource(
     sensitivity: candidates.some((candidate) => candidate.sensitivity === "sensitive") ? "sensitive" : "normal",
     searchBriefId: undefined,
     chunkIds: ragChunks.map((chunk) => chunk.id),
+    relatedThemeIds: tagSourceThemes(`${input.title} ${input.content}`, state.themes),
     createdAt,
     updatedAt: createdAt
   };
