@@ -295,6 +295,33 @@ const VALID_STRATEGY_IDS: ReadonlySet<InterviewStrategyId> = new Set<InterviewSt
   "synthesis",
 ]);
 
+/**
+ * Canonical Chinese label for each interview strategy. Single source of truth so
+ * the UI badge and the strategy engine (`decideInterviewStrategy`) agree on wording
+ * instead of re-deriving labels per surface. Mirrors the `label` fields produced in
+ * `decideInterviewStrategy` (strategy.ts).
+ */
+export const INTERVIEW_STRATEGY_LABELS: Record<InterviewStrategyId, string> = {
+  mechanism_probe: "追问机制",
+  concrete_example_probe: "索要具体时刻",
+  mechanism_reversal_probe: "机制反转",
+  debt_followup: "知识债追问",
+  perspective_shift: "视角切换",
+  blindspot_probe: "盲区探测",
+  premise_challenge: "挑战前提",
+  synthesis: "阶段总结",
+};
+
+/**
+ * Strategies that only fire when a learned PlaybookPatch (corpus learning) is
+ * applied. Used by the UI to show an "应用技法" badge ONLY for turns where the
+ * corpus learning genuinely changed the question — not for every default strategy.
+ */
+export const PLAYBOOK_DRIVEN_STRATEGIES: ReadonlySet<InterviewStrategyId> = new Set<InterviewStrategyId>([
+  "concrete_example_probe",
+  "mechanism_reversal_probe",
+]);
+
 function coerceStrategyId(value: string | undefined): InterviewStrategyId | undefined {
   if (!value) return undefined;
   return VALID_STRATEGY_IDS.has(value as InterviewStrategyId) ? (value as InterviewStrategyId) : undefined;

@@ -233,4 +233,94 @@ describe("interview-sessions routes", () => {
 
     await server.close();
   });
+
+  // C1: mid-session corpus-learning staleness. enginePolicy is stamped once at
+  // create time. When the operator approves a PlaybookPatch WHILE an interview is
+  // running, that session must pick up the new rule on its NEXT turn — not only on
+  // the next session. /turns must re-stamp session.enginePolicy from fresh state.
+  function applyMidSessionPatch(repo: ReturnType<typeof createInMemoryProductStateRepository>) {
+    const state = repo.getState();
+    repo.replaceState({
+      ...state,
+      playbookPatches: [
+        {
+          id: "patch-midsession",
+          title: "先索要具体时刻",
+          description: "抽象评价先落到具体事件",
+          sourceInsightId: "insight-1",
+          status: "applied" as const,
+          rules: ["当用户使用抽象评价时，先追问一个具体时刻。"],
+          ruleTypes: ["concrete-moment"],
+          impact: "medium" as const,
+          createdAt: "2026-06-01T00:00:00.000Z",
+          appliedAt: "2026-06-19T00:00:00.000Z"
+        },
+        ...state.playbookPatches
+      ]
+    });
+  }
+
+  it("/turns (no LLM): re-stamps enginePolicy so a mid-session applied patch takes effect THIS turn", async () => {
+    const repo = createInMemoryProductStateRepository();
+    const server = Fastify({ logger: false });
+    await registerInterviewSessionRoutes(server, repo, {}); // deterministic path
+
+    const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "decision" } })).json();
+    const id = created.session.id;
+    // Sanity: the session was created BEFORE any patch existed.
+    expect(created.session.enginePolicy.appliedPlaybookRules).toEqual([]);
+
+    // Operator approves a PlaybookPatch mid-session.
+    applyMidSessionPatch(repo);
+
+    // First user turn AFTER the patch — an abstract claim that should trigger the
+    // concrete-moment strategy IF the freshly-applied rule is now in scope.
+    const res = await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/turns`, payload: { content: "团队总是不主动承担。" } });
+    expect(res.statusCode).toBe(200);
+    const session = res.json().session;
+
+    // The new rule must now be on this session's policy (re-stamped this turn).
+    expect(session.enginePolicy.appliedPlaybookRules).toContain("当用户使用抽象评价时，先追问一个具体时刻。");
+    // And the ruleType must actually route the deterministic strategy engine.
+    const lastAssistant = [...session.turns].reverse().find((t: any) => t.role === "assistant");
+    expect(lastAssistant.strategy).toBe("concrete_example_probe");
+
+    await server.close();
+  });
+
+  it("/turns (LLM): the assistant client sees the re-stamped enginePolicy with the mid-session rule", async () => {
+    const capturedRules: string[][] = [];
+    const mockInterviewClient = {
+      createAssistantTurn: vi.fn(async (input: any) => {
+        capturedRules.push(input.session.enginePolicy?.appliedPlaybookRules ?? []);
+        return {
+          providerId: "bailian-character" as const,
+          model: "test-model",
+          content: "你能讲一个最近的具体时刻吗？",
+          intent: "百炼角色扮演追问" as const
+        };
+      })
+    };
+    const repo = createInMemoryProductStateRepository();
+    const server = Fastify({ logger: false });
+    await registerInterviewSessionRoutes(server, repo, {
+      bailianInterviewClient: mockInterviewClient,
+      llmBudget: createLlmBudget({ maxCallsPerSession: 5 })
+    });
+
+    const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "daily" } })).json();
+    const id = created.session.id;
+
+    applyMidSessionPatch(repo);
+
+    const res = await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/turns`, payload: { content: "团队总是不主动承担。" } });
+    expect(res.statusCode).toBe(200);
+
+    expect(mockInterviewClient.createAssistantTurn).toHaveBeenCalledTimes(1);
+    // The session handed to the LLM client must already carry the mid-session rule,
+    // so buildCharacterSystemPrompt injects it into the prompt.
+    expect(capturedRules[0]).toContain("当用户使用抽象评价时，先追问一个具体时刻。");
+
+    await server.close();
+  });
 });

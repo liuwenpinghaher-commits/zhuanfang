@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import {
+  buildInterviewEnginePolicy,
   createSessionDraft,
   finalizeSession,
   receiveUserTurn,
@@ -99,12 +100,22 @@ export async function registerInterviewSessionRoutes(
       return reply.code(422).send({ error: "Turn content is required." });
     }
 
-    const allowLlm = !!options.bailianInterviewClient && budget.tryConsume(session.id);
+    // C1: re-stamp enginePolicy from the LATEST state every turn. The policy is
+    // captured once at create time, so a PlaybookPatch approved mid-session would
+    // otherwise only take effect next session. Re-stamping here means a corpus rule
+    // approved while this interview is running shapes the very next question — both
+    // the LLM prompt (createAssistantTurn → buildCharacterSystemPrompt reads
+    // session.enginePolicy.appliedPlaybookRules) and the deterministic strategy
+    // engine (decideInterviewStrategy routes on appliedPlaybookRuleTypes). Pure
+    // recompute; it only changes HOW we ask, never the existing turns/state.
+    const freshSession: InterviewSession = { ...session, enginePolicy: buildInterviewEnginePolicy(state) };
+
+    const allowLlm = !!options.bailianInterviewClient && budget.tryConsume(freshSession.id);
     if (!!options.bailianInterviewClient && !allowLlm) {
-      console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "interview_turn", sessionId: session.id }));
+      console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "interview_turn", sessionId: freshSession.id }));
     }
     const updatedSession = await receiveTurn(
-      session,
+      freshSession,
       content,
       allowLlm ? options.bailianInterviewClient : undefined,
       state.memoryCorrections

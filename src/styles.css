@@ -1117,10 +1117,48 @@ select:focus-visible {
 
 .turn-meta {
   display: flex;
+  align-items: center;
   gap: 8px;
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 600;
+}
+
+/* Per-turn "applied learned technique" chip. Only shown on assistant turns whose
+   strategy is corpus-learning-driven (concrete-moment / mechanism-reversal), so it
+   marks where the learning genuinely changed the question. Indigo = corpus-learning
+   theme, matching .guidance-badge. */
+.technique-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(99, 102, 241, 0.12);
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  color: #a5b4fc;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* Session-level panel listing the corpus rules in scope for this interview. */
+.context-block.applied-techniques span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #a5b4fc;
+}
+
+.context-block.applied-techniques {
+  border-top-color: rgba(99, 102, 241, 0.3);
+}
+
+.applied-techniques-note {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .empty-state {
