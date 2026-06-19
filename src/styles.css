@@ -6,7 +6,8 @@
   --surface-glass: rgba(30, 30, 38, 0.85);
   --text-primary: #f7f8fa;
   --text-secondary: #a1a1aa;
-  --text-muted: #71717a;
+  --text-muted: #8b8b94;
+  --text-label: #c4c4cc;
   --text-inverse: #17171a;
   --border-default: #2f2f3a;
   --border-soft: #3f3f4a;
@@ -25,9 +26,10 @@
   --radius-lg: 16px;
   --shadow-panel: 0 8px 32px rgba(0, 0, 0, 0.4);
   --shadow-glow: 0 0 20px rgba(139, 92, 246, 0.15);
-  --duration-fast: 180ms;
-  --transition-fast: 150ms ease;
-  --transition: 200ms ease;
+  --duration-fast: 150ms;
+  /* 统一过渡:150ms + ease-standard */
+  --transition-fast: var(--duration-fast) var(--ease-standard);
+  --transition: var(--duration-fast) var(--ease-standard);
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
   font-family: Inter, "SF Pro Text", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
   color: var(--text-primary);
@@ -3027,8 +3029,8 @@ select:focus-visible {
 /* Button loading state: shows spinner, disables interaction */
 .btn-loading {
   position: relative;
-  cursor: not-allowed;
-  opacity: 0.75;
+  cursor: wait;
+  opacity: 0.7;
   pointer-events: none;
 }
 
@@ -3068,4 +3070,71 @@ select:focus-visible {
     animation: none;
     opacity: 0.75;
   }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   U1: 表单容器系统 — form-card / form-row / form-actions / 辅助类
+   WCAG AA 对比度保证:--text-label (#c4c4cc) 在 #0a0a0b 底上 ~11:1
+   ═══════════════════════════════════════════════════════════════ */
+
+/* 单列表单卡:替代被误用的 record-row 布局 */
+.form-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-panel);
+}
+
+/* 一个 label + 控件组 */
+.form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* label 样式:更清晰的表单标签 */
+.form-row > .field-label,
+.form-row > label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-label);
+}
+
+/* 确保表单控件占满单列 — 修复 record-row 误用导致的重叠 */
+.form-row input[type="text"],
+.form-row textarea,
+.form-card input[type="text"],
+.form-card textarea {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* 按钮行:水平排列、允许换行 */
+.form-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* 字数提示 */
+.char-count {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: right;
+}
+
+/* 候选编辑态高亮 */
+.edit-active {
+  border-color: var(--action-primary);
+  background: rgba(139, 92, 246, 0.06);
+}
+
+/* 表单错误提示 — 使用 --accent-rose 确保对比清晰 */
+.form-error {
+  color: var(--accent-rose, #f43f5e);
+  font-size: 13px;
 }
