@@ -939,7 +939,7 @@ export interface PodcastChapter {
   summary: string;
 }
 
-export type PodcastSourceType = "note" | "search-brief" | "theme" | "knowledge-debt" | "corpus-insight";
+export type PodcastSourceType = "note" | "search-brief" | "theme" | "knowledge-debt";
 export type PodcastAudioRenderStatus = "pending" | "rendered" | "fallback";
 
 export interface PodcastEpisode {

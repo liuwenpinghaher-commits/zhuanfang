@@ -659,33 +659,42 @@ export default function App() {
       return;
     }
 
-    const applyReadyToState = (base: typeof productState) => ({
+    // Step 1: Persist the edited script so the server synthesizes the correct version.
+    const applyScriptToState = (base: typeof productState) => ({
       ...base,
       podcastEpisodes: base.podcastEpisodes.map((ep) =>
         ep.id === episodeId
-          ? { ...ep, script: podcastEditingScript, scriptReviewStatus: "用户确认" as const, status: "ready" as const }
+          ? { ...ep, script: podcastEditingScript, scriptReviewStatus: "用户确认" as const }
           : ep
       )
     });
-    const updatedState = applyReadyToState(productState);
+    const stateWithScript = applyScriptToState(productState);
 
     try {
-      const { state: persisted, conflicted } = await productApiClient.saveState(updatedState);
-      // If a concurrent auto-save raced and returned a stale 409, `persisted` is the server's current
-      // state (still "draft"). Re-apply the "ready" mutation on top of the server's authoritative state
-      // so the UI always reflects what the user intended.
-      setProductState(conflicted ? applyReadyToState(persisted) : persisted);
+      const { state: persisted, conflicted } = await productApiClient.saveState(stateWithScript);
+      const baseState = conflicted ? applyScriptToState(persisted) : persisted;
+      setProductState(baseState);
       setApiPersistenceEnabled(true);
-      setPodcastEditingScript("");
-      setNotice(buildNotice("success", "语音合成已确认", `播客 "${episode.title}" 脚本已确认，等待 TTS 渲染。`));
-      return;
     } catch {
       setApiPersistenceEnabled(false);
+      setProductState(stateWithScript);
     }
 
-    setProductState(updatedState);
-    setPodcastEditingScript("");
-    setNotice(buildNotice("success", "语音合成已确认", `播客 "${episode.title}" 脚本已确认，等待 TTS 渲染。`));
+    // Step 2: Call the synthesize endpoint to actually render TTS audio.
+    try {
+      const { state: synthState, episode: synthEpisode } = await productApiClient.synthesizePodcastEpisode(episodeId);
+      setProductState(synthState);
+      setPodcastEditingScript("");
+      const isRendered = synthEpisode.audioRenderStatus === "rendered";
+      setNotice(
+        isRendered
+          ? buildNotice("success", "语音合成完成", `播客 "${episode.title}" 音频已渲染。`)
+          : buildNotice("warning", "语音合成降级", `播客 "${episode.title}" 脚本已确认，但 TTS 渲染失败，可稍后重试。`)
+      );
+    } catch {
+      setPodcastEditingScript("");
+      setNotice(buildNotice("danger", "语音合成失败", `播客 "${episode.title}" TTS 请求失败，脚本已保留。`));
+    }
   }
 
   function removePodcastEpisode(episodeId: string) {

@@ -25,6 +25,48 @@ interface PodcastRouteOptions {
   llmBudget?: LlmBudget;
 }
 
+/**
+ * Renders TTS audio for a given episode using its current script.
+ * Returns a patch object with the updated audio fields.
+ * When no audioClient is provided, degrades gracefully to "fallback".
+ */
+export async function renderEpisodeAudio(
+  episode: PodcastEpisode,
+  audioClient?: BailianPodcastAudioClient
+): Promise<Partial<PodcastEpisode>> {
+  if (!audioClient) {
+    return {
+      audioRenderStatus: "fallback",
+      audioRenderMessage: "未配置 TTS 服务，脚本已保留，可配置后重新合成。"
+    };
+  }
+  try {
+    const renderedAudio = await audioClient.synthesize({
+      text: episode.script,
+      voice: normalizeProviderVoice(episode.voice)
+    });
+    return {
+      audioUrl: renderedAudio.audioUrl,
+      durationSec: renderedAudio.durationSec ?? episode.durationSec,
+      voice: renderedAudio.voice,
+      audioRenderStatus: "rendered",
+      audioRenderMessage: "音频已渲染。"
+    };
+  } catch (ttsError) {
+    console.warn(
+      JSON.stringify({
+        event: "llm_fallback",
+        capability: "podcast_tts",
+        error: ttsError instanceof Error ? ttsError.message : String(ttsError)
+      })
+    );
+    return {
+      audioRenderStatus: "fallback",
+      audioRenderMessage: "音频渲染失败，脚本已保留，可稍后重试。"
+    };
+  }
+}
+
 export async function registerPodcastRoutes(
   server: FastifyInstance,
   repository: ProductStateRepository,
@@ -118,39 +160,11 @@ export async function registerPodcastRoutes(
       return { episode, state: nextState };
     }
 
-    // --- Step 3: Attempt TTS; degrade gracefully on failure ---
-    let finalEpisode = episode;
-    let finalState = nextState;
+    // --- Step 3: Attempt TTS via shared renderEpisodeAudio; degrade gracefully on failure ---
+    const audioPatch = await renderEpisodeAudio(episode, options.bailianPodcastAudioClient);
+    const finalEpisode: PodcastEpisode = { ...episode, ...audioPatch };
 
-    try {
-      const renderedAudio = await options.bailianPodcastAudioClient.synthesize({
-        text: episode.script,
-        voice: normalizeProviderVoice(voice)
-      });
-      finalEpisode = {
-        ...episode,
-        audioUrl: renderedAudio.audioUrl,
-        durationSec: renderedAudio.durationSec ?? episode.durationSec,
-        voice: renderedAudio.voice,
-        audioRenderStatus: "rendered",
-        audioRenderMessage: "音频已渲染。"
-      };
-    } catch (ttsError) {
-      finalEpisode = {
-        ...episode,
-        audioRenderStatus: "fallback",
-        audioRenderMessage: "音频渲染失败，脚本已保留，可稍后重试。"
-      };
-      console.warn(
-        JSON.stringify({
-          event: "llm_fallback",
-          capability: "podcast_tts",
-          error: ttsError instanceof Error ? ttsError.message : String(ttsError)
-        })
-      );
-    }
-
-    finalState = {
+    const finalState = {
       ...nextState,
       podcastEpisodes: nextState.podcastEpisodes.map((item) =>
         item.id === episode.id ? finalEpisode : item
@@ -158,6 +172,36 @@ export async function registerPodcastRoutes(
     };
     repository.replaceState(finalState);
     return { episode: finalEpisode, state: finalState };
+  });
+
+  // POST /api/podcast/episodes/:id/synthesize
+  // Re-renders TTS for an already-persisted episode using its current script.
+  // Accepts no body. Returns { episode, state } with updated audio fields.
+  // Degrades gracefully when no TTS client is configured (audioRenderStatus="fallback").
+  server.post("/api/podcast/episodes/:id/synthesize", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const state = repository.getState();
+    const existing = state.podcastEpisodes.find((ep) => ep.id === id);
+    if (!existing) {
+      return reply.code(404).send({ error: "Episode not found." });
+    }
+
+    const audioPatch = await renderEpisodeAudio(existing, options.bailianPodcastAudioClient);
+    const updatedEpisode: PodcastEpisode = {
+      ...existing,
+      ...audioPatch,
+      scriptReviewStatus: "用户确认",
+      status: "ready"
+    };
+
+    const updatedState = {
+      ...state,
+      podcastEpisodes: state.podcastEpisodes.map((ep) =>
+        ep.id === id ? updatedEpisode : ep
+      )
+    };
+    repository.replaceState(updatedState);
+    return { episode: updatedEpisode, state: updatedState };
   });
 }
 
@@ -169,7 +213,7 @@ function normalizePayload(value: unknown): PodcastEpisodeRequestPayload {
 }
 
 function normalizeSourceType(value: unknown): PodcastEpisode["sourceType"] {
-  if (value === "search-brief" || value === "theme" || value === "knowledge-debt" || value === "corpus-insight") {
+  if (value === "search-brief" || value === "theme" || value === "knowledge-debt") {
     return value;
   }
   return "note";

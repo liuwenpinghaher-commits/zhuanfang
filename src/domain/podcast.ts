@@ -6,7 +6,7 @@ import type {
 import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent } from "./utils";
 import { withGeneratedArtifactWorkflowRun } from "./engine";
 
-import { formatCorpusMoveLabel } from "./corpus";
+
 
 type PodcastFormat = PodcastEpisode["format"];
 function buildPodcastRelatedAssets(state: ProductState) {
@@ -126,126 +126,6 @@ export function generatePodcastEpisode(
     entityType: "podcast_episode",
     entityId: episode.id,
     inputSummary: `来源笔记：${note.title}`
-  });
-
-  return {
-    episode,
-    nextState
-  };
-}
-export function generatePodcastEpisodeFromCorpusInsight(
-  state: ProductState,
-  insightId: string,
-  options: { format: PodcastEpisode["format"]; voice: string }
-): { episode: PodcastEpisode; nextState: ProductState } {
-  const insight = state.corpusInsights.find((item) => item.id === insightId) ?? state.corpusInsights[0];
-  if (!insight) {
-    return generatePodcastEpisode(state, state.notes[0]?.id ?? "", options);
-  }
-
-  const corpusImport = state.corpusImports.find((item) => item.id === insight.importId);
-  const createdAt = nowIso();
-  const sourceTitle = insight.title.replace(/：访谈逻辑分析$/, "");
-  const topDimensions = insight.dimensions.slice(0, 3);
-  const topImprovements = insight.improvementPlan.slice(0, 3);
-  const topPatch = insight.recommendedPatches[0];
-  const turnExamples = corpusImport?.turns.slice(0, 3).map((turn) => `${formatCorpusMoveLabel(turn.move)} · ${turn.speaker}：${turn.content}`) ?? [];
-  const title = `语料播客：${sourceTitle}`;
-  const sourceLine = corpusImport?.sourceUrl ? `样本来源：${corpusImport.sourceUrl}` : `样本来源：${corpusImport?.mediaType ?? "text"} 导入样本`;
-  const script = buildPodcastScript(options.format, [
-    `开场：今天把语料学习结果《${sourceTitle}》转成一段可复盘的学习播客。`,
-    sourceLine,
-    `核心发现：${topDimensions.map((dimension) => `${dimension.name}：${dimension.finding}`).join("；")}`,
-    `样本片段：${turnExamples.join("；")}`,
-    `改进方案：${topImprovements.map((item) => `${item.title}：${item.action}`).join("；")}`,
-    topPatch ? `PlaybookPatch：${topPatch.title}，规则包括：${topPatch.rules.slice(0, 2).join("；")}` : "",
-    `收束问题：下一次专访如何验证“${topImprovements[0]?.title ?? "样本技法"}”是否真的改善追问质量？`
-  ], [
-    `主持人：今天我们把语料学习结果《${sourceTitle}》做成一段复盘对谈。`,
-    `来宾：先交代来源，${sourceLine}。`,
-    "主持人：这份样本最值得学习的追问动作是什么？",
-    `来宾：${topDimensions.map((dimension) => `${dimension.name}：${dimension.finding}`).join("；")}`,
-    "主持人：有没有一段原始片段能说明它不是空泛建议？",
-    `来宾：${turnExamples.join("；") || insight.dimensions[0]?.example || "样本片段需要回到原始语料核验。"}`,
-    "主持人：如果把它转成当前引擎改进，应该怎么做？",
-    `来宾：${topImprovements.map((item) => `${item.title}：${item.expectedEngineChange}`).join("；")}`,
-    topPatch ? `主持人：可确认的 PlaybookPatch 是什么？\n来宾：${topPatch.title}，规则包括：${topPatch.rules.slice(0, 3).join("；")}` : "",
-    `主持人：最后留一个验证问题。\n来宾：下一次专访如何验证“${topImprovements[0]?.title ?? "样本技法"}”是否真的改善追问质量？`
-  ]);
-  const episode: PodcastEpisode = {
-    id: makeId("podcast"),
-    noteId: insight.id,
-    sourceType: "corpus-insight",
-    sourceId: insight.id,
-    sourceLabel: insight.title,
-    title,
-    format: options.format,
-    voice: options.voice,
-    status: "draft",
-    scriptReviewStatus: "待确认",
-    durationSec: Math.max(180, Math.round(script.length * 0.8)),
-    script,
-    aiDisclosure: podcastAiDisclosure,
-    chapters: [
-      {
-        title: "样本来源",
-        startsAtSec: 0,
-        summary: sourceLine
-      },
-      {
-        title: "关键技法",
-        startsAtSec: 60,
-        summary: topDimensions[0]?.finding ?? "需要回到样本追问动作。"
-      },
-      {
-        title: "引擎改进",
-        startsAtSec: 140,
-        summary: topImprovements[0]?.expectedEngineChange ?? topPatch?.description ?? "等待用户确认 PlaybookPatch。"
-      }
-    ],
-    audioUrl: `local-audio://${title.replace(/\s+/g, "-")}.mp3`,
-    audioRenderStatus: "pending",
-    audioRenderMessage: "脚本待确认，确认后才会渲染音频。",
-    shownotes: buildPodcastShownotes(options.format, [
-      `语料分析：${insight.title}`,
-      sourceLine,
-      ...topDimensions.map((dimension) => `分析维度：${dimension.name}｜${dimension.finding}`),
-      ...topImprovements.map((item) => `改进方案：${item.title}｜${item.expectedEngineChange}`),
-      ...(topPatch ? [`PlaybookPatch：${topPatch.title}`, ...topPatch.rules.slice(0, 2).map((rule) => `规则：${rule}`)] : [])
-    ]),
-    createdAt
-  };
-  const generatedState = {
-    ...cloneState(state),
-    podcastEpisodes: [episode, ...state.podcastEpisodes]
-  };
-  const stateWithCreationEvents = withAiRunEvent(
-    withAuditEvent(generatedState, {
-      type: "podcast_episode_created",
-      label: "语料学习播客脚本已生成",
-      detail: `从语料分析《${insight.title}》生成待确认脚本《${episode.title}》。`,
-      severity: "info",
-      entityType: "podcast_episode",
-      entityId: episode.id,
-      createdAt
-    }),
-    {
-      workflow: "podcast_generation",
-      providerId: state.systemConfig.models.synthesisModel,
-      status: "succeeded",
-      entityType: "podcast_episode",
-      entityId: episode.id,
-      inputSummary: `语料分析：${insight.title}`,
-      outputSummary: `生成待确认语料学习播客脚本，预计 ${episode.durationSec} 秒。`,
-      estimatedTokens: script.length,
-      createdAt
-    }
-  );
-  const nextState = withGeneratedArtifactWorkflowRun(stateWithCreationEvents, {
-    workflow: "podcast_generation",
-    entityType: "podcast_episode",
-    entityId: episode.id,
-    inputSummary: `语料分析：${insight.title}`
   });
 
   return {

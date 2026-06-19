@@ -105,7 +105,7 @@ export {
 export type { CorpusLlmAnalysis } from "./corpus";
 
 export {
-  generatePodcastEpisode, generatePodcastEpisodeFromCorpusInsight,
+  generatePodcastEpisode,
   generatePodcastEpisodeFromKnowledgeDebt, generatePodcastEpisodeFromSearchBrief,
   generatePodcastEpisodeFromTheme,
 } from "./podcast";

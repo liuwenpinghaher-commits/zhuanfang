@@ -62,6 +62,7 @@ export interface ProductApiClient {
     input: InterruptRealtimeVoiceSessionRequest
   ): Promise<InterruptRealtimeVoiceSessionResponse>;
   generatePodcastEpisode(input: GeneratePodcastEpisodeRequest): Promise<GeneratePodcastEpisodeResponse>;
+  synthesizePodcastEpisode(episodeId: string): Promise<GeneratePodcastEpisodeResponse>;
   transcribeCorpusAudio(input: AudioTranscriptionInput): Promise<TranscribeCorpusAudioResponse>;
   analyzeCorpusImport(input: CorpusImportInput): Promise<AnalyzeCorpusImportResponse>;
   listVoices(): Promise<VoiceListResponse>;
@@ -587,6 +588,16 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input)
+      })) as GeneratePodcastEpisodeResponse;
+
+      return {
+        ...response,
+        state: normalizeProductState(response.state)
+      };
+    },
+    async synthesizePodcastEpisode(episodeId) {
+      const response = (await requestJson(`/api/podcast/episodes/${encodeURIComponent(episodeId)}/synthesize`, {
+        method: "POST"
       })) as GeneratePodcastEpisodeResponse;
 
       return {
