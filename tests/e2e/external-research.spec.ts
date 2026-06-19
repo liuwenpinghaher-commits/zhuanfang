@@ -8,6 +8,8 @@ import { expectNoHorizontalOverflow, openView, resetDemoState } from "./helpers"
 // ============================================================
 
 test("外部调研：创建简报 → 标记持续追踪 → 重新调研 → 带入专访入口可见", async ({ page }) => {
+  // AnySearch real API can take ~20s per call; this test makes 2 calls (create + refresh)
+  test.setTimeout(120000);
   await resetDemoState(page);
   await openView(page, "外部调研", "主动搜集热点、素材和可讨论主题");
 
@@ -15,10 +17,10 @@ test("外部调研：创建简报 → 标记持续追踪 → 重新调研 → �
   await page.getByLabel("追踪主题").fill("AI 产品商业化热点");
   await page.getByRole("button", { name: "AnySearch", exact: true }).click();
 
-  // 等待简报生成完成（成功或降级）
+  // 等待简报生成完成（成功或降级）— AnySearch 走真实 API，允许 25s
   await expect(
     page.getByText(/搜索已降级完成|搜索简报已生成/)
-  ).toBeVisible({ timeout: 10000 });
+  ).toBeVisible({ timeout: 25000 });
 
   // 简报卡片出现在列表中
   const briefArticle = page.locator("article.record-row").first();
@@ -48,8 +50,8 @@ test("外部调研：创建简报 → 标记持续追踪 → 重新调研 → �
   // ---- 阶段 3: 重新调研 ----
   await briefArticle.getByRole("button", { name: "重新调研", exact: true }).click();
 
-  // 刷新成功通知
-  await expect(page.getByText("外部调研已刷新")).toBeVisible({ timeout: 8000 });
+  // 刷新成功通知（重新调研也调 AnySearch API，可能 ~20s）
+  await expect(page.getByText("外部调研已刷新")).toBeVisible({ timeout: 35000 });
 
   // 简报卡片仍然存在（刷新后没有被删掉）
   await expect(briefArticle).toBeVisible();
@@ -63,6 +65,8 @@ test("外部调研：创建简报 → 标记持续追踪 → 重新调研 → �
 });
 
 test("外部调研：持续追踪开关可反复切换", async ({ page }) => {
+  // AnySearch real API can take ~20s per call
+  test.setTimeout(90000);
   await resetDemoState(page);
   await openView(page, "外部调研", "主动搜集热点、素材和可讨论主题");
 
@@ -70,9 +74,10 @@ test("外部调研：持续追踪开关可反复切换", async ({ page }) => {
   await page.getByLabel("追踪主题").fill("AI 监管与合规");
   await page.getByRole("button", { name: "AnySearch", exact: true }).click();
 
+  // AnySearch 走真实 API，允许 35s 等待响应或 local-demo fallback
   await expect(
     page.getByText(/搜索已降级完成|搜索简报已生成/)
-  ).toBeVisible({ timeout: 10000 });
+  ).toBeVisible({ timeout: 35000 });
 
   const briefArticle = page.locator("article.record-row").first();
   await expect(briefArticle).toBeVisible({ timeout: 8000 });
@@ -92,6 +97,8 @@ test("外部调研：持续追踪开关可反复切换", async ({ page }) => {
 });
 
 test("外部调研：带入专访后可在实时专访中看到外部参照", async ({ page }) => {
+  // AnySearch real API can take ~20s per call
+  test.setTimeout(90000);
   await resetDemoState(page);
   await openView(page, "外部调研", "主动搜集热点、素材和可讨论主题");
 
@@ -99,9 +106,10 @@ test("外部调研：带入专访后可在实时专访中看到外部参照", as
   await page.getByLabel("追踪主题").fill("大模型竞争格局");
   await page.getByRole("button", { name: "AnySearch", exact: true }).click();
 
+  // AnySearch 走真实 API，允许 35s 等待响应或 local-demo fallback
   await expect(
     page.getByText(/搜索已降级完成|搜索简报已生成/)
-  ).toBeVisible({ timeout: 10000 });
+  ).toBeVisible({ timeout: 35000 });
 
   const briefArticle = page.locator("article.record-row").first();
   await expect(briefArticle).toBeVisible({ timeout: 8000 });

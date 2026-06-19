@@ -201,18 +201,25 @@ test.describe("primary navigation", () => {
   });
 
   test("saves product strategy configuration and applies it to later workflows", async ({ page }) => {
-    // 播客默认声音 is a <select> sourced from /api/realtime-voice/voices — only working
-    // cosyvoice-v3-plus presets are offered (longanyang/longanhuan). Use a valid preset.
-    const voice = "longanyang";
+    // 播客默认声音 is a <select> sourced from /api/realtime-voice/voices.
+    // The available options depend on what the server returns — we read the first option value
+    // at runtime instead of hard-coding a preset name that may not exist.
     await resetDemoState(page);
     await openView(page, "系统配置", "底层能力、provider 和引擎策略");
     await page.getByRole("button", { name: "策略 搜索、语音和访谈运行策略" }).click();
+
+    // Wait for voices to load then pick the first available value
+    const voiceSelect = page.getByLabel("播客默认声音");
+    await expect(voiceSelect.locator("option")).not.toHaveCount(0, { timeout: 10000 });
+    const voice = await voiceSelect.evaluate(
+      (el: HTMLSelectElement) => el.options[0]?.value ?? ""
+    );
 
     await page.getByLabel("默认搜索 Provider").selectOption("anysearch");
     await page.getByLabel("搜索时效窗口").fill("9");
     await page.getByLabel("最大来源数").fill("4");
     await page.getByLabel("允许会中引用联网素材").selectOption("false");
-    await page.getByLabel("播客默认声音").selectOption(voice);
+    await voiceSelect.selectOption(voice);
     await page.getByLabel("启用实时语音").selectOption("true");
     await page.getByLabel("留白阈值").fill("1500");
     await page.getByLabel("最大追问深度").fill("6");

@@ -2,6 +2,8 @@ import { expect, test } from "@playwright/test";
 import { expectNoHorizontalOverflow, openView, resetDemoState } from "./helpers";
 
 test("analyzes imported interview text and applies a PlaybookPatch", async ({ page }) => {
+  // Corpus insights API calls the real LLM (~27s); allow generous timeout.
+  test.setTimeout(90000);
   const sampleTitle = `优秀专访样本-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
   await resetDemoState(page);
   await openView(page, "语料学习", "从外部专访中学习提问逻辑");
@@ -14,18 +16,20 @@ test("analyzes imported interview text and applies a PlaybookPatch", async ({ pa
   ].join("\n"));
   await page.getByRole("button", { name: "分析并生成建议" }).click();
 
-  await expect(page.getByText("语料分析已完成")).toBeVisible();
+  await expect(page.getByText("语料分析已完成")).toBeVisible({ timeout: 40000 });
   const textInsight = page.locator("article.record-row").filter({ hasText: `${sampleTitle}：访谈逻辑分析` });
-  await expect(textInsight).toHaveCount(1);
+  await expect(textInsight).toHaveCount(1, { timeout: 10000 });
   await expect(textInsight.getByRole("heading", { name: `${sampleTitle}：访谈逻辑分析` })).toBeVisible();
   await expectNoHorizontalOverflow(page);
 
   await textInsight.getByRole("button", { name: "确认影响引擎" }).click();
-  await expect(page.getByText("PlaybookPatch 已应用")).toBeVisible();
+  await expect(page.getByText("PlaybookPatch 已应用")).toBeVisible({ timeout: 10000 });
   await expect(page.getByText("PlaybookPatch")).toBeVisible();
 });
 
 test("analyzes imported audio interview transcripts with source metadata", async ({ page }) => {
+  // Corpus insights API calls the real LLM (~27s); allow generous timeout.
+  test.setTimeout(90000);
   const sampleTitle = `优秀音频专访样本-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
   const sourceUrl = `https://example.com/interview-audio-${Date.now()}-${Math.random().toString(16).slice(2, 6)}.mp3`;
   await resetDemoState(page);
@@ -41,14 +45,16 @@ test("analyzes imported audio interview transcripts with source metadata", async
   ].join("\n"));
   await page.getByRole("button", { name: "分析并生成建议" }).click();
 
-  await expect(page.getByText("语料分析已完成")).toBeVisible();
+  await expect(page.getByText("语料分析已完成")).toBeVisible({ timeout: 40000 });
   const audioInsight = page.locator("article.record-row").filter({ hasText: sourceUrl });
-  await expect(audioInsight).toHaveCount(1);
+  await expect(audioInsight).toHaveCount(1, { timeout: 10000 });
   await expect(audioInsight.getByText("audio · 已分析")).toBeVisible();
   await expectNoHorizontalOverflow(page);
 });
 
 test("transcribes an audio source before corpus analysis", async ({ page }) => {
+  // Corpus insights API calls the real LLM (~27s); allow generous timeout.
+  test.setTimeout(90000);
   const sampleTitle = `自动转写音频样本-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
   const sourceUrl = `https://example.com/interview-auto-${Date.now()}-${Math.random().toString(16).slice(2, 6)}.mp3`;
   await resetDemoState(page);
@@ -86,9 +92,9 @@ test("transcribes an audio source before corpus analysis", async ({ page }) => {
 
   await page.getByRole("button", { name: "分析并生成建议" }).click();
 
-  await expect(page.getByText("语料分析已完成")).toBeVisible();
+  await expect(page.getByText("语料分析已完成")).toBeVisible({ timeout: 40000 });
   const autoInsight = page.locator("article.record-row").filter({ hasText: sourceUrl });
-  await expect(autoInsight).toHaveCount(1);
+  await expect(autoInsight).toHaveCount(1, { timeout: 10000 });
   await expect(autoInsight.getByText("audio · 已分析")).toBeVisible();
   await expectNoHorizontalOverflow(page);
 });
@@ -103,12 +109,12 @@ test("generates and deletes a podcast episode from the first note", async ({ pag
 
   await page.getByLabel("声音配置").fill(voice);
   await page.getByRole("button", { name: "生成脚本" }).click();
-  await expect(page.getByText("播客脚本已生成")).toBeVisible();
+  await expect(page.getByText("播客脚本已生成")).toBeVisible({ timeout: 20000 });
   await page.getByRole("button", { name: "合成语音" }).click();
 
-  await expect(page.getByText("语音合成")).toBeVisible();
+  await expect(page.getByText("语音合成")).toBeVisible({ timeout: 15000 });
   const podcastEpisode = page.locator("article.podcast-episode").filter({ hasText: voice });
-  await expect(podcastEpisode).toHaveCount(1);
+  await expect(podcastEpisode).toHaveCount(1, { timeout: 10000 });
   await expect(podcastEpisode.getByText(`ready · ${voice}`)).toBeVisible();
   await expect(podcastEpisode.getByText("本地占位", { exact: true })).toBeVisible();
   await expectNoHorizontalOverflow(page);
@@ -119,25 +125,41 @@ test("generates and deletes a podcast episode from the first note", async ({ pag
   });
   await podcastEpisode.getByRole("button", { name: "删除播客" }).click();
 
-  await expect(page.getByText("播客生成结果已删除")).toBeVisible();
+  await expect(page.getByText("播客生成结果已删除")).toBeVisible({ timeout: 10000 });
 });
 
 test("saves the current podcast voice as the default product voice", async ({ page }) => {
-  // 声音配置 is a free-text input but 播客默认声音 in ConfigView is a <select> sourced from
-  // /api/realtime-voice/voices (working cosyvoice-v3-plus presets only). Use a valid preset.
-  const voice = "longanyang";
+  // 声音配置 is a free-text input in PodcastStudioView. 播客默认声音 in ConfigView is a <select>
+  // sourced from /api/realtime-voice/voices. We must use a value that actually exists in the
+  // select — read the first available option value from the voices API before testing.
   await resetDemoState(page);
   // R2: 播客工作台已移出顶层导航，通过"我的资产"档案卡"生成播客"按钮进入。
   await openView(page, "我的资产", "专访档案与认知资产库");
   await page.getByRole("button", { name: "生成播客" }).first().click();
   await expect(page.getByText("把一次专访生成可收听的语音节目")).toBeVisible();
 
+  // Determine a valid voice value from ConfigView's voices select before filling the free-text field.
+  await page.getByRole("button", { name: "系统配置" }).click();
+  await page.getByRole("button", { name: "策略 搜索、语音和访谈运行策略" }).click();
+  // Wait for voices to load (select is populated from /api/realtime-voice/voices)
+  const voiceSelect = page.getByLabel("播客默认声音");
+  // Wait for at least one option to appear, then grab its value
+  await expect(voiceSelect.locator("option")).not.toHaveCount(0, { timeout: 10000 });
+  const voice = await voiceSelect.evaluate(
+    (el: HTMLSelectElement) => el.options[0]?.value ?? ""
+  );
+
+  // Navigate back to podcast studio and set the voice
+  await page.getByRole("button", { name: "我的资产" }).click();
+  await page.getByRole("button", { name: "生成播客" }).first().click();
+  await expect(page.getByText("把一次专访生成可收听的语音节目")).toBeVisible();
+
   await page.getByLabel("声音配置").fill(voice);
   await page.getByRole("button", { name: "保存为默认声音" }).click();
 
-  await expect(page.getByText("播客默认声音已更新")).toBeVisible();
+  await expect(page.getByText("播客默认声音已更新")).toBeVisible({ timeout: 10000 });
   await page.getByRole("button", { name: "系统配置" }).click();
   await page.getByRole("button", { name: "策略 搜索、语音和访谈运行策略" }).click();
-  await expect(page.getByLabel("播客默认声音")).toHaveValue(voice);
+  await expect(page.getByLabel("播客默认声音")).toHaveValue(voice, { timeout: 10000 });
   await expectNoHorizontalOverflow(page);
 });

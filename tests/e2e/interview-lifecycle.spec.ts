@@ -8,6 +8,8 @@ import { expect, test } from "@playwright/test";
 import { openView, resetDemoState } from "./helpers";
 
 test("full interview lifecycle: start, submit 3 turns, end, assert diary note", async ({ page }) => {
+  // Each LLM turn may take ~5-6s; 3 turns + finishInterview needs > 60s total.
+  test.setTimeout(120000);
   await resetDemoState(page);
 
   // ── Step 1: start a decision interview from the home view ─────────────────
@@ -43,9 +45,8 @@ test("full interview lifecycle: start, submit 3 turns, end, assert diary note", 
     await expect(page.getByText(turnText)).toBeVisible();
 
     // Assert an assistant turn appears after each user turn.
-    // The deterministic engine always returns an "assistant" role turn.
-    // We wait for any article with role "assistant" to appear after the user turn.
-    await expect(page.locator("article.turn.assistant").last()).toBeVisible();
+    // LLM API (百炼) may take several seconds per turn — allow 15s per turn.
+    await expect(page.locator("article.turn.assistant").last()).toBeVisible({ timeout: 15000 });
   }
 
   // ── Step 4: end the interview ─────────────────────────────────────────────
@@ -55,7 +56,9 @@ test("full interview lifecycle: start, submit 3 turns, end, assert diary note", 
   await finishButton.click();
 
   // ── Step 5: assert navigation to notes view + success notice ──────────────
-  await expect(page.getByText("专访档案已生成")).toBeVisible();
+  // finishInterview calls the real API (POST /api/interview-sessions/:id/end) which
+  // runs LLM-based session analysis — empirically ~16s. Allow 35s for headroom.
+  await expect(page.getByText("专访档案已生成")).toBeVisible({ timeout: 35000 });
   // App navigates to "notes" view after finishing.
   await expect(page.getByText("从访谈沉淀认知资产")).toBeVisible();
 
