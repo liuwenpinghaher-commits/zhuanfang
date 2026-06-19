@@ -3,13 +3,17 @@ import type { InterviewCard, InterviewSession, MemoryCorrection } from "./types"
 
 // Bounds for what we surface into the realtime voice prompt. Kept small so the
 // instruction string stays focused and the LLM actually honours it.
-// Recall-freshness caveat (honest): the cascade/text interview path rebuilds memory recall
-// on every /turns request (a fresh queryEmbedding from the latest user turn), so its
-// relevantMemories track the conversation. The realtime (omni) voice path builds these
-// instructions ONCE at session start, so its memory recall is an opening-time snapshot and
-// does NOT refresh as the topic drifts. The two paths share the SAME copy (the blocks below),
-// not the same recall freshness; per-turn refresh for omni voice (via session.update) is a
-// follow-up, not yet implemented.
+// Recall-freshness caveat (honest, per-path):
+//  - Cascade/text interview path: rebuilds memory recall on every /turns request (a fresh
+//    queryEmbedding from the latest user turn), so relevantMemories track the conversation.
+//  - Bailian omni voice path (WS/WebRTC): the realtime session sets these instructions ONCE
+//    at open (an opening-time snapshot), BUT the client now refreshes them per user turn via
+//    POST /api/interview-sessions/:id/voice-instructions → connection.updateInstructions
+//    (session.update). So this path's recall ALSO tracks the conversation now (fills 🔴-1).
+//  - LiveKit cascade voice path: instructions live in the Python agent (agent-context), not in
+//    a client session.update — recall freshness there depends on whether that agent re-fetches
+//    agent-context each turn (that side's concern; NOT addressed by this change).
+// All paths share the SAME copy (the blocks below); they differ only in WHO refreshes recall.
 const MAX_VOICE_PLAYBOOK_RULES = 3;
 const MAX_VOICE_CORRECTIONS = 10;
 

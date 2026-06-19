@@ -188,6 +188,13 @@ export interface BailianRealtimeWebrtcConnection {
   stream: MediaStreamLike;
   peerConnection: PeerConnectionLike;
   dataChannel: DataChannelLike;
+  /**
+   * Refresh the live (omni) model's system instructions mid-session by emitting a
+   * `session.update` over the data channel. Used to push freshly-recomputed memory
+   * recall on every user turn (fills review 🔴-1). Safe to call when the channel is
+   * not open: the frame is dropped silently.
+   */
+  updateInstructions(instructions: string): void;
   beginAssistantTurn(input: { turnId?: string; providerTurnId?: string }): void;
   markAssistantSpeaking(input: { text: string; audioMs?: number }): void;
   completeAssistantTurn(): AssistantSpeechProgress | null;
@@ -261,6 +268,12 @@ export async function connectBailianRealtimeWebrtc(
     stream,
     peerConnection,
     dataChannel,
+    updateInstructions(instructions) {
+      // Drop silently unless the channel is open (readyState may be unset in the
+      // browser RTCDataChannel typing; treat unset as open like the open-wait helper).
+      if (dataChannel.readyState && dataChannel.readyState !== "open") return;
+      dataChannel.send(JSON.stringify({ type: "session.update", session: { instructions } }));
+    },
     beginAssistantTurn(input) {
       ensureProgress(input);
     },

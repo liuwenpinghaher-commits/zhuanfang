@@ -507,4 +507,86 @@ describe("interview-sessions routes", () => {
 
     await server.close();
   });
+
+  // --- 🔴-1: omni (bailian) voice path can refresh its memory recall per turn ---
+  //
+  // POST /api/interview-sessions/:id/voice-instructions recomputes the realtime
+  // voice instruction string against the FRESHEST user utterance. With a fake
+  // embeddingClient whose query vector points AT the "near" memory, the rebuilt
+  // recall must surface that memory inside the returned instructions — proving the
+  // omni path's recall now tracks the conversation (not just an opening snapshot).
+  it("voice-instructions: recall follows the latest user text (embedded → near memory appears in instructions)", async () => {
+    const seeded = seedTwoCosineSeparableMemories();
+    // First create with a query orthogonal to BOTH memories so the opening guide is
+    // recall-neutral; then the per-turn refresh below points the query at the near one.
+    const queryVector = [1, 0, 0]; // === rec-near direction
+    const embed = vi.fn(async (texts: string[]) => texts.map(() => queryVector));
+    const repo = createInMemoryProductStateRepository(seeded as any);
+    const server = Fastify({ logger: false });
+    await registerInterviewSessionRoutes(server, repo, { embeddingClient: { embed } });
+
+    const created = (await server.inject({
+      method: "POST",
+      url: "/api/interview-sessions",
+      payload: { mode: "daily", topicHint: "放权 场景" }
+    })).json();
+    const id = created.session.id;
+
+    embed.mockClear();
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/interview-sessions/${id}/voice-instructions`,
+      payload: { latestUserText: "我现在最纠结的就是要不要继续替团队兜底" }
+    });
+
+    expect(res.statusCode).toBe(200);
+    // The latest user text must actually be embedded (recall recomputed for this turn).
+    expect(embed).toHaveBeenCalled();
+    const { instructions } = res.json() as { instructions: string };
+    expect(typeof instructions).toBe("string");
+    // Cosine recall surfaced the near memory into the realtime instruction string.
+    expect(instructions).toContain(seeded.NEAR_TEXT);
+
+    await server.close();
+  });
+
+  it("voice-instructions: no embeddingClient → 200, does not crash, returns instructions from the existing guide", async () => {
+    const seeded = seedTwoCosineSeparableMemories();
+    const repo = createInMemoryProductStateRepository(seeded as any);
+    const server = Fastify({ logger: false });
+    await registerInterviewSessionRoutes(server, repo, {}); // no embeddingClient
+
+    const created = (await server.inject({
+      method: "POST",
+      url: "/api/interview-sessions",
+      payload: { mode: "daily", topicHint: "放权 场景" }
+    })).json();
+    const id = created.session.id;
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/interview-sessions/${id}/voice-instructions`,
+      payload: { latestUserText: "随便说点什么" }
+    });
+
+    expect(res.statusCode).toBe(200);
+    const { instructions } = res.json() as { instructions: string };
+    expect(typeof instructions).toBe("string");
+    expect(instructions.length).toBeGreaterThan(0);
+
+    await server.close();
+  });
+
+  it("voice-instructions: 404 when the interview session does not exist", async () => {
+    const repo = createInMemoryProductStateRepository(createInitialProductState());
+    const server = Fastify({ logger: false });
+    await registerInterviewSessionRoutes(server, repo, {});
+    const res = await server.inject({
+      method: "POST",
+      url: "/api/interview-sessions/does-not-exist/voice-instructions",
+      payload: { latestUserText: "x" }
+    });
+    expect(res.statusCode).toBe(404);
+    await server.close();
+  });
 });

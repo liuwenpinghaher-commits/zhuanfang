@@ -223,4 +223,34 @@ describe("connectBailianRealtimeWebsocket", () => {
 
     teardown();
   });
+
+  it("updateInstructions sends a session.update refreshing the live model's instructions", async () => {
+    // Fills review 🔴-1: the omni (bailian) voice path must be able to refresh its
+    // memory-recall-derived instructions per user turn — not just at session open.
+    const { mediaDevices, wsOnOpen, wsOnMessage, wsSent, teardown } = buildMockHarness();
+
+    const connectionPromise = connectBailianRealtimeWebsocket(createWebsocketSession(), {
+      mediaDevices: mediaDevices as unknown as { getUserMedia(constraints: MediaStreamConstraints): Promise<MediaStream> },
+      productApiBaseUrl: "ws://127.0.0.1:8787"
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+    wsOnOpen();
+    wsOnMessage(new MessageEvent("message", { data: JSON.stringify({ type: "proxy.connected" }) }));
+    const connection = await connectionPromise;
+
+    expect("updateInstructions" in connection).toBe(true);
+
+    const before = wsSent.length;
+    connection.updateInstructions("新指令：本轮聚焦放权的具体事件");
+
+    const newFrames = wsSent.slice(before).map((s) => JSON.parse(s));
+    const sessionUpdate = newFrames.find(
+      (m) => m.type === "session.update" && m.session?.instructions === "新指令：本轮聚焦放权的具体事件"
+    );
+    expect(sessionUpdate).toBeTruthy();
+    expect(sessionUpdate.session.instructions).toBe("新指令：本轮聚焦放权的具体事件");
+
+    teardown();
+  });
 });

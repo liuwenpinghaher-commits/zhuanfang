@@ -22,6 +22,14 @@ export interface BailianRealtimeWebsocketConnection {
   stream: MediaStream;
   setStrategy(strategy: string | undefined): void;
   updatePreSignals(next: InteractionPreSignals | null): void;
+  /**
+   * Refresh the live (omni) model's system instructions mid-session by emitting a
+   * `session.update`. Used to push freshly-recomputed memory recall on every user
+   * turn (fills review 🔴-1) — the realtime model can't recompute recall itself, and
+   * the opening sessionUpdate is only an opening-time snapshot. Safe to call before
+   * the socket is OPEN: the frame is silently dropped (mirrors updatePreSignals).
+   */
+  updateInstructions(instructions: string): void;
   beginAssistantTurn(input: { turnId?: string; providerTurnId?: string }): void;
   markAssistantSpeaking(input: { text: string; audioMs?: number }): void;
   completeAssistantTurn(): AssistantSpeechProgress | null;
@@ -363,6 +371,13 @@ export async function connectBailianRealtimeWebsocket(
             },
             updatePreSignals(next) {
               preSignals = next;
+            },
+            updateInstructions(instructions) {
+              // Guard exactly like the audio-append path: only push when the socket
+              // is OPEN, otherwise drop silently (no throw) so a slow/closed
+              // connection never breaks the per-turn recall refresh.
+              if (closed || ws.readyState !== WebSocket.OPEN) return;
+              ws.send(JSON.stringify({ type: "session.update", session: { instructions } }));
             },
             beginAssistantTurn(input) {
               fullAssistantTranscript = "";

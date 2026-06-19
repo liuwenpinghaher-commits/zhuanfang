@@ -109,6 +109,42 @@ describe("bailian realtime WebRTC connector", () => {
     expect(dataChannel.sent).toEqual([JSON.stringify(session.sessionUpdate)]);
     connection.close();
   });
+
+  it("updateInstructions sends a session.update over the data channel (fills review 🔴-1)", async () => {
+    const stream = { getTracks: () => [{ stop: vi.fn() }] };
+    const dataChannel = {
+      readyState: "open",
+      sent: [] as string[],
+      send(message: string) {
+        this.sent.push(message);
+      },
+      close: vi.fn()
+    };
+    const peerConnection = {
+      addTrack: vi.fn(),
+      createDataChannel: vi.fn(() => dataChannel),
+      createOffer: vi.fn(async () => ({ type: "offer" as const, sdp: "offer-sdp" })),
+      setLocalDescription: vi.fn(async () => undefined),
+      setRemoteDescription: vi.fn(async () => undefined),
+      close: vi.fn()
+    };
+    const session = createRealtimeSession();
+
+    const connection = await connectBailianRealtimeWebrtc(session, {
+      mediaDevices: { getUserMedia: vi.fn(async () => stream) },
+      peerConnectionFactory: vi.fn(() => peerConnection),
+      productApiClient: { exchangeRealtimeVoiceSdp: vi.fn(async () => "answer-sdp") }
+    });
+
+    expect("updateInstructions" in connection).toBe(true);
+
+    connection.updateInstructions("新指令：本轮聚焦放权的具体事件");
+    const lastFrame = JSON.parse(dataChannel.sent.at(-1)!);
+    expect(lastFrame.type).toBe("session.update");
+    expect(lastFrame.session.instructions).toBe("新指令：本轮聚焦放权的具体事件");
+
+    connection.close();
+  });
 });
 
 function createRealtimeSession(): RealtimeVoiceSessionResponse {

@@ -20,6 +20,7 @@ import type {
   ProductState
 } from "../../../../src/domain/types";
 import { makeId, nowIso, withAuditEvent } from "../../../../src/domain/utils";
+import { buildRealtimeVoiceInstructions } from "../../../../src/domain/voice-instructions";
 import { finalizeSessionWithLlm } from "../intelligence/finalize-llm";
 import { extractCandidateMemories, toSessionMemoryCandidates } from "../intelligence/memory-extraction-llm";
 import { generatePreSignals } from "../intelligence/pre-signals-llm";
@@ -325,6 +326,46 @@ export async function registerInterviewSessionRoutes(
     const nextState = upsertSession(state, nextSession);
     repository.replaceState(nextState);
     return { session: nextSession, state: nextState };
+  });
+
+  // 🔴-1: omni (bailian WS/WebRTC) voice path — refresh the realtime model's
+  // instructions per user turn. The realtime session sets `instructions` ONCE at
+  // session open (an opening-time recall snapshot) and the omni model can't recompute
+  // recall itself, so as the topic drifts its memory recall goes stale. The client
+  // calls this after each final user transcript with the freshest utterance; we
+  // re-embed it, rebuild the guide's memory recall (same path as /turns — cosine over
+  // confirmed memories), and re-render the voice instruction string. The client then
+  // pushes it via connection.updateInstructions → session.update.
+  //
+  // Read-only: this never mutates the session/state — it only computes and returns a
+  // string. Fail-safe: no embeddingClient / empty text / embed error → fall back to
+  // the existing session.guide (instructions unchanged, never crashes).
+  server.post("/api/interview-sessions/:id/voice-instructions", async (request, reply) => {
+    const state = repository.getState();
+    const session = findSession(state, getSessionId(request.params));
+    if (!session) {
+      return reply.code(404).send({ error: "Interview session not found." });
+    }
+    const latestUserText = normalizeOptionalString(
+      normalizeObject<{ latestUserText?: unknown }>(request.body).latestUserText
+    );
+
+    const queryEmbedding = await embedQueryText(latestUserText, options.embeddingClient);
+    const refreshedGuide = queryEmbedding
+      ? buildInterviewGuide(state, {
+          topicHint: session.guide.topicHint || undefined,
+          ...(session.card.searchBriefId ? { searchBriefId: session.card.searchBriefId } : {}),
+          queryEmbedding
+        })
+      : session.guide;
+    const refreshedSession: InterviewSession = { ...session, guide: refreshedGuide };
+
+    const instructions = buildRealtimeVoiceInstructions(
+      refreshedSession,
+      session.card,
+      state.memoryCorrections
+    );
+    return { instructions };
   });
 }
 

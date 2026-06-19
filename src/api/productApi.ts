@@ -58,6 +58,12 @@ export interface ProductApiClient {
   applyInterviewControl(sessionId: string, input: ApplyInterviewControlRequest): Promise<InterviewSessionResponse>;
   endInterviewSession(sessionId: string): Promise<EndInterviewSessionResponse>;
   generateInterviewPreSignals(sessionId: string): Promise<GeneratePreSignalsResponse>;
+  /**
+   * 🔴-1: recompute the realtime (omni) voice model's instructions against the
+   * freshest user utterance so its memory recall tracks the conversation. The client
+   * pushes the returned string into the live connection via updateInstructions.
+   */
+  refreshVoiceInstructions(interviewSessionId: string, latestUserText?: string): Promise<{ instructions: string }>;
   createRealtimeVoiceSession(input: CreateRealtimeVoiceSessionRequest): Promise<RealtimeVoiceSessionResponse>;
   exchangeRealtimeVoiceSdp(signalingPath: string, offerSdp: string): Promise<string>;
   interruptRealtimeVoiceSession(
@@ -595,6 +601,13 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
       return (await requestJson(`/api/interview-sessions/${sessionId}/pre-signals`, {
         method: "POST"
       })) as GeneratePreSignalsResponse;
+    },
+    async refreshVoiceInstructions(interviewSessionId, latestUserText) {
+      return (await requestJson(`/api/interview-sessions/${interviewSessionId}/voice-instructions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(latestUserText != null ? { latestUserText } : {})
+      })) as { instructions: string };
     },
     async createRealtimeVoiceSession(input) {
       return (await requestJson("/api/realtime-voice/sessions", {

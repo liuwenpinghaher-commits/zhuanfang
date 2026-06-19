@@ -1208,6 +1208,13 @@ export default function App() {
                         // keep existing signals on failure
                       });
                   }
+                  // 🔴-1 (honest scope): NO per-turn instruction refresh here. The
+                  // LiveKit cascade's instructions live in the Python agent
+                  // (agent-context), not in a client-side session.update — so memory
+                  // recall freshness on this path depends on whether that Python agent
+                  // re-fetches /api/realtime-voice/agent-context each turn (that side's
+                  // concern). This task fixed ONLY the bailian omni (WS/WebRTC) path,
+                  // which DOES refresh via connection.updateInstructions above.
                 },
                 onAssistantTranscript: (text, isFinal) => {
                   if (!isFinal || !text.trim()) return;
@@ -1307,6 +1314,20 @@ export default function App() {
                       })
                       .catch(() => {
                         // keep existing signals on failure
+                      });
+                    // 🔴-1: recompute the omni voice model's instructions against THIS
+                    // turn's utterance so its memory recall tracks the conversation
+                    // (the realtime session set instructions only once at open — an
+                    // opening-time snapshot). Push the refreshed string via
+                    // session.update. Non-blocking; silent on failure so a recall
+                    // hiccup never disrupts the live voice experience.
+                    productApiClient
+                      .refreshVoiceInstructions(voiceSid, text)
+                      .then((res) => {
+                        if ("updateInstructions" in connection) connection.updateInstructions(res.instructions);
+                      })
+                      .catch(() => {
+                        // keep the existing (opening-time) instructions on failure
                       });
                   }
                 },
