@@ -218,17 +218,34 @@ export function analyzeImportedInterview(
     nextState
   };
 }
-export function approvePlaybookPatch(state: ProductState, patchId: string): ProductState {
+export function approvePlaybookPatch(
+  state: ProductState,
+  patchId: string,
+  overrideRules?: string[]
+): ProductState {
   const patch = state.playbookPatches.find((item) => item.id === patchId);
   if (!patch || patch.status !== "proposed") {
     return state;
   }
+
+  // Optional user-edited rules: when a non-empty set is supplied, it replaces the
+  // patch's rules and re-derives ruleTypes from the edited text. An empty array (or
+  // omitted argument) is treated as "no override", preserving backward compatibility.
+  const cleanedOverride = overrideRules?.map((rule) => rule.trim()).filter(Boolean);
+  const hasOverride = !!cleanedOverride && cleanedOverride.length > 0;
+  const rulesOverride: Pick<PlaybookPatch, "rules" | "ruleTypes"> | undefined = hasOverride
+    ? {
+        rules: cleanedOverride,
+        ruleTypes: cleanedOverride.map((rule) => inferPlaybookRuleType(rule))
+      }
+    : undefined;
 
   const appliedAt = nowIso();
   const applyPatchStatus = (item: PlaybookPatch): PlaybookPatch =>
     item.id === patchId
       ? {
           ...item,
+          ...(rulesOverride ?? {}),
           status: "applied",
           appliedAt
         }

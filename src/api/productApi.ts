@@ -66,7 +66,7 @@ export interface ProductApiClient {
   generatePodcastEpisode(input: GeneratePodcastEpisodeRequest): Promise<GeneratePodcastEpisodeResponse>;
   synthesizePodcastEpisode(episodeId: string, script?: string): Promise<GeneratePodcastEpisodeResponse>;
   transcribeCorpusAudio(input: AudioTranscriptionInput): Promise<TranscribeCorpusAudioResponse>;
-  analyzeCorpusImport(input: CorpusImportInput): Promise<AnalyzeCorpusImportResponse>;
+  analyzeCorpusImport(input: CorpusImportInput, focus?: string): Promise<AnalyzeCorpusImportResponse>;
   listVoices(): Promise<VoiceListResponse>;
   createVoice(input: CreateVoiceRequest): Promise<VoiceInfo>;
   deleteVoice(voiceId: string): Promise<void>;
@@ -641,11 +641,12 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         body: JSON.stringify(input)
       })) as TranscribeCorpusAudioResponse;
     },
-    async analyzeCorpusImport(input) {
+    async analyzeCorpusImport(input, focus) {
+      const trimmedFocus = focus?.trim();
       const response = (await requestJson("/api/corpus/insights", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(input)
+        body: JSON.stringify(trimmedFocus ? { ...input, focus: trimmedFocus } : input)
       })) as AnalyzeCorpusImportResponse;
 
       return {

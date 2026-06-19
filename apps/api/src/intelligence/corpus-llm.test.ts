@@ -12,7 +12,7 @@
 import { describe, expect, it } from "vitest";
 import { createInitialProductState } from "../../../../src/domain/engine";
 import type { BailianChatClient } from "../providers/bailian";
-import { analyzeCorpusWithLlm } from "./corpus-llm";
+import { analyzeCorpusWithLlm, buildCorpusUserMessage } from "./corpus-llm";
 
 const baseState = createInitialProductState();
 const baseInput = {
@@ -148,5 +148,55 @@ describe("analyzeCorpusWithLlm", () => {
     await expect(
       analyzeCorpusWithLlm(baseState, baseInput, mockChat(json))
     ).rejects.toThrow("no usable dimensions");
+  });
+
+  it("passes the user-supplied focus into the LLM user message", async () => {
+    let captured = "";
+    const capturingChat: BailianChatClient = {
+      async complete(request) {
+        const userMessage = request.messages.find((message) => message.role === "user");
+        captured = userMessage?.content ?? "";
+        return VALID_JSON;
+      }
+    };
+    await analyzeCorpusWithLlm(baseState, baseInput, capturingChat, "重点学习如何追问失败经历");
+    expect(captured).toContain("重点学习如何追问失败经历");
+  });
+
+  it("omits the focus block when no focus is supplied", async () => {
+    let captured = "";
+    const capturingChat: BailianChatClient = {
+      async complete(request) {
+        const userMessage = request.messages.find((message) => message.role === "user");
+        captured = userMessage?.content ?? "";
+        return VALID_JSON;
+      }
+    };
+    await analyzeCorpusWithLlm(baseState, baseInput, capturingChat);
+    expect(captured).not.toContain("用户特别希望你重点关注");
+  });
+});
+
+describe("buildCorpusUserMessage", () => {
+  it("embeds the sample title and content", () => {
+    const message = buildCorpusUserMessage("某优秀样本", "主持人：你能具体说说吗？");
+    expect(message).toContain("某优秀样本");
+    expect(message).toContain("你能具体说说吗");
+  });
+
+  it("includes the focus instruction when focus is provided", () => {
+    const message = buildCorpusUserMessage("样本", "内容", "如何做机制反转");
+    expect(message).toContain("用户特别希望你重点关注");
+    expect(message).toContain("如何做机制反转");
+  });
+
+  it("does not include the focus instruction when focus is omitted", () => {
+    const message = buildCorpusUserMessage("样本", "内容");
+    expect(message).not.toContain("用户特别希望你重点关注");
+  });
+
+  it("ignores a whitespace-only focus", () => {
+    const message = buildCorpusUserMessage("样本", "内容", "   ");
+    expect(message).not.toContain("用户特别希望你重点关注");
   });
 });

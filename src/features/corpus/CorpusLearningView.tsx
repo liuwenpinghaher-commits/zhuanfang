@@ -1,8 +1,10 @@
-import { CheckCircle2, ChevronDown, ClipboardList, FileAudio2, Info, LoaderCircle, Sparkles, Trash2, Upload } from "lucide-react";
+import { CheckCircle2, ChevronDown, ClipboardList, FileAudio2, Info, LoaderCircle, Plus, Sparkles, Trash2, Upload, X } from "lucide-react";
 import { useState } from "react";
 import { HeaderBlock } from "../../components/HeaderBlock";
-import type { CorpusImportInput, ProductState } from "../../domain/types";
+import type { CorpusImportInput, PlaybookPatch, ProductState } from "../../domain/types";
 import { ANALYSIS_DIMENSIONS, ANALYSIS_OUTPUTS, ANALYSIS_PATHS, ANALYSIS_PRINCIPLES } from "./analysisMethod";
+
+const FOCUS_MAX = 280;
 
 interface CorpusLearningViewProps {
   state: ProductState;
@@ -10,14 +12,16 @@ interface CorpusLearningViewProps {
   title: string;
   sourceUrl: string;
   content: string;
+  focus: string;
   transcribing: boolean;
   onMediaType: (value: CorpusImportInput["mediaType"]) => void;
   onTitle: (value: string) => void;
   onSourceUrl: (value: string) => void;
   onContent: (value: string) => void;
+  onFocus: (value: string) => void;
   onTranscribeAudio: () => void;
   onAnalyze: () => void;
-  onApprovePatch: (patchId: string) => void;
+  onApprovePatch: (patchId: string, rules: string[]) => void;
   onDeleteInsight: (insightId: string) => void;
 }
 
@@ -27,11 +31,13 @@ export function CorpusLearningView({
   title,
   sourceUrl,
   content,
+  focus,
   transcribing,
   onMediaType,
   onTitle,
   onSourceUrl,
   onContent,
+  onFocus,
   onTranscribeAudio,
   onAnalyze,
   onApprovePatch,
@@ -161,7 +167,22 @@ export function CorpusLearningView({
           <label className="field-stack" htmlFor="corpus-content">
             <span className="field-label">{contentLabel}</span>
             <textarea id="corpus-content" rows={10} value={content} onChange={(event) => onContent(event.target.value)} />
-            <span className="field-help">建议使用"主持人：问题 / 被访者：回答"的格式，系统会据此识别追问动作。</span>
+            <span className="field-help">建议使用“主持人：问题 / 被访者：回答”的格式，系统会据此识别追问动作。</span>
+          </label>
+          <label className="field-stack" htmlFor="corpus-focus">
+            <span className="field-label">分析侧重（可选）</span>
+            <textarea
+              id="corpus-focus"
+              rows={3}
+              value={focus}
+              maxLength={FOCUS_MAX}
+              onChange={(event) => onFocus(event.target.value)}
+              placeholder="例如：重点学习如何追问失败经历 / 如何做机制反转"
+            />
+            <div className="field-row-foot">
+              <span className="field-help">填写后，AI 分析会优先关注你指定的提问技法；留空则做全面分析。</span>
+              <span className="char-count">{focus.length}/{FOCUS_MAX}</span>
+            </div>
           </label>
           <button className="primary-action" type="button" onClick={onAnalyze}>
             <Sparkles size={18} />分析并生成建议
@@ -202,15 +223,7 @@ export function CorpusLearningView({
             </div>
             <div className="patch-list">
               {insight.recommendedPatches.map((patch) => (
-                <div className="patch-card" key={patch.id}>
-                  <span className="status-pill">{patch.status}</span>
-                  <h3>{patch.title}</h3>
-                  <p>{patch.description}</p>
-                  <ul>{patch.rules.map((rule, ruleIdx) => <li key={`${patch.id}-rule-${ruleIdx}`}>{rule}</li>)}</ul>
-                  <button className="secondary-action" type="button" onClick={() => onApprovePatch(patch.id)} disabled={patch.status === "applied"}>
-                    <CheckCircle2 size={16} />确认影响引擎
-                  </button>
-                </div>
+                <EditablePatchCard key={patch.id} patch={patch} onApprovePatch={onApprovePatch} />
               ))}
             </div>
           </article>
@@ -218,5 +231,81 @@ export function CorpusLearningView({
         })}
       </div>
     </section>
+  );
+}
+
+interface EditablePatchCardProps {
+  patch: PlaybookPatch;
+  onApprovePatch: (patchId: string, rules: string[]) => void;
+}
+
+function EditablePatchCard({ patch, onApprovePatch }: EditablePatchCardProps) {
+  const applied = patch.status === "applied";
+  // Local draft rules — initialized from the recommended patch. The user can edit,
+  // delete or add rules here, then "确认影响引擎" applies the EDITED set.
+  const [draftRules, setDraftRules] = useState<string[]>(() => [...patch.rules]);
+
+  function updateRule(index: number, value: string) {
+    setDraftRules((prev) => prev.map((rule, idx) => (idx === index ? value : rule)));
+  }
+
+  function removeRule(index: number) {
+    setDraftRules((prev) => prev.filter((_, idx) => idx !== index));
+  }
+
+  function addRule() {
+    setDraftRules((prev) => [...prev, ""]);
+  }
+
+  const cleanedRules = draftRules.map((rule) => rule.trim()).filter(Boolean);
+  const canApply = !applied && cleanedRules.length > 0;
+
+  return (
+    <div className="patch-card">
+      <span className="status-pill">{patch.status}</span>
+      <h3>{patch.title}</h3>
+      <p>{patch.description}</p>
+      {applied ? (
+        <ul>
+          {patch.rules.map((rule, ruleIdx) => (
+            <li key={`${patch.id}-rule-${ruleIdx}`}>{rule}</li>
+          ))}
+        </ul>
+      ) : (
+        <div className="patch-rule-editor">
+          <span className="patch-rule-editor-label">推荐规则（可编辑后再应用）</span>
+          {draftRules.map((rule, ruleIdx) => (
+            <div className="patch-rule-row" key={`${patch.id}-draft-${ruleIdx}`}>
+              <input
+                value={rule}
+                onChange={(event) => updateRule(ruleIdx, event.target.value)}
+                placeholder="一条可执行的追问规则"
+                aria-label={`规则 ${ruleIdx + 1}`}
+              />
+              <button
+                className="icon-button"
+                type="button"
+                onClick={() => removeRule(ruleIdx)}
+                aria-label="删除这条规则"
+                title="删除这条规则"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          ))}
+          <button className="link-button" type="button" onClick={addRule}>
+            <Plus size={14} />加一条规则
+          </button>
+        </div>
+      )}
+      <button
+        className="secondary-action"
+        type="button"
+        onClick={() => onApprovePatch(patch.id, cleanedRules)}
+        disabled={!canApply}
+      >
+        <CheckCircle2 size={16} />确认影响引擎
+      </button>
+    </div>
   );
 }

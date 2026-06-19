@@ -17,31 +17,46 @@ const SYSTEM_PROMPT = [
   "铁律：只基于样本真实出现的技法，给出样本里的原话作为 example/evidence；不要编造。只输出一个 JSON 对象。"
 ].join("\n");
 
-export async function analyzeCorpusWithLlm(
-  state: ProductState,
-  input: CorpusImportInput,
-  chatClient: BailianChatClient
-): Promise<{ insight: CorpusInsight; nextState: ProductState }> {
-  const raw = await chatClient.complete({
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      {
-        role: "user",
-        content: [
-          `样本标题：${input.title}`,
-          "",
-          "=== 专访样本内容 ===",
-          sanitizeExternalMaterialBlock(input.content, "（样本片段已清洗）").slice(0, 6000),
-          "=== 样本结束 ===",
-          "",
-          "请输出以下结构的 JSON：",
-          `{
+/**
+ * Build the LLM user message for corpus analysis. Pure so the prompt construction
+ * (including the optional user-supplied analysis focus) is unit-testable. When a
+ * non-empty `focus` is provided, an explicit instruction steers the model toward
+ * the technique the user wants to learn; a blank/omitted focus changes nothing.
+ */
+export function buildCorpusUserMessage(title: string, content: string, focus?: string): string {
+  const trimmedFocus = focus?.trim();
+  const lines = [
+    `样本标题：${title}`,
+    "",
+    "=== 专访样本内容 ===",
+    sanitizeExternalMaterialBlock(content, "（样本片段已清洗）").slice(0, 6000),
+    "=== 样本结束 ===",
+    ""
+  ];
+  if (trimmedFocus) {
+    lines.push(`用户特别希望你重点关注：${trimmedFocus}`, "");
+  }
+  lines.push(
+    "请输出以下结构的 JSON：",
+    `{
   "dimensions": [{"name":"维度名(如 追问动作/节奏控制/反方推动)","score":1到5的整数,"finding":"这个样本在该维度做得怎样","example":"样本里的一句原话","recommendedAction":"我们引擎该怎么学"}],
   "improvementPlan": [{"title":"改进点","rationale":"样本为什么这么做","action":"我们引擎具体怎么改","expectedEngineChange":"确认后引擎行为会怎样变","evidence":"样本里的原话"}],
   "patch": {"title":"PlaybookPatch 标题","description":"一句话说明这条补丁","rules":["可执行规则1","规则2","规则3"],"impact":"low|medium|high"}
 }`
-        ].join("\n")
-      }
+  );
+  return lines.join("\n");
+}
+
+export async function analyzeCorpusWithLlm(
+  state: ProductState,
+  input: CorpusImportInput,
+  chatClient: BailianChatClient,
+  focus?: string
+): Promise<{ insight: CorpusInsight; nextState: ProductState }> {
+  const raw = await chatClient.complete({
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: buildCorpusUserMessage(input.title, input.content, focus) }
     ],
     responseFormat: "json",
     temperature: 0.4

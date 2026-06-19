@@ -11,6 +11,7 @@ interface CorpusInsightRequestPayload {
   mediaType?: unknown;
   content?: unknown;
   sourceUrl?: unknown;
+  focus?: unknown;
 }
 
 interface CorpusTranscriptionRequestPayload {
@@ -81,13 +82,14 @@ export async function registerCorpusRoutes(
     if (!input.content.trim()) {
       return reply.code(422).send({ error: "Corpus content is required." });
     }
+    const focus = normalizeFocus(request.body);
 
     const state = repository.getState();
     const allowLlm = !!options.bailianChatClient && budget.tryConsume("system");
     if (!!options.bailianChatClient && !allowLlm) {
       console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "corpus_insights" }));
     }
-    const { insight, nextState } = await analyzeCorpus(state, input, allowLlm ? options.bailianChatClient : undefined);
+    const { insight, nextState } = await analyzeCorpus(state, input, allowLlm ? options.bailianChatClient : undefined, focus);
     repository.replaceState(nextState);
     return { insight, state: nextState };
   });
@@ -96,16 +98,24 @@ export async function registerCorpusRoutes(
 async function analyzeCorpus(
   state: Parameters<typeof analyzeImportedInterview>[0],
   input: CorpusImportInput,
-  chatClient: BailianChatClient | undefined
+  chatClient: BailianChatClient | undefined,
+  focus?: string
 ) {
   if (chatClient) {
     try {
-      return await analyzeCorpusWithLlm(state, input, chatClient);
+      return await analyzeCorpusWithLlm(state, input, chatClient, focus);
     } catch (error) {
       console.warn(JSON.stringify({ event: "llm_fallback", capability: "corpus", error: error instanceof Error ? error.message : String(error) }));
     }
   }
+  // Deterministic path ignores focus (the templated analyzer does not use free-form
+  // guidance); it must still succeed when focus is supplied.
   return analyzeImportedInterview(state, input);
+}
+
+function normalizeFocus(value: unknown): string | undefined {
+  const payload = normalizePayload(value);
+  return typeof payload.focus === "string" && payload.focus.trim() ? payload.focus.trim() : undefined;
 }
 
 function normalizeCorpusInput(value: unknown): CorpusImportInput {

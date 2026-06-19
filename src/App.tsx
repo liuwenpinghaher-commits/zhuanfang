@@ -171,6 +171,7 @@ export default function App() {
   const [corpusContent, setCorpusContent] = useState(
     "主持人：你刚才说增长很难，能不能讲一个具体时刻？\n被访者：真正困难是团队不敢暴露坏消息。\n主持人：如果反过来看，是不是机制奖励了报喜不报忧？"
   );
+  const [corpusFocus, setCorpusFocus] = useState("");
 
   useEffect(() => {
     saveProductState(productState);
@@ -755,7 +756,7 @@ export default function App() {
     };
 
     try {
-      const apiRun = await productApiClient.analyzeCorpusImport(input);
+      const apiRun = await productApiClient.analyzeCorpusImport(input, corpusFocus.trim() || undefined);
       setProductState(apiRun.state);
       setApiPersistenceEnabled(true);
       setNotice(buildNotice("success", "语料分析已完成", "已生成可确认的访谈策略补丁。"));
@@ -817,8 +818,8 @@ export default function App() {
     setNotice(buildNotice("warning", "语料分析已删除", "已应用的引擎补丁仍会保留。"));
   }
 
-  function applyPlaybookPatch(patchId: string) {
-    setProductState(approvePlaybookPatch(productState, patchId));
+  function applyPlaybookPatch(patchId: string, overrideRules?: string[]) {
+    setProductState(approvePlaybookPatch(productState, patchId, overrideRules));
     setNotice(buildNotice("success", "PlaybookPatch 已应用", "系统配置已记录新的访谈策略版本。"));
     setView("config");
   }
@@ -1439,11 +1440,13 @@ export default function App() {
             title={corpusTitle}
             sourceUrl={corpusSourceUrl}
             content={corpusContent}
+            focus={corpusFocus}
             transcribing={corpusTranscribing}
             onMediaType={setCorpusMediaType}
             onTitle={setCorpusTitle}
             onSourceUrl={setCorpusSourceUrl}
             onContent={setCorpusContent}
+            onFocus={setCorpusFocus}
             onTranscribeAudio={transcribeCorpusAudio}
             onAnalyze={analyzeCorpus}
             onApprovePatch={applyPlaybookPatch}

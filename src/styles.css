@@ -2242,6 +2242,68 @@ select:focus-visible {
   line-height: 1.6;
 }
 
+/* C3: editable patch rules before applying a PlaybookPatch to the engine */
+.patch-rule-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0 12px;
+}
+
+.patch-rule-editor-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.patch-rule-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.patch-rule-row input {
+  flex: 1 1 auto;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.patch-rule-row input:focus {
+  outline: none;
+  border-color: var(--action-primary);
+}
+
+.patch-rule-row .icon-button {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+}
+
+.link-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 4px 2px;
+  border: none;
+  background: none;
+  color: var(--action-primary);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+}
+
 .patch-list.horizontal,
 .provider-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
