@@ -6,7 +6,6 @@ import {
   updateKnowledgeDebtStatus,
   updatePointStatus,
   updateQuestionStatus,
-  updateReadingAssetStatus
 } from "../../../../src/domain/engine";
 import type {
   AssetStatus,
@@ -15,7 +14,6 @@ import type {
   PointAsset,
   ProductState,
   QuestionAsset,
-  ReadingAsset
 } from "../../../../src/domain/types";
 import type { ProductStateRepository } from "../product-state-repository";
 
@@ -26,12 +24,10 @@ interface UpdateAssetStatusPayload {
 type PointStatus = Extract<AssetStatus, "临时想法" | "稳定观点" | "被挑战中" | "已修正" | "已放弃">;
 type QuestionStatus = Extract<AssetStatus, "开放" | "反复出现" | "正在聚焦" | "阶段性回答">;
 type DebtStatus = Extract<AssetStatus, "待了解" | "能复述" | "已应用" | "不相关">;
-type ReadingStatus = Extract<AssetStatus, "待了解" | "已应用" | "不相关">;
 
 const pointStatuses: PointStatus[] = ["临时想法", "稳定观点", "被挑战中", "已修正", "已放弃"];
 const questionStatuses: QuestionStatus[] = ["开放", "反复出现", "正在聚焦", "阶段性回答"];
 const debtStatuses: DebtStatus[] = ["待了解", "能复述", "已应用", "不相关"];
-const readingStatuses: ReadingStatus[] = ["待了解", "已应用", "不相关"];
 const decisionStatuses: DecisionAsset["status"][] = ["待复盘", "已复盘"];
 
 export async function registerAssetRoutes(server: FastifyInstance, repository: ProductStateRepository) {
@@ -104,47 +100,6 @@ export async function registerAssetRoutes(server: FastifyInstance, repository: P
     return { asset: updatedDebt, state: nextState };
   });
 
-  server.patch("/api/assets/readings/:id/status", async (request, reply) => {
-    const state = repository.getState();
-    const readingId = getRouteId(request.params);
-    const reading = findReading(state, readingId);
-    if (!reading) {
-      return reply.code(404).send({ error: "Reading asset not found." });
-    }
-
-    const status = normalizeReadingStatus(normalizeObject<UpdateAssetStatusPayload>(request.body).status);
-    if (!status) {
-      return reply.code(422).send({ error: "A valid reading asset status is required." });
-    }
-
-    const nextState = updateReadingAssetStatus(state, reading.id, status);
-    const updatedReading = findReading(nextState, reading.id);
-    if (!updatedReading) {
-      return reply.code(500).send({ error: "Reading asset status was not updated." });
-    }
-
-    repository.replaceState(nextState);
-    return { asset: updatedReading, state: nextState };
-  });
-
-  server.patch("/api/assets/readings/:id/importance", async (request, reply) => {
-    const state = repository.getState();
-    const readingId = getRouteId(request.params);
-    const reading = findReading(state, readingId);
-    if (!reading) {
-      return reply.code(404).send({ error: "Reading asset not found." });
-    }
-
-    const nextState = toggleAssetImportance(state, reading.id);
-    const updatedReading = findReading(nextState, reading.id);
-    if (!updatedReading || updatedReading.important === reading.important) {
-      return reply.code(500).send({ error: "Reading asset importance was not updated." });
-    }
-
-    repository.replaceState(nextState);
-    return { asset: updatedReading, state: nextState };
-  });
-
   server.post("/api/assets/decisions/:id/confirm", async (request, reply) => {
     const state = repository.getState();
     const decisionId = getRouteId(request.params);
@@ -212,12 +167,6 @@ function normalizeDebtStatus(value: unknown): DebtStatus | undefined {
   return typeof value === "string" && debtStatuses.includes(value as DebtStatus) ? (value as DebtStatus) : undefined;
 }
 
-function normalizeReadingStatus(value: unknown): ReadingStatus | undefined {
-  return typeof value === "string" && readingStatuses.includes(value as ReadingStatus)
-    ? (value as ReadingStatus)
-    : undefined;
-}
-
 function normalizeDecisionStatus(value: unknown): DecisionAsset["status"] | undefined {
   return typeof value === "string" && decisionStatuses.includes(value as DecisionAsset["status"])
     ? (value as DecisionAsset["status"])
@@ -234,10 +183,6 @@ function findQuestion(state: ProductState, questionId: unknown): QuestionAsset |
 
 function findDebt(state: ProductState, debtId: unknown): KnowledgeDebt | undefined {
   return typeof debtId === "string" ? state.debts.find((debt) => debt.id === debtId) : undefined;
-}
-
-function findReading(state: ProductState, readingId: unknown): ReadingAsset | undefined {
-  return typeof readingId === "string" ? state.readings.find((reading) => reading.id === readingId) : undefined;
 }
 
 function findDecision(state: ProductState, decisionId: unknown): DecisionAsset | undefined {

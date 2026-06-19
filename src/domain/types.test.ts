@@ -37,7 +37,7 @@ describe("domain types", () => {
       profile: { name: "", role: "", industry: "", currentFocus: "", longTermGoal: "", preferredStrength: "standard", explicitBoundaries: [], confirmedMemories: [], inferredMemories: [] },
       sessions: [], notes: [], points: [], questions: [], decisions: [], debts: [], themes: [],
       memoryCorrections: [], searchBriefs: [], podcastEpisodes: [], corpusImports: [], corpusInsights: [], playbookPatches: [],
-      readings: [], memoryRecords: [], memoryCandidates: [], memoryEdges: [],
+      memoryRecords: [], memoryCandidates: [], memoryEdges: [],
       importSources: [], ragChunks: [], intelTasks: [], intelItems: [], configVersions: [],
       auditEvents: [], aiRunEvents: [], workflowRuns: [], operationalChecks: [],
       revision: 0,

@@ -232,30 +232,12 @@ describe("product state storage", () => {
           updatedAt: "2026-06-19T00:00:00.000Z"
         }
       ],
-      readings: [
-        {
-          id: "r-1",
-          title: "test reading",
-          url: "https://example.com",
-          publisher: "pub",
-          summary: "sum",
-          whyRead: "why",
-          status: "待了解" as const,
-          usage: "延伸阅读" as const,
-          relatedThemeIds: [validThemeId, ghostId],
-          important: false,
-          createdAt: "2026-06-19T00:00:00.000Z",
-          updatedAt: "2026-06-19T00:00:00.000Z"
-        }
-      ]
     });
 
     // 合法 id 保留，悬空 id 被剔除
     expect(normalized.points[0].relatedThemeIds).toEqual([validThemeId]);
     // 全部悬空时结果为空数组
     expect(normalized.questions[0].relatedThemeIds).toEqual([]);
-    // readings 同样剪枝
-    expect(normalized.readings[0].relatedThemeIds).toEqual([validThemeId]);
   });
 
   it("P2-18: backfills missing reviewScore/reviewSignals on memoryCandidates via withMemoryCandidateReview", () => {

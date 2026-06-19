@@ -174,7 +174,7 @@ export function buildPrivacyReport(state: ProductState, generatedAt = new Date()
     {
       id: "assets",
       label: "观点、问题、决策、知识债和主题",
-      count: state.points.length + state.questions.length + state.decisions.length + state.debts.length + state.readings.length + state.themes.length,
+      count: state.points.length + state.questions.length + state.decisions.length + state.debts.length + state.themes.length,
       detail: "专访沉淀出的可检索资产、状态流转和长期追踪主题。",
       exported: true,
       purged: true
@@ -370,7 +370,6 @@ export function createPurgedProductState(currentState: ProductState, createdAt =
     questions: [],
     decisions: [],
     debts: [],
-    readings: [],
     themes: [],
     memoryCorrections: [],
     memoryRecords: [],

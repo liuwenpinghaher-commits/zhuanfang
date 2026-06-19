@@ -81,7 +81,7 @@ export type {
 export {
   buildProactiveSearchAgenda, buildSearchBrief,
   createKnowledgeDebtFromSearchBrief, createPointFromSearchBrief,
-  createQuestionFromSearchBrief, createReadingAssetsFromSearchBrief,
+  createQuestionFromSearchBrief,
   createSearchBriefFromInput, importReferenceMaterial,
 } from "./search-brief";
 
@@ -94,7 +94,7 @@ export {
   confirmDecisionCandidate, createQuestionFromNote, markMemoryCorrection,
   searchProductAssets, submitInterviewFeedback, toggleAssetImportance,
   updateDecisionStatus, updateKnowledgeDebtStatus, updatePointStatus,
-  updateQuestionStatus, updateReadingAssetStatus,
+  updateQuestionStatus,
 } from "./assets";
 
 export {
@@ -159,7 +159,6 @@ import type {
   ProductState,
   QuestionAsset,
   RagChunk,
-  ReadingAsset,
   ReferenceMaterialImportInput,
   RealtimeSignal,
   RealtimeSessionSignal,
@@ -533,7 +532,7 @@ export function createEmptyProductState(): ProductState {
   return {
     ...base,
     sessions: [], notes: [], points: [], questions: [], decisions: [], debts: [], themes: [],
-    readings: [], memoryCorrections: [], memoryRecords: [], memoryCandidates: [], memoryEdges: [],
+    memoryCorrections: [], memoryRecords: [], memoryCandidates: [], memoryEdges: [],
     searchBriefs: [], podcastEpisodes: [], corpusImports: [], corpusInsights: [], playbookPatches: [],
     importSources: [], ragChunks: [], intelTasks: [], intelItems: [],
     configVersions: [], auditEvents: [], aiRunEvents: [], workflowRuns: [], operationalChecks: [],

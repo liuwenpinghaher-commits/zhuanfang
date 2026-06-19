@@ -122,7 +122,7 @@ function buildMigrationEntityCounts(state: ProductState): MigrationEntityCount[]
     {
       id: "assets",
       label: "认知资产",
-      count: state.points.length + state.questions.length + state.decisions.length + state.debts.length + state.readings.length + state.themes.length
+      count: state.points.length + state.questions.length + state.decisions.length + state.debts.length + state.themes.length
     },
     {
       id: "memory",

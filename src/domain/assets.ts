@@ -143,30 +143,18 @@ export function searchProductAssets(state: ProductState, query: string): SearchR
   const debts = state.debts.filter((debt) =>
     match([debt.concept, debt.context, debt.whyImportant, debt.status, debt.nextQuestion])
   );
-  const readings = state.readings.filter((reading) =>
-    match([
-      reading.title,
-      reading.url,
-      reading.publisher,
-      reading.summary,
-      reading.whyRead,
-      reading.status,
-      reading.usage
-    ])
-  );
   const themes = state.themes.filter((theme) =>
     match([theme.name, theme.summary, theme.maturity, theme.representativeQuote, theme.nextQuestion])
   );
 
   return {
     query,
-    total: notes.length + points.length + questions.length + decisions.length + debts.length + readings.length + themes.length,
+    total: notes.length + points.length + questions.length + decisions.length + debts.length + themes.length,
     notes,
     points,
     questions,
     decisions,
     debts,
-    readings,
     themes
   };
 }
@@ -247,9 +235,6 @@ export function toggleAssetImportance(state: ProductState, assetId: string): Pro
     ),
     questions: state.questions.map((question) =>
       question.id === assetId ? { ...question, important: !question.important, updatedAt: nowIso() } : question
-    ),
-    readings: state.readings.map((reading) =>
-      reading.id === assetId ? { ...reading, important: !reading.important, updatedAt: nowIso() } : reading
     )
   };
 }
@@ -310,24 +295,6 @@ export function updateQuestionStatus(
     ...state,
     questions: state.questions.map((question) =>
       question.id === questionId ? { ...question, status, updatedAt: nowIso() } : question
-    )
-  };
-}
-export function updateReadingAssetStatus(
-  state: ProductState,
-  readingId: string,
-  status: Extract<AssetStatus, "待了解" | "已应用" | "不相关">
-): ProductState {
-  return {
-    ...state,
-    readings: state.readings.map((reading) =>
-      reading.id === readingId
-        ? {
-            ...reading,
-            status,
-            updatedAt: nowIso()
-          }
-        : reading
     )
   };
 }

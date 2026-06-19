@@ -6,7 +6,6 @@ import type {
   ProductState,
   QuestionAsset,
   RagChunk,
-  ReadingAsset,
   ReferenceMaterialImportInput,
   SearchAgendaItem,
   SearchBrief,
@@ -356,50 +355,7 @@ export function createQuestionFromSearchBrief(
 
   return { question, nextState };
 }
-export function createReadingAssetsFromSearchBrief(
-  state: ProductState,
-  briefId: string
-): { readings: ReadingAsset[]; nextState: ProductState } | null {
-  const brief = state.searchBriefs.find((item) => item.id === briefId);
-  if (!brief) {
-    return null;
-  }
 
-  const createdAt = nowIso();
-  const relatedThemeIds = resolveSearchBriefThemeIds(state, brief);
-  const readings = brief.sources.map((source): ReadingAsset => ({
-    id: makeId("reading"),
-    title: source.title,
-    url: source.url,
-    publisher: source.publisher,
-    summary: source.snippet,
-    whyRead: `外部资料（来源：${source.publisher}）：作为“${brief.topic}”的延伸阅读，只能用于补充背景和形成追问，不能直接当作用户事实。`,
-    status: "待了解",
-    usage: "延伸阅读",
-    relatedThemeIds,
-    important: false,
-    createdAt,
-    updatedAt: createdAt
-  }));
-
-  const nextState = withAuditEvent(
-    withExternalMaterialMemoryCandidate({
-      ...cloneState(state),
-      readings: [...readings, ...state.readings]
-    }, brief, createdAt),
-    {
-      type: "search_brief_asset_created",
-      label: "搜索简报已转为延伸阅读",
-      detail: `从搜索简报“${brief.topic}”生成 ${readings.length} 条延伸阅读。`,
-      severity: "info",
-      entityType: "search_brief",
-      entityId: brief.id,
-      createdAt
-    }
-  );
-
-  return { readings, nextState };
-}
 export function createSearchBriefFromInput(
   state: ProductState,
   input: SearchBriefInput

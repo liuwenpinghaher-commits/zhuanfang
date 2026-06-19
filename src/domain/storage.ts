@@ -49,7 +49,6 @@ export function normalizeProductState(value: unknown): ProductState {
     playbookPatches: Array.isArray(candidate.playbookPatches)
       ? candidate.playbookPatches
       : fallback.playbookPatches,
-    readings: Array.isArray(candidate.readings) ? candidate.readings : fallback.readings,
     memoryRecords: Array.isArray(candidate.memoryRecords) ? candidate.memoryRecords : fallback.memoryRecords,
     memoryCandidates: Array.isArray(candidate.memoryCandidates)
       ? candidate.memoryCandidates.map((c) => withMemoryCandidateReview(c, { legacyBackfill: true, preserveExisting: true }))
@@ -313,7 +312,6 @@ function pruneDanglingThemeRefs(state: ProductState): ProductState {
     questions: state.questions.map((q) => ({ ...q, relatedThemeIds: pruneRequired(q.relatedThemeIds) })),
     decisions: state.decisions.map((d) => ({ ...d, relatedThemeIds: pruneOptional(d.relatedThemeIds) })),
     debts: state.debts.map((d) => ({ ...d, relatedThemeIds: pruneOptional(d.relatedThemeIds) })),
-    readings: state.readings.map((r) => ({ ...r, relatedThemeIds: pruneRequired(r.relatedThemeIds) })),
     intelTasks: state.intelTasks.map((t) => ({ ...t, relatedThemeIds: pruneRequired(t.relatedThemeIds) })),
     importSources: state.importSources.map((src) => ({ ...src, relatedThemeIds: pruneOptional(src.relatedThemeIds) }))
   };

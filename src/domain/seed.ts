@@ -119,7 +119,6 @@ export const initialProductState: ProductState = {
   corpusImports: [],
   corpusInsights: [],
   playbookPatches: [],
-  readings: [],
   memoryRecords: [],
   memoryCandidates: [],
   memoryEdges: [],

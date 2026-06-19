@@ -648,20 +648,6 @@ export interface KnowledgeDebt {
   relatedThemeIds?: string[];
 }
 
-export interface ReadingAsset {
-  id: string;
-  title: string;
-  url: string;
-  publisher: string;
-  summary: string;
-  whyRead: string;
-  status: Extract<AssetStatus, "待了解" | "已应用" | "不相关">;
-  usage: "延伸阅读";
-  relatedThemeIds: string[];
-  important: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
 
 export interface LongTermTheme {
   id: string;
@@ -705,7 +691,6 @@ export interface SearchResult {
   questions: QuestionAsset[];
   decisions: DecisionAsset[];
   debts: KnowledgeDebt[];
-  readings: ReadingAsset[];
   themes: LongTermTheme[];
 }
 
@@ -1173,7 +1158,6 @@ export interface ProductState {
   questions: QuestionAsset[];
   decisions: DecisionAsset[];
   debts: KnowledgeDebt[];
-  readings: ReadingAsset[];
   themes: LongTermTheme[];
   memoryCorrections: MemoryCorrection[];
   memoryRecords: MemoryRecord[];
