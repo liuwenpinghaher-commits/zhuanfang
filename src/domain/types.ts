@@ -858,6 +858,8 @@ export interface SearchBrief extends SearchBriefInput {
   createdAt: string;
   /** 持续追踪，可重新调研刷新 */
   tracked?: boolean;
+  /** 最近一次刷新的时间；新鲜度计算优先使用此字段，为空时回退到 createdAt */
+  lastRefreshedAt?: string;
 }
 
 export type SearchBriefClaimType =
