@@ -292,22 +292,9 @@ export function buildInterviewContextPack(state: ProductState, options: Intervie
       record.status === "confirmed" &&
       (memoryPolicy.includeSensitiveMemoriesInContext || isModelSafeMemoryRecord(record))
   );
-  const governedMemoryTexts = new Set(state.memoryRecords.map((record) => record.text.trim()).filter(Boolean));
-  const profileMemoryRecords: MemoryRecord[] = state.profile.confirmedMemories
-    .map((memory) => memory.trim())
-    .filter((memory) => memory && !governedMemoryTexts.has(memory))
-    .map((memory, index) => ({
-      id: `profile-confirmed-${index + 1}`,
-      text: memory,
-      status: "confirmed",
-      sourceType: "profile",
-      sourceId: state.profile.name || "profile",
-      evidenceQuote: memory,
-      sensitivity: "normal",
-      createdAt: "2026-06-10T00:00:00.000Z",
-      updatedAt: "2026-06-10T00:00:00.000Z"
-    }));
-  const memoryRecords = [...activeRecords, ...profileMemoryRecords];
+  // M4: single source of truth — memoryRecords only; profile.confirmedMemories is a
+  // legacy parallel store that is no longer injected into context.
+  const memoryRecords = [...activeRecords];
   // M3c: when the route supplied a queryEmbedding, rank confirmed memories by the
   // three-factor scorer (cosine relevance + recency + importance) so the context
   // pack mirrors the same semantic recall as guide.relevantMemories. Without it,
@@ -839,17 +826,14 @@ export function collectAppliedPlaybookRuleTypes(state: ProductState) {
   );
 }
 function collectConfirmedMemoryTexts(state: ProductState) {
-  const governedMemoryTexts = new Set(state.memoryRecords.map((record) => record.text.trim()).filter(Boolean));
+  // M4: single source of truth — confirmed memory texts come from memoryRecords only.
   return Array.from(
-    new Set([
-      ...state.memoryRecords
+    new Set(
+      state.memoryRecords
         .filter((record) => record.status === "confirmed")
         .map((record) => record.text.trim())
-        .filter(Boolean),
-      ...state.profile.confirmedMemories
-        .map((memory) => memory.trim())
-        .filter((memory) => memory && !governedMemoryTexts.has(memory))
-    ])
+        .filter(Boolean)
+    )
   );
 }
 function collectRelevantMemories(

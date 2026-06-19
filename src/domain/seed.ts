@@ -9,14 +9,8 @@ export const initialProductState: ProductState = {
     longTermGoal: "建立一个能持续追踪个人判断、决策和学习变化的私人认知系统",
     preferredStrength: "standard",
     explicitBoundaries: ["不要把短暂情绪直接写成长期人格结论"],
-    confirmedMemories: [
-      "用户最近在反复思考团队授权和亲自下场的边界。",
-      "用户希望产品先围绕业务功能闭环，而不是先讨论技术架构。"
-    ],
-    inferredMemories: [
-      "用户重视问题定义权，不希望产品变成普通记录工具。",
-      "用户对静态模板式 AI 提问比较敏感，希望系统真正引用上下文。"
-    ]
+    confirmedMemories: [],
+    inferredMemories: []
   },
   sessions: [],
   notes: [

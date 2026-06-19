@@ -126,12 +126,22 @@ export function ProfileView({
         <div className="panel-title"><Brain size={18} /><h2>系统记忆</h2></div>
         <div className="memory-grid">
           <div>
-            <span className="label">用户确认</span>
-            <ul>{state.profile.confirmedMemories.map((memory, idx) => <li key={"confirmed-" + idx}>{memory}</li>)}</ul>
+            <span className="label">已确认记忆</span>
+            {(() => {
+              const confirmed = state.memoryRecords.filter((r) => r.status === "confirmed");
+              return confirmed.length > 0
+                ? <ul>{confirmed.map((r) => <li key={r.id}>{r.text}</li>)}</ul>
+                : <p className="empty-hint">暂无已确认记忆。对话结束后 AI 提取的记忆经审批后将显示在此。</p>;
+            })()}
           </div>
           <div>
-            <span className="label">AI 推断</span>
-            <ul>{state.profile.inferredMemories.map((memory, idx) => <li key={"inferred-" + idx}>{memory}</li>)}</ul>
+            <span className="label">待审批候选</span>
+            {(() => {
+              const pending = state.memoryCandidates.filter((c) => c.status === "pending");
+              return pending.length > 0
+                ? <ul>{pending.map((c) => <li key={c.id}>{c.text}</li>)}</ul>
+                : <p className="empty-hint">暂无待审批记忆候选。</p>;
+            })()}
           </div>
         </div>
       </section>
