@@ -36,8 +36,8 @@ test("清空示例 clears demo data and leaves app usable", async ({ page }) => 
   await expect(page.getByRole("button", { name: "今日访谈台" })).toBeVisible();
 
   // ── Step 3: home view renders in empty state without crashing ─────────────
-  // With no themes, HomeView shows empty-hint: "还没有长期主题，开始第一次专访后会自动出现在这里。"
-  await expect(page.getByText("还没有长期主题")).toBeVisible();
+  // With no themes, HomeView shows empty-hint: "还没有主题线，完成专访后会自动浮现。"
+  await expect(page.getByText("还没有主题线，完成专访后会自动浮现。")).toBeVisible();
 
   // ── Step 4: 双轨笔记 view — no notes, no crash ────────────────────────────
   await page.getByRole("button", { name: "双轨笔记" }).click();
@@ -52,9 +52,9 @@ test("清空示例 clears demo data and leaves app usable", async ({ page }) => 
   await expect(page.getByText("当前筛选下没有资产。")).toBeVisible();
 
   // ── Step 6: can still start a fresh interview from empty state ────────────
-  // Navigate back to home, click "开始聊这个".
+  // Navigate back to home, click "一键开始".
   await page.getByRole("button", { name: "今日访谈台" }).click();
-  await page.getByRole("button", { name: "开始聊这个" }).click();
+  await page.getByRole("button", { name: "一键开始" }).click();
 
   // P2-16: one-click start — from the empty state this creates a session and enters the live
   // interview directly (no "专访启动" screen). Proves a fresh interview is usable after clearing.

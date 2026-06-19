@@ -2,14 +2,14 @@ import { expect, test } from "@playwright/test";
 import { expectNoHorizontalOverflow, openView, resetDemoState, useMobileViewport } from "./helpers";
 
 const views = [
-  ["今日访谈台", "系统已根据长期主题、知识债和历史原话准备本次专访方向。"],
+  ["今日访谈台", "一键开始"],
   ["实时专访", "专访启动"],
   ["联网素材", "主动搜集热点、素材和可讨论主题"],
   ["语料学习", "从外部专访中学习提问逻辑"],
   ["播客工作台", "把一次专访生成可收听的语音节目"],
   ["双轨笔记", "从访谈沉淀认知资产"],
   ["资产库", "观点、问题、决策和知识债"],
-  ["长期追踪", "看见反复主题和观点变化"],
+  ["主题线", "看见反复主题和观点变化"],
   ["系统配置", "底层能力、provider 和引擎策略"],
   ["个人档案", "产品负责人 · AI 产品 / 创业"]
 ] as const;
