@@ -49,7 +49,7 @@ export function TrackWorkspaceView({ workspace, onBack, onContinue }: TrackWorks
           <div className="track-hero-meta">
             <span className={`status-pill track-maturity ${maturityClass}`}>{theme.maturity}</span>
             <span className="track-appearances">
-              <Clock size={13} />
+              <Clock size={12} />
               出现 {theme.appearances} 次
             </span>
           </div>
@@ -66,7 +66,7 @@ export function TrackWorkspaceView({ workspace, onBack, onContinue }: TrackWorks
 
         <div className="track-hero-action">
           <button className="primary-action track-continue-btn" type="button" onClick={onContinue}>
-            <Play size={15} />
+            <Play size={16} />
             继续这条线
           </button>
         </div>

@@ -98,7 +98,7 @@ export function CorpusLearningView({
       <div className="record-list">
         {state.corpusInsights.length === 0 && (
           <section className="panel empty-module">
-            <ClipboardList size={22} />
+            <ClipboardList size={18} />
             <p>还没有语料分析。导入一段专访文本后，会生成可解释的改进建议。</p>
           </section>
         )}

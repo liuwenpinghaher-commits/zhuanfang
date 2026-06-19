@@ -27,7 +27,7 @@ const MAX_IMPORT_CHARS = 20000;
 function SensitiveIcon() {
   return (
     <ShieldAlert
-      size={14}
+      size={16}
       aria-label="敏感内容，默认不写入上下文"
       style={{ display: "inline", verticalAlign: "text-bottom", marginRight: 3 }}
     />

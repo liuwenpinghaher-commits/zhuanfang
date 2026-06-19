@@ -52,7 +52,7 @@ export function ThemesView({ state, review, yearlyReview, radar, onStart, onOpen
       <div className="record-list">
         {state.themes.length === 0 && (
           <section className="panel empty-module">
-            <Layers size={22} />
+            <Layers size={18} />
             <p>还没有主题线，随着专访推进会自动聚合出反复出现的主题。</p>
           </section>
         )}

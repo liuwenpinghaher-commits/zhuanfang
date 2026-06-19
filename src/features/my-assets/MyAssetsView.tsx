@@ -176,7 +176,7 @@ export function MyAssetsView({
                         onGeneratePodcast(entry.note.id);
                       }}
                     >
-                      <Headphones size={15} aria-hidden="true" />
+                      <Headphones size={16} aria-hidden="true" />
                       生成播客
                     </button>
                   </div>

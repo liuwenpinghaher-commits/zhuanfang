@@ -173,7 +173,7 @@ export function PodcastStudioView({
             </article>
           ) : (
             <div className="empty-module">
-              <ClipboardList size={22} />
+              <ClipboardList size={18} />
               <p>还没有可生成播客的内容。先完成一次专访并生成档案。</p>
             </div>
           )}
@@ -182,7 +182,7 @@ export function PodcastStudioView({
         <section className="podcast-result-panel">
           {state.podcastEpisodes.length === 0 && (
             <section className="panel empty-module">
-              <Headphones size={22} />
+              <Headphones size={18} />
               <p>还没有播客。选择一份双轨笔记后即可生成脚本、shownotes 和音频文件。</p>
             </section>
           )}
@@ -250,7 +250,7 @@ function PodcastAudioPreview({ episode }: { episode: ProductState["podcastEpisod
 
   return (
     <div className="audio-preview" aria-label={`音频预览：${episode.title}`}>
-      <Volume2 size={20} />
+      <Volume2 size={18} />
       <div>
         <strong>{playable ? "可播放音频" : "本地占位"}</strong>
         {playable ? (

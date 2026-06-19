@@ -212,7 +212,7 @@ export function ConfigView({
             </div>
             <div className="record-actions">
               <button className="secondary-action" type="button" onClick={onCleanupGeneratedArtifacts}>
-                <RefreshCcw size={17} />清理重复生成物
+                <RefreshCcw size={16} />清理重复生成物
               </button>
             </div>
           </section>
@@ -256,7 +256,7 @@ export function ConfigView({
                     onClick={saveRuntimeConfig}
                     disabled={runtimeConfigSaving || runtimeDirtyCount === 0}
                   >
-                    <ShieldCheck size={17} />{runtimeConfigSaving ? "保存中" : "保存服务端配置"}
+                    <ShieldCheck size={16} />{runtimeConfigSaving ? "保存中" : "保存服务端配置"}
                   </button>
                 </div>
               </>
@@ -506,7 +506,7 @@ export function ConfigView({
                 onClick={saveProductConfig}
                 disabled={!productDirty}
               >
-                <ShieldCheck size={17} />保存产品策略
+                <ShieldCheck size={16} />保存产品策略
               </button>
             </div>
           </section>

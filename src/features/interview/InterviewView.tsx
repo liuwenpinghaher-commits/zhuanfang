@@ -81,7 +81,7 @@ export function InterviewView({
             </div>
           )}
           <button className="launch-action" type="button" onClick={() => onStart(pendingMode)}>
-            <Play size={20} />开始专访
+            <Play size={18} />开始专访
           </button>
         </div>
       </section>
@@ -117,7 +117,7 @@ export function InterviewView({
             <div className="voice-controls">
               {recording && voiceStatus === "speaking" && (
                 <button className="interrupt-button" type="button" onClick={onInterrupt} title="打断 AI">
-                  <Pause size={15} />打断
+                  <Pause size={16} />打断
                 </button>
               )}
               <button

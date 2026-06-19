@@ -141,7 +141,7 @@ export function HomeView({ state, card, monthlyReview: _monthlyReview, onStart, 
               type="button"
               onClick={() => onStart("long-term")}
             >
-              <Plus size={14} />
+              <Plus size={16} />
               新建主题线
             </button>
           </div>
@@ -166,7 +166,7 @@ export function HomeView({ state, card, monthlyReview: _monthlyReview, onStart, 
                 style={{ marginTop: "12px" }}
                 onClick={() => onStart()}
               >
-                <Play size={15} />
+                <Play size={16} />
                 开始第一次专访
               </button>
             </div>

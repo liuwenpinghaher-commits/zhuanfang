@@ -78,7 +78,7 @@ export function AssetsView({
         <section className="asset-list-panel" aria-label="资产列表">
           {assets.length === 0 && (
             <div className="empty-module">
-              <Archive size={22} />
+              <Archive size={18} />
               <p>当前筛选下没有资产。可以调整关键词或切换资产类型。</p>
             </div>
           )}
@@ -107,7 +107,7 @@ export function AssetsView({
             />
           ) : (
             <div className="empty-module">
-              <Archive size={22} />
+              <Archive size={18} />
               <p>选择一条资产查看详情。</p>
             </div>
           )}

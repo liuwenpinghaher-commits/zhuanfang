@@ -139,7 +139,7 @@ export function SearchIntelligenceView({
               >
                 {autoRunError ? (
                   <>
-                    <AlertTriangle size={15} />
+                    <AlertTriangle size={16} />
                     <span>{autoRunError}</span>
                     <button
                       type="button"
@@ -162,7 +162,7 @@ export function SearchIntelligenceView({
                       style={{ background: "none", border: "none", cursor: "pointer", padding: "2px", color: "inherit", opacity: 0.6, lineHeight: 1 }}
                       onClick={() => setAutoRunDismissed(true)}
                     >
-                      <X size={14} />
+                      <X size={16} />
                     </button>
                   </>
                 ) : null}
@@ -373,7 +373,7 @@ export function SearchIntelligenceView({
                       disabled={isUsing}
                       onClick={() => onUseBrief(brief.id)}
                     >
-                      {isUsing ? <span className="spinner" aria-hidden="true" /> : <Mic size={17} />}
+                      {isUsing ? <span className="spinner" aria-hidden="true" /> : <Mic size={16} />}
                       带入专访
                     </button>
                     {onTrackBrief && (

@@ -1,4 +1,4 @@
-import { CircleAlert, FileText, Play } from "lucide-react";
+import { BookmarkCheck, FileText, Play } from "lucide-react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { InterviewMode, ProductState } from "../../domain/types";
 
@@ -20,7 +20,7 @@ export function NotesView({ state, onStart, onSaveQuestion }: NotesViewProps) {
       <div className="record-list">
         {state.notes.length === 0 && (
           <section className="panel empty-module">
-            <FileText size={22} />
+            <FileText size={18} />
             <p>还没有专访笔记，完成一次专访后这里会出现双轨笔记。</p>
           </section>
         )}
@@ -45,7 +45,7 @@ export function NotesView({ state, onStart, onSaveQuestion }: NotesViewProps) {
             <div className="note-actions">
               {note.nextQuestions.slice(0, 2).map((question, index) => (
                 <button className="secondary-action" type="button" key={`${note.id}-q-${index}`} onClick={() => onSaveQuestion(note.id, index)}>
-                  <CircleAlert size={16} />保存问题：{question}
+                  <BookmarkCheck size={16} aria-hidden="true" />保存问题：{question}
                 </button>
               ))}
             </div>

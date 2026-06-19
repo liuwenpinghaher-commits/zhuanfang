@@ -177,7 +177,7 @@ export function ProfileView({
               disabled={loadingAction !== null}
               onClick={handleExport}
             >
-              {loadingAction === "export" ? <span className="spinner" aria-hidden="true" /> : <Download size={15} />}
+              {loadingAction === "export" ? <span className="spinner" aria-hidden="true" /> : <Download size={16} />}
               导出数据
             </button>
             {exportSuccess && <span style={{ color: "var(--color-success, #22c55e)", fontSize: "0.875rem" }}>已下载 JSON 备份包</span>}
@@ -192,7 +192,7 @@ export function ProfileView({
               disabled={loadingAction !== null}
               onClick={handlePrivacyReport}
             >
-              {loadingAction === "privacy" ? <span className="spinner" aria-hidden="true" /> : <ShieldCheck size={15} />}
+              {loadingAction === "privacy" ? <span className="spinner" aria-hidden="true" /> : <ShieldCheck size={16} />}
               隐私报告
             </button>
             {privacyError && <span style={{ color: "var(--action-danger)", fontSize: "0.875rem" }}>{privacyError}</span>}
@@ -226,7 +226,7 @@ export function ProfileView({
               disabled={loadingAction !== null}
               onClick={handlePurge}
             >
-              {loadingAction === "purge" ? <span className="spinner" aria-hidden="true" /> : <Trash2 size={15} />}
+              {loadingAction === "purge" ? <span className="spinner" aria-hidden="true" /> : <Trash2 size={16} />}
               清空个人数据
             </button>
             {purgeSuccess && <span style={{ color: "var(--color-success, #22c55e)", fontSize: "0.875rem" }}>个人数据已彻底清空</span>}
@@ -243,7 +243,7 @@ export function ProfileView({
           <strong>清空示例，开始我的记录</strong>
           <p>移除内置示例的访谈、资产和记忆，开始记录你自己的真实内容。</p>
         </div>
-        <button className="danger-button" type="button" onClick={onReset}><Trash2 size={17} />清空示例，开始我的记录</button>
+        <button className="danger-button" type="button" onClick={onReset}><Trash2 size={16} />清空示例，开始我的记录</button>
       </section>
     </section>
   );
