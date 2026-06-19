@@ -618,6 +618,23 @@ describe("product state storage", () => {
   });
 
   describe("R4 记忆简化", () => {
+    it("themes: 清除历史死字段 kind/pinned/lastActiveAt(不随 spread 透传)", () => {
+      const state = createInitialProductState();
+      const legacyTheme = {
+        ...state.themes[0],
+        kind: "subject",
+        pinned: true,
+        lastActiveAt: "2026-01-01T00:00:00.000Z"
+      };
+      const normalized = normalizeProductState({ ...state, themes: [legacyTheme as never] });
+      const migrated = normalized.themes[0] as unknown as Record<string, unknown>;
+      expect(migrated.kind).toBeUndefined();
+      expect(migrated.pinned).toBeUndefined();
+      expect(migrated.lastActiveAt).toBeUndefined();
+      // 真实字段无损
+      expect(normalized.themes[0].name).toBe(state.themes[0].name);
+    });
+
     it("memoryEdges: 历史 rich edge 仅保留指向主题的边,迁移为简化形", () => {
       const state = createInitialProductState();
       const themeId = state.themes[0]?.id ?? "theme-control";

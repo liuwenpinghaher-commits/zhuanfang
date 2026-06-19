@@ -116,7 +116,12 @@ function migrateSessionStatuses(value: unknown[]): import("./types").InterviewSe
 function migrateThemesToTracks(value: unknown[]): import("./types").LongTermTheme[] {
   return value.map((theme) => {
     if (!theme || typeof theme !== "object") return theme as import("./types").LongTermTheme;
-    const t = theme as import("./types").LongTermTheme;
+    // R4: 清除历史 localStorage 残留的死字段(kind/pinned/lastActiveAt,类型已删),避免死数据随 spread 透传
+    const copy = { ...(theme as Record<string, unknown>) };
+    delete copy.kind;
+    delete copy.pinned;
+    delete copy.lastActiveAt;
+    const t = copy as unknown as import("./types").LongTermTheme;
     return {
       ...t,
       createdAt: t.createdAt ?? t.updatedAt
