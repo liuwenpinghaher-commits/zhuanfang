@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
+import Fastify from "fastify";
 import { buildApiServer } from "../server";
 import { createInMemoryProductStateRepository } from "../product-state-repository";
 import { createInitialProductState } from "../../../../src/domain/engine";
 import type { RagChunk, ImportSource } from "../../../../src/domain/types";
 import { createLlmBudget } from "../llm-budget";
+import { registerRagRoutes } from "./rag";
 
 // ---------- helpers ----------
 
@@ -137,7 +139,7 @@ describe("POST /api/rag/query", () => {
     await server.close();
   });
 
-  it("预算耗尽: 走 fallback, 不返回 500", async () => {
+  it("预算耗尽: chatClient 不被调用，走 fallback，citations 仅含 fallback 实际引用的 chunk", async () => {
     const sourceId = "src-3";
     const chunkId = "chunk-3";
 
@@ -158,45 +160,28 @@ describe("POST /api/rag/query", () => {
     };
     const repository = createInMemoryProductStateRepository(initialState);
 
-    // Budget already exhausted (max=0)
-    const exhaustedBudget = createLlmBudget({ maxCallsPerSession: 0 });
+    // 真实注入预算耗尽: maxCallsPerSession=1，先消耗掉唯一的配额
+    // createLlmBudget({ maxCallsPerSession: 0 }) 会回落到默认 200，因此用 1 再消耗
+    const exhaustedBudget = createLlmBudget({ maxCallsPerSession: 1 });
+    exhaustedBudget.tryConsume("rag_query"); // 消耗唯一配额 → 之后 tryConsume 返回 false
 
     const fakeEmbeddingClient = {
       embed: async (_texts: string[]) => [QUERY_VEC]
     };
+    let chatCallCount = 0;
     const fakeChatClient = {
-      complete: async () => "这不应该被调用"
+      complete: async () => { chatCallCount++; return "这不应该被调用"; }
     };
 
-    const server = buildApiServer({
-      productStateRepository: repository,
+    // 直接使用 registerRagRoutes 注入 exhaustedBudget，绕过 buildApiServer 不支持传 budget 的限制
+    const server = Fastify();
+    await registerRagRoutes(server, repository, {
       embeddingClient: fakeEmbeddingClient as never,
-      bailianChatClient: fakeChatClient as never
+      bailianChatClient: fakeChatClient as never,
+      llmBudget: exhaustedBudget
     });
 
-    // Inject exhausted budget by calling the endpoint after exhausting
-    // We need to pass the budget — use the server's budget indirectly.
-    // Instead, build the server with a custom repository and no budget override
-    // but exhaust it ourselves via a different approach: max=1, call twice.
-    const budgetServer = buildApiServer({
-      productStateRepository: repository,
-      embeddingClient: fakeEmbeddingClient as never,
-      bailianChatClient: fakeChatClient as never
-    });
-
-    // First call consumes the budget (using the internal shared budget)
-    // We can't directly pass budget=0, so we test the fallback shape instead:
-    // build a server with a chat client that throws, simulating chat unavailability
-    const throwingChatClient = {
-      complete: async () => { throw new Error("chat unavailable"); }
-    };
-    const fallbackServer = buildApiServer({
-      productStateRepository: repository,
-      embeddingClient: fakeEmbeddingClient as never,
-      bailianChatClient: throwingChatClient as never
-    });
-
-    const res = await fallbackServer.inject({
+    const res = await server.inject({
       method: "POST",
       url: "/api/rag/query",
       payload: { question: "AI大模型" }
@@ -204,12 +189,21 @@ describe("POST /api/rag/query", () => {
 
     expect(res.statusCode).toBe(200);
     const body = res.json();
+    // 预算耗尽 → chatClient 一次都不应被调用
+    expect(chatCallCount).toBe(0);
+    // 走 fallback 路径：answer 有内容且不是通用错误
     expect(typeof body.answer).toBe("string");
+    expect(body.answer).not.toContain("暂无相关资料");
+    // citations 仅含 fallback 实际引用的 chunk（≤3），不超出
     expect(Array.isArray(body.citations)).toBe(true);
+    expect(body.citations.length).toBeGreaterThan(0);
+    // 所有 citations 的 id 都应在实际 chunk 列表内
+    const validIds = new Set([chunkId]);
+    body.citations.forEach((c: { id: string }) => {
+      expect(validIds.has(c.id)).toBe(true);
+    });
 
     await server.close();
-    await budgetServer.close();
-    await fallbackServer.close();
   });
 
   it("边界: 无任何 ragChunks → 200, answer 提示暂无资料, citations 空", async () => {
@@ -244,6 +238,109 @@ describe("POST /api/rag/query", () => {
       payload: {}
     });
     expect(res.statusCode).toBe(422);
+    await server.close();
+  });
+
+  // ── 修复5: citations 与答案实际引用 chunk 集合一致 ────────────────────────
+  it("离线 fallback: citations 仅含答案实际引用的前 3 个 chunk，不超出", async () => {
+    // 准备 5 个 chunks，关键词都匹配 → top-k 全部召回
+    const chunks = Array.from({ length: 5 }, (_, i) => {
+      const id = `chunk-align-${i}`;
+      const sourceId = `src-align-${i}`;
+      return {
+        chunk: makeChunk({
+          id,
+          sourceId,
+          title: `资料${i + 1}`,
+          text: `产品战略内容${i + 1}，这是战略文本。`,
+          keywords: ["产品", "战略"]
+        }),
+        source: makeSource(sourceId)
+      };
+    });
+
+    const initialState = {
+      ...createInitialProductState(),
+      ragChunks: chunks.map((x) => x.chunk),
+      importSources: chunks.map((x) => x.source)
+    };
+    const repository = createInMemoryProductStateRepository(initialState);
+
+    // 无 embeddingClient / chatClient → 走离线 fallback
+    const server = Fastify();
+    await registerRagRoutes(server, repository, {});
+
+    const res = await server.inject({
+      method: "POST",
+      url: "/api/rag/query",
+      payload: { question: "产品战略" }
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    // fallback 答案使用前 3 chunk，citations 应 ≤ 3（而非全部 5 个）
+    expect(body.citations.length).toBeLessThanOrEqual(3);
+    // answer 中引用的资料标题与 citations 一一对应
+    body.citations.forEach((citation: { id: string; title: string }) => {
+      expect(body.answer).toContain(citation.title);
+    });
+
+    await server.close();
+  });
+
+  it("在线路径: citations 与 LLM 实际用于生成答案的所有 chunk 对齐（含全部 top-k）", async () => {
+    // 3 个 chunks，embedding 完全匹配 → 全部进入 top-k
+    const sources = Array.from({ length: 3 }, (_, i) => {
+      const id = `chunk-online-${i}`;
+      const srcId = `src-online-${i}`;
+      return {
+        chunk: makeChunk({
+          id,
+          sourceId: srcId,
+          title: `在线资料${i + 1}`,
+          text: `AI内容${i + 1}`,
+          keywords: ["ai"],
+          embedding: CHUNK_VEC
+        }),
+        source: makeSource(srcId)
+      };
+    });
+
+    const initialState = {
+      ...createInitialProductState(),
+      ragChunks: sources.map((x) => x.chunk),
+      importSources: sources.map((x) => x.source)
+    };
+    const repository = createInMemoryProductStateRepository(initialState);
+
+    const fakeEmbeddingClient = {
+      embed: async (_texts: string[]) => [QUERY_VEC]
+    };
+    const fakeChatClient = {
+      complete: async () => "AI 内容综合回答"
+    };
+
+    const server = buildApiServer({
+      productStateRepository: repository,
+      embeddingClient: fakeEmbeddingClient as never,
+      bailianChatClient: fakeChatClient as never
+    });
+
+    const res = await server.inject({
+      method: "POST",
+      url: "/api/rag/query",
+      payload: { question: "AI" }
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    // 在线路径: LLM 使用全部召回 chunk，citations 应含 3 个
+    expect(body.citations).toHaveLength(3);
+    const citationIds = body.citations.map((c: { id: string }) => c.id);
+    sources.forEach(({ chunk }) => {
+      expect(citationIds).toContain(chunk.id);
+    });
+
     await server.close();
   });
 });

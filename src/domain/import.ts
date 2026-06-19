@@ -24,6 +24,52 @@ export interface EmbeddingClient {
   embed(texts: string[]): Promise<number[][]>;
 }
 
+/**
+ * DashScope text-embedding-v3 单批上限。
+ * 超过此数会整批 400 失败；分批调用后合并结果。
+ */
+export const EMBED_BATCH_SIZE = 10;
+
+/**
+ * 单次导入最多为前 N 个 chunk 计算/存储 embedding。
+ * 超出部分不存 embedding，走关键词召回。
+ * // ponytail: 固定上限防 state 膨胀;规模上来再换外部向量库
+ */
+export const MAX_EMBEDDED_CHUNKS = 200;
+
+/**
+ * 将 texts 按 batchSize 分批调用 embeddingClient.embed，合并结果。
+ * 单批失败不中断：该批返回对应数量的 undefined，chunk 走关键词召回。
+ */
+async function batchEmbed(
+  client: EmbeddingClient,
+  texts: string[],
+  batchSize = EMBED_BATCH_SIZE
+): Promise<(number[] | undefined)[]> {
+  const results: (number[] | undefined)[] = [];
+  for (let i = 0; i < texts.length; i += batchSize) {
+    const batch = texts.slice(i, i + batchSize);
+    try {
+      const vecs = await client.embed(batch);
+      for (let j = 0; j < batch.length; j++) {
+        const vec = vecs[j];
+        // 仅接受非空数组（空数组 = API 缺失该条）
+        results.push(Array.isArray(vec) && vec.length > 0 ? vec : undefined);
+      }
+    } catch (err) {
+      console.warn(
+        `[import] embedding batch ${Math.floor(i / batchSize) + 1} failed, chunks will use keyword fallback:`,
+        err instanceof Error ? err.message : err
+      );
+      // 该批所有 chunk 无 embedding
+      for (let j = 0; j < batch.length; j++) {
+        results.push(undefined);
+      }
+    }
+  }
+  return results;
+}
+
 /** Split text into ~maxChars chunks on paragraph/sentence boundaries. */
 export function chunkDocument(content: string, maxChars = 600): string[] {
   const paragraphs = content
@@ -63,28 +109,37 @@ export async function ingestImportSource(
 
   const chunkTexts = chunkDocument(input.content);
 
-  // Attempt batch embedding; silently skip on failure or missing client.
-  let embeddings: number[][] | undefined;
+  // 只对前 MAX_EMBEDDED_CHUNKS 个 chunk 计算 embedding，防止 state 无限膨胀。
+  // 超出部分 chunk 不存 embedding，走关键词召回。
+  let embeddings: (number[] | undefined)[] = [];
   if (embeddingClient && chunkTexts.length > 0) {
-    try {
-      embeddings = await embeddingClient.embed(chunkTexts);
-    } catch (err) {
-      console.warn("[import] embedding failed, ingesting without embeddings:", err instanceof Error ? err.message : err);
+    const textsToEmbed = chunkTexts.slice(0, MAX_EMBEDDED_CHUNKS);
+    const skippedCount = chunkTexts.length - textsToEmbed.length;
+    if (skippedCount > 0) {
+      console.warn(
+        `[import] ${skippedCount} chunk(s) exceed MAX_EMBEDDED_CHUNKS(${MAX_EMBEDDED_CHUNKS}), skipping embedding (keyword fallback)`
+      );
     }
+    // 分批调用，≤ EMBED_BATCH_SIZE 每批，单批失败不阻塞导入
+    embeddings = await batchEmbed(embeddingClient, textsToEmbed);
   }
 
-  const ragChunks: RagChunk[] = chunkTexts.map((text, index) => ({
-    id: makeId("rag-chunk"),
-    sourceId,
-    title: `${input.title} #${index + 1}`,
-    text,
-    keywords: [],
-    tokenEstimate: Math.ceil(text.length / 2),
-    sourceUrl: input.sourceUrl,
-    usage: "interview-context" as const,
-    createdAt,
-    ...(embeddings?.[index] !== undefined ? { embedding: embeddings[index] } : {})
-  }));
+  const ragChunks: RagChunk[] = chunkTexts.map((text, index) => {
+    const vec = embeddings[index]; // undefined for chunks beyond cap or failed batches
+    return {
+      id: makeId("rag-chunk"),
+      sourceId,
+      title: `${input.title} #${index + 1}`,
+      text,
+      keywords: [],
+      tokenEstimate: Math.ceil(text.length / 2),
+      sourceUrl: input.sourceUrl,
+      usage: "interview-context" as const,
+      createdAt,
+      // 仅非空数组才附 embedding（空数组不进 chunk，否则会污染向量检索）
+      ...(vec !== undefined && vec.length > 0 ? { embedding: vec } : {})
+    };
+  });
 
   const importSource: ImportSource = {
     id: sourceId,

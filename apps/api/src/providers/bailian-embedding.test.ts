@@ -31,10 +31,12 @@ describe("createBailianEmbeddingClient", () => {
     expect((init.headers as Record<string, string>)["authorization"]).toBe("Bearer k");
     expect((init.headers as Record<string, string>)["content-type"]).toBe("application/json");
     const body = JSON.parse(init.body as string);
+    // compatible-mode /embeddings 要 OpenAI 格式: input 直接是 string[] 而非 { texts }
     expect(body).toMatchObject({
       model: "text-embedding-v3",
-      input: { texts: ["a", "b"] }
+      input: ["a", "b"]
     });
+    expect(body.input).not.toHaveProperty("texts");
     expect(result).toEqual([[1, 0], [0, 1]]);
   });
 

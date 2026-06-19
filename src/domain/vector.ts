@@ -48,7 +48,7 @@ export function topKByCosine<T extends { embedding?: number[] }>(
 ): T[] {
   return items
     .filter((item): item is T & { embedding: number[] } =>
-      Array.isArray(item.embedding)
+      Array.isArray(item.embedding) && item.embedding.length > 0
     )
     .map((item) => ({
       item,

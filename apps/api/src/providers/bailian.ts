@@ -1172,7 +1172,7 @@ export function createBailianEmbeddingClient(
           authorization: `Bearer ${options.apiKey}`,
           "content-type": "application/json"
         },
-        body: JSON.stringify({ model, input: { texts } })
+        body: JSON.stringify({ model, input: texts })
       });
 
       if (!response.ok) {

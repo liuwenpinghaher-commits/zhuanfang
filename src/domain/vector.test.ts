@@ -47,4 +47,16 @@ describe("topKByCosine", () => {
     expect(result.map((x) => x.id)).not.toContain("d");
     expect(result.map((x) => x.id)).toContain("a");
   });
+
+  it("空数组 embedding [] 不出现在结果中（静默污染修复）", () => {
+    const query = [1, 0];
+    const items: Array<{ id: string; embedding?: number[] }> = [
+      { id: "good", embedding: [1, 0] },
+      { id: "empty", embedding: [] },       // 空数组 — 应被过滤掉
+      { id: "noEmbed" },                    // 无 embedding — 也被过滤掉
+    ];
+    const result = topKByCosine(query, items, 10);
+    expect(result.map((x) => x.id)).toEqual(["good"]);
+    expect(result.map((x) => x.id)).not.toContain("empty");
+  });
 });

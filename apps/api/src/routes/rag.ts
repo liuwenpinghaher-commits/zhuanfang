@@ -3,6 +3,7 @@ import { buildSemanticRagContext } from "../../../../src/domain/context-pack";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import type { BailianChatClient, BailianEmbeddingClient } from "../providers/bailian";
 import type { ProductStateRepository } from "../product-state-repository";
+import type { RagChunk } from "../../../../src/domain/types";
 
 const TOP_K = 5;
 
@@ -68,12 +69,6 @@ export async function registerRagRoutes(
     const ragContext = buildSemanticRagContext(state, question, TOP_K, queryEmbedding);
     const chunks = ragContext.chunks;
 
-    const citations: RagCitation[] = chunks.map((c) => ({
-      id: c.id,
-      title: c.title,
-      ...(c.sourceUrl ? { sourceUrl: c.sourceUrl } : {})
-    }));
-
     // ── 答案生成 ──
     const allowLlm = !!options.bailianChatClient && budget.tryConsume("rag_query");
     if (!!options.bailianChatClient && !allowLlm) {
@@ -81,11 +76,15 @@ export async function registerRagRoutes(
     }
 
     let answer: string;
+    // answeredChunks 记录实际参与生成答案的 chunk，citations 与之严格对齐
+    let answeredChunks: RagChunk[];
 
     if (chunks.length === 0) {
       answer = "暂无相关资料，请先导入参考文献后再提问。";
+      answeredChunks = [];
     } else if (allowLlm) {
-      // LLM path: build context from top chunks and generate answer
+      // LLM path: build context from ALL top-k chunks and generate answer
+      answeredChunks = chunks;
       const contextText = chunks
         .map((c, i) => `[${i + 1}] 《${c.title}》：${c.text}`)
         .join("\n\n");
@@ -105,26 +104,45 @@ export async function registerRagRoutes(
         console.warn(
           JSON.stringify({ event: "rag_llm_failed", error: err instanceof Error ? err.message : String(err) })
         );
-        // Fallback on LLM error
-        answer = buildFallbackAnswer(question, chunks);
+        // Fallback on LLM error: only use first 3 chunks, align citations
+        const fallback = buildFallbackAnswer(question, chunks);
+        answer = fallback.answer;
+        answeredChunks = fallback.usedChunks;
       }
     } else {
-      // Deterministic fallback: concatenate chunk title + snippet
-      answer = buildFallbackAnswer(question, chunks);
+      // Deterministic fallback: concatenate chunk title + snippet (first 3 only)
+      const fallback = buildFallbackAnswer(question, chunks);
+      answer = fallback.answer;
+      answeredChunks = fallback.usedChunks;
     }
+
+    // citations 仅列实际参与答案的 chunk，与 answer 内容一致
+    const citations: RagCitation[] = answeredChunks.map((c) => ({
+      id: c.id,
+      title: c.title,
+      ...(c.sourceUrl ? { sourceUrl: c.sourceUrl } : {})
+    }));
 
     return reply.send({ answer, citations } satisfies RagQueryResponse);
   });
 }
 
-/** Deterministic answer when no LLM is available: stitch retrieved chunk summaries. */
+/** Deterministic answer when no LLM is available: stitch retrieved chunk summaries.
+ *  Returns both the answer string and the chunks actually used, so citations can align. */
 function buildFallbackAnswer(
   question: string,
-  chunks: Array<{ title: string; text: string }>
-): string {
+  chunks: RagChunk[]
+): { answer: string; usedChunks: RagChunk[] } {
   if (chunks.length === 0) {
-    return "暂无相关资料，请先导入参考文献后再提问。";
+    return {
+      answer: "暂无相关资料，请先导入参考文献后再提问。",
+      usedChunks: []
+    };
   }
-  const parts = chunks.slice(0, 3).map((c) => `《${c.title}》：${c.text.slice(0, 120)}`);
-  return `关于"${question}"，根据已导入资料整理如下：\n\n${parts.join("\n\n")}`;
+  const usedChunks = chunks.slice(0, 3);
+  const parts = usedChunks.map((c) => `《${c.title}》：${c.text.slice(0, 120)}`);
+  return {
+    answer: `关于"${question}"，根据已导入资料整理如下：\n\n${parts.join("\n\n")}`,
+    usedChunks
+  };
 }
