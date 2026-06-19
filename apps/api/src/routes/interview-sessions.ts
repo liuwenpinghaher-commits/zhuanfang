@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import {
   buildInterviewEnginePolicy,
+  buildInterviewGuide,
   createSessionDraft,
   finalizeSession,
   receiveUserTurn,
@@ -24,13 +25,14 @@ import { extractCandidateMemories, toSessionMemoryCandidates } from "../intellig
 import { generatePreSignals } from "../intelligence/pre-signals-llm";
 import { classifyTurnComplete } from "../intelligence/turn-endpoint-llm";
 import type { ProductStateRepository } from "../product-state-repository";
-import type { BailianChatClient, BailianCharacterInterviewClient } from "../providers/bailian";
+import type { BailianChatClient, BailianCharacterInterviewClient, BailianEmbeddingClient } from "../providers/bailian";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 
 interface CreateSessionPayload {
   mode?: unknown;
   strength?: unknown;
   searchBriefId?: unknown;
+  topicHint?: unknown;
 }
 
 interface TurnPayload {
@@ -44,6 +46,7 @@ interface ControlPayload {
 interface InterviewSessionRouteOptions {
   bailianInterviewClient?: BailianCharacterInterviewClient;
   bailianChatClient?: BailianChatClient;
+  embeddingClient?: BailianEmbeddingClient;
   llmBudget?: LlmBudget;
 }
 
@@ -68,8 +71,18 @@ export async function registerInterviewSessionRoutes(
   server.post("/api/interview-sessions", async (request) => {
     const state = repository.getState();
     const payload = normalizeObject<CreateSessionPayload>(request.body);
+    const topicHint = normalizeOptionalString(payload.topicHint);
+    // M3c: embed the topic that drives memory recall so the new session's guide
+    // (buildInterviewGuide → collectRelevantMemories) ranks confirmed memories by
+    // cosine instead of substring. Mirrors buildInterviewContextPack's topicHint
+    // default so the query vector and the recall corpus stay aligned. Fail-safe:
+    // no client / embed error → undefined → keyword recall (unchanged behaviour).
+    const recallTopic = topicHint || state.themes[0]?.name || state.profile.currentFocus;
+    const queryEmbedding = await embedQueryText(recallTopic, options.embeddingClient);
     const session = createSessionDraft(state, normalizeMode(payload.mode), normalizeStrength(payload.strength, state), {
-      searchBriefId: normalizeOptionalString(payload.searchBriefId)
+      ...(payload.searchBriefId != null ? { searchBriefId: normalizeOptionalString(payload.searchBriefId) } : {}),
+      ...(topicHint ? { topicHint } : {}),
+      ...(queryEmbedding ? { queryEmbedding } : {})
     });
     // The deterministic card (createSessionDraft → buildInterviewCard) is already
     // de-hardcoded/personalized, so "开始专访" returns instantly. The LLM card
@@ -110,7 +123,24 @@ export async function registerInterviewSessionRoutes(
     // session.enginePolicy.appliedPlaybookRules) and the deterministic strategy
     // engine (decideInterviewStrategy routes on appliedPlaybookRuleTypes). Pure
     // recompute; it only changes HOW we ask, never the existing turns/state.
-    const freshSession: InterviewSession = { ...session, enginePolicy: buildInterviewEnginePolicy(state) };
+    //
+    // M3c: in the same spirit, re-derive the guide's memory recall against the
+    // FRESHEST user utterance. When an embeddingClient exists we embed the incoming
+    // user text and recompute the guide so collectRelevantMemories ranks confirmed
+    // memories by cosine to what the guest just said (not just the create-time topic).
+    // The deterministic strategy engine reads session.guide (openDebts /
+    // recommendedMemories), so this genuinely changes which memory gets referenced.
+    // Fail-safe: no client / embed failure → guide unchanged (create-time recall).
+    const enginePolicy = buildInterviewEnginePolicy(state);
+    const turnEmbedding = await embedQueryText(content, options.embeddingClient);
+    const refreshedGuide = turnEmbedding
+      ? buildInterviewGuide(state, {
+          topicHint: session.guide.topicHint || undefined,
+          ...(session.card.searchBriefId ? { searchBriefId: session.card.searchBriefId } : {}),
+          queryEmbedding: turnEmbedding
+        })
+      : session.guide;
+    const freshSession: InterviewSession = { ...session, enginePolicy, guide: refreshedGuide };
 
     const allowLlm = !!options.bailianInterviewClient && budget.tryConsume(freshSession.id);
     if (!!options.bailianInterviewClient && !allowLlm) {
@@ -296,6 +326,30 @@ export async function registerInterviewSessionRoutes(
     repository.replaceState(nextState);
     return { session: nextSession, state: nextState };
   });
+}
+
+// M3c: embed a query string (create-time topic or a turn's user text) for semantic
+// memory recall. Fail-safe — returns undefined on no client / empty text / embed
+// error, so the interview line silently degrades to keyword recall (unchanged
+// behaviour). Embeddings are computed here (route layer); the domain stays pure.
+async function embedQueryText(
+  text: string | undefined,
+  embeddingClient: BailianEmbeddingClient | undefined
+): Promise<number[] | undefined> {
+  const trimmed = text?.trim();
+  if (!embeddingClient || !trimmed) {
+    return undefined;
+  }
+  try {
+    const vectors = await embeddingClient.embed([trimmed]);
+    const vector = vectors[0];
+    return Array.isArray(vector) && vector.length > 0 ? vector : undefined;
+  } catch (error) {
+    console.warn(
+      JSON.stringify({ event: "interview_query_embed_failed", error: error instanceof Error ? error.message : String(error) })
+    );
+    return undefined;
+  }
 }
 
 function normalizeObject<T>(value: unknown): Partial<T> {

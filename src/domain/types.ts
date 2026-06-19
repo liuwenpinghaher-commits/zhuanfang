@@ -189,6 +189,8 @@ export interface InterviewGuide {
 export interface InterviewGuideOptions {
   topicHint?: string;
   searchBriefId?: string;
+  /** M3c: route-computed query vector; when present, memory recall uses cosine instead of substring. */
+  queryEmbedding?: number[];
 }
 
 export interface InterviewTurn {

@@ -421,4 +421,90 @@ describe("interview-sessions routes", () => {
 
     await server.close();
   });
+
+  // --- M3c: semantic recall is REALLY wired into the interview line ---
+  //
+  // This is the anti-fake-wiring test. Two confirmed memories are crafted so the
+  // KEYWORD path cannot separate them: both contain the exact topicHint string the
+  // same number of times, identical createdAt (so recency ties) and identical
+  // importance. The ONLY signal that differs is the embedding. We inject a fake
+  // embeddingClient that returns a query vector pointing AT the "near" memory's
+  // embedding and ORTHOGONAL to the "far" one. If cosine truly flows
+  // route → createSessionDraft → buildInterviewGuide → collectRelevantMemories →
+  // scoreMemoryForRetrieval, the near memory must rank first. Under the old
+  // substring-only behaviour the two would be order-indistinguishable.
+  function seedTwoCosineSeparableMemories() {
+    const NEAR_TEXT = "放权 场景 A：用户在复盘里反复纠结要不要继续替团队兜底。";
+    const FAR_TEXT = "放权 场景 B：用户在复盘里反复纠结要不要继续替团队兜底。";
+    const base = createInitialProductState();
+    const common = {
+      status: "confirmed" as const,
+      sourceType: "interview_session" as const,
+      sourceId: "seed",
+      sensitivity: "normal" as const,
+      importance: 5,
+      createdAt: "2026-06-15T00:00:00.000Z",
+      updatedAt: "2026-06-15T00:00:00.000Z"
+    };
+    return {
+      ...base,
+      // wipe the demo memories so only our two crafted records are in scope
+      memoryRecords: [
+        { id: "rec-near", text: NEAR_TEXT, evidenceQuote: NEAR_TEXT, embedding: [1, 0, 0], ...common },
+        { id: "rec-far", text: FAR_TEXT, evidenceQuote: FAR_TEXT, embedding: [0, 1, 0], ...common }
+      ],
+      profile: { ...base.profile, confirmedMemories: [] },
+      NEAR_TEXT,
+      FAR_TEXT
+    };
+  }
+
+  it("create session (with embeddingClient): cosine picks the near memory ahead of the far one", async () => {
+    const seeded = seedTwoCosineSeparableMemories();
+    // query vector === rec-near's embedding direction; orthogonal to rec-far.
+    const queryVector = [1, 0, 0];
+    const embed = vi.fn(async (texts: string[]) => texts.map(() => queryVector));
+    const repo = createInMemoryProductStateRepository(seeded as any);
+    const server = Fastify({ logger: false });
+    await registerInterviewSessionRoutes(server, repo, { embeddingClient: { embed } });
+
+    const created = (await server.inject({
+      method: "POST",
+      url: "/api/interview-sessions",
+      payload: { mode: "daily", topicHint: "放权 场景" }
+    })).json();
+
+    // The embedding client must have actually been called (query embedded).
+    expect(embed).toHaveBeenCalled();
+
+    const relevant: string[] = created.session.guide.relevantMemories;
+    const nearIdx = relevant.indexOf(seeded.NEAR_TEXT);
+    const farIdx = relevant.indexOf(seeded.FAR_TEXT);
+    expect(nearIdx).toBeGreaterThanOrEqual(0);
+    expect(farIdx).toBeGreaterThanOrEqual(0);
+    // Cosine decides: near (parallel to query) must come before far (orthogonal).
+    expect(nearIdx).toBeLessThan(farIdx);
+
+    await server.close();
+  });
+
+  it("create session (no embeddingClient): degrades to keyword recall, still returns both memories", async () => {
+    const seeded = seedTwoCosineSeparableMemories();
+    const repo = createInMemoryProductStateRepository(seeded as any);
+    const server = Fastify({ logger: false });
+    await registerInterviewSessionRoutes(server, repo, {}); // no embeddingClient
+
+    const created = (await server.inject({
+      method: "POST",
+      url: "/api/interview-sessions",
+      payload: { mode: "daily", topicHint: "放权 场景" }
+    })).json();
+
+    const relevant: string[] = created.session.guide.relevantMemories;
+    // No crash; both crafted memories are still recalled via the substring path.
+    expect(relevant).toContain(seeded.NEAR_TEXT);
+    expect(relevant).toContain(seeded.FAR_TEXT);
+
+    await server.close();
+  });
 });

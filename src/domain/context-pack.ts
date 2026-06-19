@@ -187,7 +187,7 @@ function buildContextSecurityInterceptions(
 function buildDecisionReviewPrompt(decision: ProductState["decisions"][number]) {
   return `复盘决策“${decision.title}”：当时的选择是否降低了短期风险，还是继续强化了等待拍板？`;
 }
-export function buildInterviewCard(state: ProductState, searchBriefId?: string, topicHint?: string): InterviewCard {
+export function buildInterviewCard(state: ProductState, searchBriefId?: string, topicHint?: string, queryEmbedding?: number[]): InterviewCard {
   const topTheme = [...state.themes].sort((a, b) => b.appearances - a.appearances)[0];
   const themeName = topTheme?.name ?? "当前问题";
   const openDebt = state.debts.find((debt) => debt.status === "待了解") ?? state.debts[0];
@@ -196,7 +196,8 @@ export function buildInterviewCard(state: ProductState, searchBriefId?: string, 
   const explicitTopicHint = topicHint?.trim();
   const contextOptions = {
     ...(searchBriefId ? { searchBriefId } : {}),
-    ...(explicitTopicHint ? { topicHint: explicitTopicHint } : {})
+    ...(explicitTopicHint ? { topicHint: explicitTopicHint } : {}),
+    ...(queryEmbedding ? { queryEmbedding } : {})
   };
   const searchBrief = resolveInterviewContextSearchBrief(state, contextOptions);
   const contextPack = buildInterviewContextPack(state, contextOptions);
@@ -261,6 +262,8 @@ export function buildInterviewCard(state: ProductState, searchBriefId?: string, 
 export interface CreateSessionOptions {
   searchBriefId?: string;
   topicHint?: string;
+  /** M3c: route-computed query vector for semantic memory recall at session creation. */
+  queryEmbedding?: number[];
 }
 
 export function buildInterviewContextPack(state: ProductState, options: InterviewGuideOptions = {}): InterviewContextPack {
@@ -276,11 +279,12 @@ export function buildInterviewContextPack(state: ProductState, options: Intervie
         .filter((chunk) => linkedImportSource.chunkIds.includes(chunk.id))
         .slice(0, contextSourceLimit)
     : [];
-  // ponytail: 主访谈流程用关键词召回(topicHint 较短,关键词足够);语义 cosine 检索
-  // 由专用资料问答端点 POST /api/rag/query 消费(对长问题做向量召回)。不在此线程穿 queryEmbedding。
+  // M3c: 路由层有 embeddingClient 时会算出 queryEmbedding 并穿入，导入资料语义召回走 cosine；
+  // 无 embeddingClient 时回退到关键词召回（topicHint 较短，关键词足够）。专用资料问答端点
+  // POST /api/rag/query 走同一条 buildSemanticRagContext cosine 路径。
   const semanticRagContext = linkedImportSource
     ? emptySemanticRagContext()
-    : buildSemanticRagContext(state, topicHint, contextSourceLimit);
+    : buildSemanticRagContext(state, topicHint, contextSourceLimit, options.queryEmbedding);
   const ragChunks = linkedImportSource ? linkedRagChunks : semanticRagContext.chunks;
   const sourceHighlights = [...searchSourceHighlights, ...semanticRagContext.sourceHighlights].slice(0, sourceHighlightLimit);
   const activeRecords = state.memoryRecords.filter(
@@ -304,7 +308,13 @@ export function buildInterviewContextPack(state: ProductState, options: Intervie
       updatedAt: "2026-06-10T00:00:00.000Z"
     }));
   const memoryRecords = [...activeRecords, ...profileMemoryRecords];
-  const confirmedMemories = rankMemoryTexts(memoryRecords.map((record) => record.text), topicHint);
+  // M3c: when the route supplied a queryEmbedding, rank confirmed memories by the
+  // three-factor scorer (cosine relevance + recency + importance) so the context
+  // pack mirrors the same semantic recall as guide.relevantMemories. Without it,
+  // fall back to the substring ranking (unchanged behaviour).
+  const confirmedMemories = options.queryEmbedding
+    ? rankMemoryRecordsBySemantics(memoryRecords, topicHint, options.queryEmbedding)
+    : rankMemoryTexts(memoryRecords.map((record) => record.text), topicHint);
   const memoryEdges = buildContextPackMemoryEdges(state, memoryRecords, topicHint);
   const graphReferences = buildMemoryGraphReferences(memoryEdges, state);
   const pendingCandidates = memoryPolicy.includePendingCandidatesInContext
@@ -461,14 +471,22 @@ export function buildInterviewGuide(state: ProductState, options: InterviewGuide
   const topicHint = explicitTopicHint || searchBrief?.topic || focusQuestion?.question || topTheme?.name || state.profile.currentFocus;
   const contextPack = buildInterviewContextPack(state, {
     topicHint,
-    ...(options.searchBriefId ? { searchBriefId: options.searchBriefId } : {})
+    ...(options.searchBriefId ? { searchBriefId: options.searchBriefId } : {}),
+    ...(options.queryEmbedding ? { queryEmbedding: options.queryEmbedding } : {})
   });
   const perspectiveCoverage = buildPerspectiveCoverage(state);
   const missingPerspectives = defaultPerspectiveOrder.filter((perspective) => perspectiveCoverage[perspective] === 0);
   const recommendedPerspectives = chooseRecommendedPerspectives(topicHint, searchBrief, perspectiveCoverage, missingPerspectives);
   // M3b: now 由编排层注入纯函数评分器，scoreMemoryForRetrieval 自身不触碰时钟。
-  // 主访谈流程按关键词召回（见上方 ponytail 注释），不穿 queryEmbedding。
-  const relevantMemories = collectRelevantMemories(state, topicHint, contextPack, undefined, nowIso());
+  // M3c: 路由层有 embeddingClient 时会算出 queryEmbedding 并穿入，relevantMemories 走 cosine；
+  // 无 embeddingClient（或记忆无 embedding）时回退到子串命中率，行为与旧逻辑一致。
+  const relevantMemories = collectRelevantMemories(
+    state,
+    topicHint,
+    contextPack,
+    options.queryEmbedding,
+    nowIso()
+  );
   const statedPositions = state.points.slice(0, 4).map((point) => `${point.title}：${point.content}`);
   const openingQuestion = searchBrief
     ? explicitTopicHint
@@ -884,9 +902,10 @@ export function createSessionDraft(
 ): InterviewSession {
   const guide = buildInterviewGuide(state, {
     ...(options.searchBriefId ? { searchBriefId: options.searchBriefId } : {}),
-    ...(options.topicHint ? { topicHint: options.topicHint } : {})
+    ...(options.topicHint ? { topicHint: options.topicHint } : {}),
+    ...(options.queryEmbedding ? { queryEmbedding: options.queryEmbedding } : {})
   });
-  const card = buildInterviewCard(state, options.searchBriefId, options.topicHint);
+  const card = buildInterviewCard(state, options.searchBriefId, options.topicHint, options.queryEmbedding);
   return {
     id: makeId("session"),
     mode,
@@ -1047,6 +1066,20 @@ const memoryGraphStopTokens = new Set([
 
 function normalizeFollowUpPrompt(prompt: string) {
   return prompt.replace(/\s+/g, "").replace(/[。！？!?]+$/g, "");
+}
+// M3c: rank confirmed MemoryRecords with the three-factor scorer (cosine when both
+// queryEmbedding and record.embedding are present, else substring). Pure — `now` is
+// captured once here for stable ordering within a single build.
+function rankMemoryRecordsBySemantics(records: MemoryRecord[], topicHint: string, queryEmbedding: number[]) {
+  const topicTokens = splitTopicTokens(topicHint);
+  const now = nowIso();
+  return [...records]
+    .map((record) => ({
+      text: record.text,
+      score: scoreMemoryForRetrieval(record, { topicTokens, queryEmbedding, now })
+    }))
+    .sort((a, b) => b.score - a.score)
+    .map((item) => item.text);
 }
 function rankMemoryTexts(memoryCandidates: string[], topicHint: string) {
   const tokens = splitTopicTokens(topicHint);

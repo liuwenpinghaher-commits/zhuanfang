@@ -10,13 +10,30 @@ import { buildMemoryEdgesForRecord, formatMemoryGraphTargetLabel } from "./conte
 
 import { withMemoryCandidateReview } from "./memoryReview";
 
-export function approveMemoryCandidate(state: ProductState, candidateId: string): ProductState {
+/**
+ * M3c: approve a candidate into a confirmed MemoryRecord.
+ *
+ * Pure & synchronous — embeddings are computed asynchronously in the route layer
+ * (which has the embeddingClient) and handed in pre-computed via `opts.embedding`,
+ * keeping this function key-free and offline-safe. Omitting `opts` reproduces the
+ * pre-M3c behaviour exactly (no embedding, importance backfilled from reviewScore).
+ *
+ * @param opts.embedding   semantic vector for `candidate.text` (route-computed).
+ * @param opts.importance  explicit 1–10 salience; when absent, derived from the
+ *                         candidate's reviewScore (0–100) mapped into 1–10.
+ */
+export function approveMemoryCandidate(
+  state: ProductState,
+  candidateId: string,
+  opts: { embedding?: number[]; importance?: number } = {}
+): ProductState {
   const candidate = state.memoryCandidates.find((item) => item.id === candidateId);
   if (!candidate || candidate.status !== "pending") {
     return state;
   }
 
   const reviewedAt = nowIso();
+  const importance = opts.importance ?? reviewScoreToImportance(candidate.reviewScore);
   const record: MemoryRecord = {
     id: makeId("memory-record"),
     text: candidate.text,
@@ -26,6 +43,8 @@ export function approveMemoryCandidate(state: ProductState, candidateId: string)
     evidenceQuote: candidate.evidenceQuote,
     sourceCandidateId: candidate.id,
     sensitivity: candidate.sensitivity,
+    importance,
+    ...(opts.embedding && opts.embedding.length > 0 ? { embedding: opts.embedding } : {}),
     createdAt: reviewedAt,
     updatedAt: reviewedAt
   };
@@ -58,6 +77,13 @@ export function approveMemoryCandidate(state: ProductState, candidateId: string)
     entityId: record.id,
     createdAt: reviewedAt
   });
+}
+// M3c: map a candidate review score (0–100) into the MemoryRecord importance band
+// (1–10) consumed by scoreMemoryForRetrieval. Non-finite scores fall back to the
+// neutral midpoint (50 → 5), matching scoreMemoryForRetrieval's `importance ?? 5`.
+function reviewScoreToImportance(reviewScore: number | undefined): number {
+  const score = Number.isFinite(reviewScore) ? (reviewScore as number) : 50;
+  return Math.max(1, Math.min(10, Math.round(score / 10)));
 }
 export function deleteMemoryRecord(state: ProductState, recordId: string): ProductState {
   const record = state.memoryRecords.find((item) => item.id === recordId);

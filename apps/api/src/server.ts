@@ -183,7 +183,10 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     await registerMemoryRecordRoutes(registeredServer, productStateRepository);
   });
   void server.register(async (registeredServer) => {
-    await registerMemoryCandidateRoutes(registeredServer, productStateRepository);
+    // M3c: candidate approval embeds the new long-term record (semantic recall).
+    await registerMemoryCandidateRoutes(registeredServer, productStateRepository, {
+      embeddingClient: providerClients.embeddingClient
+    });
   });
   void server.register(async (registeredServer) => {
     await registerNoteRoutes(registeredServer, productStateRepository);
