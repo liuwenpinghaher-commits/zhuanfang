@@ -11,10 +11,26 @@
  */
 import { expect, test } from "@playwright/test";
 import { createInitialProductState } from "../../src/domain/engine";
-import type { MemoryCandidate } from "../../src/domain/types";
+import type { MemoryCandidate, MemoryRecord } from "../../src/domain/types";
 import { expectNoHorizontalOverflow, openView, resetDemoState } from "./helpers";
 
 const STATE_URL = "http://127.0.0.1:8787/api/state";
+
+/** 构造一条 confirmed MemoryRecord（整理记忆按钮需 confirmed≥2 才渲染） */
+function confirmedRecord(id: string, text: string): MemoryRecord {
+  const now = new Date().toISOString();
+  return {
+    id,
+    text,
+    status: "confirmed",
+    sourceType: "interview",
+    sourceId: `note-${id}`,
+    evidenceQuote: "",
+    sensitivity: "normal",
+    createdAt: now,
+    updatedAt: now
+  };
+}
 
 /** 向 state 注入一条 pending candidate，返回其 id */
 async function seedPendingCandidate(page: import("@playwright/test").Page): Promise<string> {
@@ -135,5 +151,54 @@ test("记忆治理：无待审候选时显示空状态提示", async ({ page }) 
   // 空状态提示
   await expect(page.getByText("暂无待审候选。导入资料或完成一次专访后会产生候选记忆。")).toBeVisible();
 
+  await expectNoHorizontalOverflow(page);
+});
+
+test("记忆治理：confirmed≥2 时显示[整理记忆]按钮，点击触发合并后界面不崩溃", async ({ page }) => {
+  // M1: 整理记忆按钮仅在已确认长期记忆 ≥ 2 条时渲染。注入两条 confirmed 记录使其确定性出现。
+  const cur = await (await page.request.get(STATE_URL)).json() as { revision?: number };
+  const records: MemoryRecord[] = [
+    confirmedRecord("record-e2e-consolidate-1", "用户在授权边界上反复摇摆。"),
+    confirmedRecord("record-e2e-consolidate-2", "用户倾向于让团队自主决策，但又担心失控。")
+  ];
+  const seeded = {
+    ...createInitialProductState(),
+    memoryRecords: records,
+    revision: cur.revision ?? 0
+  };
+  await page.request.put(STATE_URL, { data: seeded });
+
+  await page.goto("/");
+  await page.evaluate(() => window.localStorage.clear());
+  await page.reload();
+  await expect(page.getByRole("button", { name: "今日访谈台" })).toBeVisible();
+
+  await openView(page, "记忆", "导入资料，审核长期记忆");
+
+  // 已确认长期记忆标题与两条记录可见
+  await expect(page.getByText(/已确认的长期记忆（2）/)).toBeVisible({ timeout: 8000 });
+
+  // [整理记忆] 按钮存在且可见
+  const consolidateButton = page.getByRole("button", { name: "整理记忆" });
+  await expect(consolidateButton).toBeVisible();
+
+  // Mock POST /api/memory/consolidate —— 返回 dedup 合并后的 state（保留一条），summary.deprecated=1
+  await page.route("http://127.0.0.1:8787/api/memory/consolidate", async (route) => {
+    const after = [records[0]];
+    const state = { ...createInitialProductState(), memoryRecords: after, revision: (cur.revision ?? 0) + 1 };
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ state, summary: { deprecated: 1 } })
+    });
+  });
+
+  await consolidateButton.click();
+
+  // 成功通知出现（App.consolidateMemory 成功分支文案），证明调用闭环且界面未崩溃
+  await expect(page.getByText("记忆已整理")).toBeVisible({ timeout: 5000 });
+
+  // 主导航仍可用
+  await expect(page.getByRole("button", { name: "今日访谈台" })).toBeVisible();
   await expectNoHorizontalOverflow(page);
 });
