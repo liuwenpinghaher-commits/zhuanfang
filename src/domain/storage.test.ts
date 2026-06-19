@@ -628,7 +628,7 @@ describe("product state storage", () => {
       const normalized = normalizeProductState({ ...state, memoryEdges: legacyEdges as never });
       expect(normalized.memoryEdges).toHaveLength(1);
       expect(normalized.memoryEdges[0]).toMatchObject({ fromMemoryRecordId: "r1", themeId });
-      expect((normalized.memoryEdges[0] as Record<string, unknown>).relation).toBeUndefined();
+      expect((normalized.memoryEdges[0] as unknown as Record<string, unknown>).relation).toBeUndefined();
     });
 
     it("memoryEdges: 已简化的 edge 幂等", () => {
