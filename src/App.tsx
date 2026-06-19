@@ -78,6 +78,7 @@ import type {
   SystemConfig
 } from "./domain/types";
 import { AssetsView } from "./features/assets/AssetsView";
+import { MyAssetsView } from "./features/my-assets/MyAssetsView";
 import { ConfigView } from "./features/config/ConfigView";
 import { CorpusLearningView } from "./features/corpus/CorpusLearningView";
 import { HomeView } from "./features/home/HomeView";
@@ -1430,6 +1431,29 @@ export default function App() {
             onQuestionStatus={(assetId, status) => setProductState(updateQuestionStatus(productState, assetId, status))}
             onDebtStatus={(assetId, status) => setProductState(updateKnowledgeDebtStatus(productState, assetId, status))}
             onDecisionConfirm={confirmDecision}
+          />
+        )}
+        {view === "my-assets" && (
+          <MyAssetsView
+            state={productState}
+            query={assetQuery}
+            results={assetResults}
+            filter={assetFilter}
+            selectedAssetKey={selectedAssetKey}
+            onQuery={setAssetQuery}
+            onFilter={setAssetFilter}
+            onSelectAsset={setSelectedAssetKey}
+            onToggleImportant={(assetId) => setProductState(toggleAssetImportance(productState, assetId))}
+            onPointStatus={(assetId, status) => setProductState(updatePointStatus(productState, assetId, status))}
+            onQuestionStatus={(assetId, status) => setProductState(updateQuestionStatus(productState, assetId, status))}
+            onDebtStatus={(assetId, status) => setProductState(updateKnowledgeDebtStatus(productState, assetId, status))}
+            onDecisionConfirm={confirmDecision}
+            onGeneratePodcast={(noteId) => {
+              setPodcastNoteId(noteId);
+              setPodcastSourceType("note");
+              setPodcastSourceId("");
+              setView("podcast");
+            }}
           />
         )}
         {view === "themes" && <ThemesView state={productState} review={monthlyReview} yearlyReview={yearlyReview} radar={radar} onStart={launchInterview} onOpenTrack={openTrack} />}
