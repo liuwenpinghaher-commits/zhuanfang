@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Database, Globe2, Mic, RefreshCw, Search, Sparkles, Trash2, Wand2, Bookmark, BookmarkCheck, Play, X, AlertTriangle } from "lucide-react";
+import { Database, Mic, RefreshCw, Search, Trash2, Wand2, Bookmark, BookmarkCheck, Play, X, AlertTriangle, Star } from "lucide-react";
 import { searchProviderIds, searchProviderLabels } from "../../capabilities/contracts";
 import type { CapabilityTask } from "../../capabilities/task";
 import { HeaderBlock } from "../../components/HeaderBlock";
@@ -55,19 +55,19 @@ export function SearchIntelligenceView({
   const isRunning = task.status === "running";
   const now = new Date().toISOString();
 
+  const activeProvider = state.systemConfig.search.activeProvider;
+
+  // Locally selected provider for this run. Defaults to the configured default.
+  // The dropdown picks "which provider to use"; the actions below either generate
+  // with it (onCreate) or commit it as the new default (onSetDefaultProvider).
+  const [selectedProvider, setSelectedProvider] = useState<SearchProviderId>(activeProvider);
+  const isSelectedDefault = selectedProvider === activeProvider;
+
   // Auto-run state (local to view)
   const [autoRunning, setAutoRunning] = useState(false);
   const [autoRunResult, setAutoRunResult] = useState<AutoRunSummary | null>(null);
   const [autoRunError, setAutoRunError] = useState<string | null>(null);
   const [autoRunDismissed, setAutoRunDismissed] = useState(false);
-
-  const providerActions: Array<{ id: SearchProviderId; label: string; icon: "sparkles" | "search" | "database" }> = [
-    { id: "bailian", label: "百炼联网", icon: "sparkles" },
-    { id: "anysearch", label: "AnySearch", icon: "search" },
-    { id: "local-demo", label: "本地演示", icon: "database" }
-  ];
-
-  const allProviders = searchProviderIds;
 
   async function handleAutoRun() {
     if (!onAutoRun) return;
@@ -105,7 +105,7 @@ export function SearchIntelligenceView({
           <p style={{ margin: "0 0 12px", color: "var(--text-muted)", fontSize: "0.875rem", lineHeight: 1.6 }}>
             一键扫描主题和知识债，自动采集情报并刷新已过期的持续追踪简报。
           </p>
-          <div style={{ display: "flex", gap: "12px", alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: "12px", alignItems: "flex-start", flexWrap: "wrap", flexDirection: "column" }}>
             <button
               className={autoRunning ? "primary-action btn-loading" : "primary-action"}
               type="button"
@@ -116,12 +116,12 @@ export function SearchIntelligenceView({
               {autoRunning ? (
                 <>
                   <span className="spinner" aria-hidden="true" />
-                  盯梢中…
+                  检查中…
                 </>
               ) : (
                 <>
                   <Play size={16} />
-                  ▶ 自动盯梢
+                  自动盯梢
                 </>
               )}
             </button>
@@ -134,8 +134,7 @@ export function SearchIntelligenceView({
                   alignItems: "center",
                   gap: "8px",
                   fontSize: "0.875rem",
-                  color: autoRunError ? "var(--status-failed)" : "var(--status-success, #22c55e)",
-                  flex: 1
+                  color: autoRunError ? "var(--status-failed)" : "var(--status-success, #22c55e)"
                 }}
               >
                 {autoRunError ? (
@@ -144,8 +143,8 @@ export function SearchIntelligenceView({
                     <span>{autoRunError}</span>
                     <button
                       type="button"
-                      className="secondary-action"
-                      style={{ padding: "2px 10px", fontSize: "0.8rem" }}
+                      className="primary-action"
+                      style={{ padding: "2px 12px", fontSize: "0.8rem" }}
                       onClick={handleAutoRun}
                     >
                       重试
@@ -157,16 +156,16 @@ export function SearchIntelligenceView({
                       本次新增 {autoRunResult.generated} 条 · 刷新 {autoRunResult.refreshed} 条
                       {autoRunResult.dedupedSources > 0 ? ` · 去重 ${autoRunResult.dedupedSources} 来源` : ""}
                     </span>
+                    <button
+                      type="button"
+                      aria-label="关闭提示"
+                      style={{ background: "none", border: "none", cursor: "pointer", padding: "2px", color: "inherit", opacity: 0.6, lineHeight: 1 }}
+                      onClick={() => setAutoRunDismissed(true)}
+                    >
+                      <X size={14} />
+                    </button>
                   </>
                 ) : null}
-                <button
-                  type="button"
-                  aria-label="关闭提示"
-                  style={{ background: "none", border: "none", cursor: "pointer", padding: "2px", color: "inherit", opacity: 0.6, lineHeight: 1 }}
-                  onClick={() => setAutoRunDismissed(true)}
-                >
-                  <X size={14} />
-                </button>
               </div>
             )}
           </div>
@@ -181,87 +180,96 @@ export function SearchIntelligenceView({
             <input id="search-topic" value={topic} onChange={(event) => onTopic(event.target.value)} placeholder="输入想追踪的热点或主题" />
             <span className="field-help">用于生成素材来源、讨论主题和会中引用摘要。</span>
           </label>
-          <div className="provider-action-group" aria-label="选择搜索 provider">
-            {providerActions.map((provider) => (
-              <button
-                className={provider.id === state.systemConfig.search.activeProvider ? "primary-action" : "secondary-action"}
-                type="button"
-                key={provider.id}
-                onClick={() => onCreate(provider.id)}
-                disabled={isRunning}
-              >
-                {provider.icon === "sparkles" && <Sparkles size={18} />}
-                {provider.icon === "search" && <Globe2 size={18} />}
-                {provider.icon === "database" && <Database size={18} />}
-                {isRunning && task.providerId === provider.id ? "搜集中" : provider.label}
-              </button>
-            ))}
-          </div>
         </div>
-        <div className="config-hint">
-          <span>当前默认 provider：{state.systemConfig.search.activeProvider}</span>
-          <span>会中引用：{state.systemConfig.search.allowWebInInterview ? "开启" : "关闭"}</span>
-          <span>最大来源：{state.systemConfig.search.maxSources}</span>
-          <div className="provider-default-actions">
-            {providerActions.map((provider) => (
-              <button
-                className="secondary-action"
-                type="button"
-                key={`default-${provider.id}`}
-                onClick={() => onSetDefaultProvider(provider.id)}
-                disabled={state.systemConfig.search.activeProvider === provider.id}
-              >
-                设为默认：{provider.label}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="auto-brief-section">
-          <div className="field-stack">
+
+        <div className="provider-control">
+          <label className="field-stack" htmlFor="search-provider">
             <span className="field-label">搜索提供商</span>
             <select
               id="search-provider"
-              value={state.systemConfig.search.activeProvider}
-              onChange={(event) => onSetDefaultProvider(event.target.value as SearchProviderId)}
+              value={selectedProvider}
+              onChange={(event) => setSelectedProvider(event.target.value as SearchProviderId)}
+              disabled={isRunning}
             >
-              {allProviders.map((provider) => (
+              {searchProviderIds.map((provider) => (
                 <option key={provider} value={provider}>
                   {searchProviderLabels[provider]}
+                  {provider === activeProvider ? "（默认）" : ""}
                 </option>
               ))}
             </select>
-          </div>
-          <div className="auto-brief-actions">
+            <span className="field-help">选择本次生成所用的搜索 provider。</span>
+          </label>
+          <div className="provider-control-actions">
+            <button
+              className={isRunning ? "primary-action btn-loading" : "primary-action"}
+              type="button"
+              onClick={() => onCreate(selectedProvider)}
+              disabled={isRunning}
+              aria-busy={isRunning}
+            >
+              {isRunning ? (
+                <>
+                  <span className="spinner" aria-hidden="true" />
+                  搜集中…
+                </>
+              ) : (
+                <>
+                  <Search size={16} />
+                  生成简报
+                </>
+              )}
+            </button>
             <button
               className="secondary-action"
               type="button"
-              onClick={() => onAutoBrief()}
-              disabled={isRunning}
+              title={isSelectedDefault ? "该 provider 已是默认" : `把「${searchProviderLabels[selectedProvider]}」设为默认 provider`}
+              onClick={() => onSetDefaultProvider(selectedProvider)}
+              disabled={isSelectedDefault}
             >
-              <Wand2 size={16} />自动生成
+              <Star size={16} />
+              设为默认
             </button>
-            {state.themes.length > 0 && (
-              <button
-                className="secondary-action"
-                type="button"
-                onClick={() => onAutoBrief(state.themes[0].id, undefined)}
-                disabled={isRunning}
-              >
-                <Wand2 size={16} />从主题：{state.themes[0].name}
-              </button>
-            )}
-            {state.debts.length > 0 && (
-              <button
-                className="secondary-action"
-                type="button"
-                onClick={() => onAutoBrief(undefined, state.debts[0].id)}
-                disabled={isRunning}
-              >
-                <Wand2 size={16} />从知识债：{state.debts[0].concept}
-              </button>
-            )}
           </div>
         </div>
+
+        <div className="config-hint" aria-label="当前搜索配置">
+          <span>当前默认 provider：{searchProviderLabels[activeProvider]}</span>
+          <span>会中引用：{state.systemConfig.search.allowWebInInterview ? "开启" : "关闭"}</span>
+          <span>最大来源：{state.systemConfig.search.maxSources}</span>
+        </div>
+
+        <div className="auto-brief-actions">
+          <button
+            className="secondary-action"
+            type="button"
+            onClick={() => onAutoBrief()}
+            disabled={isRunning}
+          >
+            <Wand2 size={16} />自动生成
+          </button>
+          {state.themes.length > 0 && (
+            <button
+              className="secondary-action"
+              type="button"
+              onClick={() => onAutoBrief(state.themes[0].id, undefined)}
+              disabled={isRunning}
+            >
+              <Wand2 size={16} />从主题：{state.themes[0].name}
+            </button>
+          )}
+          {state.debts.length > 0 && (
+            <button
+              className="secondary-action"
+              type="button"
+              onClick={() => onAutoBrief(undefined, state.debts[0].id)}
+              disabled={isRunning}
+            >
+              <Wand2 size={16} />从知识债：{state.debts[0].concept}
+            </button>
+          )}
+        </div>
+
         {task.status !== "idle" && (
           <div className={`task-status ${task.status}`} aria-live="polite">
             <div>
@@ -295,7 +303,7 @@ export function SearchIntelligenceView({
                   {autoRunning ? (
                     <>
                       <span className="spinner" aria-hidden="true" />
-                      盯梢中…
+                      检查中…
                     </>
                   ) : (
                     <>

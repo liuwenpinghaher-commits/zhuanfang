@@ -1738,17 +1738,32 @@ select:focus-visible {
   gap: 10px;
 }
 
-.provider-action-group {
+/* Provider control: one dropdown + generate/set-default actions */
+.provider-control {
   display: grid;
-  grid-template-columns: repeat(3, minmax(108px, 1fr));
-  gap: 8px;
-  align-self: end;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+  margin-top: 12px;
 }
 
-.provider-action-group .primary-action,
-.provider-action-group .secondary-action {
+.provider-control-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.provider-control-actions .primary-action,
+.provider-control-actions .secondary-action {
   min-width: 0;
-  padding: 0 12px;
+}
+
+/* Auto-brief shortcut buttons */
+.auto-brief-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
 }
 
 .input-row.three {
@@ -2373,7 +2388,7 @@ select:focus-visible {
 
   .input-row,
   .input-row.three,
-  .provider-action-group,
+  .provider-control,
   .provider-grid,
   .patch-list.horizontal {
     grid-template-columns: 1fr;

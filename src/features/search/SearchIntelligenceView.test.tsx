@@ -2,15 +2,18 @@
  * SearchIntelligenceView unit tests
  *
  * Guards for:
- *  - auto-watch button presence
+ *  - auto-watch button presence + single Play icon (no literal triangle glyph)
+ *  - consolidated provider control: one dropdown + one "设为默认" button
+ *    (no legacy 3-button quick group, no 3 "设为默认：X" chips)
  *  - empty-state CTA rendered when no briefs
  *  - staleness badge rendered for stale briefs
  *  - per-brief loading states (refreshing / tracking)
  */
 import { renderToString } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { createIdleCapabilityTask } from "../../capabilities/task";
 import { createEmptyProductState } from "../../domain/engine";
+import { searchProviderIds, searchProviderLabels } from "../../capabilities/contracts";
 import type { SearchBrief, SearchBriefInput } from "../../domain/types";
 import { SearchIntelligenceView } from "./SearchIntelligenceView";
 
@@ -75,11 +78,97 @@ describe("SearchIntelligenceView — auto-watch button", () => {
         state={s}
       />
     );
-    // auto-watch panel title uses Play icon + h2 "自动盯梢"
-    // The text "自动盯梢" should not appear in panel heading
-    // (it may appear elsewhere as CTA button text in empty state,
-    //  but the action panel section itself should not render)
     expect(html).not.toContain("一键扫描主题和知识债");
+  });
+
+  it("renders a single Play icon without a literal triangle glyph", () => {
+    const s = createEmptyProductState();
+    const html = renderToString(
+      <SearchIntelligenceView
+        {...baseProps}
+        state={s}
+        onAutoRun={async () => null}
+      />
+    );
+    // The double-icon bug rendered a literal "▶" alongside the lucide <Play> svg.
+    expect(html).not.toContain("▶");
+    expect(html).not.toContain("▷");
+    // lucide-react renders an inline <svg> for the Play icon.
+    expect(html).toContain("<svg");
+  });
+});
+
+describe("SearchIntelligenceView — consolidated provider control", () => {
+  it("renders one search-provider dropdown listing every registered provider", () => {
+    const s = createEmptyProductState();
+    const html = renderToString(
+      <SearchIntelligenceView
+        {...baseProps}
+        state={s}
+      />
+    );
+    // exactly one <select id="search-provider">
+    expect(html).toContain('id="search-provider"');
+    const selectCount = html.split('<select').length - 1;
+    expect(selectCount).toBe(1);
+    // every provider label appears as an option
+    for (const provider of searchProviderIds) {
+      expect(html).toContain(searchProviderLabels[provider]);
+    }
+  });
+
+  it("renders exactly one 设为默认 button (no per-provider default chips)", () => {
+    const s = createEmptyProductState();
+    const html = renderToString(
+      <SearchIntelligenceView
+        {...baseProps}
+        state={s}
+      />
+    );
+    const setDefaultCount = html.split("设为默认").length - 1;
+    expect(setDefaultCount).toBe(1);
+    // the legacy chips used "设为默认：<label>" — that pattern must be gone
+    expect(html).not.toContain("设为默认：");
+  });
+
+  it("renders a 生成简报 action button", () => {
+    const s = createEmptyProductState();
+    const html = renderToString(
+      <SearchIntelligenceView
+        {...baseProps}
+        state={s}
+      />
+    );
+    expect(html).toContain("生成简报");
+  });
+
+  it("does not render the legacy 3-button provider quick group", () => {
+    const s = createEmptyProductState();
+    const html = renderToString(
+      <SearchIntelligenceView
+        {...baseProps}
+        state={s}
+      />
+    );
+    expect(html).not.toContain("provider-action-group");
+    expect(html).not.toContain("provider-default-actions");
+    // legacy quick-button labels (distinct from the dropdown option labels)
+    expect(html).not.toContain("百炼联网");
+    expect(html).not.toContain("本地演示");
+  });
+
+  it("shows current default provider as a read-only config hint", () => {
+    const s = createEmptyProductState();
+    const html = renderToString(
+      <SearchIntelligenceView
+        {...baseProps}
+        state={s}
+      />
+    );
+    expect(html).toContain("config-hint");
+    expect(html).toContain("当前默认 provider");
+    expect(html).toContain("会中引用");
+    expect(html).toContain("最大来源");
   });
 });
 
@@ -154,7 +243,6 @@ describe("SearchIntelligenceView — per-brief loading states", () => {
         refreshingBriefId="brief-1"
       />
     );
-    // btn-loading on refresh button
     expect(html).toContain("btn-loading");
     expect(html).toContain("spinner");
   });
@@ -189,9 +277,6 @@ describe("SearchIntelligenceView — per-brief loading states", () => {
         refreshingBriefId="brief-1"
       />
     );
-    // Only one btn-loading for refresh (the one matching brief-1)
-    // brief-2's refresh button should not have btn-loading
-    // We just verify the component renders without throwing
     expect(html).toContain("另一个主题");
   });
 });
