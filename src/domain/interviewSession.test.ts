@@ -27,7 +27,6 @@ describe("buildInterviewAgentContext", () => {
     expect(ctx.turnCount).toBe(0);
     expect(ctx.latestUserTurn).toBeNull();
     expect(ctx.history).toEqual([]);
-    expect(ctx.activeStrategies).toEqual([]);
     expect(ctx.instructions).toContain("专访主持人");
   });
 
@@ -67,31 +66,6 @@ describe("buildInterviewAgentContext", () => {
     expect(ctx.history).toHaveLength(20);
     expect(ctx.history[0].text).toBe("第11轮");
     expect(ctx.history[19].text).toBe("第30轮");
-  });
-
-  it("defaults activeStrategies to [] when enginePolicy is missing", () => {
-    const session = createInterviewSession({ id: "s-np", title: "无策略" });
-
-    const ctx = buildInterviewAgentContext(session);
-
-    expect(ctx.activeStrategies).toEqual([]);
-  });
-
-  it("returns the first 5 appliedPlaybookRules when enginePolicy is set", () => {
-    const session: InterviewSession = {
-      ...createInterviewSession({ id: "s-p", title: "有策略" }),
-      enginePolicy: {
-        appliedPlaybookRules: ["r1", "r2", "r3", "r4", "r5", "r6", "r7"],
-        qualityGuardrails: [],
-        playbookHints: [],
-        modeStrategy: "",
-        rationale: "",
-      } as unknown as InterviewSession["enginePolicy"],
-    };
-
-    const ctx = buildInterviewAgentContext(session);
-
-    expect(ctx.activeStrategies).toEqual(["r1", "r2", "r3", "r4", "r5"]);
   });
 });
 

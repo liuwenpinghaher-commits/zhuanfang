@@ -192,8 +192,6 @@ export function ConfigView({
               <dl className="detail-list">
                 <dt>TTS</dt>
                 <dd>{state.systemConfig.voice.ttsProvider}</dd>
-                <dt>实时语音</dt>
-                <dd>{state.systemConfig.voice.realtimeEnabled ? "开启" : "预留"}</dd>
               </dl>
             </section>
           </div>
@@ -403,25 +401,6 @@ export function ConfigView({
                       ))}
                     </select>
                     <span className="field-help">影响播客工作台新建节目时的默认 voice。</span>
-                  </label>
-                  <label className="field-stack runtime-setting-field" htmlFor="product-realtime-enabled">
-                    <span className="field-label">启用实时语音</span>
-                    <select
-                      id="product-realtime-enabled"
-                      name="voice.realtimeEnabled"
-                      value={String(productDraft.voice.realtimeEnabled)}
-                      onChange={(event) => {
-                        const nextValue = event.target.value === "true";
-                        updateProductConfig((config) => ({
-                          ...config,
-                          voice: { ...config.voice, realtimeEnabled: nextValue }
-                        }));
-                      }}
-                    >
-                      <option value="true">开启</option>
-                      <option value="false">预留</option>
-                    </select>
-                    <span className="field-help">影响配置页状态和实时专访入口是否按可用能力展示。</span>
                   </label>
                   <label className="field-stack runtime-setting-field" htmlFor="product-realtime-mode">
                     <span className="field-label">实时语音模式</span>

@@ -42,7 +42,7 @@ function makeMinimalState(overrides: Partial<ProductState> = {}): ProductState {
       version: "1",
       providers: [],
       search: { activeProvider: "local-demo", recencyDays: 7, maxSources: 5, allowWebInInterview: false },
-      voice: { ttsProvider: "local-demo", defaultVoice: "default", podcastVoice: "default", podcastFormat: "solo", realtimeEnabled: false, realtimeMode: "cascade" },
+      voice: { ttsProvider: "local-demo", defaultVoice: "default", podcastVoice: "default", podcastFormat: "solo", realtimeMode: "cascade" },
       models: { planningModel: "m", interviewModel: "m", synthesisModel: "m" },
       interview: { playbookVersion: "1", launchMode: "immersive", silenceHoldMs: 1000, maxFollowUpDepth: 3, guidanceEnabled: false, guidanceFrequency: "low", maxGuidancePerTurn: 2, minGuidanceIntervalMs: 5000, challengeBudgetPerSession: 2 },
       memory: { includeSensitiveMemoriesInContext: false, includePendingCandidatesInContext: false, externalMaterialMemoryPolicy: "review-only" }

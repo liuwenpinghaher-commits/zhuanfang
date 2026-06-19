@@ -158,7 +158,6 @@ describe("ConfigView", () => {
     const maxSourcesInput = container?.querySelector<HTMLInputElement>('input[name="search.maxSources"]');
     const webInInterviewSelect = container?.querySelector<HTMLSelectElement>('select[name="search.allowWebInInterview"]');
     const podcastVoiceSelect = container?.querySelector<HTMLSelectElement>('select[name="voice.podcastVoice"]');
-    const realtimeSelect = container?.querySelector<HTMLSelectElement>('select[name="voice.realtimeEnabled"]');
     const silenceInput = container?.querySelector<HTMLInputElement>('input[name="interview.silenceHoldMs"]');
     const followUpInput = container?.querySelector<HTMLInputElement>('input[name="interview.maxFollowUpDepth"]');
 
@@ -177,8 +176,6 @@ describe("ConfigView", () => {
       webInInterviewSelect!.dispatchEvent(new Event("change", { bubbles: true }));
       podcastVoiceSelect!.value = "longanhuan";
       podcastVoiceSelect!.dispatchEvent(new Event("change", { bubbles: true }));
-      realtimeSelect!.value = "true";
-      realtimeSelect!.dispatchEvent(new Event("change", { bubbles: true }));
       silenceInput!.value = "1600";
       silenceInput!.dispatchEvent(new Event("input", { bubbles: true }));
       followUpInput!.value = "6";
@@ -197,8 +194,7 @@ describe("ConfigView", () => {
           allowWebInInterview: false
         }),
         voice: expect.objectContaining({
-          podcastVoice: "longanhuan",
-          realtimeEnabled: true
+          podcastVoice: "longanhuan"
         }),
         interview: expect.objectContaining({
           silenceHoldMs: 1600,

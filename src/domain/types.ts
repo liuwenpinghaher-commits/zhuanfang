@@ -38,7 +38,6 @@ export interface SystemConfig {
     defaultVoice: string;
     podcastVoice: string;
     podcastFormat: "solo" | "host-guest";
-    realtimeEnabled: boolean;
     realtimeMode: "bailian" | "livekit" | "cascade";
   };
   models: {
@@ -536,7 +535,6 @@ export interface InterviewAgentContext {
   turnCount: number;
   latestUserTurn: string | null;
   history: Array<{ role: "user" | "assistant"; text: string }>;
-  activeStrategies: string[];
 }
 
 export type ExpressionState =
@@ -1154,7 +1152,6 @@ export interface SystemStatus {
     voice: string;
     interviewModel: string;
   };
-  providers: ProviderConfig[];
   observations: string[];
 }
 

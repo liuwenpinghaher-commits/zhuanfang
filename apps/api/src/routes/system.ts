@@ -491,7 +491,7 @@ export async function registerSystemRoutes(
             ? "ready"
             : "needs-endpoint"
           : "needs-key",
-        active: state.systemConfig.voice.realtimeEnabled,
+        active: dashscopeKeyConfigured && (realtimeTransport === "websocket" || realtimeEndpointConfigured),
         detail: buildRealtimeDetail(dashscopeKeyConfigured, realtimeEndpointConfigured, realtimeTransport),
         requiredEnv: realtimeTransport === "websocket"
           ? ["DASHSCOPE_API_KEY"]

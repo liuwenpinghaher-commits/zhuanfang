@@ -229,7 +229,6 @@ describe("interview business engine", () => {
     });
 
     expect(status.activeProviders.search).toBe("bailian");
-    expect(status.providers.some((provider) => provider.kind === "voice")).toBe(true);
     expect(speaking.phase).toBe("listening");
     expect(holding.phase).toBe("holding");
     expect(holding.nextAction).toContain("留白");

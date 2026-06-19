@@ -4,7 +4,6 @@ import { createInitialProductState } from "../../../../src/domain/engine";
 import { createInMemoryProductStateRepository } from "../product-state-repository";
 import { registerMemoryRecordRoutes } from "./memory-records";
 import { registerMemoryCandidateRoutes } from "./memory-candidates";
-import { registerMemoryCorrectionRoutes } from "./memory-corrections";
 import { registerNoteRoutes } from "./notes";
 import { registerAssetRoutes } from "./assets";
 import { registerPlaybookPatchRoutes } from "./playbook-patches";
@@ -17,7 +16,6 @@ describe("new zhuanfang routes", () => {
   beforeAll(async () => {
     await registerMemoryRecordRoutes(app, stateRepo);
     await registerMemoryCandidateRoutes(app, stateRepo);
-    await registerMemoryCorrectionRoutes(app, stateRepo);
     await registerNoteRoutes(app, stateRepo);
     await registerAssetRoutes(app, stateRepo);
     await registerPlaybookPatchRoutes(app, stateRepo);
@@ -27,29 +25,6 @@ describe("new zhuanfang routes", () => {
 
   afterAll(async () => {
     await app.close();
-  });
-
-  describe("memory-corrections", () => {
-    it("POST /api/memory-corrections creates a correction", async () => {
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/memory-corrections",
-        payload: { text: "corrected memory" },
-      });
-      expect(res.statusCode).toBe(200);
-      const body = JSON.parse(res.body);
-      expect(body.correction).toBeDefined();
-      expect(body.correction.text).toBe("corrected memory");
-    });
-
-    it("POST /api/memory-corrections rejects empty text", async () => {
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/memory-corrections",
-        payload: { text: "" },
-      });
-      expect(res.statusCode).toBe(422);
-    });
   });
 
   describe("memory-records", () => {

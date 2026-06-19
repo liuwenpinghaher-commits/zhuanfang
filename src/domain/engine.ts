@@ -711,9 +711,6 @@ export function buildSystemStatus(state: ProductState): SystemStatus {
     state.systemConfig.search.allowWebInInterview
       ? "联网素材允许进入专访上下文，但必须显示来源。"
       : "联网素材只用于会前准备，不进入会中追问。",
-    state.systemConfig.voice.realtimeEnabled
-      ? "实时语音已启用，需要检查打断、留白和转写稳定性。"
-      : "实时语音当前为预留配置，原型使用文本模拟。",
     state.systemConfig.memory.includeSensitiveMemoriesInContext
       ? "敏感长期记忆允许进入模型上下文，需要严格查看引用透明度。"
       : "敏感长期记忆默认不进入模型上下文。",
@@ -729,7 +726,6 @@ export function buildSystemStatus(state: ProductState): SystemStatus {
       voice: voiceProvider,
       interviewModel: state.systemConfig.models.interviewModel,
     },
-    providers: state.systemConfig.providers,
     observations,
   };
 }

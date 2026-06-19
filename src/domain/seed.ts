@@ -215,7 +215,6 @@ export const initialProductState: ProductState = {
       defaultVoice: "longanyang",
       podcastVoice: "longanhuan",
       podcastFormat: "solo",
-      realtimeEnabled: true,
       realtimeMode: "cascade"
     },
     models: {

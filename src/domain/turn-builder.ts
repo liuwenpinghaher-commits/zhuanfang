@@ -329,7 +329,6 @@ export function buildInterviewAgentContext(
     }
   }
   const lastUserTurn = [...session.turns].reverse().find((turn) => turn.role === "user");
-  const activeStrategies = session.enginePolicy?.appliedPlaybookRules?.slice(0, 5) ?? [];
 
   return {
     instructions,
@@ -337,6 +336,5 @@ export function buildInterviewAgentContext(
     turnCount: session.turns.length,
     latestUserTurn: lastUserTurn?.content ?? null,
     history: history.slice(-20),
-    activeStrategies,
   };
 }
