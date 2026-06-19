@@ -18,15 +18,10 @@ test("full interview lifecycle: start, submit 3 turns, end, assert diary note", 
   // Note initial "本月信号" notes count before we start.
   const notesMetricBefore = await page.locator(".metric-row").getByText("笔记").locator("..").locator("strong").textContent();
 
-  // Click "开始聊这个" — navigates to interview view (pre-session launch screen).
+  // ── Step 2: one-click start (P2-16) ───────────────────────────────────────
+  // "开始聊这个" now creates the session (POST /api/interview-sessions) and enters the live
+  // interview directly, skipping the old "专访启动" pre-session launch screen.
   await page.getByRole("button", { name: "开始聊这个" }).click();
-
-  // ── Step 2: land on the interview launch screen ───────────────────────────
-  // InterviewView without an active session shows eyebrow "专访启动".
-  await expect(page.getByText("专访启动")).toBeVisible();
-
-  // Click "开始专访" to POST /api/interview-sessions (real API).
-  await page.getByRole("button", { name: "开始专访" }).click();
 
   // After session creation the view shows "实时专访" header and the text form.
   await expect(page.getByText("实时专访")).toBeVisible();

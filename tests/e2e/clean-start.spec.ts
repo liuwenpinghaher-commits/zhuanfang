@@ -56,8 +56,8 @@ test("清空示例 clears demo data and leaves app usable", async ({ page }) => 
   await page.getByRole("button", { name: "今日访谈台" }).click();
   await page.getByRole("button", { name: "开始聊这个" }).click();
 
-  // Should land on the interview launch screen ("专访启动") without crashing.
-  await expect(page.getByText("专访启动")).toBeVisible();
-  // And the "开始专访" action button should be present.
-  await expect(page.getByRole("button", { name: "开始专访" })).toBeVisible();
+  // P2-16: one-click start — from the empty state this creates a session and enters the live
+  // interview directly (no "专访启动" screen). Proves a fresh interview is usable after clearing.
+  await expect(page.getByText("实时专访")).toBeVisible();
+  await expect(page.getByLabel("你的回答")).toBeVisible();
 });

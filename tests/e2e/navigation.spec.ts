@@ -197,8 +197,9 @@ test.describe("primary navigation", () => {
   });
 
   test("saves product strategy configuration and applies it to later workflows", async ({ page }) => {
-    // 播客默认声音 is now a <select> with fixed CosyVoice options — use a known valid value.
-    const voice = "longyuan_v3";
+    // 播客默认声音 is a <select> sourced from /api/realtime-voice/voices — only working
+    // cosyvoice-v3-plus presets are offered (longanyang/longanhuan). Use a valid preset.
+    const voice = "longanyang";
     await resetDemoState(page);
     await openView(page, "系统配置", "底层能力、provider 和引擎策略");
     await page.getByRole("button", { name: "策略 搜索、语音和访谈运行策略" }).click();

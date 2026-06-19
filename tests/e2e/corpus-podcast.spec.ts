@@ -120,9 +120,9 @@ test("generates and deletes a podcast episode from the first note", async ({ pag
 });
 
 test("saves the current podcast voice as the default product voice", async ({ page }) => {
-  // 声音配置 is a free-text input but 播客默认声音 in ConfigView is a <select> with fixed CosyVoice options.
-  // Use a valid option value so ConfigView's select can reflect the saved preference.
-  const voice = "longxiaochun_v2";
+  // 声音配置 is a free-text input but 播客默认声音 in ConfigView is a <select> sourced from
+  // /api/realtime-voice/voices (working cosyvoice-v3-plus presets only). Use a valid preset.
+  const voice = "longanyang";
   await resetDemoState(page);
   await openView(page, "播客工作台", "把一次专访生成可收听的语音节目");
 

@@ -57,8 +57,8 @@ test("a submitted text turn renders both turns even when the reply carries pre_s
   await page.goto("/");
   await expect(page.getByRole("button", { name: "今日访谈台" })).toBeVisible();
 
+  // P2-16: home start is one-click — "开始聊这个" creates the session and enters the live interview directly.
   await page.getByRole("button", { name: /开始聊这个/ }).click();
-  await page.getByRole("button", { name: "开始专访" }).click();
 
   const answer = "我在纠结要不要离开大厂去做独立开发，怕失去那种稳定的身份感。";
   await page.getByLabel("你的回答").fill(answer);
