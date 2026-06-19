@@ -225,6 +225,10 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
         return new Promise<void>((resolve, reject) => {
           const socket = new WebSocket(asrWsUrl);
           ws = socket;
+          // Track whether the Promise has been settled (resolved or rejected).
+          // Guards against double-settle: onclose must not reject if onerror already did,
+          // and post-connect onclose (normal session teardown) must not reject either.
+          let settled = false;
 
           socket.onopen = () => {
             // Text-only session: the model will transcribe but not generate audio
@@ -245,6 +249,7 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
             switch (type) {
               case "proxy.connected":
                 // Proxy is ready — resolve so startListening() can proceed
+                settled = true;
                 resolve();
                 break;
 
@@ -298,7 +303,8 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
 
               case "error": {
                 const errMsg = (msg.error as { message?: string } | undefined)?.message ?? "ASR error";
-                if (!closed) {
+                if (!settled && !closed) {
+                  settled = true;
                   reject(new Error(errMsg));
                 }
                 break;
@@ -307,11 +313,21 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
           };
 
           socket.onerror = () => {
-            if (!closed) reject(new Error("ASR WebSocket error"));
+            if (!settled && !closed) {
+              settled = true;
+              reject(new Error("ASR WebSocket error"));
+            }
           };
 
           socket.onclose = () => {
             ws = null;
+            // If the socket closes before proxy.connected was received (not yet settled)
+            // and we did not initiate the close ourselves (closed flag), treat it as a
+            // connection failure so the outer retry loop can reconnect.
+            if (!settled && !closed) {
+              settled = true;
+              reject(new Error("ASR WebSocket closed before ready"));
+            }
           };
         });
       };

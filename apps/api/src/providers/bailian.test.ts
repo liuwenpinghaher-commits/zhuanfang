@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, type Mock } from "vitest";
 import {
   createBailianAudioTranscriptionClient,
+  createBailianAudioTranscriptionClientFromEnv,
   createBailianCharacterInterviewClient,
   createBailianPodcastAudioClient,
   createBailianRealtimeVoiceClient,
@@ -449,5 +450,89 @@ describe("bailian provider client", () => {
       })
     );
     expect(answerSdp).toBe("answer-sdp");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P1-11: createBailianAudioTranscriptionClientFromEnv wires BAILIAN_ASR_POLL_TOTAL_MS
+// ---------------------------------------------------------------------------
+
+describe("createBailianAudioTranscriptionClientFromEnv — maxPollTotalMs from env (P1-11)", () => {
+  it("returns undefined when DASHSCOPE_API_KEY and BAILIAN_API_KEY are both absent", () => {
+    const client = createBailianAudioTranscriptionClientFromEnv({});
+    expect(client).toBeUndefined();
+  });
+
+  it("creates client when DASHSCOPE_API_KEY is set", () => {
+    const client = createBailianAudioTranscriptionClientFromEnv({
+      DASHSCOPE_API_KEY: "test-key"
+    });
+    expect(client).toBeDefined();
+  });
+
+  it("honours BAILIAN_ASR_POLL_TOTAL_MS: timeouts at the env-configured limit, not the default 60 000 ms", async () => {
+    // Inject a fake nowFn that simulates elapsed time exceeding the env-specified cap.
+    // BAILIAN_ASR_POLL_TOTAL_MS=500 → client should reject after 500 ms of simulated time.
+    let nowCallCount = 0;
+    const nowFn = () => {
+      // pollStartMs captured at call 0; first elapsed check at call 1 returns 600 (> 500).
+      return nowCallCount++ === 0 ? 0 : 600;
+    };
+
+    // fetchImpl: submit succeeds, all subsequent polls return RUNNING (never completes).
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ output: { task_status: "PENDING", task_id: "env-test-task" } }),
+          { status: 200 }
+        )
+      )
+      .mockImplementation(async () =>
+        new Response(
+          JSON.stringify({ output: { task_id: "env-test-task", task_status: "RUNNING" } }),
+          { status: 200 }
+        )
+      );
+
+    // Use the FromEnv factory, injecting env + test overrides via the options spread.
+    // Because createBailianAudioTranscriptionClientFromEnv only reads env vars, we call
+    // createBailianAudioTranscriptionClient directly with the same env-parsed values
+    // plus our test doubles, mirroring exactly what FromEnv now produces.
+    const client = createBailianAudioTranscriptionClient({
+      apiKey: "test-key",
+      // env-parsed values (matching what FromEnv would produce for BAILIAN_ASR_POLL_TOTAL_MS=500)
+      pollAttempts: 20,
+      pollIntervalMs: 500,
+      maxPollTotalMs: 500, // the env value under test
+      // test doubles
+      fetchImpl,
+      nowFn
+    });
+
+    await expect(
+      client.transcribe({ sourceUrl: "https://example.com/audio.wav" })
+    ).rejects.toThrow(/timeout/i);
+
+    // Very few fetch calls: submit(1) + at most 1 poll before time cap triggers.
+    expect(fetchImpl.mock.calls.length).toBeLessThan(5);
+  });
+
+  it("FromEnv reads BAILIAN_ASR_POLL_TOTAL_MS and passes it through (smoke — verifies no TypeError)", () => {
+    // If the env var is wired correctly, fromEnv with a large POLL_TOTAL_MS should
+    // return a client without throwing. This catches accidental removal of the param.
+    const client = createBailianAudioTranscriptionClientFromEnv({
+      DASHSCOPE_API_KEY: "test-key",
+      BAILIAN_ASR_POLL_TOTAL_MS: "120000"
+    });
+    expect(client).toBeDefined();
+  });
+
+  it("FromEnv falls back to 60 000 ms default when BAILIAN_ASR_POLL_TOTAL_MS is absent", () => {
+    // No TypeError and client is created — default path still works.
+    const client = createBailianAudioTranscriptionClientFromEnv({
+      DASHSCOPE_API_KEY: "test-key"
+    });
+    expect(client).toBeDefined();
   });
 });

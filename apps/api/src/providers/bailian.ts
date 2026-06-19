@@ -757,7 +757,8 @@ export function createBailianAudioTranscriptionClientFromEnv(
     model: env.BAILIAN_ASR_MODEL ?? BAILIAN_TRANSCRIPTION_MODEL,
     languageHint: env.BAILIAN_ASR_LANGUAGE_HINT,
     pollAttempts: normalizeEnvInteger(env.BAILIAN_ASR_POLL_ATTEMPTS, 20),
-    pollIntervalMs: normalizeEnvInteger(env.BAILIAN_ASR_POLL_INTERVAL_MS, 500)
+    pollIntervalMs: normalizeEnvInteger(env.BAILIAN_ASR_POLL_INTERVAL_MS, 500),
+    maxPollTotalMs: normalizeEnvInteger(env.BAILIAN_ASR_POLL_TOTAL_MS, 60_000)
   });
 }
 

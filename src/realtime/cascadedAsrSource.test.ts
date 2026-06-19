@@ -409,7 +409,7 @@ describe("createBrowserAsrSource — ASR delta schema validation", () => {
  *   - "error"    → triggers socket.onerror immediately
  *   - "connected" → sends proxy.connected (success)
  */
-function buildReconnectHarness(wsFactory: (attempt: number) => "error" | "connected") {
+function buildReconnectHarness(wsFactory: (attempt: number) => "error" | "close" | "connected") {
   let attempt = 0;
 
   // Track mic track stop calls per stream
@@ -457,6 +457,9 @@ function buildReconnectHarness(wsFactory: (attempt: number) => "error" | "connec
         const result = wsFactory(currentAttempt);
         if (result === "error") {
           thisWs.onerror?.();
+        } else if (result === "close") {
+          // Simulate server-side close before proxy.connected — no onerror fires
+          thisWs.onclose?.();
         } else {
           thisWs.onopen?.();
           thisWs.onmessage?.({ data: JSON.stringify({ type: "proxy.connected" }) });
@@ -601,6 +604,101 @@ describe("createBrowserAsrSource — P0-7: stopMic on failure + finite reconnect
 
     // No WS instances should have been created (closed before any connection)
     expect(harness.wsInstances).toHaveLength(0);
+    harness.teardown();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// onclose-before-ready: ASR WebSocket closed by server before proxy.connected
+// This is the blind spot the audit found — only onerror was previously tested.
+// ---------------------------------------------------------------------------
+
+describe("createBrowserAsrSource — onclose before proxy.connected triggers reconnect (not hang)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("rejects start() when server closes socket before proxy.connected (not onerror)", async () => {
+    // The critical regression: onclose (no onerror) must reject the inner Promise
+    // so start() does NOT hang indefinitely.
+    const harness = buildReconnectHarness(() => "close"); // always close, never error
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const source = createBrowserAsrSource({
+      asrWsUrl: "ws://test/asr",
+      getMicStream: harness.getMicStream,
+      maxReconnectAttempts: 0, // no retries — fail fast
+      baseReconnectDelayMs: 0,
+    });
+    source.register(defaultHandlers());
+
+    // Must reject, not hang. The test itself acts as the timeout guard:
+    // if start() hangs, vitest's per-test timeout will fail it.
+    await expect(source.start()).rejects.toThrow(/closed before ready/i);
+
+    harness.teardown();
+  });
+
+  it("retries and eventually rejects after all attempts close without proxy.connected", async () => {
+    let callCount = 0;
+    const harness = buildReconnectHarness(() => {
+      callCount++;
+      return "close";
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const source = createBrowserAsrSource({
+      asrWsUrl: "ws://test/asr",
+      getMicStream: harness.getMicStream,
+      maxReconnectAttempts: 2,
+      baseReconnectDelayMs: 0,
+    });
+    source.register(defaultHandlers());
+
+    await expect(source.start()).rejects.toThrow(/closed before ready/i);
+
+    // 1 initial + 2 retries = 3 total connection attempts
+    expect(callCount).toBe(3);
+    harness.teardown();
+  });
+
+  it("succeeds when first attempt closes but a later attempt sends proxy.connected", async () => {
+    // close on attempt 0, connected on attempt 1
+    const harness = buildReconnectHarness((attempt) => attempt === 0 ? "close" : "connected");
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const source = createBrowserAsrSource({
+      asrWsUrl: "ws://test/asr",
+      getMicStream: harness.getMicStream,
+      maxReconnectAttempts: 2,
+      baseReconnectDelayMs: 0,
+    });
+    source.register(defaultHandlers());
+
+    // Should resolve — second attempt succeeds
+    await expect(source.start()).resolves.toBeUndefined();
+    harness.teardown();
+  });
+
+  it("onclose after successful proxy.connected does NOT reject or cause double-settle", async () => {
+    // Post-connect onclose is normal session teardown — must be silently ignored.
+    // Test: connect successfully, then fire onclose — no error, no crash.
+    const harness = buildReconnectHarness(() => "connected");
+
+    const source = createBrowserAsrSource({
+      asrWsUrl: "ws://test/asr",
+      getMicStream: harness.getMicStream,
+      maxReconnectAttempts: 0,
+      baseReconnectDelayMs: 0,
+    });
+    source.register(defaultHandlers());
+
+    await source.start(); // must resolve cleanly
+
+    // Now fire onclose on the live socket — simulates server closing after session
+    const wsInstance = harness.wsInstances[0];
+    expect(() => wsInstance.onclose?.()).not.toThrow();
+
     harness.teardown();
   });
 });
