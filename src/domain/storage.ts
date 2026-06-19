@@ -53,7 +53,7 @@ export function normalizeProductState(value: unknown): ProductState {
     memoryCandidates: Array.isArray(candidate.memoryCandidates)
       ? candidate.memoryCandidates.map((c) => withMemoryCandidateReview(c, { legacyBackfill: true, preserveExisting: true }))
       : fallback.memoryCandidates,
-    memoryEdges: Array.isArray(candidate.memoryEdges) ? candidate.memoryEdges : fallback.memoryEdges,
+    memoryEdges: Array.isArray(candidate.memoryEdges) ? migrateMemoryEdges(candidate.memoryEdges) : fallback.memoryEdges,
     importSources: Array.isArray(candidate.importSources) ? normalizeImportSources(candidate.importSources) : fallback.importSources,
     ragChunks: Array.isArray(candidate.ragChunks) ? candidate.ragChunks : fallback.ragChunks,
     configVersions: Array.isArray(candidate.configVersions) ? candidate.configVersions : fallback.configVersions,
@@ -107,6 +107,28 @@ function migrateThemesToTracks(value: unknown[]): import("./types").LongTermThem
       createdAt: t.createdAt ?? t.updatedAt
     };
   });
+}
+
+// R4: MemoryEdge 砍为 record→theme 软链。历史 rich edge 仅保留指向主题的边,其它丢弃。
+function migrateMemoryEdges(value: unknown[]): import("./types").MemoryEdge[] {
+  return value
+    .filter((edge): edge is Record<string, unknown> => Boolean(edge && typeof edge === "object"))
+    .map((edge): import("./types").MemoryEdge | null => {
+      const fromMemoryRecordId = edge.fromMemoryRecordId;
+      if (typeof fromMemoryRecordId !== "string") return null;
+      const id = typeof edge.id === "string" ? edge.id : undefined;
+      const createdAt = typeof edge.createdAt === "string" ? edge.createdAt : undefined;
+      // 已是简化形(有 themeId)
+      if (typeof edge.themeId === "string") {
+        return { id, fromMemoryRecordId, themeId: edge.themeId, createdAt };
+      }
+      // 历史 rich 形:只保留指向 long_term_theme 的边,targetId→themeId
+      if (edge.targetType === "long_term_theme" && typeof edge.targetId === "string") {
+        return { id, fromMemoryRecordId, themeId: edge.targetId, createdAt };
+      }
+      return null;
+    })
+    .filter((edge): edge is import("./types").MemoryEdge => edge !== null);
 }
 
 function migrateWorkflowRuns(value: unknown[]): import("./types").WorkflowRun[] {

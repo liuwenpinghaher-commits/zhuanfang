@@ -6,7 +6,7 @@ import type {
 } from "./types";
 
 import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent } from "./utils";
-import { buildMemoryEdgesForRecord, formatMemoryGraphTargetLabel, buildMemoryEdgeLabel } from "./context-pack";
+import { buildMemoryEdgesForRecord, formatMemoryGraphTargetLabel } from "./context-pack";
 
 import { withMemoryCandidateReview } from "./memoryReview";
 
@@ -69,7 +69,7 @@ export function deleteMemoryRecord(state: ProductState, recordId: string): Produ
   const nextState: ProductState = {
     ...cloneState(state),
     memoryRecords: state.memoryRecords.filter((item) => item.id !== record.id),
-    memoryEdges: (state.memoryEdges ?? []).filter((edge) => edge.fromMemoryRecordId !== record.id && edge.targetId !== record.id)
+    memoryEdges: (state.memoryEdges ?? []).filter((edge) => edge.fromMemoryRecordId !== record.id)
   };
 
   return withAuditEvent(nextState, {
@@ -194,7 +194,7 @@ export function updateMemoryRecordText(state: ProductState, recordId: string, te
   const baseState: ProductState = {
     ...cloneState(state),
     memoryRecords: state.memoryRecords.map((item) => (item.id === record.id ? updatedRecord : item)),
-    memoryEdges: (state.memoryEdges ?? []).filter((edge) => edge.fromMemoryRecordId !== record.id && edge.targetId !== record.id)
+    memoryEdges: (state.memoryEdges ?? []).filter((edge) => edge.fromMemoryRecordId !== record.id)
   };
   const nextState: ProductState = {
     ...baseState,

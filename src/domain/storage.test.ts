@@ -616,4 +616,26 @@ describe("product state storage", () => {
       expect(normalized.searchBriefs[0].tracked).toBe(true);
     });
   });
+
+  describe("R4 记忆简化", () => {
+    it("memoryEdges: 历史 rich edge 仅保留指向主题的边,迁移为简化形", () => {
+      const state = createInitialProductState();
+      const themeId = state.themes[0]?.id ?? "theme-control";
+      const legacyEdges = [
+        { id: "e1", fromMemoryRecordId: "r1", targetType: "long_term_theme", targetId: themeId, relation: "supports", weight: 3 },
+        { id: "e2", fromMemoryRecordId: "r1", targetType: "point", targetId: "p1", relation: "contradicts", weight: 1 }
+      ];
+      const normalized = normalizeProductState({ ...state, memoryEdges: legacyEdges as never });
+      expect(normalized.memoryEdges).toHaveLength(1);
+      expect(normalized.memoryEdges[0]).toMatchObject({ fromMemoryRecordId: "r1", themeId });
+      expect((normalized.memoryEdges[0] as Record<string, unknown>).relation).toBeUndefined();
+    });
+
+    it("memoryEdges: 已简化的 edge 幂等", () => {
+      const state = createInitialProductState();
+      const simplified = [{ id: "e1", fromMemoryRecordId: "r1", themeId: "theme-x", createdAt: "2026-06-01T00:00:00.000Z" }];
+      const normalized = normalizeProductState({ ...state, memoryEdges: simplified as never });
+      expect(normalized.memoryEdges).toEqual(simplified);
+    });
+  });
 });

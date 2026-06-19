@@ -34,8 +34,8 @@ export {
 export {
   addMemoryGraphToken, buildInterviewCard, buildInterviewContextPack,
   buildInterviewFollowUpQueue, buildInterviewGuide, buildInterviewResumeCard,
-  buildMemoryEdgeLabel, buildMemoryEdgesForRecord, collectAppliedPlaybookRules,
-  createSessionDraft, formatMemoryGraphTargetLabel, getMemoryGraphRelationLabel,
+  buildMemoryEdgesForRecord, collectAppliedPlaybookRules,
+  createSessionDraft, formatMemoryGraphTargetLabel,
   tokenizeMemoryGraphText,
 } from "./context-pack";
 
@@ -149,8 +149,6 @@ import type {
   MemoryCandidate,
   MemoryEdge,
   MemoryGraphReference,
-  MemoryGraphRelation,
-  MemoryGraphTargetType,
   MemoryRecord,
   MonthlyReview,
   PlaybookPatch,

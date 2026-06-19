@@ -769,37 +769,16 @@ export interface MemoryCandidate {
   reviewNote?: string;
 }
 
-export type MemoryGraphTargetType =
-  | "long_term_theme"
-  | "question"
-  | "knowledge_debt"
-  | "point"
-  | "decision"
-  | "memory_record";
-
-export type MemoryGraphRelation = "relates_to" | "revisits" | "raises_debt" | "supports" | "contrasts_with";
-
 export interface MemoryEdge {
-  id: string;
+  id?: string;
   fromMemoryRecordId: string;
-  targetType: MemoryGraphTargetType;
-  targetId: string;
-  relation: MemoryGraphRelation;
-  label: string;
-  evidenceQuote: string;
-  weight: number;
-  createdAt: string;
+  themeId: string;
+  createdAt?: string;
 }
 
 export interface MemoryGraphReference {
-  edgeId: string;
-  memoryRecordId: string;
-  targetType: MemoryGraphTargetType;
-  targetId: string;
-  targetLabel: string;
-  relation: MemoryGraphRelation;
-  reason: string;
-  weight: number;
+  themeId: string;
+  themeLabel: string;
 }
 
 export interface ContextSecurityInterception {

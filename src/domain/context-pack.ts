@@ -12,8 +12,6 @@ import type {
   ImportSource,
   MemoryEdge,
   MemoryGraphReference,
-  MemoryGraphRelation,
-  MemoryGraphTargetType,
   MemoryRecord,
   ProductState,
   RagChunk,
@@ -28,13 +26,6 @@ import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, formatSearc
 import { buildInterviewEnginePolicy } from "./strategy";
 import { topKByCosine } from "./vector";
 
-type MemoryGraphTargetCandidate = {
-  targetType: MemoryGraphTargetType;
-  targetId: string;
-  targetLabel: string;
-  relation: MemoryGraphRelation;
-  corpus: string;
-};
 type SemanticRagContext = {
   chunks: RagChunk[];
   sourceHighlights: SourceHighlight[];
@@ -94,14 +85,12 @@ function buildContextPackMemoryEdges(state: ProductState, memoryRecords: MemoryR
         return true;
       }
       const record = recordsById.get(edge.fromMemoryRecordId);
+      const theme = state.themes.find((t) => t.id === edge.themeId);
       const edgeTokens = tokenizeMemoryGraphText(
-        [record?.text, record?.evidenceQuote, resolveMemoryGraphTargetCorpus(state, edge), edge.evidenceQuote, edge.label]
-          .filter(Boolean)
-          .join(" ")
+        [record?.text, record?.evidenceQuote, theme?.name, theme?.summary].filter(Boolean).join(" ")
       );
       return hasMemoryGraphTokenOverlap(topicTokens, edgeTokens);
     })
-    .sort((a, b) => b.weight - a.weight)
     .slice(0, 16);
 }
 function buildContextSecurityInterceptions(
@@ -570,108 +559,47 @@ function buildKnowledgeFragments(state: ProductState, searchBrief: SearchBrief |
     .flatMap((patch) => patch.rules.slice(0, 2));
   return [...fromSearch, ...fromRagChunks, ...fromDebts, ...fromPatches].slice(0, 6);
 }
-export function buildMemoryEdgeLabel(relation: MemoryGraphRelation, targetLabel: string) {
-  return `${getMemoryGraphRelationLabel(relation)}：${targetLabel}`;
-}
 export function buildMemoryEdgesForRecord(state: ProductState, record: MemoryRecord, createdAt: string): MemoryEdge[] {
   const sourceTokens = tokenizeMemoryGraphText(`${record.text} ${record.evidenceQuote}`);
   if (sourceTokens.size === 0) {
     return [];
   }
 
-  const existingKeys = new Set(
-    (state.memoryEdges ?? []).map((edge) => `${edge.fromMemoryRecordId}:${edge.targetType}:${edge.targetId}:${edge.relation}`)
+  const existingThemeIds = new Set(
+    (state.memoryEdges ?? [])
+      .filter((edge) => edge.fromMemoryRecordId === record.id)
+      .map((edge) => edge.themeId)
   );
-  const candidates: MemoryGraphTargetCandidate[] = [
-    ...state.themes.map((theme) => ({
-      targetType: "long_term_theme" as const,
-      targetId: theme.id,
-      targetLabel: theme.name,
-      relation: "relates_to" as const,
-      corpus: [theme.name, theme.summary, theme.representativeQuote, theme.nextQuestion].join(" ")
-    })),
-    ...state.questions.map((question) => ({
-      targetType: "question" as const,
-      targetId: question.id,
-      targetLabel: question.question,
-      relation: "revisits" as const,
-      corpus: [question.question, question.whyImportant, question.nextPrompt].join(" ")
-    })),
-    ...state.debts.map((debt) => ({
-      targetType: "knowledge_debt" as const,
-      targetId: debt.id,
-      targetLabel: debt.concept,
-      relation: "raises_debt" as const,
-      corpus: [debt.concept, debt.context, debt.whyImportant, debt.nextQuestion].join(" ")
-    })),
-    ...state.points.map((point) => ({
-      targetType: "point" as const,
-      targetId: point.id,
-      targetLabel: point.title,
-      relation: "supports" as const,
-      corpus: [point.title, point.content, ...point.evidence].join(" ")
-    })),
-    ...state.decisions.map((decision) => ({
-      targetType: "decision" as const,
-      targetId: decision.id,
-      targetLabel: decision.title,
-      relation: "supports" as const,
-      corpus: [decision.title, decision.choice, decision.tradeOff, decision.riskHypothesis].join(" ")
-    })),
-    ...state.memoryRecords
-      .filter((memory) => memory.id !== record.id && memory.status === "confirmed")
-      .map((memory) => ({
-        targetType: "memory_record" as const,
-        targetId: memory.id,
-        targetLabel: formatMemoryGraphTargetLabel(memory.text),
-        relation: "contrasts_with" as const,
-        corpus: [memory.text, memory.evidenceQuote].join(" ")
-      }))
-  ];
 
-  return candidates
-    .map((candidate) => {
-      const targetTokens = tokenizeMemoryGraphText(candidate.corpus);
-      const sharedTokens = Array.from(sourceTokens).filter((token) => targetTokens.has(token));
-      const score = sharedTokens.reduce((total, token) => total + (token.length >= 3 ? 1.5 : 1), 0);
-      return { ...candidate, score, sharedTokens };
+  return state.themes
+    .filter((theme) => !existingThemeIds.has(theme.id))
+    .map((theme) => {
+      const themeTokens = tokenizeMemoryGraphText(
+        [theme.name, theme.summary, theme.representativeQuote, theme.nextQuestion].join(" ")
+      );
+      const sharedCount = Array.from(sourceTokens).filter((t) => themeTokens.has(t)).length;
+      return { theme, sharedCount };
     })
-    .filter((candidate) => candidate.score >= 2)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 12)
-    .filter((candidate) => !existingKeys.has(`${record.id}:${candidate.targetType}:${candidate.targetId}:${candidate.relation}`))
-    .map((candidate) => ({
+    .filter(({ sharedCount }) => sharedCount >= 2)
+    .map(({ theme }) => ({
       id: makeId("memory-edge"),
       fromMemoryRecordId: record.id,
-      targetType: candidate.targetType,
-      targetId: candidate.targetId,
-      relation: candidate.relation,
-      label: buildMemoryEdgeLabel(candidate.relation, candidate.targetLabel),
-      evidenceQuote: `共享线索：${candidate.sharedTokens.slice(0, 4).join(" / ")}`,
-      weight: Math.min(0.95, Number((0.45 + candidate.score * 0.08).toFixed(2))),
-      createdAt
+      themeId: theme.id,
+      createdAt,
     }));
 }
 function buildMemoryGraphReferences(edges: MemoryEdge[], state: ProductState): MemoryGraphReference[] {
-  return edges
-    .map((edge) => {
-      const targetLabel = resolveMemoryGraphTargetLabel(state, edge);
-      if (!targetLabel) {
-        return undefined;
-      }
-      const relationLabel = getMemoryGraphRelationLabel(edge.relation);
-      return {
-        edgeId: edge.id,
-        memoryRecordId: edge.fromMemoryRecordId,
-        targetType: edge.targetType,
-        targetId: edge.targetId,
-        targetLabel,
-        relation: edge.relation,
-        reason: `${relationLabel}“${targetLabel}”提供二跳召回依据：${edge.evidenceQuote}`,
-        weight: edge.weight
-      };
-    })
-    .filter((reference): reference is MemoryGraphReference => Boolean(reference));
+  const seen = new Set<string>();
+  const result: MemoryGraphReference[] = [];
+  for (const edge of edges) {
+    const theme = state.themes.find((t) => t.id === edge.themeId);
+    if (!theme || seen.has(theme.id)) {
+      continue;
+    }
+    seen.add(theme.id);
+    result.push({ themeId: theme.id, themeLabel: theme.name });
+  }
+  return result;
 }
 function buildOpinionEvolution(state: ProductState): InterviewGuide["opinionEvolution"] {
   const note = state.notes[0];
@@ -995,21 +923,6 @@ function formatSearchAgendaTraceForInterview(trace: SearchBriefAgendaTrace) {
   const seedAssets = trace.seedAssetIds.length > 0 ? `；关联资产：${trace.seedAssetIds.join(" / ")}` : "";
   return `主动搜集依据（${formatSearchAgendaIntent(trace.intent)} · ${trace.source}）：${trace.reason}${seedAssets}`;
 }
-export function getMemoryGraphRelationLabel(relation: MemoryGraphRelation) {
-  if (relation === "relates_to") {
-    return "长期主题";
-  }
-  if (relation === "revisits") {
-    return "历史问题";
-  }
-  if (relation === "raises_debt") {
-    return "知识债";
-  }
-  if (relation === "supports") {
-    return "支撑资产";
-  }
-  return "相邻记忆";
-}
 function getPrimarySearchSourceLabel(searchBrief: SearchBrief) {
   return searchBrief.sources[0]?.publisher || searchBrief.provider;
 }
@@ -1113,48 +1026,6 @@ function resolveInterviewSearchBrief(state: ProductState, searchBriefId?: string
   }
   const brief = searchBriefId ? state.searchBriefs.find((item) => item.id === searchBriefId) : state.searchBriefs[0];
   return brief && isSearchBriefAllowedInInterviewContext(state, brief) ? brief : undefined;
-}
-function resolveMemoryGraphTargetCorpus(state: ProductState, edge: Pick<MemoryEdge, "targetType" | "targetId">) {
-  if (edge.targetType === "long_term_theme") {
-    const theme = state.themes.find((item) => item.id === edge.targetId);
-    return theme ? [theme.name, theme.summary, theme.representativeQuote, theme.nextQuestion].join(" ") : "";
-  }
-  if (edge.targetType === "question") {
-    const question = state.questions.find((item) => item.id === edge.targetId);
-    return question ? [question.question, question.whyImportant, question.nextPrompt].join(" ") : "";
-  }
-  if (edge.targetType === "knowledge_debt") {
-    const debt = state.debts.find((item) => item.id === edge.targetId);
-    return debt ? [debt.concept, debt.context, debt.whyImportant, debt.nextQuestion].join(" ") : "";
-  }
-  if (edge.targetType === "point") {
-    const point = state.points.find((item) => item.id === edge.targetId);
-    return point ? [point.title, point.content, ...point.evidence].join(" ") : "";
-  }
-  if (edge.targetType === "decision") {
-    const decision = state.decisions.find((item) => item.id === edge.targetId);
-    return decision ? [decision.title, decision.choice, decision.tradeOff, decision.riskHypothesis].join(" ") : "";
-  }
-  const memory = state.memoryRecords.find((record) => record.id === edge.targetId);
-  return memory ? [memory.text, memory.evidenceQuote].join(" ") : "";
-}
-function resolveMemoryGraphTargetLabel(state: ProductState, edge: Pick<MemoryEdge, "targetType" | "targetId">) {
-  if (edge.targetType === "long_term_theme") {
-    return state.themes.find((theme) => theme.id === edge.targetId)?.name;
-  }
-  if (edge.targetType === "question") {
-    return state.questions.find((question) => question.id === edge.targetId)?.question;
-  }
-  if (edge.targetType === "knowledge_debt") {
-    return state.debts.find((debt) => debt.id === edge.targetId)?.concept;
-  }
-  if (edge.targetType === "point") {
-    return state.points.find((point) => point.id === edge.targetId)?.title;
-  }
-  if (edge.targetType === "decision") {
-    return state.decisions.find((decision) => decision.id === edge.targetId)?.title;
-  }
-  return state.memoryRecords.find((record) => record.id === edge.targetId)?.text;
 }
 function scoreDebtFollowUp(debt: ProductState["debts"][number]) {
   const staleDays = daysBetween(debt.updatedAt, nowIso());
