@@ -2947,76 +2947,10 @@ select:focus-visible {
   box-shadow: var(--focus-ring);
 }
 
-/* ── my-assets: tab header (alias → .seg-tabs / .seg-tab) ── */
-.my-assets-tabs {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  margin-bottom: 14px;
-}
-
-.my-assets-tab {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-sm);
-  background: var(--surface-muted);
-  color: var(--text-secondary);
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  text-align: left;
-  position: relative;
-  transition:
-    border-color var(--transition-fast),
-    background var(--transition-fast),
-    color var(--transition-fast);
-}
-
-.my-assets-tab strong {
-  margin-left: auto;
-  min-width: 20px;
-  text-align: center;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-muted);
-}
-
-.my-assets-tab:hover {
-  border-color: var(--border-strong);
-  color: var(--text-primary);
-}
-
-.my-assets-tab:hover strong {
-  color: var(--text-secondary);
-}
-
-.my-assets-tab.active {
-  border-color: var(--action-primary);
-  background: var(--surface-raised);
-  color: var(--text-primary);
-}
-
-.my-assets-tab.active::after {
-  content: "";
-  position: absolute;
-  inset-inline: 0;
-  bottom: -1px;
-  height: 2px;
-  border-radius: 2px 2px 0 0;
-  background: var(--action-primary);
-}
-
-.my-assets-tab.active strong {
-  color: var(--action-primary);
-}
-
-.my-assets-tab:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
+/* ── my-assets: tab header — migrated to .seg-tabs / .seg-tab / .seg-tab-count ── */
+/* Legacy class names kept as no-op aliases so old snapshots don't break. */
+.my-assets-tabs {}
+.my-assets-tab {}
 
 /* ── my-assets: archive card ── */
 .archive-card {
@@ -3064,10 +2998,6 @@ select:focus-visible {
 }
 
 @media (max-width: 640px) {
-  .my-assets-tabs {
-    grid-template-columns: 1fr 1fr;
-  }
-
   .seg-tabs {
     grid-template-columns: 1fr 1fr;
   }
