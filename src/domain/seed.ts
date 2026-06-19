@@ -238,6 +238,10 @@ export const initialProductState: ProductState = {
       includeSensitiveMemoriesInContext: false,
       includePendingCandidatesInContext: false,
       externalMaterialMemoryPolicy: "review-only"
+    },
+    research: {
+      autoScheduleEnabled: false,
+      scheduleIntervalMin: 1440
     }
   }
 };

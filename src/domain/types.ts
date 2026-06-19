@@ -62,6 +62,12 @@ export interface SystemConfig {
     includePendingCandidatesInContext: boolean;
     externalMaterialMemoryPolicy: "review-only" | "never" | "auto-candidate";
   };
+  research?: {
+    /** 是否启用后台自动调研调度（默认 false；常驻服务时生效，非常驻靠手动触发 auto-run） */
+    autoScheduleEnabled?: boolean;
+    /** 后台调度间隔（分钟），默认 1440（24h） */
+    scheduleIntervalMin?: number;
+  };
 }
 
 export interface ConfigVersion {

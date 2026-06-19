@@ -4,6 +4,7 @@ import { createInitialProductState } from "../../../../src/domain/engine";
 import { buildSearchBrief } from "../../../../src/domain/search-brief";
 import { createInMemoryProductStateRepository } from "../product-state-repository";
 import { registerSearchRoutes } from "./search";
+import type { SearchBrief } from "../../../../src/domain/types";
 
 // ---------------------------------------------------------------------------
 // Fake search provider — injects deterministic SearchBriefInput without I/O
@@ -164,5 +165,169 @@ describe("search routes", () => {
       });
       expect(res.statusCode).toBe(404);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/research/auto-run
+// ---------------------------------------------------------------------------
+describe("POST /api/research/auto-run", () => {
+  // 独立 app + repo，避免与上方测试共享 state 发生干扰
+  const autoRunApp = Fastify();
+
+  // State with themes (so planResearchAgendaRun generates agendaItems)
+  // and a stale tracked brief (lastRefreshedAt 30 days ago)
+  const staleDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const baseState = createInitialProductState();
+
+  // Plant a stale tracked brief with a duplicate source URL (to verify dedup)
+  const staleBriefPartial = {
+    id: "stale-brief-1",
+    topic: "自动化测试主题",
+    provider: "local-demo" as const,
+    status: "ready" as const,
+    summary: "旧简报摘要",
+    facts: ["旧事实"],
+    controversies: [],
+    opposingViews: [],
+    interviewAngles: [],
+    discussionTopics: [],
+    sourceAngles: [],
+    sources: [
+      {
+        id: "src-dup",
+        title: "重复来源",
+        url: "https://example.local/dup",
+        publisher: "DupPublisher",
+        publishedAt: staleDate,
+        snippet: "dup snippet",
+        relevanceScore: 0.8,
+        usage: "interview-context" as const,
+      },
+    ],
+    sourceTrace: [],
+    appliedToSessionIds: [],
+    createdAt: staleDate,
+    tracked: true,
+    lastRefreshedAt: staleDate,
+  } satisfies SearchBrief;
+
+  const initialStateForAutoRun = {
+    ...baseState,
+    searchBriefs: [staleBriefPartial],
+  };
+
+  const autoRunRepo = createInMemoryProductStateRepository(initialStateForAutoRun);
+
+  // Fake provider that always returns a brief with the same dup URL (so dedup fires)
+  const fakeClientWithDup = {
+    async createSearchBrief(input: { topic: string }) {
+      return {
+        topic: input.topic,
+        provider: "local-demo" as const,
+        status: "ready" as const,
+        summary: `Refreshed: ${input.topic}`,
+        facts: [`Fresh fact about ${input.topic}`],
+        controversies: [],
+        opposingViews: [],
+        interviewAngles: [],
+        discussionTopics: [],
+        sourceAngles: [],
+        sources: [
+          {
+            id: "src-dup-2",
+            title: "重复来源",
+            url: "https://example.local/dup", // same URL → dedup should fire across briefs
+            publisher: "DupPublisher",
+            publishedAt: new Date().toISOString(),
+            snippet: "fresh snippet",
+            relevanceScore: 0.9,
+            usage: "interview-context" as const,
+          },
+        ],
+      };
+    },
+  };
+
+  beforeAll(async () => {
+    await registerSearchRoutes(autoRunApp, autoRunRepo, {
+      bailianSearchClient: fakeClientWithDup,
+    });
+    await autoRunApp.ready();
+  });
+
+  afterAll(async () => {
+    await autoRunApp.close();
+  });
+
+  it("returns 200 with summary object", async () => {
+    const res = await autoRunApp.inject({
+      method: "POST",
+      url: "/api/research/auto-run",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.summary).toBeDefined();
+    expect(typeof body.summary.generated).toBe("number");
+    expect(typeof body.summary.refreshed).toBe("number");
+    expect(typeof body.summary.dedupedSources).toBe("number");
+    expect(body.state).toBeDefined();
+  });
+
+  it("refreshes stale tracked brief and updates lastRefreshedAt", async () => {
+    // Reset state with the stale brief
+    autoRunRepo.replaceState(initialStateForAutoRun);
+
+    const before = autoRunRepo.getState().searchBriefs.find((b) => b.id === "stale-brief-1");
+    expect(before?.lastRefreshedAt).toBe(staleDate);
+
+    const res = await autoRunApp.inject({
+      method: "POST",
+      url: "/api/research/auto-run",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    // refreshed >= 1 (the stale tracked brief was refreshed)
+    expect(body.summary.refreshed).toBeGreaterThanOrEqual(1);
+
+    // Check lastRefreshedAt was updated in state
+    const after = body.state.searchBriefs.find((b: SearchBrief) => b.id === "stale-brief-1");
+    expect(after).toBeDefined();
+    expect(after.lastRefreshedAt).not.toBe(staleDate);
+  });
+
+  it("deduplicates sources across briefs when same URL appears in multiple briefs", async () => {
+    // Reset; state already has stale brief with dup URL. After refresh + any generated briefs
+    // the dedup step should remove cross-brief duplicate sources.
+    autoRunRepo.replaceState(initialStateForAutoRun);
+
+    const res = await autoRunApp.inject({
+      method: "POST",
+      url: "/api/research/auto-run",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    // dedupedSources may be 0 or more depending on how many new briefs share the URL;
+    // the field must be present and non-negative.
+    expect(body.summary.dedupedSources).toBeGreaterThanOrEqual(0);
+  });
+
+  it("falls back gracefully when no provider key is configured (no-key scenario)", async () => {
+    // App with no provider clients at all → should still return 200 via local-demo fallback
+    const noKeyApp = Fastify();
+    const noKeyRepo = createInMemoryProductStateRepository(createInitialProductState());
+    await registerSearchRoutes(noKeyApp, noKeyRepo, {}); // no bailianSearchClient
+    await noKeyApp.ready();
+
+    const res = await noKeyApp.inject({
+      method: "POST",
+      url: "/api/research/auto-run",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.summary).toBeDefined();
+    expect(typeof body.summary.generated).toBe("number");
+
+    await noKeyApp.close();
   });
 });

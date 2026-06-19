@@ -90,6 +90,11 @@ export function normalizeProductState(value: unknown): ProductState {
       memory: {
         ...fallback.systemConfig.memory,
         ...systemConfig.memory
+      },
+      research: {
+        autoScheduleEnabled: false,
+        scheduleIntervalMin: 1440,
+        ...systemConfig.research
       }
     }
   };

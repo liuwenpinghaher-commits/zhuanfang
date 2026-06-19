@@ -51,6 +51,7 @@ import { registerRagRoutes } from "./routes/rag";
 import { registerRealtimeVoiceRoutes } from "./routes/realtime-voice";
 import { registerReviewRoutes } from "./routes/reviews";
 import { registerSearchRoutes } from "./routes/search";
+import { startResearchScheduler } from "./research-scheduler";
 import { registerStateRoutes } from "./routes/state";
 import { registerSystemRoutes } from "./routes/system";
 
@@ -347,6 +348,19 @@ export async function startServer() {
   const port = Number(process.env.PORT ?? 8787);
   const host = process.env.HOST ?? "127.0.0.1";
   await server.listen({ host, port });
+
+  // 后台调研调度器：仅在常驻进程（startServer）中启动，buildApiServer/测试不触发。
+  // 默认关闭（autoScheduleEnabled: false）；在 systemConfig.research.autoScheduleEnabled
+  // 设为 true 后，重启服务即激活。非常驻环境靠 POST /api/research/auto-run 手动触发。
+  const researchConfig = repository.getState().systemConfig.research;
+  const schedulerEnabled = researchConfig?.autoScheduleEnabled ?? false;
+  const schedulerIntervalMin = researchConfig?.scheduleIntervalMin ?? 1440;
+  startResearchScheduler({
+    repository,
+    clients: {}, // provider clients 在运行时从 env 注入；调度器默认降级 local-demo
+    intervalMs: schedulerIntervalMin * 60 * 1000,
+    enabled: schedulerEnabled
+  });
 
   return server;
 }

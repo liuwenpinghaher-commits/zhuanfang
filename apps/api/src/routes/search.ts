@@ -9,7 +9,11 @@ import {
   startCapabilityTask
 } from "../../../../src/capabilities/task";
 import { buildSearchBrief, createSearchBriefFromInput } from "../../../../src/domain/engine";
-import type { SearchBriefInput, SearchProviderId } from "../../../../src/domain/types";
+import type { ProductState, SearchBrief, SearchBriefInput, SearchProviderId } from "../../../../src/domain/types";
+import {
+  dedupeBriefSources,
+  planResearchAgendaRun
+} from "../../../../src/domain/research-automation";
 import { enrichBriefInput } from "../intelligence/search-synthesis-llm";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import type { BailianChatClient } from "../providers/bailian";
@@ -24,7 +28,7 @@ interface SearchBriefRequestPayload {
   recencyDays?: unknown;
 }
 
-interface SearchRouteOptions {
+export interface SearchRouteOptions {
   bailianSearchClient?: BailianSearchClient;
   anySearchClient?: AnySearchClient;
   bailianChatClient?: BailianChatClient;
@@ -201,6 +205,67 @@ export async function registerSearchRoutes(
     return { brief: updatedBrief, state: nextState };
   });
 
+  // ---------------------------------------------------------------------------
+  // POST /api/research/auto-run
+  // 自动调研：生成新简报 + 刷新过期 tracked 简报 + 跨简报去重来源
+  // 受 llmBudget "research_auto_run" key 守卫；耗尽时走降级仍返回 200
+  // ---------------------------------------------------------------------------
+  server.post("/api/research/auto-run", async (_request, _reply) => {
+    const now = new Date().toISOString();
+    const state = repository.getState();
+    const { agendaItems, staleTrackedBriefIds } = planResearchAgendaRun(state, now);
+
+    const allowLlm = !!options.bailianChatClient && budget.tryConsume("research_auto_run");
+    if (!!options.bailianChatClient && !allowLlm) {
+      console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "research_auto_run" }));
+    }
+
+    // --- 生成新简报（每个 agendaItem 一条） ---
+    const currentState = repository.getState();
+    const generated: SearchBrief[] = [];
+    let runningState: ProductState = currentState;
+    for (const item of agendaItems) {
+      const { brief, nextState } = await generateBriefForTopic(
+        runningState,
+        item.query,
+        options,
+        allowLlm
+      );
+      generated.push(brief);
+      runningState = nextState;
+    }
+
+    // --- 刷新过期 tracked 简报 ---
+    const refreshed: SearchBrief[] = [];
+    for (const briefId of staleTrackedBriefIds) {
+      const existing = runningState.searchBriefs.find((b) => b.id === briefId);
+      if (!existing) continue;
+      const { updatedBrief, nextState } = await refreshExistingBrief(
+        runningState,
+        existing,
+        options,
+        allowLlm,
+        now
+      );
+      refreshed.push(updatedBrief);
+      runningState = nextState;
+    }
+
+    // --- 跨简报来源去重 ---
+    const { briefs: dedupedBriefs, duplicateCount } = dedupeBriefSources(runningState.searchBriefs);
+    const finalState: ProductState = { ...runningState, searchBriefs: dedupedBriefs };
+    repository.replaceState(finalState);
+
+    return {
+      state: finalState,
+      summary: {
+        generated: generated.length,
+        refreshed: refreshed.length,
+        dedupedSources: duplicateCount
+      }
+    };
+  });
+
   server.post("/api/search/auto-briefs", async (request, reply) => {
     const state = repository.getState();
     const { themeId, debtId } = (request.body ?? {}) as { themeId?: string; debtId?: string };
@@ -330,4 +395,129 @@ function normalizePositiveInteger(value: unknown, fallback: number) {
 
 function isSearchProviderId(value: unknown): value is SearchProviderId {
   return typeof value === "string" && searchProviderIds.includes(value as SearchProviderId);
+}
+
+// ---------------------------------------------------------------------------
+// 可复用核心函数（供 auto-run 端点 + 后台调度器共用，不经 HTTP）
+// ---------------------------------------------------------------------------
+
+/**
+ * 按 topic 生成一条搜索简报，并将结果合入传入的 state 返回新 state。
+ * 无 provider 时降级走 local-demo（不报错，仍返回简报）。
+ */
+export async function generateBriefForTopic(
+  state: ProductState,
+  topic: string,
+  options: SearchRouteOptions,
+  allowLlm: boolean
+): Promise<{ brief: SearchBrief; nextState: ProductState }> {
+  const provider = state.systemConfig.search.activeProvider;
+  const searchInput = {
+    topic,
+    maxSources: state.systemConfig.search.maxSources,
+    recencyDays: state.systemConfig.search.recencyDays
+  };
+  try {
+    let result: SearchBriefInput | undefined;
+    if (provider === "bailian" && options.bailianSearchClient) {
+      result = await options.bailianSearchClient.createSearchBrief({ ...searchInput, providerId: "bailian" });
+    } else if (provider === "anysearch" && options.anySearchClient) {
+      result = await options.anySearchClient.createSearchBrief({ ...searchInput, providerId: "anysearch" });
+    }
+    if (result) {
+      const enriched = await enrichBriefInput(result, allowLlm ? options.bailianChatClient : undefined);
+      return createSearchBriefFromInput(state, enriched);
+    }
+  } catch (error) {
+    console.warn(JSON.stringify({ event: "generate_brief_provider_error", topic, error: error instanceof Error ? error.message : String(error) }));
+  }
+  // 降级：local-demo 确定性简报
+  return buildSearchBrief(state, topic, provider);
+}
+
+/**
+ * 刷新一条已有简报，更新 lastRefreshedAt，返回 updatedBrief 和新 state。
+ * 无 provider 时降级走 local-demo，仍更新 lastRefreshedAt。
+ */
+export async function refreshExistingBrief(
+  state: ProductState,
+  existing: SearchBrief,
+  options: SearchRouteOptions,
+  allowLlm: boolean,
+  now: string
+): Promise<{ updatedBrief: SearchBrief; nextState: ProductState }> {
+  const topic = existing.topic;
+  const providerId = isSearchProviderId(existing.provider) ? existing.provider : state.systemConfig.search.activeProvider;
+  const searchInput = {
+    topic,
+    maxSources: state.systemConfig.search.maxSources,
+    recencyDays: state.systemConfig.search.recencyDays
+  };
+
+  let freshInput: SearchBriefInput | undefined;
+  try {
+    if (providerId === "bailian" && options.bailianSearchClient) {
+      freshInput = await options.bailianSearchClient.createSearchBrief({ ...searchInput, providerId: "bailian" });
+    } else if (providerId === "anysearch" && options.anySearchClient) {
+      freshInput = await options.anySearchClient.createSearchBrief({ ...searchInput, providerId: "anysearch" });
+    }
+  } catch (error) {
+    console.warn(JSON.stringify({ event: "refresh_brief_provider_error", briefId: existing.id, error: error instanceof Error ? error.message : String(error) }));
+  }
+
+  const enriched = freshInput
+    ? await enrichBriefInput(freshInput, allowLlm ? options.bailianChatClient : undefined)
+    : undefined;
+
+  let refreshedBriefInput: SearchBriefInput;
+  if (enriched) {
+    refreshedBriefInput = enriched;
+  } else {
+    const { brief: fallback } = buildSearchBrief(state, topic, "local-demo");
+    refreshedBriefInput = {
+      topic: fallback.topic,
+      provider: fallback.provider,
+      status: fallback.status,
+      summary: fallback.summary,
+      facts: fallback.facts,
+      controversies: fallback.controversies,
+      opposingViews: fallback.opposingViews,
+      interviewAngles: fallback.interviewAngles,
+      discussionTopics: fallback.discussionTopics,
+      sourceAngles: fallback.sourceAngles,
+      sources: fallback.sources,
+      sourceTrace: fallback.sourceTrace,
+      agendaTrace: fallback.agendaTrace
+    };
+  }
+
+  const updatedBrief: SearchBrief = {
+    ...existing,
+    topic: refreshedBriefInput.topic,
+    provider: refreshedBriefInput.provider,
+    status: refreshedBriefInput.status,
+    summary: refreshedBriefInput.summary,
+    facts: refreshedBriefInput.facts,
+    controversies: refreshedBriefInput.controversies,
+    opposingViews: refreshedBriefInput.opposingViews,
+    interviewAngles: refreshedBriefInput.interviewAngles,
+    discussionTopics: refreshedBriefInput.discussionTopics,
+    sourceAngles: refreshedBriefInput.sourceAngles,
+    sources: refreshedBriefInput.sources,
+    sourceTrace: refreshedBriefInput.sourceTrace ?? existing.sourceTrace,
+    agendaTrace: refreshedBriefInput.agendaTrace,
+    // 保留身份字段
+    id: existing.id,
+    tracked: existing.tracked,
+    appliedToSessionIds: existing.appliedToSessionIds,
+    createdAt: existing.createdAt,
+    lastRefreshedAt: now
+  };
+
+  const nextState: ProductState = {
+    ...state,
+    searchBriefs: state.searchBriefs.map((b) => (b.id === existing.id ? updatedBrief : b))
+  };
+
+  return { updatedBrief, nextState };
 }

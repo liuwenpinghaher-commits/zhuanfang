@@ -43,6 +43,7 @@ export interface ProductApiClient {
   refreshSearchBrief(id: string): Promise<RefreshSearchBriefResponse>;
   trackSearchBrief(id: string, tracked: boolean): Promise<TrackSearchBriefResponse>;
   createAutoBrief(input: CreateAutoBriefRequest): Promise<CreateAutoBriefResponse>;
+  autoRunResearch(): Promise<AutoRunResearchResponse>;
   createInterviewSession(input: CreateInterviewSessionRequest): Promise<InterviewSessionResponse>;
   sendInterviewTurn(sessionId: string, input: SendInterviewTurnRequest): Promise<InterviewSessionResponse>;
   recordInterviewTurn(sessionId: string, input: { role: "user" | "assistant"; content: string }): Promise<InterviewSessionResponse>;
@@ -161,6 +162,15 @@ export interface TrackSearchBriefResponse {
 export interface CreateAutoBriefResponse {
   brief: SearchBrief;
   state: ProductState;
+}
+
+export interface AutoRunResearchResponse {
+  state: ProductState;
+  summary: {
+    generated: number;
+    refreshed: number;
+    dedupedSources: number;
+  };
 }
 
 export interface ReviewsResponse {
@@ -466,6 +476,16 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input)
       })) as CreateAutoBriefResponse;
+
+      return {
+        ...response,
+        state: normalizeProductState(response.state)
+      };
+    },
+    async autoRunResearch() {
+      const response = (await requestJson("/api/research/auto-run", {
+        method: "POST"
+      })) as AutoRunResearchResponse;
 
       return {
         ...response,
