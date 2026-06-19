@@ -30,7 +30,10 @@ function makeBrief(overrides: Partial<SearchBrief> = {}): SearchBrief {
     opposingViews: [],
     interviewAngles: [],
     discussionTopics: [],
+    sourceAngles: [],
     sources: [],
+    sourceTrace: [],
+    appliedToSessionIds: [],
     tracked: false,
     createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(), // 30 days ago -> stale
     lastRefreshedAt: undefined,
