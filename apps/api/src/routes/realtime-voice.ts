@@ -3,6 +3,7 @@ import type { IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import type { BailianRealtimeVoiceClient, BailianVoiceEnrollmentClient } from "../providers/bailian";
+import { COSYVOICE_PRESET_VOICES } from "../voice-presets";
 import {
   createBailianStreamingTtsClient,
   STREAMING_TTS_SAMPLE_RATE,
@@ -90,9 +91,17 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     done(null, body);
   });
 
+  const cosyvoiceFallbackPreset = COSYVOICE_PRESET_VOICES.map((v) => ({
+    voice: v.voice,
+    name: v.name,
+    description: v.name,
+    targetModel: undefined as string | undefined,
+    createdAt: undefined as string | undefined
+  }));
+
   server.get("/api/realtime-voice/voices", async () => {
     if (!options.voiceEnrollmentClient) {
-      return { preset: [], custom: [] };
+      return { preset: cosyvoiceFallbackPreset, custom: [] };
     }
     try {
       const voices = await options.voiceEnrollmentClient.listVoices();
@@ -100,7 +109,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       const custom = voices.filter((v) => v.targetModel && v.targetModel !== "qwen3.5-omni-plus-realtime");
       return { preset, custom };
     } catch {
-      return { preset: [], custom: [] };
+      return { preset: cosyvoiceFallbackPreset, custom: [] };
     }
   });
 

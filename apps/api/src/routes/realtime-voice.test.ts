@@ -519,6 +519,60 @@ describe("realtime-voice TTS WebSocket proxy (/api/realtime-voice/ws/tts/:sessio
   });
 });
 
+describe("realtime-voice GET /api/realtime-voice/voices — offline fallback", () => {
+  it("returns cosyvoice presets (not empty) when voiceEnrollmentClient is absent", async () => {
+    const lonelyApp = Fastify();
+    await registerRealtimeVoiceRoutes(lonelyApp); // no voiceEnrollmentClient
+    await lonelyApp.ready();
+
+    const res = await lonelyApp.inject({
+      method: "GET",
+      url: "/api/realtime-voice/voices"
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { preset: Array<{ voice: string; name: string }>; custom: unknown[] };
+
+    expect(body.custom).toEqual([]);
+
+    const voices = body.preset.map((v) => v.voice);
+    expect(voices).toContain("longanyang");
+    expect(voices).toContain("longanhuan");
+
+    const longanyang = body.preset.find((v) => v.voice === "longanyang");
+    const longanhuan = body.preset.find((v) => v.voice === "longanhuan");
+    expect(longanyang?.name).toBe("龙安洋·阳光男声");
+    expect(longanhuan?.name).toBe("龙安欢·元气女声");
+
+    await lonelyApp.close();
+  });
+
+  it("returns cosyvoice presets (not empty) when voiceEnrollmentClient throws", async () => {
+    const failingClient = {
+      listVoices: async () => { throw new Error("network error"); },
+      createVoice: async () => { throw new Error("network error"); }
+    };
+    const testApp = Fastify();
+    await registerRealtimeVoiceRoutes(testApp, { voiceEnrollmentClient: failingClient as never });
+    await testApp.ready();
+
+    const res = await testApp.inject({
+      method: "GET",
+      url: "/api/realtime-voice/voices"
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { preset: Array<{ voice: string; name: string }>; custom: unknown[] };
+
+    expect(body.custom).toEqual([]);
+    const voices = body.preset.map((v) => v.voice);
+    expect(voices).toContain("longanyang");
+    expect(voices).toContain("longanhuan");
+
+    await testApp.close();
+  });
+});
+
 describe("realtime-voice POST /sessions — enginePolicy (P1-21)", () => {
   let app: FastifyInstance;
   let stateRepo: ProductStateRepository;

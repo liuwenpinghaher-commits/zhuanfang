@@ -9,17 +9,7 @@ import {
 } from "../providers/bailian";
 import type { AnySearchClient } from "../providers/anysearch";
 
-// CosyVoice voices are model-locked: each CosyVoice model only accepts its OWN
-// voice set. The TTS path uses cosyvoice-v3-plus, which rejects every v2 voice
-// (longxiaochun_v2 …) AND some v3-named voices (longyuan_v3, longanhuan_v3,
-// longanli …) with engine error 418. The list below is the subset VERIFIED to
-// synthesize on this account's cosyvoice-v3-plus streaming endpoint
-// (scripts/spike-tts-proxy-voice). longanyang is the default fallback. Add more
-// only after spiking them green — an unverified entry is a 418 trap for the user.
-const COSYVOICE_PRESET_VOICES = [
-  { voice: "longanyang", name: "龙安洋·阳光男声" },
-  { voice: "longanhuan", name: "龙安欢·元气女声" },
-];
+import { COSYVOICE_PRESET_VOICES } from "../voice-presets";
 import type {
   BailianAudioTranscriptionClient,
   BailianCharacterInterviewClient,
