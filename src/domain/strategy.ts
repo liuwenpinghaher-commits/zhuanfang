@@ -12,7 +12,7 @@ import type {
 import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, extractAnchor, noQualityEvidenceScore } from "./utils";
 
 import { buildInterviewQualityReport, buildQualityOperationsReport } from "./quality-report";
-import { collectAppliedPlaybookRules } from "./context-pack";
+import { collectAppliedPlaybookRules, collectAppliedPlaybookRuleTypes } from "./context-pack";
 
 function average(values: number[]) {
   if (values.length === 0) {
@@ -27,6 +27,7 @@ export function buildInterviewEnginePolicy(state: ProductState): InterviewEngine
     silenceHoldMs: state.systemConfig.interview.silenceHoldMs,
     playbookVersion: state.systemConfig.interview.playbookVersion,
     appliedPlaybookRules: collectAppliedPlaybookRules(state),
+    appliedPlaybookRuleTypes: collectAppliedPlaybookRuleTypes(state),
     qualityGuardrails: buildQualityGuardrails(state),
     memory: { ...state.systemConfig.memory },
     guidanceEnabled: state.systemConfig.interview.guidanceEnabled ?? true,
@@ -477,10 +478,21 @@ function hasConcreteInterviewMoment(text: string) {
   const momentSignals = ["昨天", "今天", "上周", "会议", "当时", "他说", "她说", "负责人", "客户", "项目"];
   return momentSignals.some((signal) => text.includes(signal));
 }
+function hasAppliedRuleType(session: InterviewSession, ruleType: string) {
+  return (session.enginePolicy?.appliedPlaybookRuleTypes ?? []).includes(ruleType);
+}
 function hasConcreteMomentPlaybookRule(session: InterviewSession) {
+  // Prefer the explicit classification; fall back to legacy keyword matching for
+  // patches created before ruleType existed.
+  if (hasAppliedRuleType(session, "concrete-moment")) {
+    return true;
+  }
   return (session.enginePolicy?.appliedPlaybookRules ?? []).some((rule) => rule.includes("具体时刻"));
 }
 function hasMechanismReversalPlaybookRule(session: InterviewSession) {
+  if (hasAppliedRuleType(session, "mechanism-reversal")) {
+    return true;
+  }
   return (session.enginePolicy?.appliedPlaybookRules ?? []).some(
     (rule) => rule.includes("机制") && rule.includes("奖励") && rule.includes("代价")
   );

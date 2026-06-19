@@ -18,4 +18,67 @@ describe("voice instructions", () => {
     const session = createSessionDraft(createEmptyProductState(), "decision", "standard", {});
     expect(() => buildRealtimeVoiceInstructions(session, session.card)).not.toThrow();
   });
+
+  // S3-A: playbook rules (enginePolicy.appliedPlaybookRules) must reach the realtime voice prompt.
+  it("injects applied playbook rules from enginePolicy into the voice instructions", () => {
+    const state = createInitialProductState();
+    const session = createSessionDraft(state, "decision", "standard", {});
+    session.enginePolicy = {
+      ...session.enginePolicy!,
+      appliedPlaybookRules: [
+        "当用户使用抽象评价时，先追问一个具体时刻。",
+        "当用户已经给出具体例子后，再从机制、奖励和代价角度反问。",
+        "每轮只改变一个追问动作。"
+      ]
+    };
+    const out = buildRealtimeVoiceInstructions(session, session.card);
+    expect(out).toContain("已应用的提问技法");
+    expect(out).toContain("先追问一个具体时刻");
+    expect(out).toContain("从机制、奖励和代价角度反问");
+  });
+
+  it("caps injected playbook rules at 3 and omits the section when there are none", () => {
+    const state = createInitialProductState();
+    const session = createSessionDraft(state, "decision", "standard", {});
+
+    // No applied rules → no section, no crash.
+    session.enginePolicy = { ...session.enginePolicy!, appliedPlaybookRules: [] };
+    const empty = buildRealtimeVoiceInstructions(session, session.card);
+    expect(empty).not.toContain("已应用的提问技法");
+
+    // More than 3 rules → only the first 3 surface.
+    session.enginePolicy = {
+      ...session.enginePolicy!,
+      appliedPlaybookRules: ["规则甲", "规则乙", "规则丙", "规则丁不应出现"]
+    };
+    const capped = buildRealtimeVoiceInstructions(session, session.card);
+    expect(capped).toContain("规则甲");
+    expect(capped).toContain("规则丙");
+    expect(capped).not.toContain("规则丁不应出现");
+  });
+
+  // S3-C: most-recent memoryCorrections must reach the realtime voice prompt (bounded ≤10).
+  it("injects the most recent memory corrections (bounded at 10) into the voice instructions", () => {
+    const state = createInitialProductState();
+    const session = createSessionDraft(state, "decision", "standard", {});
+    const corrections = Array.from({ length: 12 }, (_, i) => ({
+      id: `corr-${i + 1}`,
+      text: `用户纠正${i + 1}`,
+      createdAt: new Date(Date.UTC(2026, 0, i + 1)).toISOString()
+    }));
+    const out = buildRealtimeVoiceInstructions(session, session.card, corrections);
+    expect(out).toContain("用户已纠正过的表述");
+    // newest (day 12) present, oldest two (day 1, day 2) dropped by the ≤10 bound
+    expect(out).toContain("用户纠正12");
+    expect(out).not.toContain("用户纠正1。");
+    expect(out).not.toContain("用户纠正2。");
+  });
+
+  it("omits the corrections section when there are no corrections and does not crash", () => {
+    const state = createInitialProductState();
+    const session = createSessionDraft(state, "decision", "standard", {});
+    expect(() => buildRealtimeVoiceInstructions(session, session.card, [])).not.toThrow();
+    const out = buildRealtimeVoiceInstructions(session, session.card, []);
+    expect(out).not.toContain("用户已纠正过的表述");
+  });
 });

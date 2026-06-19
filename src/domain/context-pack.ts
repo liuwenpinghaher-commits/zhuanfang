@@ -807,6 +807,17 @@ export function collectAppliedPlaybookRules(state: ProductState) {
     )
   );
 }
+export function collectAppliedPlaybookRuleTypes(state: ProductState) {
+  return Array.from(
+    new Set(
+      state.playbookPatches
+        .filter((patch) => patch.status === "applied")
+        .flatMap((patch) => patch.ruleTypes ?? [])
+        .map((ruleType) => ruleType.trim())
+        .filter(Boolean)
+    )
+  );
+}
 function collectConfirmedMemoryTexts(state: ProductState) {
   const governedMemoryTexts = new Set(state.memoryRecords.map((record) => record.text.trim()).filter(Boolean));
   return Array.from(

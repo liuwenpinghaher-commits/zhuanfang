@@ -19,6 +19,25 @@ export interface CorpusLlmAnalysis {
   patch: { title: string; description: string; rules: string[]; impact: "low" | "medium" | "high" };
 }
 
+/**
+ * Classify a playbook rule into a machine-readable ruleType from its text.
+ * Used to stamp ruleTypes on generated patches so strategy routing no longer
+ * depends on brittle keyword matching at decision time. Returns a generic
+ * "follow-up" type when the rule does not clearly match a known technique.
+ */
+export function inferPlaybookRuleType(rule: string): "concrete-moment" | "mechanism-reversal" | "follow-up" {
+  const text = rule;
+  const mechanismSignals = ["机制", "奖励", "代价", "反问", "反方", "翻转", "翻成", "系统问题"];
+  const concreteSignals = ["具体时刻", "具体事件", "具体场景", "真实场景", "举个例子", "最近一次", "落到"];
+  if (concreteSignals.some((signal) => text.includes(signal))) {
+    return "concrete-moment";
+  }
+  if (mechanismSignals.filter((signal) => text.includes(signal)).length >= 2) {
+    return "mechanism-reversal";
+  }
+  return "follow-up";
+}
+
 function clampCorpusScore(value: number): number {
   if (!Number.isFinite(value)) {
     return 3;
@@ -47,6 +66,14 @@ export function analyzeImportedInterview(
     turns.find((turn) => turn.content.includes("具体") || turn.content.includes("时刻"))?.content ??
     turns[0]?.content ??
     sanitizedInput.content.slice(0, 60);
+  const patchRules =
+    analysis?.patch.rules?.filter((rule) => rule.trim()).length
+      ? analysis.patch.rules.filter((rule) => rule.trim())
+      : [
+          "当用户使用抽象评价时，先追问一个具体时刻。",
+          "当用户已经给出具体例子后，再从机制、奖励和代价角度反问。",
+          "每轮只改变一个追问动作，避免把访谈变成建议清单。"
+        ];
   const patch: PlaybookPatch = {
     id: makeId("patch"),
     title: analysis?.patch.title?.trim() || "先索要具体时刻，再做机制反转",
@@ -58,14 +85,10 @@ export function analyzeImportedInterview(
     sourceTitle: sanitizedInput.title,
     ...(sanitizedInput.sourceUrl ? { sourceUrl: sanitizedInput.sourceUrl } : {}),
     status: "proposed",
-    rules:
-      analysis?.patch.rules?.filter((rule) => rule.trim()).length
-        ? analysis.patch.rules.filter((rule) => rule.trim())
-        : [
-            "当用户使用抽象评价时，先追问一个具体时刻。",
-            "当用户已经给出具体例子后，再从机制、奖励和代价角度反问。",
-            "每轮只改变一个追问动作，避免把访谈变成建议清单。"
-          ],
+    rules: patchRules,
+    // Positionally aligned classification so the strategy engine can route by
+    // ruleType instead of keyword-matching the rule text.
+    ruleTypes: patchRules.map((rule) => inferPlaybookRuleType(rule)),
     impact: analysis?.patch.impact ?? "medium",
     createdAt
   };

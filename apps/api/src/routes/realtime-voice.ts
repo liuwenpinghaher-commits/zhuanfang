@@ -14,7 +14,7 @@ import {
   appendRealtimeSignalTrace,
   truncateAssistantTurn
 } from "../../../../src/domain/engine";
-import { collectAppliedPlaybookRules } from "../../../../src/domain/context-pack";
+import { collectAppliedPlaybookRules, collectAppliedPlaybookRuleTypes } from "../../../../src/domain/context-pack";
 import type {
   AiRunEvent,
   InterviewEnginePolicy,
@@ -280,7 +280,8 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       return reply.status(404).send({ error: "session_not_found" });
     }
     const { buildInterviewAgentContext } = await import("../../../../src/domain/engine");
-    return buildInterviewAgentContext(session);
+    const corrections = stateRepo.getState().memoryCorrections ?? [];
+    return buildInterviewAgentContext(session, corrections);
   });
 
   server.get("/api/realtime-voice/livekit-token", async (request) => {
@@ -582,6 +583,7 @@ function buildDefaultEnginePolicy(state: ProductState): InterviewEnginePolicy {
     silenceHoldMs: cfg.interview.silenceHoldMs,
     playbookVersion: cfg.interview.playbookVersion,
     appliedPlaybookRules: collectAppliedPlaybookRules(state),
+    appliedPlaybookRuleTypes: collectAppliedPlaybookRuleTypes(state),
     qualityGuardrails: [],
     memory: { ...cfg.memory },
     guidanceEnabled: cfg.interview.guidanceEnabled ?? true,

@@ -492,6 +492,13 @@ export interface InterviewEnginePolicy {
   silenceHoldMs: number;
   playbookVersion: string;
   appliedPlaybookRules: string[];
+  /**
+   * Distinct ruleTypes aggregated from the applied playbook patches. Lets the
+   * strategy engine route by classification instead of keyword-matching rule
+   * text. Optional for backward compatibility with sessions/policies built
+   * before ruleType existed.
+   */
+  appliedPlaybookRuleTypes?: string[];
   qualityGuardrails: string[];
   memory: SystemConfig["memory"];
   guidanceEnabled: boolean;
@@ -1032,6 +1039,13 @@ export interface PlaybookPatch {
   sourceUrl?: string;
   status: "proposed" | "applied" | "reverted" | "rejected";
   rules: string[];
+  /**
+   * Optional machine-readable classification of each rule, positionally aligned
+   * with `rules`. Drives strategy routing (concrete-moment / mechanism-reversal)
+   * without relying on brittle keyword matching of the rule text. Legacy patches
+   * predating this field fall back to keyword matching.
+   */
+  ruleTypes?: Array<"concrete-moment" | "mechanism-reversal" | string>;
   impact: "low" | "medium" | "high";
   createdAt: string;
   appliedAt?: string;

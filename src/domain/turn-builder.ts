@@ -9,6 +9,7 @@ import type {
   InterviewStrategyId,
   InterviewStrength,
   InterviewTurn,
+  MemoryCorrection,
 } from "./types";
 
 import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, extractAnchor, isLongUserAnswer, buildMirroredFollowUp, findPendingControlAction, applyPendingControlToFollowUp, sanitizeExternalMaterialText } from "./utils";
@@ -316,8 +317,11 @@ export function addTurn(session: InterviewSession, input: AddTurnInput): Intervi
   };
 }
 
-export function buildInterviewAgentContext(session: InterviewSession): InterviewAgentContext {
-  const instructions = buildRealtimeVoiceInstructions(session);
+export function buildInterviewAgentContext(
+  session: InterviewSession,
+  corrections: MemoryCorrection[] = []
+): InterviewAgentContext {
+  const instructions = buildRealtimeVoiceInstructions(session, undefined, corrections);
   const history: Array<{ role: "user" | "assistant"; text: string }> = [];
   for (const turn of session.turns) {
     if (turn.role === "user" || turn.role === "assistant") {
