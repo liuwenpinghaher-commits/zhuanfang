@@ -158,6 +158,7 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
       bailianRealtimeVoiceClient: providerClients.bailianRealtimeVoiceClient,
       voiceEnrollmentClient: providerClients.voiceEnrollmentClient,
       stateRepo: productStateRepository,
+      embeddingClient: providerClients.embeddingClient,
       streamingTtsClient: providerClients.streamingTtsClient
     });
   });

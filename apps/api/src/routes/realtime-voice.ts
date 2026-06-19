@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
-import type { BailianRealtimeVoiceClient, BailianVoiceEnrollmentClient } from "../providers/bailian";
+import type { BailianRealtimeVoiceClient, BailianVoiceEnrollmentClient, BailianEmbeddingClient } from "../providers/bailian";
 import { COSYVOICE_PRESET_VOICES } from "../voice-presets";
 import {
   createBailianStreamingTtsClient,
@@ -42,6 +42,8 @@ interface RealtimeVoiceRouteOptions {
   bailianRealtimeVoiceClient?: BailianRealtimeVoiceClient;
   voiceEnrollmentClient?: BailianVoiceEnrollmentClient;
   stateRepo?: ProductStateRepository;
+  /** 🔴-1: embeds the latest user utterance so livekit agent-context recall tracks the conversation. */
+  embeddingClient?: BailianEmbeddingClient;
   /**
    * Injectable streaming TTS client for the TTS WebSocket proxy.
    * When omitted the proxy constructs one at upgrade time from the
@@ -83,6 +85,30 @@ interface RealtimeVoiceSessionRecord extends RealtimeVoiceConfig {
   interviewSessionId?: string;
   enginePolicy?: InterviewEnginePolicy;
   expiresAt: string;
+}
+
+// 🔴-1: embed the latest user utterance for semantic memory recall in agent-context.
+// Fail-safe — undefined on no client / empty text / embed error, so recall silently
+// degrades to keyword ranking (unchanged behaviour). Mirrors embedQueryText in
+// interview-sessions.ts (kept local to avoid cross-route coupling).
+async function embedRecallQuery(
+  text: string | undefined,
+  embeddingClient: BailianEmbeddingClient | undefined
+): Promise<number[] | undefined> {
+  const trimmed = text?.trim();
+  if (!embeddingClient || !trimmed) {
+    return undefined;
+  }
+  try {
+    const vectors = await embeddingClient.embed([trimmed]);
+    const vector = vectors[0];
+    return Array.isArray(vector) && vector.length > 0 ? vector : undefined;
+  } catch (error) {
+    console.warn(
+      JSON.stringify({ event: "agent_context_embed_failed", error: error instanceof Error ? error.message : String(error) })
+    );
+    return undefined;
+  }
 }
 
 export async function registerRealtimeVoiceRoutes(server: FastifyInstance, options: RealtimeVoiceRouteOptions = {}) {
@@ -279,9 +305,28 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     if (!session) {
       return reply.status(404).send({ error: "session_not_found" });
     }
-    const { buildInterviewAgentContext } = await import("../../../../src/domain/engine");
-    const corrections = stateRepo.getState().memoryCorrections ?? [];
-    return buildInterviewAgentContext(session, corrections);
+    const { buildInterviewAgentContext, buildInterviewGuide } = await import("../../../../src/domain/engine");
+    const state = stateRepo.getState();
+    const corrections = state.memoryCorrections ?? [];
+
+    // 🔴-1 (livekit): when the Python agent passes the latest user utterance (?latestUserText=),
+    // refresh memory recall (queryEmbedding) so the persona's 【可引用的历史】 tracks the
+    // conversation instead of being frozen at the opening snapshot. Fail-safe: no client /
+    // no text / embed error → keyword recall (current behaviour), never throws.
+    const { latestUserText } = request.query as { latestUserText?: string };
+    const queryEmbedding = await embedRecallQuery(latestUserText, options.embeddingClient);
+    const effectiveSession = queryEmbedding
+      ? {
+          ...session,
+          guide: buildInterviewGuide(state, {
+            topicHint: session.guide.topicHint || undefined,
+            ...(session.card.searchBriefId ? { searchBriefId: session.card.searchBriefId } : {}),
+            queryEmbedding
+          })
+        }
+      : session;
+
+    return buildInterviewAgentContext(effectiveSession, corrections);
   });
 
   server.get("/api/realtime-voice/livekit-token", async (request) => {

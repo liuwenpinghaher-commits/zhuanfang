@@ -17,7 +17,9 @@ load_dotenv()
 BACKEND_URL = os.getenv("INTERVIEW_BACKEND_URL", "http://127.0.0.1:8787")
 
 
-async def _fetch_agent_context(interview_session_id: str) -> dict | None:
+async def _fetch_agent_context(
+    interview_session_id: str, latest_user_text: str | None = None
+) -> dict | None:
     """Fetch the unified interview agent context (instructions + opening) from the backend.
 
     Returns the InterviewAgentContext dict on success, or None on any failure.
@@ -25,11 +27,17 @@ async def _fetch_agent_context(interview_session_id: str) -> dict | None:
     buildRealtimeVoiceInstructions — it already contains the opening discipline
     and card.suggestedOpening, so we use it to update the agent persona and
     to drive the opening generate_reply.
+
+    When ``latest_user_text`` is provided (per-turn refresh, 🔴-1), the backend
+    re-ranks memory recall against that utterance so 可引用记忆/历史 tracks the
+    conversation instead of staying frozen at the opening-time snapshot.
     """
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
+            params = {"latestUserText": latest_user_text} if latest_user_text else None
             resp = await client.get(
-                f"{BACKEND_URL}/api/realtime-voice/agent-context/{interview_session_id}"
+                f"{BACKEND_URL}/api/realtime-voice/agent-context/{interview_session_id}",
+                params=params,
             )
             if resp.status_code == 200:
                 return resp.json()
@@ -76,8 +84,41 @@ _FALLBACK_INSTRUCTIONS = (
 
 
 class InterviewAgent(Agent):
-    def __init__(self, instructions: str = _FALLBACK_INSTRUCTIONS):
+    def __init__(
+        self,
+        instructions: str = _FALLBACK_INSTRUCTIONS,
+        interview_session_id: str | None = None,
+    ):
         super().__init__(instructions=instructions)
+        self._interview_session_id = interview_session_id
+
+    async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
+        """🔴-1 (livekit): refresh memory recall on every user turn.
+
+        livekit-agents calls this after the user finishes speaking and before the
+        LLM replies. We re-fetch the agent context with the latest utterance so the
+        backend re-ranks 可引用记忆/历史 by semantic relevance, then update the
+        persona instructions. Best-effort: any failure leaves the current
+        instructions unchanged (the opening snapshot), never blocks the reply.
+        """
+        if not self._interview_session_id:
+            return
+        try:
+            user_text = (new_message.text_content or "").strip()
+        except Exception:
+            user_text = ""
+        if not user_text:
+            return
+        ctx = await _fetch_agent_context(
+            self._interview_session_id, latest_user_text=user_text
+        )
+        fresh = ctx.get("instructions") if ctx else None
+        if not fresh:
+            return
+        try:
+            await self.update_instructions(fresh)
+        except Exception as exc:
+            print(f"[agent] per-turn update_instructions failed: {exc}")
 
 
 async def entrypoint(ctx: JobContext):
@@ -101,7 +142,10 @@ async def entrypoint(ctx: JobContext):
         if agent_context
         else _FALLBACK_INSTRUCTIONS
     )
-    agent = InterviewAgent(instructions=instructions)
+    agent = InterviewAgent(
+        instructions=instructions,
+        interview_session_id=interview_session_id,
+    )
 
     session = AgentSession(
         stt=aliyun.STT(model="paraformer-realtime-v2"),

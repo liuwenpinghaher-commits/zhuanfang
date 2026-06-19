@@ -10,10 +10,12 @@ import type { InterviewCard, InterviewSession, MemoryCorrection } from "./types"
 //    at open (an opening-time snapshot), BUT the client now refreshes them per user turn via
 //    POST /api/interview-sessions/:id/voice-instructions → connection.updateInstructions
 //    (session.update). So this path's recall ALSO tracks the conversation now (fills 🔴-1).
-//  - LiveKit cascade voice path: instructions live in the Python agent (agent-context), not in
-//    a client session.update — recall freshness there depends on whether that agent re-fetches
-//    agent-context each turn (that side's concern; NOT addressed by this change).
-// All paths share the SAME copy (the blocks below); they differ only in WHO refreshes recall.
+//  - LiveKit cascade voice path: instructions live in the Python agent. It now re-fetches
+//    GET /agent-context/:id?latestUserText=<utterance> on every user turn (agent/main.py
+//    on_user_turn_completed → update_instructions), and that endpoint re-ranks recall by the
+//    utterance's queryEmbedding — so this path's recall ALSO tracks the conversation now.
+// All three paths track recall now; they differ only in WHO triggers the per-turn refresh
+// (/turns for cascade-text, client session.update for bailian omni, Python agent for livekit).
 const MAX_VOICE_PLAYBOOK_RULES = 3;
 const MAX_VOICE_CORRECTIONS = 10;
 

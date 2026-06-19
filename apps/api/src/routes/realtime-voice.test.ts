@@ -252,6 +252,55 @@ describe("realtime-voice /agent-context route", () => {
     expect(res.json().error).toBe("state_repo_unavailable");
     await lonelyApp.close();
   });
+
+  it("refreshes memory recall from ?latestUserText= so instructions track the conversation (🔴-1 livekit)", async () => {
+    const { createInterviewSession } = await import("../../../../src/domain/engine");
+    const { generateSessionId } = await import("../../../../src/domain/identifiers");
+    const sid = generateSessionId();
+    const session = createInterviewSession({ id: sid, title: "放权专访", createdAt: new Date().toISOString() });
+
+    // Two confirmed memories distinguishable ONLY by embedding (keyword recall can't tell them apart).
+    const near = { id: "m-near", text: "用户在放权这件事上反复强调先小范围验证再扩大", status: "confirmed",
+      sourceType: "interview_session", sourceId: "s", evidenceQuote: "", createdAt: "2026-06-01T00:00:00Z",
+      updatedAt: "2026-06-01T00:00:00Z", embedding: [1, 0, 0] };
+    const far = { id: "m-far", text: "用户提到自己喜欢在清晨独自跑步", status: "confirmed",
+      sourceType: "interview_session", sourceId: "s", evidenceQuote: "", createdAt: "2026-06-01T00:00:00Z",
+      updatedAt: "2026-06-01T00:00:00Z", embedding: [0, 1, 0] };
+    stateRepo.replaceState({ ...stateRepo.getState(), sessions: [session], memoryRecords: [near, far] as never });
+
+    let embedCalls = 0;
+    const fakeEmbed = { embed: async (_texts: string[]) => { embedCalls += 1; return [[1, 0, 0]]; } };
+    const embApp = Fastify();
+    await registerRealtimeVoiceRoutes(embApp, { stateRepo, embeddingClient: fakeEmbed as never });
+    await embApp.ready();
+
+    const res = await embApp.inject({
+      method: "GET",
+      url: `/api/realtime-voice/agent-context/${sid}?latestUserText=${encodeURIComponent("我还是不敢把审批权交出去")}`
+    });
+    expect(res.statusCode).toBe(200);
+    expect(embedCalls).toBe(1); // the latest utterance was embedded for recall
+    expect(res.json().instructions).toContain("先小范围验证再扩大"); // cosine surfaced the NEAR memory
+    await embApp.close();
+  });
+
+  it("does not embed when ?latestUserText= is absent (recall unchanged, no-op safe)", async () => {
+    const { createInterviewSession } = await import("../../../../src/domain/engine");
+    const { generateSessionId } = await import("../../../../src/domain/identifiers");
+    const sid = generateSessionId();
+    const session = createInterviewSession({ id: sid, title: "x", createdAt: new Date().toISOString() });
+    stateRepo.replaceState({ ...stateRepo.getState(), sessions: [session] });
+
+    let embedCalls = 0;
+    const fakeEmbed = { embed: async () => { embedCalls += 1; return [[1, 0, 0]]; } };
+    const embApp = Fastify();
+    await registerRealtimeVoiceRoutes(embApp, { stateRepo, embeddingClient: fakeEmbed as never });
+    await embApp.ready();
+    const res = await embApp.inject({ method: "GET", url: `/api/realtime-voice/agent-context/${sid}` });
+    expect(res.statusCode).toBe(200);
+    expect(embedCalls).toBe(0);
+    await embApp.close();
+  });
 });
 
 describe("realtime-voice /livekit-token route", () => {
