@@ -140,7 +140,7 @@ test("saves the current podcast voice as the default product voice", async ({ pa
 
   // Determine a valid voice value from ConfigView's voices select before filling the free-text field.
   await page.getByRole("button", { name: "系统配置" }).click();
-  await page.getByRole("button", { name: "策略 搜索、语音和访谈运行策略" }).click();
+  await page.getByRole("button", { name: /参数/ }).click();
   // Wait for voices to load (select is populated from /api/realtime-voice/voices)
   const voiceSelect = page.getByLabel("播客默认声音");
   // Wait for at least one option to appear, then grab its value
@@ -159,7 +159,7 @@ test("saves the current podcast voice as the default product voice", async ({ pa
 
   await expect(page.getByText("播客默认声音已更新")).toBeVisible({ timeout: 10000 });
   await page.getByRole("button", { name: "系统配置" }).click();
-  await page.getByRole("button", { name: "策略 搜索、语音和访谈运行策略" }).click();
+  await page.getByRole("button", { name: /参数/ }).click();
   await expect(page.getByLabel("播客默认声音")).toHaveValue(voice, { timeout: 10000 });
   await expectNoHorizontalOverflow(page);
 });

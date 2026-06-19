@@ -13,7 +13,7 @@ const views = [
   ["我的资产", "专访档案与认知资产库"],
   ["外部调研", "主动搜集热点、素材和可讨论主题"],
   ["记忆", "导入资料，审核长期记忆"],
-  ["系统配置", "底层能力、provider 和引擎策略"],
+  ["系统配置", "状态页展示 Product API 的真实能力健康"],
   ["语料学习", "从外部专访中学习提问逻辑"],
   ["个人档案", "产品负责人 · AI 产品 / 创业"]
 ] as const;
@@ -78,9 +78,8 @@ test.describe("primary navigation", () => {
       });
     });
     await resetDemoState(page);
-    await openView(page, "系统配置", "底层能力、provider 和引擎策略");
-
-    await page.getByRole("button", { name: /Provider/ }).click();
+    // 系统配置默认进入「状态」区，实时能力健康直接可见，无需再切分段。
+    await openView(page, "系统配置", "状态页展示 Product API 的真实能力健康");
 
     await expect(page.getByRole("heading", { name: "Product API 实时状态" })).toBeVisible();
     await expect(page.getByText("Product State Store")).toBeVisible();
@@ -185,12 +184,13 @@ test.describe("primary navigation", () => {
     });
 
     await resetDemoState(page);
-    await openView(page, "系统配置", "底层能力、provider 和引擎策略");
-    await page.getByRole("button", { name: "策略 搜索、语音和访谈运行策略" }).click();
+    await openView(page, "系统配置", "状态页展示 Product API 的真实能力健康");
+    // 服务端配置(env)表单现在归到「参数」区。
+    await page.getByRole("button", { name: /参数/ }).click();
 
     await page.getByLabel("DashScope / 百炼 API Key").fill("secret-that-stays-server-side");
     await page.getByLabel("联网搜索模型").fill("qwen3.7-plus");
-    await page.getByRole("button", { name: "保存运行配置" }).click();
+    await page.getByRole("button", { name: "保存服务端配置" }).click();
 
     await expect(page.getByText("运行配置已保存")).toBeVisible();
     expect(receivedUpdates).toEqual({
@@ -205,8 +205,9 @@ test.describe("primary navigation", () => {
     // The available options depend on what the server returns — we read the first option value
     // at runtime instead of hard-coding a preset name that may not exist.
     await resetDemoState(page);
-    await openView(page, "系统配置", "底层能力、provider 和引擎策略");
-    await page.getByRole("button", { name: "策略 搜索、语音和访谈运行策略" }).click();
+    await openView(page, "系统配置", "状态页展示 Product API 的真实能力健康");
+    // 产品策略表单现在归到「参数」区。
+    await page.getByRole("button", { name: /参数/ }).click();
 
     // Wait for voices to load then pick the first available value
     const voiceSelect = page.getByLabel("播客默认声音");
@@ -220,7 +221,9 @@ test.describe("primary navigation", () => {
     await page.getByLabel("最大来源数").fill("4");
     await page.getByLabel("允许会中引用联网素材").selectOption("false");
     await voiceSelect.selectOption(voice);
-    await page.getByLabel("启用实时语音").selectOption("true");
+    // 「启用实时语音」布尔开关已改为「实时语音模式」下拉（cascade/bailian/livekit）。
+    // 参数区有两个「实时语音模式」select（服务端 env + 产品策略），这里指向产品策略那一个。
+    await page.locator("#product-realtime-mode").selectOption("cascade");
     await page.getByLabel("留白阈值").fill("1500");
     await page.getByLabel("最大追问深度").fill("6");
     await page.getByRole("button", { name: "保存产品策略" }).click();

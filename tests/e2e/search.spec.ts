@@ -51,7 +51,7 @@ test("sets the default search provider from the search workspace", async ({ page
   await expect(page.getByText("当前默认 provider：anysearch").first()).toBeVisible();
 
   await page.getByRole("button", { name: "系统配置" }).click();
-  await page.getByRole("button", { name: "策略 搜索、语音和访谈运行策略" }).click();
+  await page.getByRole("button", { name: /参数/ }).click();
   await expect(page.getByLabel("默认搜索 Provider")).toHaveValue("anysearch");
   await expectNoHorizontalOverflow(page);
 });
