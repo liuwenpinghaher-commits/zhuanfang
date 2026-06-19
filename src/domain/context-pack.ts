@@ -284,6 +284,8 @@ export function buildInterviewContextPack(state: ProductState, options: Intervie
         .filter((chunk) => linkedImportSource.chunkIds.includes(chunk.id))
         .slice(0, contextSourceLimit)
     : [];
+  // ponytail: 主访谈流程用关键词召回(topicHint 较短,关键词足够);语义 cosine 检索
+  // 由专用资料问答端点 POST /api/rag/query 消费(对长问题做向量召回)。不在此线程穿 queryEmbedding。
   const semanticRagContext = linkedImportSource
     ? emptySemanticRagContext()
     : buildSemanticRagContext(state, topicHint, contextSourceLimit);

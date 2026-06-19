@@ -15,6 +15,8 @@ import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, extractAnch
 import { decideInterviewStrategy } from "./strategy";
 import { buildRealtimeVoiceInstructions } from "./voice-instructions";
 
+// ponytail: 这两个是启发式关键词信号(非穷尽、偏管理/职场语料);真正 scenario-agnostic
+// 的追问需 LLM 驱动生成,留作升级路径。当前词表覆盖常见表达,缺词时回退到通用追问模板。
 // 通用信号：用户在表达"不想再承担/想放手"类的压力回避意图
 function mentionsAvoidance(text: string): boolean {
   return ["不想", "不愿", "不再", "想放手", "放权", "放手", "脱手", "退出", "兜底", "救火", "背锅", "担责"].some((s) => text.includes(s));
