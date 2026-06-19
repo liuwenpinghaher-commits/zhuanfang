@@ -355,6 +355,85 @@ describe("product state storage", () => {
       });
       expect(normalized.systemConfig.voice.defaultVoice).toBe("longanhuan");
     });
+
+    // 修复点：custom 克隆声音必须原样保留，不被白名单清掉
+    it("normalizeProductState preserves custom enrolled voice ID (custom-voice-abc123)", () => {
+      const state = createInitialProductState();
+      const normalized = normalizeProductState({
+        ...state,
+        systemConfig: {
+          ...state.systemConfig,
+          voice: {
+            ...state.systemConfig.voice,
+            defaultVoice: "custom-voice-abc123" as string
+          }
+        }
+      });
+      expect(normalized.systemConfig.voice.defaultVoice).toBe("custom-voice-abc123");
+    });
+
+    it("normalizeProductState preserves cosyvoice-clone style custom voice ID", () => {
+      const state = createInitialProductState();
+      const normalized = normalizeProductState({
+        ...state,
+        systemConfig: {
+          ...state.systemConfig,
+          voice: {
+            ...state.systemConfig.voice,
+            defaultVoice: "cosyvoice-clone-xyz789" as string
+          }
+        }
+      });
+      expect(normalized.systemConfig.voice.defaultVoice).toBe("cosyvoice-clone-xyz789");
+    });
+
+    it("normalizeProductState: podcastVoice calm-host (legacy invalid) is corrected to longanhuan", () => {
+      const state = createInitialProductState();
+      const normalized = normalizeProductState({
+        ...state,
+        systemConfig: {
+          ...state.systemConfig,
+          voice: {
+            ...state.systemConfig.voice,
+            podcastVoice: "calm-host" as string
+          }
+        }
+      });
+      expect(normalized.systemConfig.voice.podcastVoice).toBe("longanhuan");
+    });
+
+    it("normalizeProductState: podcastVoice custom clone is preserved", () => {
+      const state = createInitialProductState();
+      const normalized = normalizeProductState({
+        ...state,
+        systemConfig: {
+          ...state.systemConfig,
+          voice: {
+            ...state.systemConfig.voice,
+            podcastVoice: "custom-voice-podcast-001" as string
+          }
+        }
+      });
+      expect(normalized.systemConfig.voice.podcastVoice).toBe("custom-voice-podcast-001");
+    });
+
+    it("custom voice ID is idempotent across multiple normalizations", () => {
+      const state = createInitialProductState();
+      const withCustom = {
+        ...state,
+        systemConfig: {
+          ...state.systemConfig,
+          voice: {
+            ...state.systemConfig.voice,
+            defaultVoice: "custom-voice-abc123" as string
+          }
+        }
+      };
+      const once = normalizeProductState(withCustom);
+      const twice = normalizeProductState(once);
+      expect(once.systemConfig.voice.defaultVoice).toBe("custom-voice-abc123");
+      expect(twice.systemConfig.voice.defaultVoice).toBe("custom-voice-abc123");
+    });
   });
 
   it("migrateWorkflowRuns: maps legacy mastra-runtime providerId to local-workflow-runtime", () => {

@@ -205,7 +205,15 @@ function normalizeSearchConfig(systemConfig: Partial<SystemConfig>, fallbackConf
   };
 }
 
-const VALID_COSYVOICE_PRESET_VOICES = new Set(["longanyang", "longanhuan"]);
+// P2-11: Known-invalid legacy placeholder voice IDs that are rejected with HTTP 418
+// by the TTS backend. Only these specific values (and empty/non-string) are corrected;
+// any other non-empty string (including custom enrolled clone voices) is kept as-is.
+// ponytail: 只纠正已知非法 legacy 占位值;custom 克隆声音原样保留
+const KNOWN_INVALID_VOICE_IDS = new Set(["warm-interviewer", "calm-host", "local-demo"]);
+
+function isInvalidVoiceId(voice: unknown): boolean {
+  return typeof voice !== "string" || voice.trim() === "" || KNOWN_INVALID_VOICE_IDS.has(voice);
+}
 
 function normalizeVoiceConfig(systemConfig: Partial<SystemConfig>, fallbackConfig: SystemConfig) {
   const voiceConfig = {
@@ -217,17 +225,19 @@ function normalizeVoiceConfig(systemConfig: Partial<SystemConfig>, fallbackConfi
   // eb5e4011). Force any persisted s2s config to bailian (default).
   const realtimeMode = (voiceConfig.realtimeMode as string) === "s2s" ? "bailian" : voiceConfig.realtimeMode;
 
-  // P2-11: Guard against illegal defaultVoice values (e.g. old semantic aliases
-  // like "warm-interviewer") that are rejected with HTTP 418 by the TTS backend.
-  // Only longanyang / longanhuan are confirmed valid on cosyvoice-v3-plus.
-  const defaultVoice = VALID_COSYVOICE_PRESET_VOICES.has(voiceConfig.defaultVoice as string)
-    ? voiceConfig.defaultVoice
-    : "longanyang";
+  // P2-11: Correct only known-invalid legacy placeholder values (e.g. "warm-interviewer",
+  // "calm-host") that are rejected with HTTP 418 by the TTS backend.
+  // Custom enrolled clone voices (e.g. "custom-voice-xxx", "cosyvoice-clone-xxx") are
+  // preserved as-is — this is a blacklist correction, NOT a whitelist enforcement.
+  // ponytail: 只纠正已知非法 legacy 占位值;custom 克隆声音原样保留
+  const defaultVoice = isInvalidVoiceId(voiceConfig.defaultVoice) ? "longanyang" : voiceConfig.defaultVoice;
+  const podcastVoice = isInvalidVoiceId(voiceConfig.podcastVoice) ? "longanhuan" : voiceConfig.podcastVoice;
 
   return {
     ...voiceConfig,
     realtimeMode,
     defaultVoice,
+    podcastVoice,
     podcastFormat: voiceConfig.podcastFormat || fallbackConfig.voice.podcastFormat,
     ttsProvider: voiceConfig.ttsProvider === "local-demo" ? fallbackConfig.voice.ttsProvider : voiceConfig.ttsProvider
   };
