@@ -1,4 +1,4 @@
-import { Database, Globe2, Mic, Search, Sparkles, Trash2, Wand2 } from "lucide-react";
+import { Database, Globe2, Mic, RefreshCw, Search, Sparkles, Trash2, Wand2, Bookmark, BookmarkCheck } from "lucide-react";
 import { searchProviderIds, searchProviderLabels } from "../../capabilities/contracts";
 import type { CapabilityTask } from "../../capabilities/task";
 import { HeaderBlock } from "../../components/HeaderBlock";
@@ -17,6 +17,8 @@ interface SearchIntelligenceViewProps {
   onDeleteBrief: (briefId: string) => void;
   onSetDefaultProvider: (provider: SearchProviderId) => void;
   onAutoBrief: (themeId?: string, debtId?: string) => void | Promise<void>;
+  onRefreshBrief?: (briefId: string) => void | Promise<void>;
+  onTrackBrief?: (briefId: string, tracked: boolean) => void | Promise<void>;
 }
 
 export function SearchIntelligenceView({
@@ -30,7 +32,9 @@ export function SearchIntelligenceView({
   onUseBrief,
   onDeleteBrief,
   onSetDefaultProvider,
-  onAutoBrief
+  onAutoBrief,
+  onRefreshBrief,
+  onTrackBrief
 }: SearchIntelligenceViewProps) {
   const isRunning = task.status === "running";
   const providerActions: Array<{ id: SearchProviderId; label: string; icon: "sparkles" | "search" | "database" }> = [
@@ -45,9 +49,9 @@ export function SearchIntelligenceView({
   return (
     <section className="view-stack">
       <HeaderBlock
-        eyebrow="联网素材"
+        eyebrow="外部调研"
         title="主动搜集热点、素材和可讨论主题"
-        subtitle="当前搜索走 SearchProvider 能力层；真实 provider 可在系统配置中替换。"
+        subtitle="外部调研结果可标记为「持续追踪」并随时刷新；研究成果可带入专访作为外部参照。"
       />
       <section className="panel action-panel">
         <div className="panel-title"><Search size={18} /><h2>生成搜索简报</h2></div>
@@ -181,6 +185,28 @@ export function SearchIntelligenceView({
                 <button className="secondary-action" type="button" onClick={() => onUseBrief(brief.id)}>
                   <Mic size={17} />带入专访
                 </button>
+                {onTrackBrief && (
+                  <button
+                    className={brief.tracked ? "primary-action" : "secondary-action"}
+                    type="button"
+                    title={brief.tracked ? "已标记为持续追踪，点击取消" : "标记为持续追踪"}
+                    onClick={() => onTrackBrief(brief.id, !brief.tracked)}
+                  >
+                    {brief.tracked ? <BookmarkCheck size={16} /> : <Bookmark size={16} />}
+                    {brief.tracked ? "持续追踪中" : "持续追踪"}
+                  </button>
+                )}
+                {onRefreshBrief && (
+                  <button
+                    className="secondary-action"
+                    type="button"
+                    title="重新调研该主题并刷新内容"
+                    onClick={() => onRefreshBrief(brief.id)}
+                    disabled={isRunning}
+                  >
+                    <RefreshCw size={16} />重新调研
+                  </button>
+                )}
                 <button className="danger-button" type="button" onClick={() => onDeleteBrief(brief.id)}>
                   <Trash2 size={16} />删除简报
                 </button>

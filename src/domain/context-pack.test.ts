@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { buildInterviewCard, buildInterviewGuide, buildSemanticRagContext } from "./context-pack";
+import { buildInterviewCard, buildInterviewContextPack, buildInterviewGuide, buildSemanticRagContext } from "./context-pack";
 import { createInitialProductState } from "./engine";
-import type { RagChunk, ImportSource } from "./types";
+import type { RagChunk, ImportSource, SearchBrief } from "./types";
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -139,5 +139,81 @@ describe("context-pack (de-hardcoded)", () => {
         expect(`${b.concept} ${b.reason}`).not.toMatch(/救火|授权/);
       }
     }
+  });
+});
+
+// ─── tracked brief → 喂专访断言 (R3) ─────────────────────────────────────────
+
+describe("tracked SearchBrief → buildInterviewContextPack", () => {
+  it("tracked:true brief appears in contextPack.searchBriefs (验证追踪产出真喂专访)", () => {
+    const state = createInitialProductState();
+    // allowWebInInterview defaults to true in seed; ensure it is set
+    state.systemConfig = {
+      ...state.systemConfig,
+      search: { ...state.systemConfig.search, allowWebInInterview: true }
+    };
+
+    const trackedBrief = {
+      id: "brief-tracked-001",
+      topic: "AI 产品持续追踪主题",
+      provider: "local-demo" as const,
+      status: "ready" as const,
+      summary: "持续追踪的外部调研摘要",
+      facts: ["持续追踪事实"],
+      controversies: ["持续追踪争议"],
+      opposingViews: ["持续追踪反方"],
+      interviewAngles: ["专访角度"],
+      discussionTopics: ["讨论主题"],
+      sourceAngles: ["素材角度"],
+      sources: [],
+      sourceTrace: [],
+      appliedToSessionIds: [],
+      createdAt: new Date().toISOString(),
+      tracked: true
+    };
+
+    state.searchBriefs = [trackedBrief];
+
+    const contextPack = buildInterviewContextPack(state, { searchBriefId: trackedBrief.id });
+
+    // The tracked brief must be present in the context pack's searchBriefs array
+    expect(contextPack.searchBriefs.length).toBeGreaterThan(0);
+    const found = contextPack.searchBriefs.find((b) => b.id === trackedBrief.id);
+    expect(found).toBeDefined();
+    expect(found?.tracked).toBe(true);
+  });
+
+  it("tracked:false brief (no explicit searchBriefId) still appears as first brief via default resolution", () => {
+    const state = createInitialProductState();
+    state.systemConfig = {
+      ...state.systemConfig,
+      search: { ...state.systemConfig.search, allowWebInInterview: true }
+    };
+
+    const untrackedBrief = {
+      id: "brief-untracked-001",
+      topic: "未追踪主题",
+      provider: "local-demo" as const,
+      status: "ready" as const,
+      summary: "未追踪摘要",
+      facts: [],
+      controversies: [],
+      opposingViews: [],
+      interviewAngles: [],
+      discussionTopics: [],
+      sourceAngles: [],
+      sources: [],
+      sourceTrace: [],
+      appliedToSessionIds: [],
+      createdAt: new Date().toISOString(),
+      tracked: false
+    };
+
+    state.searchBriefs = [untrackedBrief];
+
+    // Without explicit searchBriefId, falls back to briefs[0] — still resolves
+    const contextPack = buildInterviewContextPack(state, {});
+    expect(contextPack.searchBriefs.length).toBeGreaterThan(0);
+    expect(contextPack.searchBriefs[0].id).toBe(untrackedBrief.id);
   });
 });

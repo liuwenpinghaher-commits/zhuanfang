@@ -575,6 +575,35 @@ export default function App() {
     setNotice(buildNotice("success", "自动简报已生成（本地）", `已选中「${brief.topic}」，可以带入下一次专访。`));
   }
 
+  async function refreshBrief(briefId: string) {
+    try {
+      const response = await productApiClient.refreshSearchBrief(briefId);
+      setProductState(response.state);
+      setApiPersistenceEnabled(true);
+      setNotice(buildNotice("success", "外部调研已刷新", `「${response.brief.topic}」的研究内容已更新。`));
+    } catch {
+      setApiPersistenceEnabled(false);
+      setNotice(buildNotice("warning", "刷新失败", "无法连接到后端，刷新未完成。"));
+    }
+  }
+
+  async function trackBrief(briefId: string, tracked: boolean) {
+    try {
+      const response = await productApiClient.trackSearchBrief(briefId, tracked);
+      setProductState(response.state);
+      setApiPersistenceEnabled(true);
+      setNotice(buildNotice("success", tracked ? "已标记为持续追踪" : "已取消持续追踪", tracked ? "该主题将持续追踪，可随时刷新获取最新研究。" : "已取消持续追踪标记。"));
+    } catch {
+      // Optimistic local update when API unavailable
+      setApiPersistenceEnabled(false);
+      setProductState((current) => ({
+        ...current,
+        searchBriefs: current.searchBriefs.map((b) => (b.id === briefId ? { ...b, tracked } : b))
+      }));
+      setNotice(buildNotice("success", tracked ? "已标记为持续追踪（本地）" : "已取消持续追踪（本地）", "后端不可用，已在本地更新状态。"));
+    }
+  }
+
   async function generatePodcastScript() {
     const effectiveSourceId =
       podcastSourceType === "note"
@@ -1347,6 +1376,8 @@ export default function App() {
             onDeleteBrief={removeSearchBrief}
             onSetDefaultProvider={setDefaultSearchProvider}
             onAutoBrief={autoBrief}
+            onRefreshBrief={refreshBrief}
+            onTrackBrief={trackBrief}
           />
         )}
         {view === "corpus" && (

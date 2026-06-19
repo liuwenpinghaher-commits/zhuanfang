@@ -40,6 +40,8 @@ export interface ProductApiClient {
   saveState(state: ProductState): Promise<{ state: ProductState; conflicted: boolean }>;
   resetState(): Promise<ProductState>;
   createSearchBrief(input: CreateSearchBriefRequest): Promise<CreateSearchBriefResponse>;
+  refreshSearchBrief(id: string): Promise<RefreshSearchBriefResponse>;
+  trackSearchBrief(id: string, tracked: boolean): Promise<TrackSearchBriefResponse>;
   createAutoBrief(input: CreateAutoBriefRequest): Promise<CreateAutoBriefResponse>;
   createInterviewSession(input: CreateInterviewSessionRequest): Promise<InterviewSessionResponse>;
   sendInterviewTurn(sessionId: string, input: SendInterviewTurnRequest): Promise<InterviewSessionResponse>;
@@ -144,6 +146,16 @@ export interface CreateSearchBriefResponse {
 export interface CreateAutoBriefRequest {
   themeId?: string;
   debtId?: string;
+}
+
+export interface RefreshSearchBriefResponse {
+  brief: SearchBrief;
+  state: ProductState;
+}
+
+export interface TrackSearchBriefResponse {
+  brief: SearchBrief;
+  state: ProductState;
 }
 
 export interface CreateAutoBriefResponse {
@@ -423,6 +435,26 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         body: JSON.stringify(input)
       })) as CreateSearchBriefResponse;
 
+      return {
+        ...response,
+        state: normalizeProductState(response.state)
+      };
+    },
+    async refreshSearchBrief(id) {
+      const response = (await requestJson(`/api/search/briefs/${encodeURIComponent(id)}/refresh`, {
+        method: "POST"
+      })) as RefreshSearchBriefResponse;
+      return {
+        ...response,
+        state: normalizeProductState(response.state)
+      };
+    },
+    async trackSearchBrief(id, tracked) {
+      const response = (await requestJson(`/api/search/briefs/${encodeURIComponent(id)}/track`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tracked })
+      })) as TrackSearchBriefResponse;
       return {
         ...response,
         state: normalizeProductState(response.state)
