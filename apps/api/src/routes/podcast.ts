@@ -175,8 +175,11 @@ export async function registerPodcastRoutes(
   });
 
   // POST /api/podcast/episodes/:id/synthesize
-  // Re-renders TTS for an already-persisted episode using its current script.
-  // Accepts no body. Returns { episode, state } with updated audio fields.
+  // Re-renders TTS for an already-persisted episode.
+  // Optional body: { script?: string } — when provided, the episode.script is updated to
+  // the caller-supplied value BEFORE rendering, eliminating the frontend save-then-synthesize
+  // race condition (the client can pass the current editing script directly).
+  // When omitted, falls back to the stored episode.script.
   // Degrades gracefully when no TTS client is configured (audioRenderStatus="fallback").
   server.post("/api/podcast/episodes/:id/synthesize", async (request, reply) => {
     const { id } = request.params as { id: string };
@@ -186,9 +189,16 @@ export async function registerPodcastRoutes(
       return reply.code(404).send({ error: "Episode not found." });
     }
 
-    const audioPatch = await renderEpisodeAudio(existing, options.bailianPodcastAudioClient);
+    // If the caller supplies a script, use it (and persist it) instead of the stored one.
+    const body = request.body && typeof request.body === "object" ? (request.body as Record<string, unknown>) : {};
+    const incomingScript = typeof body.script === "string" && body.script.trim() ? body.script : undefined;
+    const episodeToRender: PodcastEpisode = incomingScript
+      ? { ...existing, script: incomingScript, scriptReviewStatus: "用户确认" }
+      : existing;
+
+    const audioPatch = await renderEpisodeAudio(episodeToRender, options.bailianPodcastAudioClient);
     const updatedEpisode: PodcastEpisode = {
-      ...existing,
+      ...episodeToRender,
       ...audioPatch,
       scriptReviewStatus: "用户确认",
       status: "ready"

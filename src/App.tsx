@@ -667,30 +667,39 @@ export default function App() {
       return;
     }
 
-    // Step 1: Persist the edited script so the server synthesizes the correct version.
+    // Capture the script the user is currently editing. We pass it directly to the
+    // synthesize endpoint so TTS always uses the current version — this eliminates the
+    // race where a prior saveState failure left the server holding a stale script.
+    const scriptToSynthesize = podcastEditingScript || episode.script;
+
+    // Best-effort: also update local state optimistically so the UI reflects the new script
+    // even before the server round-trip completes.
     const applyScriptToState = (base: typeof productState) => ({
       ...base,
       podcastEpisodes: base.podcastEpisodes.map((ep) =>
         ep.id === episodeId
-          ? { ...ep, script: podcastEditingScript, scriptReviewStatus: "用户确认" as const }
+          ? { ...ep, script: scriptToSynthesize, scriptReviewStatus: "用户确认" as const }
           : ep
       )
     });
-    const stateWithScript = applyScriptToState(productState);
+    setProductState(applyScriptToState(productState));
 
-    try {
-      const { state: persisted, conflicted } = await productApiClient.saveState(stateWithScript);
-      const baseState = conflicted ? applyScriptToState(persisted) : persisted;
-      setProductState(baseState);
-      setApiPersistenceEnabled(true);
-    } catch {
-      setApiPersistenceEnabled(false);
-      setProductState(stateWithScript);
-    }
+    // Best-effort persistence (non-blocking). If this fails, the synthesize call below
+    // still carries the correct script, so failure here does NOT abort synthesis.
+    productApiClient.saveState(applyScriptToState(productState)).then(
+      ({ state: persisted, conflicted }) => {
+        setProductState(conflicted ? applyScriptToState(persisted) : persisted);
+        setApiPersistenceEnabled(true);
+      },
+      () => { setApiPersistenceEnabled(false); }
+    );
 
-    // Step 2: Call the synthesize endpoint to actually render TTS audio.
+    // Call the synthesize endpoint with the current script attached. The server will
+    // use this script for TTS rendering AND persist it, so the result is always
+    // consistent with what the user confirmed — regardless of whether saveState above
+    // succeeded.
     try {
-      const { state: synthState, episode: synthEpisode } = await productApiClient.synthesizePodcastEpisode(episodeId);
+      const { state: synthState, episode: synthEpisode } = await productApiClient.synthesizePodcastEpisode(episodeId, scriptToSynthesize);
       setProductState(synthState);
       setPodcastEditingScript("");
       const isRendered = synthEpisode.audioRenderStatus === "rendered";
@@ -700,7 +709,6 @@ export default function App() {
           : buildNotice("warning", "语音合成降级", `播客 "${episode.title}" 脚本已确认，但 TTS 渲染失败，可稍后重试。`)
       );
     } catch {
-      setPodcastEditingScript("");
       setNotice(buildNotice("danger", "语音合成失败", `播客 "${episode.title}" TTS 请求失败，脚本已保留。`));
     }
   }
