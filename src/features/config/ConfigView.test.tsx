@@ -111,13 +111,13 @@ describe("ConfigView", () => {
 
     renderView(state, systemCapabilities, {
       runtimeConfig,
-      section: "policies",
+      section: "settings",
       onSaveRuntimeConfig
     });
 
     const keyInput = container?.querySelector<HTMLInputElement>('input[name="DASHSCOPE_API_KEY"]');
     const modelInput = container?.querySelector<HTMLInputElement>('input[name="BAILIAN_SEARCH_MODEL"]');
-    expect(container?.textContent).toContain("服务端运行配置");
+    expect(container?.textContent).toContain("服务端配置（env）");
     expect(container?.textContent).toContain("/tmp/.env.local");
     expect(keyInput?.placeholder).toContain("未配置");
     expect(modelInput?.value).toBe("qwen-plus");
@@ -143,7 +143,7 @@ describe("ConfigView", () => {
     const onSaveProductConfig = vi.fn();
 
     renderView(state, emptyCapabilities(), {
-      section: "policies",
+      section: "settings",
       onSaveProductConfig,
       // The voice dropdowns are data-driven from `voices` (verified cosyvoice-v3-plus
       // presets); supply the ones the test selects.
@@ -162,7 +162,7 @@ describe("ConfigView", () => {
     const silenceInput = container?.querySelector<HTMLInputElement>('input[name="interview.silenceHoldMs"]');
     const followUpInput = container?.querySelector<HTMLInputElement>('input[name="interview.maxFollowUpDepth"]');
 
-    expect(container?.textContent).toContain("产品策略配置");
+    expect(container?.textContent).toContain("产品策略");
     expect(providerSelect?.value).toBe("bailian");
     expect(recencyInput?.value).toBe("14");
 
@@ -212,7 +212,7 @@ describe("ConfigView", () => {
     const state = createInitialProductState();
 
     renderView(state, emptyCapabilities(), {
-      section: "policies",
+      section: "settings",
       voices: [
         { voice: "longanyang", name: "龙安洋·阳光男声", description: "" },
         { voice: "longanhuan", name: "龙安欢·元气女声", description: "" }
@@ -247,9 +247,8 @@ describe("ConfigView", () => {
           systemCapabilities={systemCapabilities}
           runtimeConfig={null}
           runtimeConfigSaving={false}
-          section="providers"
+          section="status"
           onSection={vi.fn()}
-          onApprovePatch={vi.fn()}
           onCleanupGeneratedArtifacts={vi.fn()}
           onSaveRuntimeConfig={vi.fn()}
           onSaveProductConfig={vi.fn()}

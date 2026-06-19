@@ -133,7 +133,7 @@ export default function App() {
   const [assetQuery, setAssetQuery] = useState("");
   const [assetFilter, setAssetFilter] = useState<AssetFilter>("all");
   const [selectedAssetKey, setSelectedAssetKey] = useState<string | undefined>(undefined);
-  const [configSection, setConfigSection] = useState<ConfigSection>("overview");
+  const [configSection, setConfigSection] = useState<ConfigSection>("status");
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const [recording, setRecording] = useState(false);
   const [realtimeVoiceSession, setRealtimeVoiceSession] = useState<RealtimeVoiceSessionResponse | null>(null);
@@ -1538,7 +1538,6 @@ export default function App() {
             runtimeConfigSaving={runtimeConfigSaving}
             section={configSection}
             onSection={setConfigSection}
-            onApprovePatch={applyPlaybookPatch}
             onCleanupGeneratedArtifacts={cleanupGeneratedArtifacts}
             onSaveRuntimeConfig={saveRuntimeConfig}
             onSaveProductConfig={saveProductConfig}

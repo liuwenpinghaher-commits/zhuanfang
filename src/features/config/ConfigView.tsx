@@ -1,4 +1,4 @@
-import { Archive, CheckCircle2, ClipboardList, Cpu, Database, Mic, RefreshCcw, Search, ShieldCheck, Upload, Volume2 } from "lucide-react";
+import { Archive, Cpu, Mic, RefreshCcw, Search, ShieldCheck, Sliders, Upload, Volume2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigSetting, SystemConfigUpdateRequest, VoiceInfo } from "../../api/productApi";
 import { searchProviderIds, searchProviderLabels } from "../../capabilities/contracts";
@@ -16,7 +16,6 @@ interface ConfigViewProps {
   runtimeConfigSaving: boolean;
   section: ConfigSection;
   onSection: (section: ConfigSection) => void;
-  onApprovePatch: (patchId: string) => void;
   onCleanupGeneratedArtifacts: () => void;
   onSaveRuntimeConfig: (updates: SystemConfigUpdateRequest) => void;
   onSaveProductConfig: (config: SystemConfig) => void;
@@ -34,7 +33,6 @@ export function ConfigView({
   runtimeConfigSaving,
   section,
   onSection,
-  onApprovePatch,
   onCleanupGeneratedArtifacts,
   onSaveRuntimeConfig,
   onSaveProductConfig,
@@ -65,6 +63,10 @@ export function ConfigView({
   }, [state.systemConfig]);
 
   const runtimeDirtyCount = useMemo(() => Object.values(runtimeDirty).filter(Boolean).length, [runtimeDirty]);
+  const appliedPatchCount = useMemo(
+    () => state.playbookPatches.filter((patch) => patch.status === "applied").length,
+    [state.playbookPatches]
+  );
 
   function updateRuntimeSetting(setting: SystemConfigSetting, value: string) {
     setRuntimeDraft((current) => ({ ...current, [setting.key]: value }));
@@ -110,8 +112,8 @@ export function ConfigView({
     <section className="view-stack">
       <HeaderBlock
         eyebrow="系统配置"
-        title="底层能力、provider 和引擎策略"
-        subtitle="这里暴露系统当前使用的底座、配置版本、降级状态和已确认的访谈策略补丁。"
+        title="实时能力状态与运行参数"
+        subtitle="状态页展示 Product API 的真实能力健康；参数页集中编辑服务端配置(env)和产品策略。"
       />
       <section className="panel config-tabs" aria-label="系统配置分段">
         {configSectionOptions.map((option) => (
@@ -127,62 +129,7 @@ export function ConfigView({
         ))}
       </section>
 
-      {section === "overview" && (
-        <>
-          <div className="dashboard-grid">
-            <section className="panel">
-              <div className="panel-title"><Cpu size={18} /><h2>当前引擎</h2></div>
-              <dl className="detail-list">
-                <dt>配置版本</dt>
-                <dd>{status.configVersion}</dd>
-                <dt>访谈策略</dt>
-                <dd>{state.systemConfig.interview.playbookVersion}</dd>
-                <dt>访谈模型</dt>
-                <dd>{status.activeProviders.interviewModel}</dd>
-              </dl>
-            </section>
-            <section className="panel">
-              <div className="panel-title"><Search size={18} /><h2>搜索能力</h2></div>
-              <dl className="detail-list">
-                <dt>活跃 Provider</dt>
-                <dd>{status.activeProviders.search}</dd>
-                <dt>会中引用</dt>
-                <dd>{state.systemConfig.search.allowWebInInterview ? "开启" : "关闭"}</dd>
-              </dl>
-            </section>
-            <section className="panel">
-              <div className="panel-title"><Volume2 size={18} /><h2>语音能力</h2></div>
-              <dl className="detail-list">
-                <dt>TTS</dt>
-                <dd>{state.systemConfig.voice.ttsProvider}</dd>
-                <dt>实时语音</dt>
-                <dd>{state.systemConfig.voice.realtimeEnabled ? "开启" : "预留"}</dd>
-              </dl>
-            </section>
-          </div>
-          <section className="panel">
-            <div className="panel-title"><ShieldCheck size={18} /><h2>系统观测</h2></div>
-            <ul className="clean-list">
-              {status.observations.map((item, obsIdx) => <li key={`obs-${obsIdx}`}>{item}</li>)}
-            </ul>
-          </section>
-          <section className="panel">
-            <div className="panel-title"><Archive size={18} /><h2>生成物治理</h2></div>
-            <div className="metric-row compact">
-              <Metric label="搜索简报" value={state.searchBriefs.length} />
-              <Metric label="播客生成" value={state.podcastEpisodes.length} />
-              <Metric label="语料分析" value={state.corpusInsights.length} />
-            </div>
-            <div className="record-actions">
-              <button className="secondary-action" type="button" onClick={onCleanupGeneratedArtifacts}>
-                <RefreshCcw size={17} />清理重复生成物
-              </button>
-            </div>
-          </section>
-        </>
-      )}
-
-      {section === "providers" && (
+      {section === "status" && (
         <div className="view-stack">
           <section className="panel">
             <div className="panel-title"><ShieldCheck size={18} /><h2>Product API 实时状态</h2></div>
@@ -191,7 +138,7 @@ export function ConfigView({
                 <div className="config-hint">
                   <span>{systemCapabilities.runtime.service}</span>
                   <span>状态库：{systemCapabilities.runtime.stateStore}</span>
-                  <span>配置版本：{systemCapabilities.configVersion}</span>
+                  <span>引擎版本：{systemCapabilities.configVersion}</span>
                   <span>检查时间：{new Date(systemCapabilities.generatedAt).toLocaleString("zh-CN")}</span>
                 </div>
                 <div className="provider-grid">
@@ -213,29 +160,72 @@ export function ConfigView({
                 </div>
               </>
             ) : (
-              <p className="muted-copy">Product API 实时状态暂不可用，当前显示本地配置快照。</p>
+              <p className="muted-copy">Product API 实时状态暂不可用。请确认 API 服务已启动，再回到本页查看能力健康。</p>
             )}
           </section>
+
+          <div className="dashboard-grid">
+            <section className="panel">
+              <div className="panel-title"><Cpu size={18} /><h2>当前引擎</h2></div>
+              <dl className="detail-list">
+                <dt>配置版本</dt>
+                <dd>{status.configVersion}</dd>
+                <dt>访谈策略</dt>
+                <dd>{state.systemConfig.interview.playbookVersion}</dd>
+                <dt>访谈模型</dt>
+                <dd>{status.activeProviders.interviewModel}</dd>
+                <dt>已应用补丁</dt>
+                <dd>{appliedPatchCount}</dd>
+              </dl>
+            </section>
+            <section className="panel">
+              <div className="panel-title"><Search size={18} /><h2>搜索能力</h2></div>
+              <dl className="detail-list">
+                <dt>活跃 Provider</dt>
+                <dd>{status.activeProviders.search}</dd>
+                <dt>会中引用</dt>
+                <dd>{state.systemConfig.search.allowWebInInterview ? "开启" : "关闭"}</dd>
+              </dl>
+            </section>
+            <section className="panel">
+              <div className="panel-title"><Volume2 size={18} /><h2>语音能力</h2></div>
+              <dl className="detail-list">
+                <dt>TTS</dt>
+                <dd>{state.systemConfig.voice.ttsProvider}</dd>
+                <dt>实时语音</dt>
+                <dd>{state.systemConfig.voice.realtimeEnabled ? "开启" : "预留"}</dd>
+              </dl>
+            </section>
+          </div>
+
           <section className="panel">
-            <div className="panel-title"><Database size={18} /><h2>本地配置快照</h2></div>
-            <div className="provider-grid">
-              {status.providers.map((provider) => (
-                <article className="provider-card" key={provider.id}>
-                  <span className="status-pill">{provider.kind} · {provider.status}</span>
-                  <h3>{provider.label}</h3>
-                  <p>{provider.description}</p>
-                  <small>{provider.active ? "当前启用" : "未启用"} · {new Date(provider.lastCheckedAt).toLocaleDateString("zh-CN")}</small>
-                </article>
-              ))}
+            <div className="panel-title"><ShieldCheck size={18} /><h2>系统观测</h2></div>
+            <ul className="clean-list">
+              {status.observations.map((item, obsIdx) => <li key={`obs-${obsIdx}`}>{item}</li>)}
+            </ul>
+          </section>
+
+          <section className="panel">
+            <div className="panel-title"><Archive size={18} /><h2>生成物治理</h2></div>
+            <div className="metric-row compact">
+              <Metric label="搜索简报" value={state.searchBriefs.length} />
+              <Metric label="播客生成" value={state.podcastEpisodes.length} />
+              <Metric label="语料分析" value={state.corpusInsights.length} />
+            </div>
+            <div className="record-actions">
+              <button className="secondary-action" type="button" onClick={onCleanupGeneratedArtifacts}>
+                <RefreshCcw size={17} />清理重复生成物
+              </button>
             </div>
           </section>
         </div>
       )}
 
-      {section === "policies" && (
+      {section === "settings" && (
         <div className="view-stack">
           <section className="panel">
-            <div className="panel-title"><ShieldCheck size={18} /><h2>服务端运行配置</h2></div>
+            <div className="panel-title"><ShieldCheck size={18} /><h2>服务端配置（env）</h2></div>
+            <p className="muted-copy">直接写入 API 的 .env，保存后通过 PATCH /api/system/config 生效。密钥字段留空表示保持不变。</p>
             {runtimeConfig ? (
               <>
                 <div className="config-hint">
@@ -268,49 +258,14 @@ export function ConfigView({
                     onClick={saveRuntimeConfig}
                     disabled={runtimeConfigSaving || runtimeDirtyCount === 0}
                   >
-                    <ShieldCheck size={17} />{runtimeConfigSaving ? "保存中" : "保存运行配置"}
+                    <ShieldCheck size={17} />{runtimeConfigSaving ? "保存中" : "保存服务端配置"}
                   </button>
                 </div>
               </>
             ) : (
-              <p className="muted-copy">Product API 配置接口暂不可用，当前只能查看本地策略快照。</p>
+              <p className="muted-copy">Product API 配置接口暂不可用，无法编辑服务端 env。</p>
             )}
           </section>
-          <div className="dashboard-grid">
-            <section className="panel">
-              <div className="panel-title"><Search size={18} /><h2>搜索策略</h2></div>
-              <dl className="detail-list">
-                <dt>Provider</dt>
-                <dd>{status.activeProviders.search}</dd>
-                <dt>时效窗口</dt>
-                <dd>{state.systemConfig.search.recencyDays} 天</dd>
-                <dt>最大来源</dt>
-                <dd>{state.systemConfig.search.maxSources}</dd>
-              </dl>
-            </section>
-            <section className="panel">
-              <div className="panel-title"><Volume2 size={18} /><h2>语音策略</h2></div>
-              <dl className="detail-list">
-                <dt>默认声音</dt>
-                <dd>{state.systemConfig.voice.defaultVoice}</dd>
-                <dt>播客声音</dt>
-                <dd>{state.systemConfig.voice.podcastVoice}</dd>
-                <dt>Realtime</dt>
-                <dd>{state.systemConfig.voice.realtimeEnabled ? "开启" : "预留"}</dd>
-              </dl>
-            </section>
-            <section className="panel">
-              <div className="panel-title"><Mic size={18} /><h2>访谈策略</h2></div>
-              <dl className="detail-list">
-                <dt>启动模式</dt>
-                <dd>{state.systemConfig.interview.launchMode}</dd>
-                <dt>留白阈值</dt>
-                <dd>{state.systemConfig.interview.silenceHoldMs} ms</dd>
-                <dt>追问深度</dt>
-                <dd>{state.systemConfig.interview.maxFollowUpDepth}</dd>
-              </dl>
-            </section>
-          </div>
 
           <VoiceCloningPanel
             voices={voices}
@@ -320,7 +275,8 @@ export function ConfigView({
           />
 
           <section className="panel">
-            <div className="panel-title"><Cpu size={18} /><h2>产品策略配置</h2></div>
+            <div className="panel-title"><Sliders size={18} /><h2>产品策略</h2></div>
+            <p className="muted-copy">写入本地产品状态（自动保存），影响搜索、语音和访谈流程的默认行为。</p>
             <div className="runtime-config-sections">
               <section className="runtime-config-section">
                 <h3>联网素材</h3>
@@ -576,25 +532,6 @@ export function ConfigView({
             </div>
           </section>
         </div>
-      )}
-
-      {section === "patches" && (
-        <section className="panel">
-          <div className="panel-title"><ClipboardList size={18} /><h2>PlaybookPatch</h2></div>
-          <div className="patch-list horizontal">
-            {state.playbookPatches.length === 0 && <p>还没有从导入语料确认过的访谈策略补丁。</p>}
-            {state.playbookPatches.map((patch) => (
-              <div className="patch-card" key={patch.id}>
-                <span className="status-pill">{patch.status} · {patch.impact}</span>
-                <h3>{patch.title}</h3>
-                <p>{patch.description}</p>
-                <button className="secondary-action" type="button" onClick={() => onApprovePatch(patch.id)} disabled={patch.status === "applied"}>
-                  <CheckCircle2 size={16} />应用
-                </button>
-              </div>
-            ))}
-          </div>
-        </section>
       )}
     </section>
   );

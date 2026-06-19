@@ -8,7 +8,6 @@ import { registerMemoryCorrectionRoutes } from "./memory-corrections";
 import { registerNoteRoutes } from "./notes";
 import { registerAssetRoutes } from "./assets";
 import { registerPlaybookPatchRoutes } from "./playbook-patches";
-import { registerProductConfigRoutes } from "./product-config";
 import { registerGeneratedArtifactRoutes } from "./generated-artifacts";
 
 describe("new zhuanfang routes", () => {
@@ -22,7 +21,6 @@ describe("new zhuanfang routes", () => {
     await registerNoteRoutes(app, stateRepo);
     await registerAssetRoutes(app, stateRepo);
     await registerPlaybookPatchRoutes(app, stateRepo);
-    await registerProductConfigRoutes(app, stateRepo);
     await registerGeneratedArtifactRoutes(app, stateRepo);
     await app.ready();
   });
@@ -249,52 +247,6 @@ describe("new zhuanfang routes", () => {
       const res = await app.inject({
         method: "POST",
         url: "/api/playbook-patches/nonexistent/revert",
-      });
-      expect(res.statusCode).toBe(404);
-    });
-  });
-
-  describe("product-config", () => {
-    it("PATCH /api/product-config updates config", async () => {
-      const state = stateRepo.getState();
-      const res = await app.inject({
-        method: "PATCH",
-        url: "/api/product-config",
-        payload: {
-          config: {
-            ...state.systemConfig,
-            interview: {
-              ...state.systemConfig.interview,
-              playbookVersion: "v2",
-            },
-          },
-          reason: "upgrade playbook",
-        },
-      });
-      expect(res.statusCode).toBe(200);
-      const body = JSON.parse(res.body);
-      expect(body.configVersion).toBeDefined();
-    });
-
-    it("PATCH /api/product-config returns 200 for submitting current config", async () => {
-      const state = stateRepo.getState();
-      const res = await app.inject({
-        method: "PATCH",
-        url: "/api/product-config",
-        payload: {
-          config: state.systemConfig,
-          reason: "re-submit current config",
-        },
-      });
-      expect(res.statusCode).toBe(200);
-      const body = JSON.parse(res.body);
-      expect(body.configVersion).toBeDefined();
-    });
-
-    it("POST /api/product-config/versions/:id/rollback returns 404 for missing version", async () => {
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/product-config/versions/nonexistent/rollback",
       });
       expect(res.statusCode).toBe(404);
     });

@@ -43,7 +43,7 @@ export interface AssetFilterOption {
   description: string;
 }
 
-export type ConfigSection = "overview" | "providers" | "policies" | "patches";
+export type ConfigSection = "status" | "settings";
 
 export interface ConfigSectionOption {
   id: ConfigSection;
@@ -107,10 +107,8 @@ export const assetFilterOptions: AssetFilterOption[] = [
 ];
 
 export const configSectionOptions: ConfigSectionOption[] = [
-  { id: "overview", label: "总览", description: "当前配置版本和活跃能力" },
-  { id: "providers", label: "Provider", description: "搜索、语音、存储和本地引擎状态" },
-  { id: "policies", label: "策略", description: "搜索、语音和访谈运行策略" },
-  { id: "patches", label: "补丁", description: "用户确认的访谈策略变更" }
+  { id: "status", label: "状态", description: "实时能力健康、引擎版本和生成物计数" },
+  { id: "settings", label: "参数", description: "服务端配置(env)和产品策略" }
 ];
 
 export const interviewControlGroups: InterviewControlGroup[] = [

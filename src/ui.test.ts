@@ -42,8 +42,9 @@ describe("ui helpers", () => {
   });
 
   it("defines system configuration sections in a stable order", () => {
-    expect(configSectionOptions.map((option) => option.id)).toEqual(["overview", "providers", "policies", "patches"]);
-    expect(configSectionOptions.find((option) => option.id === "providers")?.label).toBe("Provider");
+    expect(configSectionOptions.map((option) => option.id)).toEqual(["status", "settings"]);
+    expect(configSectionOptions.find((option) => option.id === "status")?.label).toBe("状态");
+    expect(configSectionOptions.find((option) => option.id === "settings")?.label).toBe("参数");
   });
 
   it("groups in-session interview controls by user intent", () => {

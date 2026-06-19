@@ -45,7 +45,6 @@ import { registerMemoryCorrectionRoutes } from "./routes/memory-corrections";
 import { registerNoteRoutes } from "./routes/notes";
 import { registerPlaybookPatchRoutes } from "./routes/playbook-patches";
 import { registerPodcastRoutes } from "./routes/podcast";
-import { registerProductConfigRoutes } from "./routes/product-config";
 import { registerQualityRoutes } from "./routes/quality";
 import { registerRagRoutes } from "./routes/rag";
 import { registerRealtimeVoiceRoutes } from "./routes/realtime-voice";
@@ -192,9 +191,6 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   });
   void server.register(async (registeredServer) => {
     await registerPlaybookPatchRoutes(registeredServer, productStateRepository);
-  });
-  void server.register(async (registeredServer) => {
-    await registerProductConfigRoutes(registeredServer, productStateRepository);
   });
   void server.register(async (registeredServer) => {
     await registerGeneratedArtifactRoutes(registeredServer, productStateRepository);
