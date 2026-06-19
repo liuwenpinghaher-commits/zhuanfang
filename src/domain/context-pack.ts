@@ -1030,8 +1030,21 @@ function resolveInterviewSearchBrief(state: ProductState, searchBriefId?: string
   if (!state.systemConfig.search.allowWebInInterview) {
     return undefined;
   }
-  const brief = searchBriefId ? state.searchBriefs.find((item) => item.id === searchBriefId) : state.searchBriefs[0];
-  return brief && isSearchBriefAllowedInInterviewContext(state, brief) ? brief : undefined;
+  if (searchBriefId) {
+    // 显式指定 id 时按 id 查找，行为不变
+    const brief = state.searchBriefs.find((item) => item.id === searchBriefId);
+    return brief && isSearchBriefAllowedInInterviewContext(state, brief) ? brief : undefined;
+  }
+  // 无显式 id 时：优先选最近的 tracked:true 且允许进上下文的 brief（兑现"持续追踪自动喂专访"语义）
+  const trackedBrief = state.searchBriefs.find(
+    (item) => item.tracked && isSearchBriefAllowedInInterviewContext(state, item)
+  );
+  if (trackedBrief) {
+    return trackedBrief;
+  }
+  // 无 tracked brief 时回退到原 [0] 逻辑
+  const first = state.searchBriefs[0];
+  return first && isSearchBriefAllowedInInterviewContext(state, first) ? first : undefined;
 }
 function scoreDebtFollowUp(debt: ProductState["debts"][number]) {
   const staleDays = daysBetween(debt.updatedAt, nowIso());

@@ -709,5 +709,86 @@ describe("product state storage", () => {
       const normalized = normalizeProductState({ ...state, memoryCandidates: candidates as never });
       expect(normalized.memoryCandidates.length).toBe(3);
     });
+
+    it("部分候选缺少 createdAt（历史脏数据）时 normalize 不崩、approved ≤ 200、pending 全留", () => {
+      const state = createInitialProductState();
+      // 50 pending（有 createdAt）+ 180 approved（部分缺 createdAt）
+      const pending = Array.from({ length: 50 }, (_, i) => ({
+        id: `pd-${i}`,
+        text: `pending ${i}`,
+        status: "pending" as const,
+        sourceType: "interview_session" as const,
+        sourceId: "s1",
+        evidenceQuote: "quote",
+        reason: "reason",
+        sensitivity: "normal" as const,
+        reviewScore: 60,
+        reviewSignals: [],
+        createdAt: new Date(Date.UTC(2026, 0, i + 1)).toISOString()
+      }));
+      const approvedWithMissingCreatedAt = Array.from({ length: 180 }, (_, i) => ({
+        id: `ap-${i}`,
+        text: `approved ${i}`,
+        status: i % 3 === 0 ? ("approved" as const) : ("rejected" as const),
+        sourceType: "interview_session" as const,
+        sourceId: "s1",
+        evidenceQuote: "quote",
+        reason: "reason",
+        sensitivity: "normal" as const,
+        reviewScore: 75,
+        reviewSignals: [],
+        // 每隔 3 个故意缺 createdAt（历史脏数据）
+        ...(i % 3 !== 0 ? { createdAt: new Date(Date.UTC(2026, 1, i + 1)).toISOString() } : {})
+      }));
+
+      const normalized = normalizeProductState({
+        ...state,
+        memoryCandidates: [...pending, ...approvedWithMissingCreatedAt] as never
+      });
+
+      const pendingResult = normalized.memoryCandidates.filter((c) => c.status === "pending");
+      const reviewedResult = normalized.memoryCandidates.filter((c) => c.status !== "pending");
+      // pending 全部保留
+      expect(pendingResult.length).toBe(50);
+      // 已审 ≤ 200（总量 180 < 200 故全留，重点验证不崩）
+      expect(reviewedResult.length).toBeLessThanOrEqual(200);
+      // 不崩即通过（无异常抛出）
+    });
+  });
+
+  describe("migrateMemoryEdges 丢边告警", () => {
+    it("全部为非主题边时迁移后 memoryEdges 为 []", () => {
+      const state = createInitialProductState();
+      const nonThemeEdges = [
+        { id: "e1", fromMemoryRecordId: "r1", targetType: "point", targetId: "p1" },
+        { id: "e2", fromMemoryRecordId: "r2", targetType: "question", targetId: "q1" }
+      ];
+      const normalized = normalizeProductState({ ...state, memoryEdges: nonThemeEdges as never });
+      expect(normalized.memoryEdges).toEqual([]);
+    });
+
+    it("混合边时只保留 long_term_theme 边，非主题边被丢弃", () => {
+      const state = createInitialProductState();
+      const themeId = state.themes[0]?.id ?? "theme-x";
+      const mixed = [
+        { id: "e1", fromMemoryRecordId: "r1", targetType: "long_term_theme", targetId: themeId },
+        { id: "e2", fromMemoryRecordId: "r2", targetType: "point", targetId: "p-xyz" }
+      ];
+      const normalized = normalizeProductState({ ...state, memoryEdges: mixed as never });
+      expect(normalized.memoryEdges).toHaveLength(1);
+      expect(normalized.memoryEdges[0].themeId).toBe(themeId);
+    });
+  });
+
+  describe("legacy.readings 清除", () => {
+    it("历史 readings 字段经 spread 透传后被显式删除", () => {
+      const state = createInitialProductState();
+      const legacy = {
+        ...state,
+        readings: [{ id: "r1", title: "旧阅读记录", url: "https://example.com" }]
+      } as unknown as Parameters<typeof normalizeProductState>[0];
+      const normalized = normalizeProductState(legacy) as unknown as Record<string, unknown>;
+      expect(normalized.readings).toBeUndefined();
+    });
   });
 });

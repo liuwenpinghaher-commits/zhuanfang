@@ -267,3 +267,84 @@ describe("R4: corrections 有界化", () => {
     expect(contextPack.corrections.length).toBe(10);
   });
 });
+
+// ─── tracked brief 自动喂专访（真验证，不绕过 searchBriefId）─────────────────
+
+function makeTrackedBrief(id: string, tracked: boolean): SearchBrief {
+  return {
+    id,
+    topic: `topic-${id}`,
+    provider: "local-demo" as const,
+    status: "ready" as const,
+    summary: `摘要-${id}`,
+    facts: [`事实-${id}`],
+    controversies: [`争议-${id}`],
+    opposingViews: [`反方-${id}`],
+    interviewAngles: [`角度-${id}`],
+    discussionTopics: [`讨论-${id}`],
+    sourceAngles: [`来源-${id}`],
+    sources: [],
+    sourceTrace: [],
+    appliedToSessionIds: [],
+    createdAt: new Date().toISOString(),
+    tracked
+  };
+}
+
+describe("tracked brief 自动选择（无显式 searchBriefId）", () => {
+  it("多个 brief 中非首位的 tracked:true，不传 searchBriefId 时选中 tracked brief 而非 [0]", () => {
+    const state = createInitialProductState();
+    state.systemConfig = {
+      ...state.systemConfig,
+      search: { ...state.systemConfig.search, allowWebInInterview: true }
+    };
+    // briefs[0] 未追踪，briefs[1] 追踪
+    const untrackedFirst = makeTrackedBrief("brief-untracked-first", false);
+    const trackedSecond = makeTrackedBrief("brief-tracked-second", true);
+    state.searchBriefs = [untrackedFirst, trackedSecond];
+
+    // 关键：不传 searchBriefId，断言选中 tracked 的 brief
+    const contextPack = buildInterviewContextPack(state, {});
+
+    expect(contextPack.searchBriefs.length).toBeGreaterThan(0);
+    const found = contextPack.searchBriefs.find((b) => b.id === "brief-tracked-second");
+    expect(found).toBeDefined();
+    expect(found?.tracked).toBe(true);
+    // [0] 的 untracked brief 不应被选中
+    const wrongBrief = contextPack.searchBriefs.find((b) => b.id === "brief-untracked-first");
+    expect(wrongBrief).toBeUndefined();
+  });
+
+  it("全无 tracked brief 时回退到 briefs[0]（原有行为保持）", () => {
+    const state = createInitialProductState();
+    state.systemConfig = {
+      ...state.systemConfig,
+      search: { ...state.systemConfig.search, allowWebInInterview: true }
+    };
+    const brief0 = makeTrackedBrief("brief-fallback-0", false);
+    const brief1 = makeTrackedBrief("brief-fallback-1", false);
+    state.searchBriefs = [brief0, brief1];
+
+    const contextPack = buildInterviewContextPack(state, {});
+
+    expect(contextPack.searchBriefs.length).toBeGreaterThan(0);
+    expect(contextPack.searchBriefs[0].id).toBe("brief-fallback-0");
+  });
+
+  it("显式传 searchBriefId 时按 id 找，不被 tracked 逻辑干扰", () => {
+    const state = createInitialProductState();
+    state.systemConfig = {
+      ...state.systemConfig,
+      search: { ...state.systemConfig.search, allowWebInInterview: true }
+    };
+    const trackedFirst = makeTrackedBrief("brief-tracked-first", true);
+    const explicitTarget = makeTrackedBrief("brief-explicit-target", false);
+    state.searchBriefs = [trackedFirst, explicitTarget];
+
+    // 显式指定第二个 brief（非 tracked）
+    const contextPack = buildInterviewContextPack(state, { searchBriefId: "brief-explicit-target" });
+
+    expect(contextPack.searchBriefs.length).toBeGreaterThan(0);
+    expect(contextPack.searchBriefs.find((b) => b.id === "brief-explicit-target")).toBeDefined();
+  });
+});

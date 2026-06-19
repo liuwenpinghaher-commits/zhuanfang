@@ -94,9 +94,11 @@ export function normalizeProductState(value: unknown): ProductState {
     }
   };
   // R3: intel 子系统已删除。`...candidate` spread 会带入历史 intelTasks/intelItems,显式丢弃。
+  // readings 字段在 R1 中已删除,同样通过 spread 透传,一并清除。
   const legacy = normalized as unknown as Record<string, unknown>;
   delete legacy.intelTasks;
   delete legacy.intelItems;
+  delete legacy.readings;
   return pruneDanglingThemeRefs(normalized);
 }
 
@@ -124,7 +126,7 @@ function migrateThemesToTracks(value: unknown[]): import("./types").LongTermThem
 
 // R4: MemoryEdge 砍为 record→theme 软链。历史 rich edge 仅保留指向主题的边,其它丢弃。
 function migrateMemoryEdges(value: unknown[]): import("./types").MemoryEdge[] {
-  return value
+  const results = value
     .filter((edge): edge is Record<string, unknown> => Boolean(edge && typeof edge === "object"))
     .map((edge): import("./types").MemoryEdge | null => {
       const fromMemoryRecordId = edge.fromMemoryRecordId;
@@ -140,8 +142,13 @@ function migrateMemoryEdges(value: unknown[]): import("./types").MemoryEdge[] {
         return { id, fromMemoryRecordId, themeId: edge.targetId, createdAt };
       }
       return null;
-    })
-    .filter((edge): edge is import("./types").MemoryEdge => edge !== null);
+    });
+  const kept = results.filter((edge): edge is import("./types").MemoryEdge => edge !== null);
+  const dropped = results.length - kept.length;
+  if (dropped > 0) {
+    console.warn(JSON.stringify({ event: "memory_edges_migration_dropped", count: dropped }));
+  }
+  return kept;
 }
 
 function migrateWorkflowRuns(value: unknown[]): import("./types").WorkflowRun[] {
