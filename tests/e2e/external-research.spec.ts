@@ -15,7 +15,9 @@ test("外部调研：创建简报 → 标记持续追踪 → 重新调研 → �
 
   // ---- 阶段 1: 创建简报（AnySearch，走 local-demo fallback）----
   await page.getByLabel("追踪主题").fill("AI 产品商业化热点");
-  await page.getByRole("button", { name: "AnySearch", exact: true }).click();
+  // Provider controls consolidated into #search-provider <select> + 「生成简报」button (U6).
+  await page.locator("#search-provider").selectOption("anysearch");
+  await page.getByRole("button", { name: "生成简报" }).click();
 
   // 等待简报生成完成（成功或降级）— AnySearch 走真实 API，允许 25s
   await expect(
@@ -72,7 +74,9 @@ test("外部调研：持续追踪开关可反复切换", async ({ page }) => {
 
   // 创建一个简报
   await page.getByLabel("追踪主题").fill("AI 监管与合规");
-  await page.getByRole("button", { name: "AnySearch", exact: true }).click();
+  // Provider controls consolidated into #search-provider <select> + 「生成简报」button (U6).
+  await page.locator("#search-provider").selectOption("anysearch");
+  await page.getByRole("button", { name: "生成简报" }).click();
 
   // AnySearch 走真实 API，允许 35s 等待响应或 local-demo fallback
   await expect(
@@ -104,7 +108,9 @@ test("外部调研：带入专访后可在实时专访中看到外部参照", as
 
   // 创建简报
   await page.getByLabel("追踪主题").fill("大模型竞争格局");
-  await page.getByRole("button", { name: "AnySearch", exact: true }).click();
+  // Provider controls consolidated into #search-provider <select> + 「生成简报」button (U6).
+  await page.locator("#search-provider").selectOption("anysearch");
+  await page.getByRole("button", { name: "生成简报" }).click();
 
   // AnySearch 走真实 API，允许 35s 等待响应或 local-demo fallback
   await expect(

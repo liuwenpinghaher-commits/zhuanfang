@@ -8,7 +8,10 @@ test("creates an AnySearch degraded brief with structured material and can delet
   await openView(page, "外部调研", "主动搜集热点、素材和可讨论主题");
 
   await page.getByLabel("追踪主题").fill("AI 产品商业化热点");
-  await page.getByRole("button", { name: "AnySearch", exact: true }).click();
+  // Provider controls were consolidated into a single <select id="search-provider"> + 「生成简报」button.
+  // Pick AnySearch explicitly so this test still exercises the AnySearch path, then generate.
+  await page.locator("#search-provider").selectOption("anysearch");
+  await page.getByRole("button", { name: "生成简报" }).click();
 
   // AnySearch calls the real API; allow up to 30s. Notice varies: degraded → "搜索已降级完成",
   // success → "搜索简报已生成". Status badge: degraded → "需复核", success → "可用".
@@ -45,7 +48,11 @@ test("sets the default search provider from the search workspace", async ({ page
   await resetDemoState(page);
   await openView(page, "外部调研", "主动搜集热点、素材和可讨论主题");
 
-  await page.getByRole("button", { name: "设为默认：AnySearch" }).click();
+  // The per-provider "设为默认：X" chips were replaced by a single 「设为默认」button that commits
+  // whatever provider is chosen in #search-provider. The demo default is bailian, so selecting
+  // anysearch enables the button (it is disabled when the selection already equals the default).
+  await page.locator("#search-provider").selectOption("anysearch");
+  await page.getByRole("button", { name: "设为默认" }).click();
 
   await expect(page.getByText("默认搜索 Provider 已更新")).toBeVisible();
   await expect(page.getByText("当前默认 provider：anysearch").first()).toBeVisible();
