@@ -159,9 +159,9 @@ export function buildTrackWorkspace(state: ProductState, themeId: string): Track
   const theme = state.themes.find((t) => t.id === themeId);
   return {
     theme,
-    // ImportSource 无 relatedThemeIds 字段 → 通过 ragChunks.usage/relatedThemeIds 关联;
-    // MVP:用 importSources 全集为空时返回 []。若 ragChunks 有 themeId 关联则按其 sourceId 反查。
-    sources: theme ? state.importSources.filter((src) => sourceLinkedToTheme(state, src, themeId)) : [],
+    // 已核实:RagChunk / ImportSource 均无 relatedThemeIds —— 数据模型当前没有"资料↔主题线"关联。
+    // ponytail: sources MVP 返回 [],工作区 Sources 列显示诚实空状态;待数据模型支持资料软标签后再接。
+    sources: [],
     sessions: theme ? state.sessions.filter((s) => has(s.relatedThemeIds, themeId)) : [],
     outputs: {
       points: theme ? state.points.filter((p) => has(p.relatedThemeIds, themeId)) : [],
@@ -171,16 +171,9 @@ export function buildTrackWorkspace(state: ProductState, themeId: string): Track
     }
   };
 }
-
-// ImportSource 自身无 relatedThemeIds;经 ragChunks(其 sourceId 指向 source、且 chunk 可带 relatedThemeIds)反查。
-function sourceLinkedToTheme(state: ProductState, src: ImportSource, themeId: string): boolean {
-  return state.ragChunks.some(
-    (c) => c.sourceId === src.id && has((c as { relatedThemeIds?: string[] }).relatedThemeIds, themeId)
-  );
-}
 ```
 
-> 注:先读 `src/domain/types.ts` 确认 `RagChunk` 是否有 `relatedThemeIds`、`ProductState.ragChunks` 是否存在。若 `ragChunks` 无该字段,`sources` MVP 直接返回 `[]`(Track 工作区先展示 sessions+outputs,sources 留空状态「该主题线暂无关联资料」),并在测试里相应断言 `sources: []`。**以实际类型为准,不要引用不存在的字段。**
+> 已核实:`RagChunk` 仅有 `sourceId`/`usage`,`ImportSource` 无 `relatedThemeIds` → 当前无"资料↔主题线"关联,`sources` 返回 `[]`,工作区 Sources 列显示空状态「资料尚未按主题线归类」。测试断言 `ws.sources` 为 `[]`。`ImportSource` import 可省去。
 
 - [ ] **Step 4:** Run `npx vitest run src/domain/timeline.test.ts` — Expected PASS。
 - [ ] **Step 5:** `npm run typecheck` + 全量 `npx vitest run --exclude "**/*.real.test.ts"` 全绿。
