@@ -762,6 +762,12 @@ export interface MemoryRecord {
   createdAt: string;
   updatedAt: string;
   deprecatedReason?: string;
+  /** M3: 语义检索向量，由嵌入模型生成；缺省时退化为关键词检索 */
+  embedding?: number[];
+  /** M3: 显著性评分 1–10，消费侧缺省按 5 处理 */
+  importance?: number;
+  /** M3: 最近被检索时间，用于衰减排序 */
+  lastAccessedAt?: string;
 }
 
 export interface MemoryCandidate {
@@ -778,6 +784,10 @@ export interface MemoryCandidate {
   createdAt: string;
   reviewedAt?: string;
   reviewNote?: string;
+  /** M3: 去重提示 — 指向与此候选高度相似的已有 MemoryRecord id（Task 6 去重用） */
+  similarToRecordId?: string;
+  /** M3: 去重操作建议 */
+  suggestedUpdate?: "add" | "update" | "noop" | "conflict";
 }
 
 export interface MemoryEdge {

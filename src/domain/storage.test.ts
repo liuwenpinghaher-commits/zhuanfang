@@ -808,4 +808,108 @@ describe("product state storage", () => {
       expect(normalized.readings).toBeUndefined();
     });
   });
+
+  describe("MemoryRecord migration (M3 data)", () => {
+    it("normalizes legacy MemoryRecord without new fields, no crash", () => {
+      const legacy = {
+        ...createInitialProductState(),
+        memoryRecords: [
+          {
+            id: "m1",
+            text: "x",
+            status: "confirmed",
+            sourceType: "interview_session",
+            sourceId: "s",
+            evidenceQuote: "",
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z"
+          }
+        ]
+      };
+      const norm = normalizeProductState(legacy as Parameters<typeof normalizeProductState>[0]);
+      const r = norm.memoryRecords[0];
+      expect(r.embedding).toBeUndefined();        // 可选,缺省不报错
+      expect(r.importance ?? 5).toBe(5);          // 缺省视为中性 5
+      expect(r.text).toBe("x");                   // 其余字段不变
+    });
+
+    it("MemoryRecord with embedding and importance is preserved after normalize (round-trip)", () => {
+      const state = createInitialProductState();
+      const norm = normalizeProductState({
+        ...state,
+        memoryRecords: [
+          {
+            id: "m2",
+            text: "y",
+            status: "confirmed" as const,
+            sourceType: "interview_session" as const,
+            sourceId: "s",
+            evidenceQuote: "quote",
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+            embedding: [0.1, 0.2, 0.3],
+            importance: 8,
+            lastAccessedAt: "2026-06-01T00:00:00Z"
+          }
+        ]
+      });
+      const r = norm.memoryRecords[0];
+      expect(r.embedding).toEqual([0.1, 0.2, 0.3]);
+      expect(r.importance).toBe(8);
+      expect(r.lastAccessedAt).toBe("2026-06-01T00:00:00Z");
+      expect(r.text).toBe("y");
+    });
+
+    it("MemoryCandidate with dedup hint fields is preserved after normalize (round-trip)", () => {
+      const state = createInitialProductState();
+      const norm = normalizeProductState({
+        ...state,
+        memoryCandidates: [
+          {
+            id: "mc-dedup",
+            text: "候选去重测试",
+            status: "pending" as const,
+            sourceType: "interview_session" as const,
+            sourceId: "s1",
+            evidenceQuote: "很长的原话引用超过十二字符",
+            reason: "reason",
+            sensitivity: "normal" as const,
+            reviewScore: 70,
+            reviewSignals: ["signal-a"],
+            createdAt: "2026-06-01T00:00:00Z",
+            similarToRecordId: "m1",
+            suggestedUpdate: "update" as const
+          }
+        ]
+      });
+      const c = norm.memoryCandidates[0];
+      expect(c.similarToRecordId).toBe("m1");
+      expect(c.suggestedUpdate).toBe("update");
+    });
+
+    it("MemoryCandidate without dedup hint fields is not crashed, fields are undefined", () => {
+      const state = createInitialProductState();
+      const norm = normalizeProductState({
+        ...state,
+        memoryCandidates: [
+          {
+            id: "mc-old",
+            text: "候选记忆文本",
+            status: "pending" as const,
+            sourceType: "interview_session" as const,
+            sourceId: "s1",
+            evidenceQuote: "很长的原话引用超过十二字符",
+            reason: "reason",
+            sensitivity: "normal" as const,
+            reviewScore: 70,
+            reviewSignals: ["signal-a"],
+            createdAt: "2026-06-01T00:00:00Z"
+          }
+        ]
+      });
+      const c = norm.memoryCandidates[0];
+      expect(c.similarToRecordId).toBeUndefined();
+      expect(c.suggestedUpdate).toBeUndefined();
+    });
+  });
 });
