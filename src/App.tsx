@@ -156,6 +156,9 @@ export default function App() {
   const [searchTopic, setSearchTopic] = useState("AI 产品商业化热点");
   const [activeSearchBriefId, setActiveSearchBriefId] = useState<string | undefined>(undefined);
   const [searchTask, setSearchTask] = useState(() => createIdleCapabilityTask<SearchBriefInput>("联网搜索"));
+  const [refreshingBriefId, setRefreshingBriefId] = useState<string | null>(null);
+  const [trackingBriefId, setTrackingBriefId] = useState<string | null>(null);
+  const [usingBriefId, setUsingBriefId] = useState<string | null>(null);
   const [podcastNoteId, setPodcastNoteId] = useState(() => productState.notes[0]?.id ?? "");
   const [podcastVoice, setPodcastVoice] = useState(productState.systemConfig.voice.podcastVoice);
   const [podcastSourceType, setPodcastSourceType] = useState<PodcastSourceType>("note");
@@ -576,6 +579,7 @@ export default function App() {
   }
 
   async function refreshBrief(briefId: string) {
+    setRefreshingBriefId(briefId);
     try {
       const response = await productApiClient.refreshSearchBrief(briefId);
       setProductState(response.state);
@@ -584,10 +588,13 @@ export default function App() {
     } catch {
       setApiPersistenceEnabled(false);
       setNotice(buildNotice("warning", "刷新失败", "无法连接到后端，刷新未完成。"));
+    } finally {
+      setRefreshingBriefId(null);
     }
   }
 
   async function trackBrief(briefId: string, tracked: boolean) {
+    setTrackingBriefId(briefId);
     try {
       const response = await productApiClient.trackSearchBrief(briefId, tracked);
       setProductState(response.state);
@@ -601,6 +608,21 @@ export default function App() {
         searchBriefs: current.searchBriefs.map((b) => (b.id === briefId ? { ...b, tracked } : b))
       }));
       setNotice(buildNotice("success", tracked ? "已标记为持续追踪（本地）" : "已取消持续追踪（本地）", "后端不可用，已在本地更新状态。"));
+    } finally {
+      setTrackingBriefId(null);
+    }
+  }
+
+  async function autoRunResearch() {
+    try {
+      const response = await productApiClient.autoRunResearch();
+      setProductState(response.state);
+      setApiPersistenceEnabled(true);
+      setNotice(buildNotice("success", "自动盯梢完成", `新增 ${response.summary.generated} 条，刷新 ${response.summary.refreshed} 条。`));
+      return response.summary;
+    } catch {
+      setApiPersistenceEnabled(false);
+      throw new Error("自动盯梢失败，请检查网络连接后重试");
     }
   }
 
@@ -1386,6 +1408,10 @@ export default function App() {
             onAutoBrief={autoBrief}
             onRefreshBrief={refreshBrief}
             onTrackBrief={trackBrief}
+            onAutoRun={autoRunResearch}
+            refreshingBriefId={refreshingBriefId}
+            trackingBriefId={trackingBriefId}
+            usingBriefId={usingBriefId}
           />
         )}
         {view === "corpus" && (
