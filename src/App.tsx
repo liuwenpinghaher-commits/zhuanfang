@@ -48,7 +48,7 @@ import {
   updateQuestionStatus
 } from "./domain/engine";
 import { executeSearchProvider } from "./capabilities/search";
-import { createIdleCapabilityTask, startCapabilityTask } from "./capabilities/task";
+import { createIdleCapabilityTask, failCapabilityTask, startCapabilityTask } from "./capabilities/task";
 import { productApiClient, getProductApiBaseUrl, isNetworkError, type ReviewsResponse } from "./api/productApi";
 import type { RealtimeVoiceSessionResponse, SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigUpdateRequest, VoiceInfo } from "./api/productApi";
 // WebRTC omni client is incomplete (no callbacks/turn recording); the connect path is
@@ -276,6 +276,9 @@ export default function App() {
       .getState()
       .then((remoteState) => {
         if (!cancelled) {
+          // Record what we just loaded as "already saved" so the debounce effect doesn't
+          // immediately PUT the freshly-fetched state straight back to the server on load.
+          lastSavedContentRef.current = productStateContentSignature(remoteState);
           setProductState(remoteState);
           setApiPersistenceEnabled(true);
         }
@@ -337,11 +340,19 @@ export default function App() {
     };
   }, [productState]);
 
+  // Adopt an authoritative state returned by a fine-grained route. Records it as
+  // "already saved" so the debounce effect doesn't echo the whole state back in a
+  // redundant full-state PUT (the route already persisted it server-side).
+  function adoptServerState(next: ProductState) {
+    lastSavedContentRef.current = productStateContentSignature(next);
+    setProductState(next);
+  }
+
   async function importMemoryDocument(title: string, content: string) {
     setImporting(true);
     try {
       const result = await productApiClient.importDocument({ title, content, sourceType: "text" });
-      setProductState(result.state);
+      adoptServerState(result.state);
       setApiPersistenceEnabled(true);
       setNotice(buildNotice("success", "导入完成", `抽取了 ${result.candidateCount} 条候选记忆，请在下方审核。`));
     } catch {
@@ -353,14 +364,14 @@ export default function App() {
 
   function withMemoryAction(run: () => Promise<ProductState>) {
     run()
-      .then((next) => setProductState(next))
+      .then((next) => adoptServerState(next))
       .catch(() => setNotice(buildNotice("warning", "操作失败", "记忆治理需要后端在线。")));
   }
   function confirmDecision(id: string) {
     setConfirmingDecisionId(id);
     productApiClient
       .confirmDecision(id)
-      .then((next) => setProductState(next))
+      .then((next) => adoptServerState(next))
       .catch(() => setNotice(buildNotice("warning", "操作失败", "确认决策需要后端在线。")))
       .finally(() => setConfirmingDecisionId(undefined));
   }
@@ -374,7 +385,7 @@ export default function App() {
     productApiClient
       .consolidateMemory()
       .then((res) => {
-        setProductState(res.state);
+        adoptServerState(res.state);
         setNotice(
           buildNotice(
             "success",
@@ -577,7 +588,13 @@ export default function App() {
           : buildNotice("success", "搜索简报已生成", `已选中「${apiRun.brief.topic}」，可以带入下一次专访。`)
       );
       return;
-    } catch {
+    } catch (err) {
+      if (!isNetworkError(err)) {
+        // Server is up but rejected the request — don't fork to a local demo brief.
+        setSearchTask(failCapabilityTask(runningTask, "服务返回错误，请稍后重试。"));
+        setNotice(buildNotice("warning", "搜索失败", "服务返回错误，请稍后重试。"));
+        return;
+      }
       setApiPersistenceEnabled(false);
     }
 
@@ -1132,6 +1149,16 @@ export default function App() {
 
   async function exportData() {
     return productApiClient.exportState();
+  }
+
+  async function importData(payload: unknown) {
+    const nextState = await productApiClient.importState(payload);
+    setApiPersistenceEnabled(true);
+    saveProductState(nextState);
+    setSession(null);
+    closeRealtimeVoiceSession();
+    setNotice(buildNotice("success", "数据已从备份恢复", "已用导入的备份覆盖当前全部数据。"));
+    return nextState;
   }
 
   async function showPrivacyReport() {
@@ -1755,6 +1782,7 @@ export default function App() {
             onAddCorrection={addCorrection}
             onReset={resetData}
             onExport={exportData}
+            onImport={importData}
             onPrivacyReport={showPrivacyReport}
             onPurge={purgeData}
             onSetProductState={setProductState}

@@ -5,6 +5,9 @@ import type { ImportSource, ProductState, ProviderConfig, SearchBrief, SearchPro
 const STORAGE_KEY = "interview-product-state-v1";
 // ponytail: 有界常量 — normalize 时保留的最大已审 candidate 数(pending 全留)
 const MAX_REVIEWED_CANDIDATES = 200;
+// ponytail: rolling window for audit/aiRun event logs (newest-first). Bounds the largest
+// unbounded growth source so the full-state-PUT model can't grow past the 28MB body limit.
+const MAX_EVENT_LOG = 1000;
 
 export function normalizeProductState(value: unknown): ProductState {
   const fallback = createInitialProductState();
@@ -70,8 +73,12 @@ export function normalizeProductState(value: unknown): ProductState {
     importSources: Array.isArray(candidate.importSources) ? normalizeImportSources(candidate.importSources) : fallback.importSources,
     ragChunks: Array.isArray(candidate.ragChunks) ? candidate.ragChunks : fallback.ragChunks,
     configVersions: Array.isArray(candidate.configVersions) ? candidate.configVersions : fallback.configVersions,
-    auditEvents: Array.isArray(candidate.auditEvents) ? candidate.auditEvents : fallback.auditEvents,
-    aiRunEvents: Array.isArray(candidate.aiRunEvents) ? candidate.aiRunEvents : fallback.aiRunEvents,
+    // ponytail: rolling window on the two highest-frequency log arrays — every interview
+    // turn appends an aiRunEvent + an auditEvent (newest-first), and nothing else capped
+    // them. Without this the whole ProductState grows unbounded and (via full-state PUT)
+    // eventually hits the 28MB body limit, killing all writes. 1000 most-recent kept.
+    auditEvents: Array.isArray(candidate.auditEvents) ? candidate.auditEvents.slice(0, MAX_EVENT_LOG) : fallback.auditEvents,
+    aiRunEvents: Array.isArray(candidate.aiRunEvents) ? candidate.aiRunEvents.slice(0, MAX_EVENT_LOG) : fallback.aiRunEvents,
     workflowRuns: Array.isArray(candidate.workflowRuns) ? migrateWorkflowRuns(candidate.workflowRuns) : fallback.workflowRuns,
     operationalChecks: Array.isArray(candidate.operationalChecks) ? candidate.operationalChecks : fallback.operationalChecks,
     revision: typeof candidate.revision === "number" ? candidate.revision : fallback.revision,

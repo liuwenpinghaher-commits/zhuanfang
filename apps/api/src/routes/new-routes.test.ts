@@ -4,10 +4,7 @@ import { createInitialProductState } from "../../../../src/domain/engine";
 import { createInMemoryProductStateRepository } from "../product-state-repository";
 import { registerMemoryRecordRoutes } from "./memory-records";
 import { registerMemoryCandidateRoutes } from "./memory-candidates";
-import { registerNoteRoutes } from "./notes";
 import { registerAssetRoutes } from "./assets";
-import { registerPlaybookPatchRoutes } from "./playbook-patches";
-import { registerGeneratedArtifactRoutes } from "./generated-artifacts";
 
 describe("new zhuanfang routes", () => {
   const app = Fastify();
@@ -16,10 +13,7 @@ describe("new zhuanfang routes", () => {
   beforeAll(async () => {
     await registerMemoryRecordRoutes(app, stateRepo);
     await registerMemoryCandidateRoutes(app, stateRepo);
-    await registerNoteRoutes(app, stateRepo);
     await registerAssetRoutes(app, stateRepo);
-    await registerPlaybookPatchRoutes(app, stateRepo);
-    await registerGeneratedArtifactRoutes(app, stateRepo);
     await app.ready();
   });
 
@@ -81,59 +75,6 @@ describe("new zhuanfang routes", () => {
     });
   });
 
-  describe("notes", () => {
-    it("POST /api/notes/:id/questions returns 404 for missing note", async () => {
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/notes/nonexistent/questions",
-        payload: { nextQuestionIndex: 0 },
-      });
-      expect(res.statusCode).toBe(404);
-    });
-
-    it("POST /api/notes/:id/questions returns 422 for invalid index", async () => {
-      const state = stateRepo.getState();
-      const noteId = state.notes[0].id;
-      const res = await app.inject({
-        method: "POST",
-        url: `/api/notes/${noteId}/questions`,
-        payload: { nextQuestionIndex: 999 },
-      });
-      expect(res.statusCode).toBe(422);
-    });
-
-    it("POST /api/notes/:id/questions creates a question from a note", async () => {
-      const state = stateRepo.getState();
-      const noteId = state.notes[0].id;
-      const res = await app.inject({
-        method: "POST",
-        url: `/api/notes/${noteId}/questions`,
-        payload: { nextQuestionIndex: 0 },
-      });
-      expect(res.statusCode).toBe(200);
-      const body = JSON.parse(res.body);
-      expect(body.question).toBeDefined();
-      expect(body.question.id).toContain("question-from-note");
-    });
-
-    it("POST /api/notes/:id/feedback submits feedback", async () => {
-      const state = stateRepo.getState();
-      const noteId = state.notes[0].id;
-      const res = await app.inject({
-        method: "POST",
-        url: `/api/notes/${noteId}/feedback`,
-        payload: {
-          tags: ["went-deep", "summary-accurate"],
-          mostValuableQuestion: "What is the real cost?",
-        },
-      });
-      expect(res.statusCode).toBe(200);
-      const body = JSON.parse(res.body);
-      expect(body.note).toBeDefined();
-      expect(body.note.feedback).toBeDefined();
-    });
-  });
-
   describe("assets", () => {
     // Asset status mutations (points/questions/debts/decision-review) are local-first
     // reducers persisted via PUT /api/state — they have no dedicated routes. Only the
@@ -156,36 +97,6 @@ describe("new zhuanfang routes", () => {
         url: "/api/assets/decisions/nonexistent/confirm",
       });
       expect(res.statusCode).toBe(404);
-    });
-  });
-
-  describe("playbook-patches", () => {
-    it("POST /api/playbook-patches/:id/apply returns 404 for missing patch", async () => {
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/playbook-patches/nonexistent/apply",
-      });
-      expect(res.statusCode).toBe(404);
-    });
-
-    it("POST /api/playbook-patches/:id/revert returns 404 for missing patch", async () => {
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/playbook-patches/nonexistent/revert",
-      });
-      expect(res.statusCode).toBe(404);
-    });
-  });
-
-  describe("generated-artifacts", () => {
-    it("POST /api/generated-artifacts/cleanup runs deduplication", async () => {
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/generated-artifacts/cleanup",
-      });
-      expect(res.statusCode).toBe(200);
-      const body = JSON.parse(res.body);
-      expect(body.removed).toBeDefined();
     });
   });
 });

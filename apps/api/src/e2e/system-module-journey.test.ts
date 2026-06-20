@@ -40,10 +40,10 @@ describe("System journey A: config → research auto-run → interview → asset
     const capBody = capRes.json();
     expect(Array.isArray(capBody.capabilities)).toBe(true);
     expect(capBody.capabilities.length).toBeGreaterThan(0);
-    // 运行时与状态库永远 ready
+    // 运行时 ready；状态库在内存态（本测试无 dbPath）是 degraded（非持久，诚实降级），sqlite 才 ready
     const byId = (id: string) => capBody.capabilities.find((c: any) => c.id === id);
     expect(byId("product-api").status).toBe("ready");
-    expect(byId("state-store").status).toBe("ready");
+    expect(byId("state-store").status).toBe("degraded");
     // 无 key → 百炼能力必须是 needs-key（诚实降级）
     expect(byId("bailian-responses").status).toBe("needs-key");
     expect(byId("bailian-character").status).toBe("needs-key");

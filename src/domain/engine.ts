@@ -759,35 +759,6 @@ export function applySystemConfigChange(
   });
 }
 
-export function rollbackSystemConfigVersion(state: ProductState, versionId: string): ProductState {
-  const history = ensureConfigVersionHistory(state);
-  const targetVersion = history.find((version) => version.id === versionId);
-  if (!targetVersion) {
-    return state;
-  }
-
-  const createdAt = new Date().toISOString();
-  const nextState = withSystemConfigVersion(state, targetVersion.snapshot, {
-    changedBy: "user",
-    reason: `回滚到配置版本 ${targetVersion.version}`,
-    createdAt,
-    rollbackTarget: targetVersion.version,
-  });
-  if (nextState === state) {
-    return state;
-  }
-
-  return withAuditEvent(nextState, {
-    type: "system_config_reverted",
-    label: "配置版本已回滚",
-    detail: `已回滚到 ${targetVersion.version}，后续流程将使用该配置快照。`,
-    severity: "warning",
-    entityType: "system_config_version",
-    entityId: nextState.configVersions[0].id,
-    createdAt,
-  });
-}
-
 export function withSystemConfigVersion(
   state: ProductState,
   nextConfig: SystemConfig,

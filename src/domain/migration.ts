@@ -146,11 +146,10 @@ function buildMigrationEntityCounts(state: ProductState): MigrationEntityCount[]
     {
       id: "operations",
       label: "运行与审计",
+      // workflowRuns / operationalChecks are never produced — excluded to avoid implying coverage.
       count:
         state.auditEvents.length +
         state.aiRunEvents.length +
-        state.workflowRuns.length +
-        state.operationalChecks.length +
         state.configVersions.length
     }
   ];

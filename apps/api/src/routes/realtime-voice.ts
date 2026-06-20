@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
+import { isAuthGuardActive, isAuthorized } from "../auth";
 import { WebSocketServer, WebSocket } from "ws";
 import type { BailianRealtimeVoiceClient, BailianVoiceEnrollmentClient, BailianEmbeddingClient } from "../providers/bailian";
 import { COSYVOICE_PRESET_VOICES } from "../voice-presets";
@@ -51,6 +52,8 @@ interface RealtimeVoiceRouteOptions {
    * the upgrade is rejected with close code 4001.
    */
   streamingTtsClient?: BailianStreamingTtsClient;
+  /** Runtime env for auth checks on the raw WS upgrade path (which bypasses Fastify hooks). */
+  env?: Record<string, string | undefined>;
 }
 
 interface RealtimeVoiceSessionPayload {
@@ -305,7 +308,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     if (!session) {
       return reply.status(404).send({ error: "session_not_found" });
     }
-    const { buildInterviewAgentContext, buildInterviewGuide } = await import("../../../../src/domain/engine");
+    const { buildInterviewAgentContext, buildInterviewGuide, buildInterviewEnginePolicy } = await import("../../../../src/domain/engine");
     const state = stateRepo.getState();
     const corrections = state.memoryCorrections ?? [];
 
@@ -315,21 +318,25 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     // no text / embed error → keyword recall (current behaviour), never throws.
     const { latestUserText } = request.query as { latestUserText?: string };
     const queryEmbedding = await embedRecallQuery(latestUserText, options.embeddingClient);
-    const effectiveSession = queryEmbedding
-      ? {
-          ...session,
-          guide: buildInterviewGuide(state, {
-            topicHint: session.guide.topicHint || undefined,
-            ...(session.card.searchBriefId ? { searchBriefId: session.card.searchBriefId } : {}),
-            queryEmbedding
-          })
-        }
-      : session;
+    const refreshedGuide = queryEmbedding
+      ? buildInterviewGuide(state, {
+          topicHint: session.guide.topicHint || undefined,
+          ...(session.card.searchBriefId ? { searchBriefId: session.card.searchBriefId } : {}),
+          queryEmbedding
+        })
+      : session.guide;
+    // Re-stamp enginePolicy from latest state so a mid-session PlaybookPatch reaches the
+    // LiveKit agent's instructions (not frozen at the opening snapshot) — same as /turns.
+    const effectiveSession = {
+      ...session,
+      enginePolicy: buildInterviewEnginePolicy(state),
+      guide: refreshedGuide
+    };
 
     return buildInterviewAgentContext(effectiveSession, corrections);
   });
 
-  server.get("/api/realtime-voice/livekit-token", async (request) => {
+  server.get("/api/realtime-voice/livekit-token", async (request, reply) => {
     const { sessionId, interviewSessionId } = request.query as {
       sessionId?: string;
       interviewSessionId?: string;
@@ -338,10 +345,17 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       ? `interview-${interviewSessionId}`
       : `session-${sessionId ?? randomUUID()}`;
 
+    const env = options.env ?? process.env;
+    // In production, refuse to sign with the well-known dev defaults — anyone could forge
+    // an equivalent token. Local/dev keeps the devkey fallback for zero-config.
+    if (isAuthGuardActive(env) && (!env.LIVEKIT_API_KEY || !env.LIVEKIT_API_SECRET)) {
+      return reply.code(503).send({ error: "LiveKit credentials not configured." });
+    }
+
     const { AccessToken } = await import("livekit-server-sdk");
     const token = new AccessToken(
-      process.env.LIVEKIT_API_KEY ?? "devkey",
-      process.env.LIVEKIT_API_SECRET ?? "secret",
+      env.LIVEKIT_API_KEY ?? "devkey",
+      env.LIVEKIT_API_SECRET ?? "secret",
       {
         identity: `user-${randomUUID().slice(0, 8)}`,
         name: "Interview User",
@@ -391,6 +405,18 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
 
   server.server.on("upgrade", (request: IncomingMessage, socket, head) => {
     const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
+
+    // This raw Node upgrade handler runs OUTSIDE Fastify's onRequest auth hook, so the WS
+    // path would otherwise bypass production bearer auth entirely. Apply the same check here.
+    // Browsers can't set WS headers, so a ?token= query value is also accepted.
+    if (!isAuthorized(options.env ?? process.env, {
+      authHeader: request.headers.authorization,
+      tokenQuery: url.searchParams.get("token") ?? undefined
+    })) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+      socket.destroy();
+      return;
+    }
 
     // ── TTS proxy branch (/api/realtime-voice/ws/tts/:sessionId) ────────────
     //

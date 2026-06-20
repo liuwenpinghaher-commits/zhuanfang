@@ -70,7 +70,11 @@ export function startResearchScheduler(options: ResearchSchedulerOptions): Resea
     }
 
     const { briefs: dedupedBriefs } = dedupeBriefSources(runningState.searchBriefs);
-    options.repository.replaceState({ ...runningState, searchBriefs: dedupedBriefs });
+    // Field-level merge: a tick can take tens of seconds across LLM calls, during which a
+    // user may have committed interview turns / asset edits. Re-read the LATEST state and
+    // write back ONLY searchBriefs, instead of overwriting the whole snapshot captured at
+    // tick start (which silently dropped concurrent edits — last-write-wins).
+    options.repository.replaceState({ ...options.repository.getState(), searchBriefs: dedupedBriefs });
 
     console.info(JSON.stringify({
       event: "research_scheduler_tick",

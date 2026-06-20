@@ -28,6 +28,7 @@ type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 export interface ProductApiClient {
   health(): Promise<boolean>;
   exportState(): Promise<BackupRestoreRehearsalReport>;
+  importState(payload: unknown): Promise<ProductState>;
   getPrivacyReport(): Promise<PrivacyReport>;
   purgeState(): Promise<ProductState>;
   getSystemCapabilities(): Promise<SystemCapabilitiesResponse>;
@@ -389,6 +390,15 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
     async exportState() {
       return (await requestJson("/api/state/export", { method: "GET" })) as BackupRestoreRehearsalReport;
     },
+    async importState(payload) {
+      return normalizeProductState(
+        await requestJson("/api/state/import", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload)
+        })
+      );
+    },
     async getPrivacyReport() {
       return (await requestJson("/api/state/privacy-report", { method: "GET" })) as PrivacyReport;
     },
@@ -476,7 +486,7 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         return { state: normalizeProductState(body.current), conflicted: true };
       }
       if (!response.ok) {
-        throw new Error(`Product API request failed: ${response.status}`);
+        throw new ApiError(response.status, "/api/state");
       }
       return { state: normalizeProductState(await response.json()), conflicted: false };
     },

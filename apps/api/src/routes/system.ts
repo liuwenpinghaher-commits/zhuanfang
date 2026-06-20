@@ -347,6 +347,18 @@ export async function registerSystemRoutes(
       return reply.code(422).send({ error: "At least one supported config update is required." });
     }
 
+    // Refuse to silently clear a REQUIRED secret (e.g. DASHSCOPE_API_KEY) — doing so would
+    // degrade every dependent capability without any explicit signal.
+    const requiredSecretKeys = new Set(
+      runtimeSettingDefinitions.filter((definition) => definition.required && definition.secret).map((definition) => definition.key)
+    );
+    const clearedRequired = Object.entries(updates)
+      .filter(([key, value]) => value === undefined && requiredSecretKeys.has(key))
+      .map(([key]) => key);
+    if (clearedRequired.length > 0) {
+      return reply.code(422).send({ error: `不能清空必填密钥：${clearedRequired.join("、")}。如需更换请直接填入新值。` });
+    }
+
     const env = options.env ?? process.env;
     if (options.envFilePath) {
       writeEnvFileUpdates(options.envFilePath, updates);
@@ -396,11 +408,16 @@ export async function registerSystemRoutes(
       {
         id: "state-store",
         kind: "storage",
+        // Memory mode works but is NOT persistent — surface it as degraded (not the same
+        // green "ready" as durable SQLite), and drop the PRODUCT_STATE_DB_PATH requirement
+        // that memory mode doesn't actually need.
         label: "Product State Store",
-        status: "ready",
+        status: options.stateStore === "sqlite" ? "ready" : "degraded",
         active: true,
-        detail: options.stateStore === "sqlite" ? "SQLite 状态库已启用。" : "内存状态库已启用，重启后回到 seed 状态。",
-        requiredEnv: ["PRODUCT_STATE_DB_PATH"],
+        detail: options.stateStore === "sqlite"
+          ? "SQLite 状态库已启用，数据持久化。"
+          : "内存状态库已启用：数据不持久，重启后回到 seed 状态；导出仅为当前会话快照。",
+        requiredEnv: options.stateStore === "sqlite" ? ["PRODUCT_STATE_DB_PATH"] : [],
         lastCheckedAt: generatedAt
       },
       {
@@ -485,7 +502,9 @@ export async function registerSystemRoutes(
           ? ["DASHSCOPE_API_KEY"]
           : ["DASHSCOPE_API_KEY", "BAILIAN_REALTIME_WEBRTC_ENDPOINT"],
         model: env.BAILIAN_REALTIME_MODEL ?? BAILIAN_REALTIME_MODEL,
-        transport: env.BAILIAN_REALTIME_TRANSPORT ?? "webrtc",
+        // Reuse the resolved transport (defaults to websocket) so the descriptor doesn't
+        // claim "ready" on a websocket assumption while displaying "webrtc".
+        transport: realtimeTransport,
         lastCheckedAt: generatedAt
       }
     ];

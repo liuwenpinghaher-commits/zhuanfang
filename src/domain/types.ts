@@ -284,6 +284,7 @@ export interface AuditEvent {
     | "context_security_intercepted"
     | "decision_candidate_confirmed"
     | "privacy_data_purged"
+    | "state_imported"
     | "cascade_decision_logged";
   label: string;
   detail: string;
@@ -473,7 +474,7 @@ export interface InterviewTransparencyItem {
 export interface InterviewPlaybookReference {
   patchId: string;
   title: string;
-  status: "proposed" | "applied" | "reverted" | "rejected";
+  status: "proposed" | "applied" | "reverted";
   impact: "low" | "medium" | "high";
   sourceInsightId: string;
   sourceImportId?: string;
@@ -1066,7 +1067,7 @@ export interface PlaybookPatch {
   sourceImportId?: string;
   sourceTitle?: string;
   sourceUrl?: string;
-  status: "proposed" | "applied" | "reverted" | "rejected";
+  status: "proposed" | "applied" | "reverted";
   rules: string[];
   /**
    * Optional machine-readable classification of each rule, positionally aligned

@@ -298,6 +298,23 @@ export function ConfigView({
                       ))}
                     </select>
                     <span className="field-help">影响“联网素材”默认使用的 provider。</span>
+                    {(() => {
+                      // Cross-reference the selected provider with its live capability health
+                      // so users see "selected but degraded/needs-key" without leaving the tab.
+                      const capId = productDraft.search.activeProvider === "bailian"
+                        ? "bailian-responses"
+                        : productDraft.search.activeProvider === "anysearch"
+                          ? "anysearch"
+                          : null;
+                      const cap = capId ? systemCapabilities?.capabilities.find((c) => c.id === capId) : null;
+                      if (!cap || cap.status === "ready") return null;
+                      return (
+                        <span className="field-help" style={{ color: "var(--accent-amber)" }}>
+                          ⚠ 所选 provider 当前状态：{cap.status}
+                          {cap.requiredEnv && cap.requiredEnv.length > 0 ? `（需在「服务端配置」填 ${cap.requiredEnv.join("、")}）` : ""}
+                        </span>
+                      );
+                    })()}
                   </label>
                   <label className="field-stack runtime-setting-field" htmlFor="product-search-recency">
                     <span className="field-label">搜索时效窗口</span>
@@ -445,6 +462,27 @@ export function ConfigView({
                       ))}
                     </select>
                     <span className="field-help">影响播客工作台新建节目时的默认 voice。</span>
+                  </label>
+                  <label className="field-stack runtime-setting-field" htmlFor="product-tts-provider">
+                    <span className="field-label">TTS Provider</span>
+                    <select
+                      id="product-tts-provider"
+                      name="voice.ttsProvider"
+                      value={productDraft.voice.ttsProvider}
+                      onChange={(event) => {
+                        const nextValue = event.target.value as typeof productDraft.voice.ttsProvider;
+                        updateProductConfig((config) => ({
+                          ...config,
+                          voice: { ...config.voice, ttsProvider: nextValue }
+                        }));
+                      }}
+                    >
+                      <option value="local-demo">Local Demo</option>
+                      <option value="bailian">百炼 CosyVoice</option>
+                      <option value="openai">OpenAI</option>
+                      <option value="elevenlabs">ElevenLabs</option>
+                    </select>
+                    <span className="field-help">语音合成 provider，与上方「状态」页的语音能力健康对应。</span>
                   </label>
                   <label className="field-stack runtime-setting-field" htmlFor="product-realtime-mode">
                     <span className="field-label">实时语音模式</span>

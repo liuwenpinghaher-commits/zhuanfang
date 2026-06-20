@@ -2,9 +2,19 @@ import type { FastifyInstance } from "fastify";
 import { buildBackupRestoreRehearsalReport } from "../../../../src/domain/backup";
 import { buildPrivacyReport, createPurgedProductState } from "../../../../src/domain/privacy";
 import { normalizeProductState } from "../../../../src/domain/storage";
+import { withAuditEvent } from "../../../../src/domain/utils";
+import { purgeLocalObjectArtifactsForState } from "../local-object-artifacts";
 import type { ProductStateRepository } from "../product-state-repository";
 
-export async function registerStateRoutes(server: FastifyInstance, repository: ProductStateRepository) {
+interface StateRouteOptions {
+  env?: Record<string, string | undefined>;
+}
+
+export async function registerStateRoutes(
+  server: FastifyInstance,
+  repository: ProductStateRepository,
+  options: StateRouteOptions = {}
+) {
   server.get("/api/state", async () => repository.getState());
   server.put("/api/state", async (request, reply) => {
     const stored = repository.getState();
@@ -24,16 +34,59 @@ export async function registerStateRoutes(server: FastifyInstance, repository: P
     return buildPrivacyReport(state);
   });
 
-  // P0-2: Export (backup rehearsal report)
+  // P0-2: Export. The rehearsal report now carries `exportPackage` (full ProductState),
+  // so the downloaded JSON is genuinely restorable via POST /api/state/import below.
   server.get("/api/state/export", async () => {
     const state = repository.getState();
     return buildBackupRestoreRehearsalReport(state);
   });
 
-  // P0-3: Purge
+  // P0-2b: Import — restore a previously exported package (or a raw ProductState).
+  // Accepts { exportPackage: { state } } (full export report shape) or { state } or a
+  // bare ProductState. Normalizes before replacing so schema/field drift is healed.
+  server.post("/api/state/import", async (request, reply) => {
+    const body = request.body as
+      | { state?: unknown; exportPackage?: { state?: unknown } }
+      | undefined;
+    const incoming = body?.exportPackage?.state ?? body?.state ?? body;
+    if (!incoming || typeof incoming !== "object") {
+      return reply
+        .code(422)
+        .send({ error: "Import payload must include a ProductState (as `state`, `exportPackage.state`, or the object itself)." });
+    }
+    // Import is a full-state overwrite (no revision lock by design — it's a restore). Stamp
+    // an audit event so this destructive replace is recorded, like purge.
+    const imported = withAuditEvent(normalizeProductState(incoming), {
+      type: "state_imported",
+      label: "已从备份导入并覆盖全部状态",
+      detail: "用户通过 /api/state/import 用导入包整体替换了当前 ProductState。",
+      severity: "warning",
+      entityType: "privacy_operation",
+      entityId: "local-product-state",
+      createdAt: new Date().toISOString()
+    });
+    return repository.replaceState(imported);
+  });
+
+  // P0-3: Purge — clears personal data from the state store AND deletes the referenced
+  // local-object audio files on disk (previously the files were left behind while the
+  // audit claimed a complete wipe). artifactPurge accounts for deleted/missing/skipped.
   server.post("/api/state/purge", async () => {
     const state = repository.getState();
-    const purged = createPurgedProductState(state);
-    return repository.replaceState(purged);
+    const artifactPurge = purgeLocalObjectArtifactsForState(state, { env: options.env });
+    let purged = createPurgedProductState(state);
+    if (artifactPurge.referenceCount > 0) {
+      purged = withAuditEvent(purged, {
+        type: "privacy_data_purged",
+        label: "本地音频原件已删除",
+        detail: `artifactPurge：删除 ${artifactPurge.deleted}、缺失 ${artifactPurge.missing}、跳过 ${artifactPurge.skipped}（共 ${artifactPurge.uniqueFileCount} 个文件）。`,
+        severity: "warning",
+        entityType: "privacy_operation",
+        entityId: "local-object-artifacts",
+        createdAt: new Date().toISOString()
+      });
+    }
+    const nextState = repository.replaceState(purged);
+    return { ...nextState, artifactPurge };
   });
 }

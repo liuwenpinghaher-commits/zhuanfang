@@ -41,7 +41,7 @@ export function buildCorpusUserMessage(title: string, content: string, focus?: s
     `{
   "dimensions": [{"name":"维度名(如 追问动作/节奏控制/反方推动)","score":1到5的整数,"finding":"这个样本在该维度做得怎样","example":"样本里的一句原话","recommendedAction":"我们引擎该怎么学"}],
   "improvementPlan": [{"title":"改进点","rationale":"样本为什么这么做","action":"我们引擎具体怎么改","expectedEngineChange":"确认后引擎行为会怎样变","evidence":"样本里的原话"}],
-  "patch": {"title":"PlaybookPatch 标题","description":"一句话说明这条补丁","rules":["可执行规则1","规则2","规则3"],"impact":"low|medium|high"}
+  "patch": {"title":"PlaybookPatch 标题","description":"一句话说明这条补丁","rules":["可执行规则1","规则2","规则3"],"ruleTypes":["与每条规则一一对应,取值 concrete-moment(索要具体时刻)/mechanism-reversal(机制反转)/follow-up(一般追问)"],"impact":"low|medium|high"}
 }`
   );
   return lines.join("\n");
@@ -101,11 +101,16 @@ function parseCorpusAnalysis(raw: string): CorpusLlmAnalysis {
 
   const patchObj = asObject(json.patch);
   const impactRaw = asString(patchObj.impact);
+  const validRuleTypes = new Set(["concrete-moment", "mechanism-reversal", "follow-up"]);
+  const ruleTypes = asStringArray(patchObj.ruleTypes).filter((type): type is "concrete-moment" | "mechanism-reversal" | "follow-up" =>
+    validRuleTypes.has(type)
+  );
   const patch = {
     title: asString(patchObj.title),
     description: asString(patchObj.description),
     rules: asStringArray(patchObj.rules),
-    impact: (IMPACTS.has(impactRaw) ? impactRaw : "medium") as "low" | "medium" | "high"
+    impact: (IMPACTS.has(impactRaw) ? impactRaw : "medium") as "low" | "medium" | "high",
+    ...(ruleTypes.length ? { ruleTypes } : {})
   };
 
   return { dimensions, improvementPlan, patch };

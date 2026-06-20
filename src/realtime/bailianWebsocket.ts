@@ -5,7 +5,7 @@ import type {
   InterruptAssistantResult
 } from "./bailianWebrtc";
 import type { InterruptionScene } from "../domain/engine";
-import { buildInterruptionContext, getInterruptionScene, buildFallbackPreSignals } from "../domain/engine";
+import { buildInterruptionContext, getInterruptionScene } from "../domain/engine";
 import { createExpressionStateDetector, type ExpressionStateInput } from "./expressionStateDetector";
 import { createSpeechFeatureTracker, spectralCentroid } from "./speechFeatures";
 import { evaluateIntent } from "./interactionIntentEngine";

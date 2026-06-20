@@ -1,5 +1,5 @@
-import { Brain, Download, FileText, PenLine, Settings, ShieldCheck, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { Brain, Download, FileText, PenLine, Settings, ShieldCheck, Trash2, Upload } from "lucide-react";
+import { useState, type ChangeEvent } from "react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { PrivacyReport } from "../../domain/privacy";
 import type { BackupRestoreRehearsalReport } from "../../domain/backup";
@@ -12,12 +12,13 @@ interface ProfileViewProps {
   onAddCorrection: () => void;
   onReset: () => void;
   onExport: () => Promise<BackupRestoreRehearsalReport>;
+  onImport: (payload: unknown) => Promise<ProductState>;
   onPrivacyReport: () => Promise<PrivacyReport>;
   onPurge: () => Promise<ProductState>;
   onSetProductState: (state: ProductState) => void;
 }
 
-type GovernanceAction = "export" | "privacy" | "purge";
+type GovernanceAction = "export" | "import" | "privacy" | "purge";
 
 export function ProfileView({
   state,
@@ -25,6 +26,7 @@ export function ProfileView({
   onCorrectionText,
   onAddCorrection,
   onReset,
+  onImport,
   onExport,
   onPrivacyReport,
   onPurge,
@@ -35,6 +37,8 @@ export function ProfileView({
   const [purgeSuccess, setPurgeSuccess] = useState(false);
   const [privacyReport, setPrivacyReport] = useState<PrivacyReport | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [importSuccess, setImportSuccess] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
   const [privacyError, setPrivacyError] = useState<string | null>(null);
   const [purgeError, setPurgeError] = useState<string | null>(null);
 
@@ -57,6 +61,27 @@ export function ProfileView({
       setExportSuccess(true);
     } catch (err) {
       setExportError(err instanceof Error ? err.message : "导出失败");
+    } finally {
+      setLoadingAction(null);
+    }
+  }
+
+  async function handleImportFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = ""; // allow re-selecting the same file later
+    if (!file) return;
+    const confirmed = window.confirm("导入将用所选备份覆盖当前全部数据，且无法撤销。确定吗？");
+    if (!confirmed) return;
+    setLoadingAction("import");
+    setImportSuccess(false);
+    setImportError(null);
+    try {
+      const payload = JSON.parse(await file.text());
+      const nextState = await onImport(payload);
+      onSetProductState(nextState);
+      setImportSuccess(true);
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : "导入失败，请确认文件是有效的导出包。");
     } finally {
       setLoadingAction(null);
     }
@@ -192,6 +217,16 @@ export function ProfileView({
             </button>
             {exportSuccess && <span style={{ color: "var(--color-success, #22c55e)", fontSize: "0.875rem" }}>已下载 JSON 备份包</span>}
             {exportError && <span style={{ color: "var(--action-danger)", fontSize: "0.875rem" }}>{exportError}</span>}
+            <label
+              className={"secondary-action" + (loadingAction === "import" ? " btn-loading" : "")}
+              style={{ cursor: loadingAction !== null ? "default" : "pointer", opacity: loadingAction !== null && loadingAction !== "import" ? 0.6 : 1 }}
+            >
+              {loadingAction === "import" ? <span className="spinner" aria-hidden="true" /> : <Upload size={16} />}
+              导入数据
+              <input type="file" accept="application/json,.json" hidden disabled={loadingAction !== null} onChange={handleImportFile} />
+            </label>
+            {importSuccess && <span style={{ color: "var(--color-success, #22c55e)", fontSize: "0.875rem" }}>已从备份恢复</span>}
+            {importError && <span style={{ color: "var(--action-danger)", fontSize: "0.875rem" }}>{importError}</span>}
           </div>
 
           {/* Privacy Report */}

@@ -16,6 +16,7 @@ import {
 } from "../../../../src/domain/research-automation";
 import { enrichBriefInput } from "../intelligence/search-synthesis-llm";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
+import { formatProviderErrorMessage } from "../provider-error";
 import type { BailianChatClient } from "../providers/bailian";
 import type { ProductStateRepository } from "../product-state-repository";
 
@@ -340,7 +341,7 @@ async function executeBailianSearchProvider(
       task: completeCapabilityTask(runningTask, result)
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "百炼联网搜索调用失败。";
+    const message = formatProviderErrorMessage(error, "百炼联网搜索调用失败。");
     return {
       result: undefined,
       task: failCapabilityTask(runningTask, message)
@@ -366,7 +367,7 @@ async function executeAnySearchProvider(
       task: completeCapabilityTask(runningTask, result)
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "AnySearch 调用失败。";
+    const message = formatProviderErrorMessage(error, "AnySearch 调用失败。");
     return {
       result: undefined,
       task: failCapabilityTask(runningTask, message)

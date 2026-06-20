@@ -70,9 +70,15 @@ export function createSqliteProductStateRepository(options: SqliteProductStateRe
       )
       .run(SNAPSHOT_ID, stateJson, createdAt, createdAt);
 
+    // The events table is an append-only audit trail; its content is never read back
+    // (only getEventCount reads it). Storing the FULL state per event amplified every
+    // write by ~state-size × the 500-row window (a near-empty DB hit 12 MB). Store only
+    // compact metadata instead — the `state_json` column is reused for it (NOT NULL,
+    // no schema migration needed).
+    const eventMeta = JSON.stringify({ revision: normalizedState.revision, bytes: stateJson.length });
     database
       .prepare("INSERT INTO product_state_events (event_type, state_json, created_at) VALUES (?, ?, ?)")
-      .run(eventType, stateJson, createdAt);
+      .run(eventType, eventMeta, createdAt);
 
     // 固定保留窗口裁剪:保留最近 maxEvents 条,其余删除
     database

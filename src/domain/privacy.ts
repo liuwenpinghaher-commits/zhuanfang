@@ -213,13 +213,13 @@ export function buildPrivacyReport(state: ProductState, generatedAt = new Date()
     {
       id: "operations",
       label: "审计与运行记录",
+      // workflowRuns / operationalChecks are not yet produced by any code path, so they
+      // are excluded here rather than implying coverage the system doesn't have.
       count:
         state.auditEvents.length +
         state.aiRunEvents.length +
-        state.workflowRuns.length +
-        state.operationalChecks.length +
         state.configVersions.length,
-      detail: "审计事件、AI run event、workflow trace、运营检查证据和配置版本历史。",
+      detail: "审计事件、AI run event 和配置版本历史。",
       exported: true,
       purged: true
     }

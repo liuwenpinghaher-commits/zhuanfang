@@ -13,3 +13,10 @@ tsconfig.tsbuildinfo
 agent/venv/
 agent/__pycache__/
 agent/*.pyc
+
+# Runtime data / local artifacts — never commit
+/memory
+*.bak
+.claude/launch.json
+# 受访者隐私资料(本地数据,禁止入库)
+/张小珏专访资料/

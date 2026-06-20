@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { analyzeImportedInterview } from "../../../../src/domain/engine";
+import { analyzeImportedInterview, sanitizeExternalMaterialText } from "../../../../src/domain/engine";
 import type { AudioTranscription, AudioTranscriptionInput, CorpusImportInput } from "../../../../src/domain/types";
 import { analyzeCorpusWithLlm } from "../intelligence/corpus-llm";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
@@ -140,7 +140,12 @@ async function analyzeCorpus(
 
 function normalizeFocus(value: unknown): string | undefined {
   const payload = normalizePayload(value);
-  return typeof payload.focus === "string" && payload.focus.trim() ? payload.focus.trim() : undefined;
+  if (typeof payload.focus !== "string" || !payload.focus.trim()) {
+    return undefined;
+  }
+  // focus is interpolated straight into the LLM prompt — sanitize it like other external
+  // material so it can't smuggle instruction-injection text.
+  return sanitizeExternalMaterialText(payload.focus.trim(), payload.focus.trim());
 }
 
 function normalizeCorpusInput(value: unknown): CorpusImportInput {

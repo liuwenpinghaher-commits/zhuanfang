@@ -16,7 +16,14 @@ import { withMemoryCandidateReview } from "./memoryReview";
 export interface CorpusLlmAnalysis {
   dimensions: Array<{ name: string; score: number; finding: string; example: string; recommendedAction: string }>;
   improvementPlan: Array<{ title: string; rationale: string; action: string; expectedEngineChange: string; evidence: string }>;
-  patch: { title: string; description: string; rules: string[]; impact: "low" | "medium" | "high" };
+  patch: {
+    title: string;
+    description: string;
+    rules: string[];
+    impact: "low" | "medium" | "high";
+    /** Optional per-rule type from the LLM (aligned with `rules`); falls back to keyword inference. */
+    ruleTypes?: Array<"concrete-moment" | "mechanism-reversal" | "follow-up">;
+  };
 }
 
 /**
@@ -87,8 +94,9 @@ export function analyzeImportedInterview(
     status: "proposed",
     rules: patchRules,
     // Positionally aligned classification so the strategy engine can route by
-    // ruleType instead of keyword-matching the rule text.
-    ruleTypes: patchRules.map((rule) => inferPlaybookRuleType(rule)),
+    // ruleType instead of keyword-matching the rule text. Prefer the LLM's own
+    // per-rule type (it understands its own phrasing); fall back to keyword inference.
+    ruleTypes: patchRules.map((rule, index) => analysis?.patch.ruleTypes?.[index] ?? inferPlaybookRuleType(rule)),
     impact: analysis?.patch.impact ?? "medium",
     createdAt
   };

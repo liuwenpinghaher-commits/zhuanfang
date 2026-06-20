@@ -31,13 +31,20 @@ export interface BackupRestoreRehearsalReport {
   strategy: "json-export-import-rehearsal";
   summary: Record<BackupRehearsalStatus, number>;
   package: BackupRehearsalPackageSummary;
+  /**
+   * The actual recoverable package (full ProductState). Previously this report only
+   * carried the *summary* (bytes/digest), so a downloaded export wasn't restorable and
+   * the matching /api/state/import had nothing to ingest. Now it's included so the
+   * export → import round-trip is real.
+   */
+  exportPackage: ProductStateExportPackage;
   privacyReport: PrivacyReport;
   migrationManifest: ProductStateMigrationManifest;
   checks: BackupRehearsalCheck[];
   runbook: string[];
 }
 
-interface ProductStateExportPackage {
+export interface ProductStateExportPackage {
   schemaVersion: 1;
   exportedAt: string;
   product: "interview-product-mvp";
@@ -134,6 +141,7 @@ export function buildBackupRestoreRehearsalReport(
     generatedAt,
     strategy: "json-export-import-rehearsal",
     summary: summarizeBackupRehearsalChecks(checks),
+    exportPackage,
     package: {
       product: "interview-product-mvp",
       format: "product-state-json",

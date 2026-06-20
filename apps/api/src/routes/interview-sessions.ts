@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import {
+  buildFallbackPreSignals,
   buildInterviewEnginePolicy,
   buildInterviewGuide,
   createSessionDraft,
@@ -235,12 +236,14 @@ export async function registerInterviewSessionRoutes(
     if (!session) {
       return reply.code(404).send({ error: "Interview session not found." });
     }
-    if (!options.bailianChatClient) {
-      return reply.code(503).send({ error: "Chat client is not configured." });
-    }
-    if (!budget.tryConsume(session.id)) {
-      console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "pre_signals", sessionId: session.id }));
-      return { preSignals: null, session };
+    // No LLM / budget exhausted → fall back to the deterministic offline engine instead of
+    // erroring (it produces the same InteractionPreSignals shape). Previously this hard-503/502'd
+    // and the offline buildFallbackPreSignals was a dead import.
+    if (!options.bailianChatClient || !budget.tryConsume(session.id)) {
+      if (!options.bailianChatClient) {
+        console.warn(JSON.stringify({ event: "llm_unavailable", capability: "pre_signals", sessionId: session.id }));
+      }
+      return { preSignals: buildFallbackPreSignals(session.guide), session };
     }
     try {
       const preSignals = await generatePreSignals(session, options.bailianChatClient);
@@ -248,7 +251,8 @@ export async function registerInterviewSessionRoutes(
       repository.replaceState(upsertSession(state, updatedSession));
       return { preSignals, session: updatedSession };
     } catch (error) {
-      return reply.code(502).send({ error: error instanceof Error ? error.message : "pre_signals generation failed." });
+      console.warn(JSON.stringify({ event: "llm_fallback", capability: "pre_signals", error: error instanceof Error ? error.message : String(error) }));
+      return { preSignals: buildFallbackPreSignals(session.guide), session };
     }
   });
 
@@ -379,7 +383,13 @@ export async function registerInterviewSessionRoutes(
           queryEmbedding
         })
       : session.guide;
-    const refreshedSession: InterviewSession = { ...session, guide: refreshedGuide };
+    // Re-stamp enginePolicy from the latest state (mirrors /turns:136) so a PlaybookPatch
+    // approved mid-session actually reaches the omni voice instructions, not just guide.
+    const refreshedSession: InterviewSession = {
+      ...session,
+      enginePolicy: buildInterviewEnginePolicy(state),
+      guide: refreshedGuide
+    };
 
     const instructions = buildRealtimeVoiceInstructions(
       refreshedSession,

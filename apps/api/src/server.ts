@@ -1,7 +1,6 @@
 // OpenTelemetry must be initialized before any other imports
 import "./telemetry";
 
-import { timingSafeEqual } from "node:crypto";
 import Fastify, { type FastifyRequest, type FastifyReply } from "fastify";
 import fastifyStatic from "@fastify/static";
 import { join } from "node:path";
@@ -32,19 +31,17 @@ import {
   createBailianStreamingTtsClient,
   type BailianStreamingTtsClient
 } from "./providers/bailian-streaming-tts";
+import { isAuthGuardActive, isAuthorized } from "./auth";
 import { createLlmBudget } from "./llm-budget";
 import { registerAssetRoutes } from "./routes/assets";
 import { registerCorpusRoutes } from "./routes/corpus";
-import { registerGeneratedArtifactRoutes } from "./routes/generated-artifacts";
 import { registerHealthRoutes } from "./routes/health";
 import { registerImportRoutes } from "./routes/import";
 import { registerInterviewSessionRoutes } from "./routes/interview-sessions";
 import { registerMemoryRecordRoutes } from "./routes/memory-records";
 import { registerMemoryCandidateRoutes } from "./routes/memory-candidates";
-import { registerNoteRoutes } from "./routes/notes";
 import { registerPlaybookPatchRoutes } from "./routes/playbook-patches";
 import { registerPodcastRoutes } from "./routes/podcast";
-import { registerQualityRoutes } from "./routes/quality";
 import { registerRagRoutes } from "./routes/rag";
 import { registerRealtimeVoiceRoutes } from "./routes/realtime-voice";
 import { registerReviewRoutes } from "./routes/reviews";
@@ -139,7 +136,9 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
       }
     });
   });
-  void server.register(registerStateRoutes, productStateRepository);
+  void server.register(async (registeredServer) => {
+    await registerStateRoutes(registeredServer, productStateRepository, { env: runtimeEnv });
+  });
   void server.register(async (registeredServer) => {
     await registerInterviewSessionRoutes(registeredServer, productStateRepository, {
       ...providerClients,
@@ -164,7 +163,8 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
       voiceEnrollmentClient: providerClients.voiceEnrollmentClient,
       stateRepo: productStateRepository,
       embeddingClient: providerClients.embeddingClient,
-      streamingTtsClient: providerClients.streamingTtsClient
+      streamingTtsClient: providerClients.streamingTtsClient,
+      env: runtimeEnv
     });
   });
   void server.register(async (registeredServer) => {
@@ -198,19 +198,10 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     });
   });
   void server.register(async (registeredServer) => {
-    await registerNoteRoutes(registeredServer, productStateRepository);
-  });
-  void server.register(async (registeredServer) => {
     await registerAssetRoutes(registeredServer, productStateRepository);
   });
   void server.register(async (registeredServer) => {
     await registerPlaybookPatchRoutes(registeredServer, productStateRepository);
-  });
-  void server.register(async (registeredServer) => {
-    await registerGeneratedArtifactRoutes(registeredServer, productStateRepository);
-  });
-  void server.register(async (registeredServer) => {
-    await registerQualityRoutes(registeredServer, productStateRepository);
   });
   void server.register(async (registeredServer) => {
     await registerRagRoutes(registeredServer, productStateRepository, {
@@ -222,9 +213,18 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   // Static file serving: when PRODUCT_STATIC_DIR is set (production Docker image),
   // serve the built frontend from that directory. Registered after all API routes
   // so /api/* handlers take precedence.
+  // "disabled" is an explicit opt-out (matches the README); any other value is a root dir.
   const staticDir = runtimeEnv.PRODUCT_STATIC_DIR;
-  if (staticDir) {
+  if (staticDir && staticDir !== "disabled") {
     void server.register(fastifyStatic, { root: staticDir });
+    // SPA history fallback: serve index.html for non-/api GET routes so deep-link refresh
+    // (e.g. /podcast) doesn't 404. /api/* still falls through to a JSON 404.
+    server.setNotFoundHandler((request, reply) => {
+      if (request.method === "GET" && !request.url.startsWith("/api/")) {
+        return reply.sendFile("index.html");
+      }
+      return reply.code(404).send({ error: "Not found" });
+    });
   }
 
   // Background research scheduler — only in the persistent process (startServer sets
@@ -311,13 +311,8 @@ function registerCors(server: ReturnType<typeof Fastify>, env: Record<string, st
 const AUTH_EXEMPT_PREFIXES = ["/api/health"];
 
 function registerProductionAuth(server: ReturnType<typeof Fastify>, env: Record<string, string | undefined>) {
-  // Case-insensitive comparison prevents "Production"/"PRODUCTION" silently bypassing auth (fix: P0-5)
-  const isProduction = (env.DEPLOYMENT_PROFILE ?? "").trim().toLowerCase() === "production";
-  const apiToken = env.PRODUCT_API_TOKEN;
-
-  // Auth guard is only active when both conditions hold: production profile AND a token configured.
-  // This keeps local development completely friction-free.
-  if (!isProduction || !apiToken) {
+  // Auth guard is only active in production profile WITH a token — keeps local dev friction-free.
+  if (!isAuthGuardActive(env)) {
     return;
   }
 
@@ -334,13 +329,7 @@ function registerProductionAuth(server: ReturnType<typeof Fastify>, env: Record<
       return;
     }
 
-    const authHeader = request.headers.authorization;
-    // Timing-safe comparison prevents timing-oracle attacks on the bearer token (fix: P0-5)
-    const expected = `Bearer ${apiToken}`;
-    const actual = authHeader ?? "";
-    const expectedBuf = Buffer.from(expected);
-    const actualBuf = Buffer.from(actual.padEnd(expected.length, "\0").slice(0, expected.length));
-    if (actual.length === expected.length && timingSafeEqual(expectedBuf, actualBuf)) {
+    if (isAuthorized(env, { authHeader: request.headers.authorization })) {
       return;
     }
 
