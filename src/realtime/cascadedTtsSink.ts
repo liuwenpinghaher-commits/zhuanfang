@@ -242,6 +242,31 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
       }
       // Resolve any in-flight speak() so the pipeline's await returns (releases mic).
       if (settleActiveSpeak) settleActiveSpeak();
+    },
+
+    // P1-08: terminal teardown. stop() keeps the socket warm for the next turn;
+    // close() releases the socket AND the AudioContext so they don't leak across
+    // repeated voice-session open/close cycles (leaked AudioContexts eventually
+    // exhaust the browser's context budget, after which new contexts fail to
+    // start and TTS goes permanently silent). Idempotent: nulls each handle so a
+    // second close() is a no-op, and a later getAudioContext()/openWs() can
+    // recreate fresh resources if the sink is somehow reused.
+    close() {
+      stopPlayback();
+      // Resolve any in-flight speak() before we drop the socket it's listening on.
+      if (settleActiveSpeak) settleActiveSpeak();
+      if (ws) {
+        try {
+          if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+            ws.close(1000, "tts sink closed");
+          }
+        } catch { /* already closing/closed */ }
+        ws = null;
+      }
+      if (audioCtx && audioCtx.state !== "closed") {
+        audioCtx.close().catch(() => { /* best-effort */ });
+      }
+      audioCtx = null;
     }
   };
 }

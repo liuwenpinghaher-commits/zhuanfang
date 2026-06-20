@@ -13,6 +13,7 @@ import {
 import type { ProductStateRepository } from "../product-state-repository";
 import {
   appendRealtimeSignalTrace,
+  buildInterviewEnginePolicy,
   truncateAssistantTurn
 } from "../../../../src/domain/engine";
 import { collectAppliedPlaybookRules, collectAppliedPlaybookRuleTypes } from "../../../../src/domain/context-pack";
@@ -308,7 +309,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     if (!session) {
       return reply.status(404).send({ error: "session_not_found" });
     }
-    const { buildInterviewAgentContext, buildInterviewGuide, buildInterviewEnginePolicy } = await import("../../../../src/domain/engine");
+    const { buildInterviewAgentContext, buildInterviewGuide } = await import("../../../../src/domain/engine");
     const state = stateRepo.getState();
     const corrections = state.memoryCorrections ?? [];
 
@@ -341,6 +342,19 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       sessionId?: string;
       interviewSessionId?: string;
     };
+
+    // P1-03: when the caller asks for an interview room, only sign a publish/subscribe token
+    // for an interview session that actually exists. Previously ANY interviewSessionId minted a
+    // room token, so a guessed/forged id granted access to (or pre-created) another person's
+    // interview room. We only validate when a state repo is wired; without one (dev/no-repo)
+    // there are no interview rooms to protect, so the ad-hoc session path is left untouched.
+    if (interviewSessionId && options.stateRepo) {
+      const interviewSession = await options.stateRepo.getInterviewSession(interviewSessionId);
+      if (!interviewSession) {
+        return reply.code(404).send({ error: "Interview session not found." });
+      }
+    }
+
     const roomName = interviewSessionId
       ? `interview-${interviewSessionId}`
       : `session-${sessionId ?? randomUUID()}`;
@@ -405,6 +419,18 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
 
   server.server.on("upgrade", (request: IncomingMessage, socket, head) => {
     const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
+
+    // P1-02 (CSWSH): the WS handshake is the one same-origin request a browser CAN'T forge
+    // a header on, so a malicious page could open a cross-site WS to this proxy and burn
+    // provider quota. Reject a browser-supplied Origin that isn't in the allow-set. A missing
+    // Origin (non-browser clients: the Python agent, server-to-server, tests) is allowed —
+    // CSWSH is a browser-only threat and the bearer check below still gates production.
+    const origin = request.headers.origin;
+    if (origin && !isAllowedWsOrigin(origin, options.env ?? process.env)) {
+      socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+      socket.destroy();
+      return;
+    }
 
     // This raw Node upgrade handler runs OUTSIDE Fastify's onRequest auth hook, so the WS
     // path would otherwise bypass production bearer auth entirely. Apply the same check here.
@@ -646,23 +672,52 @@ function normalizeVad(value: string | undefined): RealtimeVoiceConfig["vad"] {
   return value === "client_vad" ? "client_vad" : "server_vad";
 }
 
+// P1-02: allow-set for WS Origin validation. Mirrors registerCors in server.ts —
+// PRODUCT_WEB_ORIGINS (comma-separated production origins) when set, otherwise the Vite
+// dev-server origins so local development connects with zero config.
+const WS_DEV_ORIGINS = ["http://127.0.0.1:3220", "http://localhost:3220"];
+function isAllowedWsOrigin(origin: string, env: Record<string, string | undefined>): boolean {
+  const configured = env.PRODUCT_WEB_ORIGINS
+    ? env.PRODUCT_WEB_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean)
+    : null;
+  const allowed = configured ?? WS_DEV_ORIGINS;
+  return allowed.includes(origin);
+}
+
 function buildDefaultEnginePolicy(state: ProductState): InterviewEnginePolicy {
-  const cfg = state.systemConfig;
-  return {
-    allowWebInInterview: cfg.search.allowWebInInterview,
-    maxFollowUpDepth: cfg.interview.maxFollowUpDepth,
-    silenceHoldMs: cfg.interview.silenceHoldMs,
-    playbookVersion: cfg.interview.playbookVersion,
-    appliedPlaybookRules: collectAppliedPlaybookRules(state),
-    appliedPlaybookRuleTypes: collectAppliedPlaybookRuleTypes(state),
-    qualityGuardrails: [],
-    memory: { ...cfg.memory },
-    guidanceEnabled: cfg.interview.guidanceEnabled ?? true,
-    guidanceFrequency: cfg.interview.guidanceFrequency ?? "medium",
-    maxGuidancePerTurn: cfg.interview.maxGuidancePerTurn ?? 2,
-    minGuidanceIntervalMs: cfg.interview.minGuidanceIntervalMs ?? 5000,
-    challengeBudgetPerSession: cfg.interview.challengeBudgetPerSession ?? 3
-  };
+  // P0-C: delegate to the canonical domain policy builder instead of hand-rolling the object
+  // with `qualityGuardrails: []`. This is the only place that decided the voice session's
+  // policy when no per-session policy exists, so writing an empty array here was the third
+  // failure that severed the quality-guardrail closed loop. buildInterviewEnginePolicy fills
+  // qualityGuardrails with the real remediation text the domain produces.
+  try {
+    return buildInterviewEnginePolicy(state);
+  } catch (error) {
+    // Robustness: the domain quality-report path can throw on edge-case state shapes. A voice
+    // session must still be creatable, so fall back to a config-derived policy. qualityGuardrails
+    // is honestly empty here (we couldn't compute it) — NOT a hardcoded design choice.
+    console.warn(JSON.stringify({
+      event: "engine_policy_fallback",
+      capability: "realtime_voice",
+      error: error instanceof Error ? error.message : String(error)
+    }));
+    const cfg = state.systemConfig;
+    return {
+      allowWebInInterview: cfg.search.allowWebInInterview,
+      maxFollowUpDepth: cfg.interview.maxFollowUpDepth,
+      silenceHoldMs: cfg.interview.silenceHoldMs,
+      playbookVersion: cfg.interview.playbookVersion,
+      appliedPlaybookRules: collectAppliedPlaybookRules(state),
+      appliedPlaybookRuleTypes: collectAppliedPlaybookRuleTypes(state),
+      qualityGuardrails: [],
+      memory: { ...cfg.memory },
+      guidanceEnabled: cfg.interview.guidanceEnabled ?? true,
+      guidanceFrequency: cfg.interview.guidanceFrequency ?? "medium",
+      maxGuidancePerTurn: cfg.interview.maxGuidancePerTurn ?? 2,
+      minGuidanceIntervalMs: cfg.interview.minGuidanceIntervalMs ?? 5000,
+      challengeBudgetPerSession: cfg.interview.challengeBudgetPerSession ?? 3
+    };
+  }
 }
 
 function resolveEnginePolicy(

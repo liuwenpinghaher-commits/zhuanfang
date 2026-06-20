@@ -101,18 +101,46 @@ export function withAiRunEvent(state: ProductState, event: Omit<AiRunEvent, "id"
   };
 }
 
-/** Extracts a keyword anchor from user text */
-export function extractAnchor(text: string): string {
-  const candidates = ["兜底", "救火", "失控", "判断", "授权", "机制", "责任", "团队", "项目"];
-  const found = candidates.find((candidate) => text.includes(candidate));
-  if (found) {
-    return found;
+// 句首/句尾常见的虚词与连接词，从锚点片段两端剥离，让锚点更接近"用户在谈的那个东西"，
+// 而不带场景偏向（不再用职场/管理词表硬挑关键词）。
+const ANCHOR_EDGE_FILLERS = [
+  "我觉得", "我认为", "我想", "我其实", "我", "你", "他", "她", "它", "我们", "他们",
+  "然后", "因为", "所以", "但是", "可是", "不过", "而且", "就是", "其实", "感觉", "可能",
+  "现在", "当时", "后来", "一直", "总是", "真的", "确实", "就", "都", "也", "还", "很", "太",
+  "这个", "那个", "这", "那", "的", "了", "吧", "啊", "呢", "嘛", "吗"
+];
+
+function stripAnchorEdges(segment: string): string {
+  let result = segment.trim();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const filler of ANCHOR_EDGE_FILLERS) {
+      if (result.length > filler.length && result.startsWith(filler)) {
+        result = result.slice(filler.length).trim();
+        changed = true;
+      }
+      if (result.length > filler.length && result.endsWith(filler)) {
+        result = result.slice(0, result.length - filler.length).trim();
+        changed = true;
+      }
+    }
   }
-  const normalized = text.replace(/[，。！？、,.!?]/g, " ");
-  const longest = normalized
-    .split(/\s+/)
-    .filter(Boolean)
-    .sort((a, b) => b.length - a.length)[0];
+  return result;
+}
+
+/**
+ * Extracts a scenario-agnostic anchor phrase from user text — the longest
+ * meaningful clause, with edge filler words stripped. Deterministic, no domain
+ * keyword list (a real semantic anchor needs LLM extraction; this is the offline
+ * fallback). Returns "这个问题" only when nothing usable remains.
+ */
+export function extractAnchor(text: string): string {
+  const segments = text
+    .split(/[，。！？、,.!?；;：:\n]+/)
+    .map((segment) => stripAnchorEdges(segment))
+    .filter((segment) => segment.length > 0);
+  const longest = segments.sort((a, b) => b.length - a.length)[0];
   return longest?.slice(0, 12) || "这个问题";
 }
 
@@ -128,20 +156,16 @@ export function buildMirroredFollowUp(userText: string, followUp: string) {
   return `我先复述一下：${summarizeUserAnswerForMirror(userText)}。接下来我想追问：${trimFollowUp(followUp)}`;
 }
 
-/** Helper for above */
+/**
+ * Builds a scenario-agnostic one-line mirror of the user's answer. Deterministic
+ * offline fallback (a faithful mirror really needs LLM summarization) — anchors on
+ * the user's own longest clause without presuming a workplace/responsibility frame,
+ * and gently points past the surface to "what's underneath it" so the follow-up has
+ * something to land on.
+ */
 export function summarizeUserAnswerForMirror(userText: string) {
-  if (userText.includes("团队执行慢") && (userText.includes("判断") || userText.includes("边界"))) {
-    return "你不是只在说团队执行慢，而是在说风险出现时，判断边界又被交回到你这里";
-  }
-  if ((userText.includes("救火") || userText.includes("兜底")) && userText.includes("判断")) {
-    return "你不是只在说要不要继续救火，而是在说判断责任为什么总会回到你这里";
-  }
-  if (userText.includes("失控") && userText.includes("授权")) {
-    return "你不是只在说授权会不会失控，而是在说自己能不能承受放手后的短期代价";
-  }
-
   const anchor = extractAnchor(userText);
-  return `你不是只在说“${anchor}”，而是在说它背后的责任、边界和真实代价`;
+  return `你说的重点不只是“${anchor}”这件事本身，更像是它背后让你在意的那层东西`;
 }
 
 /** Checks if follow-up is mirrored format */

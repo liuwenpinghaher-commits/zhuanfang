@@ -1,12 +1,9 @@
 import type {
-  ImportSource,
   KnowledgeDebt,
   MemoryCandidate,
   PointAsset,
   ProductState,
   QuestionAsset,
-  RagChunk,
-  ReferenceMaterialImportInput,
   SearchAgendaItem,
   SearchBrief,
   SearchBriefAgendaTrace,
@@ -18,11 +15,10 @@ import type {
   SourceHighlight,
 } from "./types";
 
-import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, formatSearchTraceSourceLabel, getReferenceMaterialPublisher } from "./utils";
-import { formatSearchBriefSourceLabel, buildSearchBriefSourceEvidence, pickSearchBriefText, sanitizeExternalMaterialText, sanitizeExternalMaterialBlock, sanitizeExternalMaterialList, sanitizeExternalSource, withGeneratedArtifactWorkflowRun } from "./engine";
+import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, formatSearchTraceSourceLabel } from "./utils";
+import { formatSearchBriefSourceLabel, buildSearchBriefSourceEvidence, pickSearchBriefText, sanitizeExternalMaterialText, sanitizeExternalMaterialList, sanitizeExternalSource, withGeneratedArtifactWorkflowRun } from "./engine";
 
 import { withMemoryCandidateReview } from "./memoryReview";
-import { tagSourceThemes } from "./theme-tagging";
 
 function buildDefaultSearchBriefSourceTrace(input: SearchBriefInput): SearchBriefSourceTrace[] {
   const sources = input.sources.filter((source) => source.id.trim());
@@ -88,10 +84,6 @@ export function buildProactiveSearchAgenda(state: ProductState): SearchAgendaIte
 
   return dedupeSearchAgenda(agenda).slice(0, 4);
 }
-function buildReferenceMaterialSummary(title: string, chunks: RagChunk[]) {
-  const firstChunk = chunks[0]?.text ?? "这份资料需要继续补充内容。";
-  return `导入资料《${title}》已拆成 ${chunks.length} 个可检索片段，首要线索是：${firstChunk}`;
-}
 export function buildSearchBrief(
   state: ProductState,
   topic: string,
@@ -139,38 +131,6 @@ export function buildSearchBrief(
     sources,
     ...(options.agendaTrace ? { agendaTrace: options.agendaTrace } : {})
   });
-}
-function chunkReferenceMaterial(content: string): string[] {
-  const paragraphs = content
-    .split(/\n{2,}|\r?\n/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-  const chunks = paragraphs.length > 0 ? paragraphs : [content.trim()];
-
-  return chunks.flatMap((chunk) => {
-    if (chunk.length <= 360) {
-      return [chunk];
-    }
-    const sentences = chunk.split(/(?<=[。！？.!?])\s*/).map((part) => part.trim()).filter(Boolean);
-    if (sentences.length <= 1) {
-      return chunk.match(/.{1,360}/g) ?? [chunk];
-    }
-
-    const grouped: string[] = [];
-    let current = "";
-    for (const sentence of sentences) {
-      if (current && `${current}${sentence}`.length > 360) {
-        grouped.push(current);
-        current = sentence;
-      } else {
-        current = `${current}${sentence}`;
-      }
-    }
-    if (current) {
-      grouped.push(current);
-    }
-    return grouped;
-  }).slice(0, 8);
 }
 function createDemoSources(topic: string, provider: SearchProviderId, maxSources: number): SourceHighlight[] {
   const sourceTemplates = [
@@ -441,13 +401,6 @@ function dedupeSearchAgenda(items: SearchAgendaItem[]) {
     return true;
   });
 }
-function extractReferenceMaterialKeywords(text: string) {
-  const tokens = text
-    .split(/[、，。,.!?！？；;：:\s/]+/)
-    .map((token) => token.trim())
-    .filter((token) => token.length >= 2 && token.length <= 12);
-  return Array.from(new Set(tokens)).slice(0, 6);
-}
 function getSearchBriefClaims(input: SearchBriefInput): Array<{ claimType: SearchBriefClaimType; claim: string }> {
   return [
     ...input.facts.map((claim) => ({ claimType: "fact" as const, claim })),
@@ -457,130 +410,6 @@ function getSearchBriefClaims(input: SearchBriefInput): Array<{ claimType: Searc
     ...input.discussionTopics.map((claim) => ({ claimType: "discussion-topic" as const, claim })),
     ...input.sourceAngles.map((claim) => ({ claimType: "source-angle" as const, claim }))
   ].filter((item) => item.claim.trim().length > 0);
-}
-export function importReferenceMaterial(
-  state: ProductState,
-  input: ReferenceMaterialImportInput
-): { source: ImportSource; chunks: RagChunk[]; brief: SearchBrief; nextState: ProductState } {
-  const createdAt = nowIso();
-  const title = sanitizeExternalMaterialText(input.title, "导入资料").trim() || "导入资料";
-  const content = sanitizeExternalMaterialBlock(input.content, `${title} 的资料内容待补充。`);
-  const chunkTexts = chunkReferenceMaterial(content);
-  const sourceId = makeId("import-source");
-  const chunks: RagChunk[] = chunkTexts.map((text, index) => ({
-    id: makeId("rag-chunk"),
-    sourceId,
-    title: `${title} · 片段 ${index + 1}`,
-    text,
-    keywords: extractReferenceMaterialKeywords(`${title} ${text}`),
-    tokenEstimate: Math.max(1, Math.ceil(text.length / 4)),
-    sourceUrl: input.sourceUrl,
-    usage: "interview-context",
-    createdAt
-  }));
-
-  const sourceUrl = input.sourceUrl?.trim();
-  const publisher = sourceUrl ? getReferenceMaterialPublisher(sourceUrl) : "手动导入";
-  const sources = chunks.slice(0, Math.max(1, state.systemConfig.search.maxSources)).map((chunk, index): SourceHighlight => ({
-    id: makeId(`import-source-${index + 1}`),
-    title: chunk.title,
-    url: sourceUrl || `local-import://${sourceId}/${chunk.id}`,
-    publisher,
-    publishedAt: createdAt,
-    snippet: chunk.text,
-    relevanceScore: Math.max(0.55, 0.95 - index * 0.08),
-    usage: "interview-context"
-  }));
-  const summary = buildReferenceMaterialSummary(title, chunks);
-  const briefInput: SearchBriefInput = {
-    topic: title,
-    provider: "local-demo",
-    status: "ready",
-    summary,
-    facts: chunks.slice(0, 3).map((chunk) => `导入资料片段：${chunk.text}`),
-    controversies: [
-      "待复核：这份资料的判断需要回到用户自己的具体经历验证。",
-      "待复核：资料里的通用结论不应直接写入长期记忆。"
-    ],
-    opposingViews: [
-      "反方校验：资料观点可能只适合特定组织阶段，不一定适用于当前团队。",
-      "反方校验：如果没有具体项目证据，外部资料可能会稀释真实问题。"
-    ],
-    interviewAngles: [
-      `专访角度：这份《${title}》如何改变你对当前问题的判断？`,
-      "专访角度：先找一个具体项目，验证资料观点是否真的解释了当下困境。"
-    ],
-    discussionTopics: [
-      `专访切入：${title} 对你当前判断的真实影响是什么？`,
-      `这份资料里哪一句最像你最近遇到的具体场景？`,
-      "如果把这份资料转成一个低成本验证动作，下一步是什么？"
-    ],
-    sourceAngles: chunks.slice(0, 3).map((chunk) => `资料片段：${chunk.text}`),
-    sources
-  };
-  const brief: SearchBrief = {
-    ...briefInput,
-    id: makeId("search-brief"),
-    sourceTrace: buildDefaultSearchBriefSourceTrace(briefInput),
-    appliedToSessionIds: [],
-    createdAt
-  };
-  const source: ImportSource = {
-    id: sourceId,
-    title,
-    sourceType: input.sourceType,
-    sourceUrl: sourceUrl || undefined,
-    content,
-    status: "chunked",
-    sensitivity: input.sensitivity === "sensitive" ? "sensitive" : "normal",
-    searchBriefId: brief.id,
-    chunkIds: chunks.map((chunk) => chunk.id),
-    relatedThemeIds: tagSourceThemes(`${title} ${content}`, state.themes),
-    createdAt,
-    updatedAt: createdAt
-  };
-
-  const importedState = withReferenceMaterialMemoryCandidate({
-    ...cloneState(state),
-    importSources: [source, ...state.importSources],
-    ragChunks: [...chunks, ...state.ragChunks],
-    searchBriefs: [brief, ...state.searchBriefs]
-  }, source, chunks, createdAt);
-  const stateWithEvents = withAiRunEvent(
-    withAuditEvent(importedState, {
-      type: "reference_material_imported",
-      label: "导入资料已入库",
-      detail: `《${source.title}》已生成 ${chunks.length} 个 RAG 分块和 1 份可带入专访的资料包。`,
-      severity: source.sensitivity === "sensitive" ? "warning" : "info",
-      entityType: "import_source",
-      entityId: source.id,
-      createdAt
-    }),
-    {
-      workflow: "import_ingestion",
-      providerId: "deterministic-engine",
-      status: "succeeded",
-      entityType: "import_source",
-      entityId: source.id,
-      inputSummary: `${source.sourceType} 资料：${source.title}`,
-      outputSummary: `生成 ${chunks.length} 个 RAG 分块和资料包：${brief.topic}`,
-      estimatedTokens: content.length,
-      createdAt
-    }
-  );
-  const nextState = withGeneratedArtifactWorkflowRun(stateWithEvents, {
-    workflow: "import_ingestion",
-    entityType: "import_source",
-    entityId: source.id,
-    inputSummary: `${source.sourceType} 资料：${source.title}`
-  });
-
-  return {
-    source,
-    chunks,
-    brief,
-    nextState
-  };
 }
 function normalizeSearchBriefSourceTrace(inputTrace: SearchBriefInput["sourceTrace"], input: SearchBriefInput): SearchBriefSourceTrace[] {
   const sources = input.sources.filter((source) => source.id.trim());
@@ -660,33 +489,6 @@ function withExternalMaterialMemoryCandidate(state: ProductState, brief: SearchB
     ),
     reason: `外部素材“${brief.topic}”已被转成认知资产；根据当前记忆策略，只生成待审核候选，用户确认后才进入长期记忆。`,
     sensitivity: "normal",
-    createdAt
-  });
-
-  return {
-    ...state,
-    memoryCandidates: [candidate, ...state.memoryCandidates]
-  };
-}
-function withReferenceMaterialMemoryCandidate(
-  state: ProductState,
-  source: ImportSource,
-  chunks: RagChunk[],
-  createdAt: string
-): ProductState {
-  if (state.systemConfig.memory.externalMaterialMemoryPolicy !== "auto-candidate") {
-    return state;
-  }
-
-  const candidate: MemoryCandidate = withMemoryCandidateReview({
-    id: makeId("memory-candidate"),
-    text: `用户正在把《${source.title}》作为导入资料，用来补充下一次专访的外部参照和判断线索。`,
-    status: "pending",
-    sourceType: "import_source",
-    sourceId: source.id,
-    evidenceQuote: pickSearchBriefText(chunks.map((chunk) => chunk.text), source.title),
-    reason: `导入资料《${source.title}》已生成 RAG 分块和可带入专访的资料包；根据当前记忆策略，只生成待审核候选，用户确认后才进入长期记忆。`,
-    sensitivity: source.sensitivity,
     createdAt
   });
 

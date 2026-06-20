@@ -29,7 +29,9 @@ export interface ProductStateMigrationManifest {
   schemaVersion: 1;
   format: "product-state-json";
   generatedAt: string;
-  recommendedTarget: "postgres-jsonb-first";
+  // 当前持久化是 SQLite JSON snapshot/event 单租户库（Postgres 仓库已删除）。
+  // 该清单描述「把当前 SQLite 状态安全搬到另一台机器/另一份库」的就绪度，不预设关系库目标。
+  recommendedTarget: "sqlite-json-snapshot";
   sourceTables: string[];
   entityCounts: MigrationEntityCount[];
   checks: MigrationReadinessCheck[];
@@ -50,7 +52,7 @@ export function buildProductStateMigrationManifest(
     schemaVersion: 1,
     format: "product-state-json",
     generatedAt,
-    recommendedTarget: "postgres-jsonb-first",
+    recommendedTarget: "sqlite-json-snapshot",
     sourceTables: ["product_state_snapshots", "product_state_events"],
     entityCounts,
     checks: [
@@ -62,11 +64,11 @@ export function buildProductStateMigrationManifest(
         recommendation: "迁移脚本应始终先执行 normalizeProductState，再写入目标库。"
       },
       {
-        id: "jsonb-first-target",
-        label: "PostgreSQL JSONB 首阶段",
+        id: "sqlite-snapshot-store",
+        label: "SQLite JSON snapshot/event 存储",
         status: "ready",
-        detail: "当前状态天然是单租户 ProductState JSON；第一阶段可迁移到 JSONB snapshot/event 表，不需要先拆全量关系表。",
-        recommendation: "先建立 product_state_snapshots / product_state_events JSONB 表；稳定后再按查询热点拆 assets、memory、sessions。"
+        detail: "当前持久化是单租户 ProductState JSON，存放在 SQLite 的 product_state_snapshots / product_state_events 表中（Postgres 仓库已删除）。",
+        recommendation: "搬迁时直接复制 SQLite 库文件（PRODUCT_STATE_DB_PATH），或用 /api/state/export 导出后在目标机 /api/state/import 恢复；两种方式都先过 normalizeProductState。"
       },
       {
         id: "pending-memory-review",
@@ -97,11 +99,11 @@ export function buildProductStateMigrationManifest(
       }
     ],
     targetPlan: [
-      "1. 创建 product_state_snapshots(id text primary key, state_json jsonb not null, created_at timestamptz, updated_at timestamptz)。",
-      "2. 创建 product_state_events(id bigserial primary key, event_type text, state_json jsonb not null, created_at timestamptz)。",
-      "3. 从 SQLite snapshot 读取 state_json，执行 normalizeProductState 后写入 PostgreSQL snapshot，并追加 replace event。",
-      "4. 迁移对象文件目录或对象存储，再校验 local-object:// 与公网音频 URL 映射。",
-      "5. 通过 Product API /api/state/export 和 /api/state/import 做一次备份恢复演练，再切换生产读写。"
+      "1. 在源机停止写入（或确保无并发请求），定位 SQLite 库文件 PRODUCT_STATE_DB_PATH。",
+      "2. 通过 Product API /api/state/export 导出当前 ProductState JSON（不含 provider 密钥），作为可移植备份。",
+      "3. 在目标机配置同版本服务与 PRODUCT_STATE_DB_PATH，用 /api/state/import 导入导出包；导入会自动执行 normalizeProductState 并追加一条 replace event。",
+      "4. 迁移对象文件目录（CORPUS_UPLOAD_DIR）或对象存储，再校验 local-object:// 与公网音频 URL 映射。",
+      "5. 在目标机做一次 export→import 往返演练，核对实体计数与 checks 全绿后再切换生产读写。"
     ]
   };
 }

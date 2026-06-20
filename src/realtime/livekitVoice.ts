@@ -38,11 +38,26 @@ function wireParticipantSpeaking(
   });
 }
 
+/**
+ * Interrupt signal published to the room data channel (P1-10). The Python
+ * livekit-agents side is expected to listen for this and cancel its in-flight
+ * TTS synthesis. Kept as a small JSON envelope so the agent can version/extend
+ * it without breaking the client.
+ */
+const INTERRUPT_SIGNAL = { type: "interrupt", reason: "user_interrupt" } as const;
+
 export async function createLivekitVoiceSession(
   options: CreateLivekitVoiceSessionOptions
 ): Promise<LivekitVoiceSession> {
   const { serverUrl, token, callbacks } = options;
   const room = new Room();
+
+  // Track the agent's subscribed audio tracks + the <audio> elements .attach()
+  // created, so interrupt() can stop local playback immediately (the only thing
+  // the client can do without agent cooperation) instead of letting the buffered
+  // TTS play to completion.
+  const subscribedAudioTracks = new Set<RemoteTrack>();
+  const attachedAudioEls = new Set<HTMLMediaElement>();
 
   for (const p of room.remoteParticipants.values()) {
     wireParticipantSpeaking(p, callbacks);
@@ -64,6 +79,8 @@ export async function createLivekitVoiceSession(
       try {
         const el = track.attach();
         el.setAttribute("autoplay", "true");
+        subscribedAudioTracks.add(track);
+        attachedAudioEls.add(el as HTMLMediaElement);
         console.log("[voice] attached audio from", participant.identity);
       } catch (err) {
         callbacks.onError(err instanceof Error ? err : new Error(String(err)));
@@ -71,12 +88,46 @@ export async function createLivekitVoiceSession(
     }
   });
 
+  // Forget tracks/elements once unsubscribed so interrupt() never touches stale
+  // handles (and the sets don't grow unbounded over a long session).
+  room.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack) => {
+    if (track.kind !== Track.Kind.Audio) return;
+    subscribedAudioTracks.delete(track);
+    try {
+      for (const el of track.detach()) attachedAudioEls.delete(el as HTMLMediaElement);
+    } catch { /* already detached */ }
+  });
+
   room.on(RoomEvent.Connected, () => {
+    callbacks.onStateChange("connected" as ConnectionState);
+  });
+
+  // P1-06: livekit-client owns its own reconnect loop (signal + media), but the
+  // states were never surfaced — a network blip looked identical to a healthy
+  // session, and a *permanent* failure looked the same as a user hangup. Wire
+  // the SDK's reconnect lifecycle to onStateChange, and distinguish a terminal
+  // drop (Disconnected while we were mid-reconnect) as an error so the UI can
+  // show "voice disconnected" rather than silently going dead.
+  let reconnecting = false;
+  room.on(RoomEvent.Reconnecting, () => {
+    reconnecting = true;
+    callbacks.onStateChange("reconnecting" as ConnectionState);
+  });
+
+  room.on(RoomEvent.Reconnected, () => {
+    reconnecting = false;
     callbacks.onStateChange("connected" as ConnectionState);
   });
 
   room.on(RoomEvent.Disconnected, () => {
     callbacks.onStateChange("disconnected" as ConnectionState);
+    // A disconnect that arrives while the SDK was still trying to reconnect means
+    // the reconnect attempts were exhausted — report it as a failure, not a
+    // clean close.
+    if (reconnecting) {
+      reconnecting = false;
+      callbacks.onError(new Error("LiveKit connection lost and could not reconnect"));
+    }
   });
 
   // Standard LiveKit TranscriptionSegment protocol — the Python agent
@@ -112,11 +163,46 @@ export async function createLivekitVoiceSession(
       await room.localParticipant.setMicrophoneEnabled(true);
     },
     interrupt() {
-      // ponytail: LiveKit 模式 interrupt 受 SDK/架构限制，客户端侧无法直接取消
-      // 远端 Agent 的 TTS 合成或停止远端音轨播放。完整的打断（停止 Agent 合成并
-      // 重新聆听）需要 Agent 侧支持 interrupt 信令（livekit-agents Python 侧）。
-      // 当前最小有效行为：确保本地麦克风处于启用状态，以便用户发言时 ASR 可以拾音。
-      // 如需真打断，请在后端 Agent 实现 interrupt 数据通道协议并通过 publishData 发送信令。
+      // P1-10: best-effort real interrupt. Three actions, in order of immediacy:
+      //
+      //   1. Stop LOCAL playback of the agent's buffered TTS right now — pause +
+      //      mute the attached <audio> elements and detach the audio tracks. This
+      //      is the only thing the client can do unilaterally, and it makes the
+      //      agent's voice actually stop in the user's ear immediately instead of
+      //      playing the already-buffered sentence to the end.
+      //   2. Publish an `interrupt` signal on the room data channel so the Python
+      //      livekit-agents side can cancel its in-flight TTS *synthesis* (the
+      //      authoritative stop — requires the agent to handle this envelope; see
+      //      INTERRUPT_SIGNAL). Without agent cooperation the agent keeps
+      //      generating, but local playback (step 1) is already silenced.
+      //   3. Re-arm the local mic so the user's barge-in speech is captured.
+      //
+      // NOTE (dependency): a fully clean interrupt — stopping the agent from
+      // *generating* further audio — still needs the agent to honor the data
+      // signal in step 2. Steps 1 & 3 work client-side regardless.
+
+      // 1. Silence + tear down local playback of the agent's current utterance.
+      for (const el of attachedAudioEls) {
+        try { el.pause(); el.muted = true; } catch { /* element gone */ }
+      }
+      for (const track of subscribedAudioTracks) {
+        try { track.detach(); } catch { /* already detached */ }
+      }
+      attachedAudioEls.clear();
+      subscribedAudioTracks.clear();
+
+      // 2. Tell the agent to cancel synthesis (best-effort; needs agent support).
+      try {
+        const payload = new TextEncoder().encode(JSON.stringify(INTERRUPT_SIGNAL));
+        // reliable delivery — an interrupt must not be silently dropped.
+        const maybePromise = room.localParticipant.publishData(payload, { reliable: true });
+        // publishData returns a Promise in current SDKs; swallow rejection.
+        void Promise.resolve(maybePromise).catch(() => { /* agent may not be ready */ });
+      } catch {
+        /* publishData unavailable (older SDK / mock) — playback is already stopped */
+      }
+
+      // 3. Make sure the mic is live so the user's barge-in is heard.
       room.localParticipant.setMicrophoneEnabled(true).catch(() => {
         // mic might already be enabled — ignore
       });

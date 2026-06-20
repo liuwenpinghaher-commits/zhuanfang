@@ -130,20 +130,6 @@ export interface InterviewResumeCard {
   turnCount: number;
 }
 
-export type InterviewFollowUpSourceType = "question" | "knowledge_debt" | "theme" | "decision_review";
-
-export interface InterviewFollowUpItem {
-  id: string;
-  sourceType: InterviewFollowUpSourceType;
-  sourceId: string;
-  title: string;
-  prompt: string;
-  reason: string;
-  priority: number;
-  mode: InterviewMode;
-  updatedAt: string;
-}
-
 export interface InterviewGuide {
   topicHint: string;
   dailyBrief: {

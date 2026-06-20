@@ -1,7 +1,6 @@
 import type {
   InterviewCard,
   InterviewContextPack,
-  InterviewFollowUpItem,
   InterviewGuide,
   InterviewGuideOptions,
   InterviewMode,
@@ -183,9 +182,6 @@ function buildContextSecurityInterceptions(
   }
 
   return interceptions;
-}
-function buildDecisionReviewPrompt(decision: ProductState["decisions"][number]) {
-  return `复盘决策“${decision.title}”：当时的选择是否降低了短期风险，还是继续强化了等待拍板？`;
 }
 export function buildInterviewCard(state: ProductState, searchBriefId?: string, topicHint?: string, queryEmbedding?: number[]): InterviewCard {
   const topTheme = [...state.themes].sort((a, b) => b.appearances - a.appearances)[0];
@@ -371,75 +367,6 @@ export function buildInterviewContextPack(state: ProductState, options: Intervie
       }))
     ]
   };
-}
-export function buildInterviewFollowUpQueue(state: ProductState, limit = 6): InterviewFollowUpItem[] {
-  const candidates: InterviewFollowUpItem[] = [
-    ...state.questions
-      .filter((question) => ["正在聚焦", "反复出现", "开放"].includes(question.status))
-      .map((question) => ({
-        id: `followup-question-${question.id}`,
-        sourceType: "question" as const,
-        sourceId: question.id,
-        title: formatQuestionFollowUpTitle(question),
-        prompt: question.question,
-        reason: buildQuestionFollowUpReason(question),
-        priority: scoreQuestionFollowUp(question),
-        mode: "decision" as const,
-        updatedAt: question.updatedAt
-      })),
-    ...state.debts
-      .filter((debt) => debt.status === "待了解")
-      .map((debt) => ({
-        id: `followup-debt-${debt.id}`,
-        sourceType: "knowledge_debt" as const,
-        sourceId: debt.id,
-        title: `知识债：${debt.concept}`,
-        prompt: debt.nextQuestion,
-        reason: `未完成知识债：${debt.whyImportant}`,
-        priority: scoreDebtFollowUp(debt),
-        mode: "learning" as const,
-        updatedAt: debt.updatedAt
-      })),
-    ...state.decisions
-      .filter((decision) => decision.confirmationStatus === "用户确认" && decision.status === "待复盘")
-      .map((decision) => ({
-        id: `followup-decision-${decision.id}`,
-        sourceType: "decision_review" as const,
-        sourceId: decision.id,
-        title: `决策复盘：${decision.title}`,
-        prompt: buildDecisionReviewPrompt(decision),
-        reason: `复盘日期 ${decision.reviewAt}：${decision.riskHypothesis}`,
-        priority: scoreDecisionFollowUp(decision),
-        mode: "decision" as const,
-        updatedAt: decision.updatedAt
-      })),
-    ...state.themes
-      .filter((theme) => theme.maturity !== "关闭")
-      .map((theme) => ({
-        id: `followup-theme-${theme.id}`,
-        sourceType: "theme" as const,
-        sourceId: theme.id,
-        title: `长期主题：${theme.name}`,
-        prompt: theme.nextQuestion,
-        reason: `长期主题已出现 ${theme.appearances} 次：${theme.summary}`,
-        priority: scoreThemeFollowUp(theme),
-        mode: "long-term" as const,
-        updatedAt: theme.updatedAt
-      }))
-  ];
-
-  const seenPrompts = new Set<string>();
-  return candidates
-    .filter((item) => {
-      const normalizedPrompt = normalizeFollowUpPrompt(item.prompt);
-      if (!normalizedPrompt || seenPrompts.has(normalizedPrompt)) {
-        return false;
-      }
-      seenPrompts.add(normalizedPrompt);
-      return true;
-    })
-    .sort((left, right) => right.priority - left.priority || Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
-    .slice(0, limit);
 }
 export function buildInterviewGuide(state: ProductState, options: InterviewGuideOptions = {}): InterviewGuide {
   const explicitTopicHint = options.topicHint?.trim();
@@ -667,15 +594,6 @@ function buildPerspectiveRationale(
       : "历史资产已有多视角覆盖，本轮重点做交叉验证。";
   const sourceNote = searchBrief ? `同时接入“${searchBrief.topic}”的外部素材，避免只在个人经验内循环。` : "";
   return `推荐 ${recommendedPerspectives.join(" / ")}：${missingNote}${sourceNote}`;
-}
-function buildQuestionFollowUpReason(question: ProductState["questions"][number]) {
-  if (isUserRequestedFollowUpQuestion(question)) {
-    return `用户会后反馈明确要求继续追问：${question.nextPrompt}`;
-  }
-  if (question.status === "正在聚焦") {
-    return `正在聚焦的问题：${question.whyImportant}`;
-  }
-  return `${question.status}问题：${question.whyImportant}`;
 }
 export function buildSemanticRagContext(
   state: ProductState,
@@ -950,9 +868,6 @@ function formatExternalMaterial(label: "外部资料" | "外部观点", searchBr
 export function formatMemoryGraphTargetLabel(text: string) {
   return text.length > 28 ? `${text.slice(0, 28)}...` : text;
 }
-function formatQuestionFollowUpTitle(question: ProductState["questions"][number]) {
-  return isUserRequestedFollowUpQuestion(question) ? `用户标记：${formatQuestionTitle(question.question)}` : question.question;
-}
 function formatQuestionTitle(question: string) {
   return question.replace(/^下次继续追问/, "").replace(/[。！？!?]+$/g, "").trim() || question;
 }
@@ -1032,9 +947,6 @@ function isSearchBriefDiscussionTopic(searchBrief: SearchBrief | undefined, topi
     return candidate === hint || candidate.includes(hint) || hint.includes(candidate);
   });
 }
-function isUserRequestedFollowUpQuestion(question: ProductState["questions"][number]) {
-  return question.whyImportant.includes("会后反馈") || question.question.startsWith("下次继续追问");
-}
 const memoryGraphStopTokens = new Set([
   "用户",
   "确认",
@@ -1058,9 +970,6 @@ const memoryGraphStopTokens = new Set([
   "系统"
 ]);
 
-function normalizeFollowUpPrompt(prompt: string) {
-  return prompt.replace(/\s+/g, "").replace(/[。！？!?]+$/g, "");
-}
 // M3c: rank confirmed MemoryRecords with the three-factor scorer (cosine when both
 // queryEmbedding and record.embedding are present, else substring). Pure — `now` is
 // captured once here for stable ordering within a single build.
@@ -1166,22 +1075,6 @@ function resolveInterviewSearchBrief(state: ProductState, searchBriefId?: string
   const first = state.searchBriefs[0];
   return first && isSearchBriefAllowedInInterviewContext(state, first) ? first : undefined;
 }
-function scoreDebtFollowUp(debt: ProductState["debts"][number]) {
-  const staleDays = daysBetween(debt.updatedAt, nowIso());
-  return Math.min(88, 70 + Math.min(12, staleDays) + (debt.whyImportant.includes("授权") ? 6 : 0));
-}
-function scoreDecisionFollowUp(decision: ProductState["decisions"][number]) {
-  const daysUntilReview = daysBetween(nowIso(), decision.reviewAt);
-  const dueScore = daysUntilReview <= 0 ? 20 : daysUntilReview <= 7 ? 14 : 6;
-  return Math.min(92, 72 + dueScore + (decision.decisionKind === "用户决策" ? 6 : 0));
-}
-function scoreQuestionFollowUp(question: ProductState["questions"][number]) {
-  const statusScore = question.status === "正在聚焦" ? 78 : question.status === "反复出现" ? 68 : 56;
-  const importanceScore = question.important ? 12 : 0;
-  const appearanceScore = Math.min(12, question.appearances * 3);
-  const feedbackScore = isUserRequestedFollowUpQuestion(question) ? 25 : 0;
-  return Math.min(100, statusScore + importanceScore + appearanceScore + feedbackScore);
-}
 function scoreRagChunkForTopic(chunk: RagChunk, source: ImportSource, topicTokens: Set<string>) {
   const primaryTokens = tokenizeMemoryGraphText(chunk.text);
   const metadataTokens = tokenizeMemoryGraphText([source.title, chunk.title, ...chunk.keywords].join(" "));
@@ -1191,17 +1084,6 @@ function scoreRagChunkForTopic(chunk: RagChunk, source: ImportSource, topicToken
     const metadataScore = metadataTokens.has(token) ? baseScore * 0.5 : 0;
     return score + primaryScore + metadataScore;
   }, 0);
-}
-function scoreThemeFollowUp(theme: ProductState["themes"][number]) {
-  const maturityScore: Record<ProductState["themes"][number]["maturity"], number> = {
-    萌芽: 48,
-    重复: 62,
-    聚焦: 72,
-    成型: 66,
-    变化: 70,
-    关闭: 0
-  };
-  return Math.min(84, maturityScore[theme.maturity] + Math.min(10, theme.appearances * 2));
 }
 function searchBriefHasRemovedExternalInstruction(searchBrief: SearchBrief) {
   return [

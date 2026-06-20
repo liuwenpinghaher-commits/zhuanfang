@@ -2,7 +2,7 @@
 
 语音专访式日记工具原型。当前版本已经从纯前端 demo 演进为本地可运行的产品 MVP：前端负责沉浸式专访与工作台体验，Product API 负责状态、配置、联网搜索、百炼模型、播客音频、语料转写和实时语音代理。
 
-当前交付状态以 [docs/implementation-status.md](docs/implementation-status.md) 为准；早期方案文档保留为设计过程记录。
+本文档描述当前实际可运行的能力；早期方案文档（`docs/`）保留为设计过程记录。
 
 ## 核心业务
 
@@ -12,14 +12,13 @@
 - 语料学习：导入文本或音频专访样本，分析追问逻辑，生成 PlaybookPatch，经确认后影响后续引擎。
 - 播客工作台：从笔记、搜索简报、长期主题、知识债、语料学习结果生成单人旁白或主持对谈播客；TTS 已配置时默认直出百炼 CosyVoice 音频。
 - 系统配置：provider 健康、运行配置、产品策略、配置版本、质量运营、质量修复动作和 AI 运行事件。
-- 数据治理：个人页提供完整 JSON 导出/导入、隐私数据库存、迁移准备清单、备份恢复演练、运营检查证据、演示数据重置和彻底清空个人数据；Product API 清空会删除已引用的本地对象音频，清空不会恢复 demo 样例，导出包不包含运行密钥。
+- 数据治理：个人页提供完整 JSON 导出/导入、隐私数据库存、演示数据重置和彻底清空个人数据；Product API 清空会删除已引用的本地对象音频，清空不会恢复 demo 样例，导出包不包含运行密钥。
 
 ## 技术底座
 
 - Frontend: React 18, TypeScript, Vite, lucide-react.
 - Product API: Fastify, tsx.
 - State: `npm run start:api` 默认使用 SQLite `.data/product-state.sqlite` 持久化；测试和临时演示可设置 `PRODUCT_STATE_DB_PATH=memory` 回到内存态。
-- Workflow Runtime: 本地确定性 runtime + Mastra-compatible HTTP runtime adapter，可通过配置切换。
 - Tests: Vitest, Playwright.
 - Optional providers: 百炼 Responses / qwen-plus-character / Qwen-Omni Realtime / CosyVoice / SenseVoice, AnySearch / Tavily / Exa / Brave Search.
 
@@ -52,10 +51,13 @@ npm run build
 
 ```bash
 cp .env.production.example .env.production.local
+# 在 .env.production.local 中设置一个长随机 PRODUCT_API_TOKEN（生产必填）
 docker compose --env-file .env.production.local up --build
 ```
 
-容器会在同一个 `PORT` 上托管前端静态产物和 Product API，默认访问 `http://127.0.0.1:3210`。`VITE_PRODUCT_API_BASE_URL` 在生产模板中保持空值，表示浏览器同源请求 `/api/*`；如果前端和 API 分域部署，再把它改成公开 API 地址。详细步骤见 [docs/deployment-runbook.md](docs/deployment-runbook.md)。
+> **生产必须设置 `PRODUCT_API_TOKEN`。** 当 `DEPLOYMENT_PROFILE=production` 时服务会 fail-closed：缺少该令牌时直接拒绝启动并报错——否则鉴权守卫不会生效，所有 `/api/*` 路由（隐私导出、一键清空、修改 provider 配置、语音代理）将无凭据即可访问。`docker-compose.yml` 使用 `${PRODUCT_API_TOKEN:?...}`，未设置时 `docker compose up` 会直接失败。客户端通过 `Authorization: Bearer <token>` 或 `?token=<token>`（WebSocket）携带令牌。
+
+容器会在同一个 `PORT` 上托管前端静态产物和 Product API，默认访问 `http://127.0.0.1:3210`。`VITE_PRODUCT_API_BASE_URL` 在生产模板中保持空值，表示浏览器同源请求 `/api/*`；如果前端和 API 分域部署，再把它改成公开 API 地址。
 
 测试：
 
@@ -93,10 +95,9 @@ BAILIAN_CHARACTER_PROMPT_STYLE=role-play-partial
 BAILIAN_CHARACTER_TEMPERATURE=0.55
 BAILIAN_CHARACTER_MAX_TOKENS=140
 
-WORKFLOW_RUNTIME_PROVIDER=local
-MASTRA_RUNTIME_ENDPOINT=
-MASTRA_RUNTIME_API_KEY=
 DEPLOYMENT_PROFILE=local
+# 生产必填（DEPLOYMENT_PROFILE=production 时缺失会拒绝启动）；本地可留空。
+PRODUCT_API_TOKEN=
 PROVIDER_SMOKE_TEST_TOPIC=AI 产品商业化热点 provider 冒烟
 PROVIDER_SMOKE_TEST_AUDIO_URL=
 PROVIDER_SMOKE_TEST_WEBRTC_OFFER_SDP=
@@ -110,10 +111,9 @@ PRODUCT_STATIC_DIR=dist
 PROVIDER_REQUEST_TIMEOUT_MS=30000
 SEARCH_REQUEST_TIMEOUT_MS=30000
 BAILIAN_REQUEST_TIMEOUT_MS=30000
-MASTRA_RUNTIME_TIMEOUT_MS=30000
 
 BAILIAN_TTS_MODEL=cosyvoice-v3-plus
-BAILIAN_TTS_VOICE=longyuan_v3
+BAILIAN_TTS_VOICE=longanyang
 BAILIAN_TTS_FORMAT=mp3
 BAILIAN_TTS_SAMPLE_RATE=24000
 BAILIAN_TTS_RATE=0.95
@@ -135,7 +135,6 @@ BAILIAN_REALTIME_VAD_THRESHOLD=0.5
 BAILIAN_REALTIME_SILENCE_DURATION_MS=800
 
 PRODUCT_STATE_DB_PATH=.data/product-state.sqlite
-PRODUCT_BACKUP_STRATEGY=manual-json-export
 PRODUCT_WEB_ORIGINS=http://127.0.0.1:3220,http://localhost:3220
 CORPUS_UPLOAD_DIR=.data/corpus-audio
 CORPUS_AUDIO_PUBLIC_BASE_URL=
@@ -165,31 +164,15 @@ PODCAST_AUTO_RENDER_ON_CREATE=auto
 
 `PRODUCT_STATIC_DIR` 控制 Product API 是否托管前端构建产物；目录存在且包含 `index.html` 时，非 `/api/*` 的 GET 请求会返回静态资源或 SPA fallback。生产 Docker 镜像默认设置为 `/app/dist`；设置为 `disabled` 可关闭静态托管。
 
-`DEPLOYMENT_PROFILE` 控制系统配置页“部署就绪”检查的严格度：`local` 面向本机原型，`production` 会严格检查 HTTPS 域名、CORS 正式来源、非内存状态库、公开音频访问和备份策略。`PRODUCT_BACKUP_STRATEGY` 用于声明当前恢复方案，例如 `manual-json-export`、`sqlite-snapshot` 或 `managed-database-backup`。
+`PRODUCT_API_TOKEN` 是 Product API 的访问令牌。当 `DEPLOYMENT_PROFILE=production` 时它是**必填项**：缺失时服务会 fail-closed 直接拒绝启动，避免在无鉴权守卫的情况下暴露 `/api/*`（隐私导出、一键清空、修改 provider 配置、语音代理）。设置后，浏览器/客户端通过 `Authorization: Bearer <token>` 携带，WebSocket 语音代理通过 `?token=<token>` 携带。本地 `DEPLOYMENT_PROFILE=local` 时可留空。
 
-`PROVIDER_REQUEST_TIMEOUT_MS` 是服务端外部 provider 的全局请求超时；`SEARCH_REQUEST_TIMEOUT_MS`、`BAILIAN_REQUEST_TIMEOUT_MS`、`MASTRA_RUNTIME_TIMEOUT_MS` 可分别覆盖搜索、百炼和 Mastra runtime，未配置时继承全局值。
+`DEPLOYMENT_PROFILE` 控制系统配置页“部署就绪”检查的严格度：`local` 面向本机原型，`production` 会严格检查 HTTPS 域名、CORS 正式来源、非内存状态库和公开音频访问。
 
-系统配置页的“发布门禁”会读取 `GET /api/system/release-gate`，把部署就绪、备份恢复、PostgreSQL JSONB 迁移包、真实 Provider 冒烟、Workflow Runtime 和公网音频访问聚合成 `通过 / 观察 / 阻塞` 结论。它会保留备份摘要、迁移快照、runtime provider 和最近一次已保存的 `operationalChecks` 冒烟证据，但不会输出 provider key；缺少百炼 key、最近一次冒烟失败或证据过期时会阻止真实发布。
-
-系统配置页的“上线执行清单”会读取 `GET /api/system/go-live-checklist`，把交付就绪包拆成 P0/P1/P2 操作步骤。P0 覆盖发布审计阻塞项、真实 Provider 冒烟、Workflow Runtime 和 Realtime 语音等会阻塞上线的动作；P1 覆盖公网音频、外部搜索、隐私运营和发布审计归档；P2 用于交付证据归档。清单只返回 env key 名称、证据入口和 packageId，不返回 provider secret、env value 或本地文件内容。
-
-系统配置页的“交付就绪包”会读取 `GET /api/system/shipping-handoff-package`，把发布审计摘要、隐私运营摘要、外部依赖状态、证据入口、runbook 和下一步动作聚合成单一交付视图。它只嵌入摘要和 endpoint，不嵌入完整运行配置值、本地文件内容或 provider secret，适合交付审阅时先看总状态，再按 endpoint 深入核对。
-
-系统配置页的“发布审计包”会读取 `GET /api/system/release-audit-package`，把发布门禁、部署就绪、迁移准备、备份恢复、PostgreSQL JSONB 迁移包和最近运营检查证据合并成同一份快照。审计包显式标记 provider secret、env value 和本地文件内容不会被包含，适合上线前复盘和交付审阅。
-
-系统配置页的“真实 Provider 冒烟”会主动调用已配置 provider，验证真实搜索、角色专访、TTS、ASR 和 Realtime SDP。`PROVIDER_SMOKE_TEST_TOPIC` 控制搜索/角色专访测试主题；`PROVIDER_SMOKE_TEST_AUDIO_URL` 提供可公网访问的音频样本 URL，未配置时 SenseVoice ASR 冒烟会跳过；`PROVIDER_SMOKE_TEST_WEBRTC_OFFER_SDP` 提供 Realtime SDP 交换样本，未配置时 Realtime 冒烟会跳过。失败原因会脱敏展示，并以摘要形式保存到 `ProductState.operationalChecks`。
-
-系统配置页的“Workflow Runtime 冒烟”会调用 `POST /api/system/workflow-runtime-smoke-test`。本地 runtime 会执行一次 ContextPack 构建；当 `WORKFLOW_RUNTIME_PROVIDER=mastra` 且配置了 `MASTRA_RUNTIME_ENDPOINT` 时会通过 Mastra-compatible HTTP adapter 调用外部 runtime；缺少 endpoint 时返回跳过。冒烟不会把 workflow 输出写入业务 `workflowRuns`，但会保存一条 `operationalChecks` 证据供发布门禁判断。
+`PROVIDER_REQUEST_TIMEOUT_MS` 是服务端外部 provider 的全局请求超时；`SEARCH_REQUEST_TIMEOUT_MS`、`BAILIAN_REQUEST_TIMEOUT_MS` 可分别覆盖搜索和百炼请求，未配置时继承全局值。
 
 外部搜索 provider 在 Product API 服务端按环境变量自动启用：`ANYSEARCH_API_KEY` 调用 AnySearch `/v1/search`，`TAVILY_API_KEY` 调用 Tavily `/search`，`EXA_API_KEY` 调用 Exa `/search`，`BRAVE_SEARCH_API_KEY` 调用 Brave Web Search `/res/v1/web/search`。未配置 key 时 UI 仍可生成本地可复核素材，并在任务状态中标注降级原因。
 
 个人页的数据治理区会显示当前 ProductState 的隐私库存，区分显性档案、专访笔记、认知资产、长期记忆、联网/RAG 资料、语料学习、播客生成物、运行审计记录和运营检查证据。`GET /api/state/privacy-report` 返回同一份库存；`GET /api/state/export` 的导出包会附带隐私报告；`POST /api/state/purge` 需要 `confirm=PURGE_PERSONAL_DATA`，会清空个人数据、删除已引用的 `local-object://corpus-audio/...` 本地音频原件，并保留 provider/模型运行配置和一条清空审计事件。响应里的 `artifactPurge` 会列出删除、缺失和跳过的对象文件数量。
-
-系统配置页的“隐私运营包”会读取 `GET /api/state/privacy-operations-package`，把隐私库存、用户访问/更正/删除/迁移/透明权利、本地对象音频引用、保留策略、清空 runbook 和下一步动作聚合成审阅材料。该包只输出计数和状态，不包含 provider secret、env value 或本地文件内容。
-
-系统配置页的“迁移准备”会读取 `GET /api/system/migration-readiness`，输出当前 ProductState 的实体计数、SQLite snapshot/event 源表、`postgres-jsonb-first` 目标路线、待审核记忆和 `local-object://` 音频风险。`GET /api/system/postgres-migration-package` 会生成 PostgreSQL JSONB 首阶段迁移包，包含建表 SQL、snapshot/event 写入 SQL、验证 SQL、状态摘要和 runbook。迁移包不迁移密钥；provider key 仍由 `.env.local` 或系统配置页管理。
-
-系统配置页的“备份恢复演练”会读取 `GET /api/system/backup-rehearsal`，在内存里模拟一次 JSON 导出和导入恢复，不改写当前状态。报告会比较导出摘要与恢复摘要、隐私库存、provider secret 排除、迁移清单和本地对象音频引用，并给出生产恢复演练 runbook。
 
 ## 目录
 
@@ -212,14 +195,12 @@ React UI
      -> Bailian Character interview provider
      -> Bailian Realtime WebRTC SDP proxy
      -> Bailian TTS / ASR providers
-     -> Workflow run registry
   -> local fallback engine
 ```
 
 文本专访和实时语音转写现在共用 `interview-turn-runner`：优先走百炼角色扮演 provider，失败或未配置时降级到本地规则引擎，并统一记录 AI 运行事件。实时语音的留白、打断和语音追问信号会写入会话 `realtimeSignals`，进入"实时轮替"质量门，并在系统配置的透明追踪里展示。
-实时打断现在支持回填：浏览器侧 `bailianWebrtc.ts` 通过 `markAssistantSpeaking` 累积已合成的字符与音频时长，触发打断时调用 `POST /api/realtime-voice/sessions/:id/interrupt`，服务端通过 `truncateAssistantTurn` 把对应 assistant turn 的 `content` 截断为 `spokenTextSoFar`，并写入 `realtimeSignals`（`eventType=agent_speech_interrupted`）和 `aiRunEvents.metrics`，避免后续轮次基于"模型完整输出"做出错乱的追问。Turn 判定通过 `src/realtime/turnDetectors/` 抽象，默认实现是 silence VAD（行为零变化），可在未来插入语义判定。详见 [docs/realtime-improvement-plan.md](docs/realtime-improvement-plan.md)。
+实时打断现在支持回填：浏览器语音侧累积已合成的字符与音频时长，触发打断时调用 `POST /api/realtime-voice/sessions/:id/interrupt`，服务端通过 `truncateAssistantTurn` 把对应 assistant turn 的 `content` 截断为 `spokenTextSoFar`，并写入 `realtimeSignals`（`eventType=agent_speech_interrupted`）和 `aiRunEvents.metrics`，避免后续轮次基于"模型完整输出"做出错乱的追问。详见 [docs/realtime-improvement-plan.md](docs/realtime-improvement-plan.md)。
 系统配置里的“默认访谈声音”会在创建 Realtime session 时传给 Product API；`BAILIAN_REALTIME_VOICE` 作为服务端默认/回退音色保留。
-系统配置页的质量区会显示最近 workflow runs 和质量修复动作；Product API 提供 `/api/system/workflows/:workflowId/run`，用于触发 ContextPack、导入摄取、记忆投影等工作流的可观测运行记录。默认 `WORKFLOW_RUNTIME_PROVIDER=local`，使用当前确定性 runtime；配置 `WORKFLOW_RUNTIME_PROVIDER=mastra` 和 `MASTRA_RUNTIME_ENDPOINT` 后，会把 `{ input, state }` POST 到 `/api/workflows/:workflowId/run`，接收外部 Mastra-compatible runtime 返回的 `{ run, nextState }`。`context_pack_build` 会读取当前 ProductState 并输出主题、确认记忆、候选、修正和来源数量；`memory_projection` 会统计待审候选、敏感候选、确认长期记忆和模型上下文记录，不会自动确认候选；`search_brief_generation`、`podcast_generation`、`import_ingestion` 会分别输出来源/事实/讨论主题、章节/Shownotes/声音、转写轮次/分析维度/PlaybookPatch 等业务指标。质量修复动作会把记忆修正、质量门低分、实时轮替失败、候选记忆精度、来源忠实度和 provider 降级转成下一场专访的 `qualityGuardrails`。
 
 ## 验证状态
 

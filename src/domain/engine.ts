@@ -33,7 +33,7 @@ export {
 
 export {
   addMemoryGraphToken, buildInterviewCard, buildInterviewContextPack,
-  buildInterviewFollowUpQueue, buildInterviewGuide, buildInterviewResumeCard,
+  buildInterviewGuide, buildInterviewResumeCard,
   buildMemoryEdgesForRecord, collectAppliedPlaybookRules,
   createSessionDraft, formatMemoryGraphTargetLabel,
   tokenizeMemoryGraphText,
@@ -83,7 +83,7 @@ export {
   buildProactiveSearchAgenda, buildSearchBrief,
   createKnowledgeDebtFromSearchBrief, createPointFromSearchBrief,
   createQuestionFromSearchBrief,
-  createSearchBriefFromInput, importReferenceMaterial,
+  createSearchBriefFromInput,
 } from "./search-brief";
 
 export {
@@ -97,11 +97,11 @@ export {
   updateQuestionStatus,
 } from "./assets";
 export {
-  createQuestionFromNote, markMemoryCorrection, submitInterviewFeedback,
+  createQuestionFromNote, markMemoryCorrection,
 } from "./note-feedback";
 
 export {
-  analyzeImportedInterview, approvePlaybookPatch, formatCorpusMoveLabel,
+  analyzeImportedInterview, approvePlaybookPatch,
   revertPlaybookPatch,
 } from "./corpus";
 
@@ -135,18 +135,14 @@ import type {
   InterviewContextPack,
   InterviewControlAction,
   InterviewEnginePolicy,
-  InterviewFollowUpItem,
   InterviewGuide,
   InterviewGuideOptions,
-  InterviewFeedbackInput,
-  InterviewFeedbackTag,
   InterviewMode,
   InterviewResumeCard,
   InterviewSession,
   InterviewStrategyDecision,
   InterviewStrategyId,
   InterviewStrength,
-  InterviewTransparencyItem,
   InterviewTurn,
   ImportSource,
   MemoryCandidate,
@@ -159,11 +155,6 @@ import type {
   PointAsset,
   ProductState,
   QuestionAsset,
-  RagChunk,
-  ReferenceMaterialImportInput,
-  RealtimeSignal,
-  RealtimeSessionSignal,
-  RealtimeTurnState,
   SearchAgendaItem,
   SearchBrief,
   SearchBriefAgendaTrace,
@@ -251,41 +242,6 @@ export function withGeneratedArtifactWorkflowRun(
   state: ProductState, input: TriggerWorkflowRunInput
 ): ProductState {
   return triggerWorkflowRun(state, input).nextState;
-}
-
-export function refreshWorkflowRunDetails(
-  state: ProductState, input: TriggerWorkflowRunInput
-): ProductState {
-  const existingRun = (state.workflowRuns ?? []).find(
-    (run) =>
-      run.workflow === input.workflow &&
-      run.entityType === input.entityType &&
-      run.entityId === input.entityId,
-  );
-  if (!existingRun) {
-    return triggerWorkflowRun(state, input).nextState;
-  }
-
-  const completedAt = new Date().toISOString();
-  const workflowDetails = buildWorkflowRunDetails(state, input);
-  const refreshedRun: WorkflowRun = {
-    ...existingRun,
-    outputSummary: workflowDetails.outputSummary,
-    completedAt,
-    metadata: workflowDetails.metadata,
-  };
-
-  return {
-    ...state,
-    workflowRuns: state.workflowRuns.map((run) =>
-      run.id === existingRun.id ? refreshedRun : run,
-    ),
-    aiRunEvents: state.aiRunEvents.map((event) =>
-      event.workflowRunId === existingRun.id
-        ? { ...event, outputSummary: workflowDetails.outputSummary }
-        : event,
-    ),
-  };
 }
 
 function buildWorkflowRunDetails(
@@ -590,119 +546,6 @@ export {
 // Section G: Interview-transparency report
 // ============================================================================
 
-export function buildInterviewTransparencyReport(
-  state: ProductState, limit = 3,
-): InterviewTransparencyItem[] {
-  return [...state.sessions]
-    .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())
-    .slice(0, limit)
-    .map((session) => {
-      const linkedSearchBrief = session.card.searchBriefId
-        ? state.searchBriefs.find((brief) => brief.id === session.card.searchBriefId)
-        : undefined;
-      const memoryReferences = uniqueStrings([
-        ...session.card.historyReferences,
-        ...session.turns
-          .map((turn) => turn.referencedMemory)
-          .filter((reference): reference is string => Boolean(reference)),
-      ])
-        .filter((reference) => !isAgendaHistoryReference(reference))
-        .slice(0, 4);
-      const playbookReferences = buildSessionPlaybookReferences(state, session);
-      const degradedEvents = state.aiRunEvents
-        .filter(
-          (event) =>
-            event.entityType === "interview_session" &&
-            event.entityId === session.id &&
-            event.status === "degraded",
-        )
-        .map((event) => ({
-          workflow: event.workflow,
-          providerId: event.providerId,
-          reason: event.degradedReason ?? event.outputSummary,
-        }));
-
-      return {
-        sessionId: session.id,
-        title: session.title,
-        status: session.status,
-        startedAt: session.startedAt,
-        searchSources: session.card.sourceHighlights ?? [],
-        agendaReferences: linkedSearchBrief?.agendaTrace
-          ? [
-              {
-                topic: linkedSearchBrief.topic,
-                agendaItemId: linkedSearchBrief.agendaTrace.agendaItemId,
-                source: linkedSearchBrief.agendaTrace.source,
-                intent: linkedSearchBrief.agendaTrace.intent,
-                reason: linkedSearchBrief.agendaTrace.reason,
-                seedAssetIds: linkedSearchBrief.agendaTrace.seedAssetIds,
-              },
-            ]
-          : [],
-        memoryReferences,
-        playbookReferences,
-        playbookVersion: session.enginePolicy?.playbookVersion ?? state.systemConfig.interview.playbookVersion,
-        interviewModel: state.systemConfig.models.interviewModel,
-        strategyReasons: (session.strategyTrace ?? [])
-          .map((decision) => `${decision.label}：${decision.reason}`)
-          .slice(0, 4),
-        controls: session.turns
-          .filter((turn) => turn.intent === "控制反馈")
-          .map((turn) => summarizeControlFeedback(turn.content)),
-        realtimeSignals: (session.realtimeSignals ?? [])
-          .slice(-4)
-          .map(formatRealtimeSignalTrace),
-        degradedEvents,
-      };
-    });
-}
-
-// ---- Private helpers for transparency + quality reports --------------------
-
-function buildSessionPlaybookReferences(
-  state: ProductState, session: InterviewSession,
-): InterviewTransparencyItem["playbookReferences"] {
-  return state.playbookPatches
-    .filter((patch) => patch.status === "applied")
-    .map((patch) => ({
-      id: patch.id,
-      patchId: patch.id,
-      title: patch.title,
-      status: patch.status,
-      sourceInsightId: patch.sourceInsightId ?? patch.id,
-      rules: patch.rules,
-      impact: patch.impact,
-    })) as InterviewTransparencyItem["playbookReferences"];
-}
-
-function isAgendaHistoryReference(reference: string) {
-  return /^议程：/.test(reference);
-}
-
-function formatRealtimeSignalTrace(signal: RealtimeSessionSignal) {
-  const parts: string[] = [
-    `[${signal.eventType === "hold" ? "留白" : signal.eventType === "interruption" ? "打断" : "语音追问"}]`,
-    `阶段：${signal.phase === "holding" ? "留白中" : signal.phase === "listening" ? "收听中" : signal.phase === "thinking" ? "思考中" : "讲话中"}`,
-    signal.transcript?.trim() ? `转写：${signal.transcript.trim().slice(0, 30)}` : "",
-  ].filter(Boolean);
-  return parts.join("，");
-}
-
-function summarizeControlFeedback(content: string) {
-  const cleanup = content
-    .replace(/^用户控制反馈：/i, "")
-    .replace(/^控制反馈：/i, "")
-    .replace(/^收听控制反馈：/i, "")
-    .trim();
-  return cleanup || "控制反馈";
-}
-
-
-function uniqueStrings(values: string[]) {
-  return [...new Set(values)];
-}
-
 // ============================================================================
 // Section H: System-config versioning
 // ============================================================================
@@ -735,28 +578,6 @@ export function buildSystemStatus(state: ProductState): SystemStatus {
 
 export function removeVersionSuffix(version: string, suffix: string) {
   return version.split(suffix).join("");
-}
-
-export function applySystemConfigChange(
-  state: ProductState,
-  nextConfig: SystemConfig,
-  options: { changedBy: ConfigVersion["changedBy"]; reason: string },
-): ProductState {
-  const createdAt = new Date().toISOString();
-  const nextState = withSystemConfigVersion(state, nextConfig, { ...options, createdAt });
-  if (nextState === state) {
-    return state;
-  }
-
-  return withAuditEvent(nextState, {
-    type: "system_config_changed",
-    label: "配置版本已更新",
-    detail: `${options.reason}，配置版本更新为 ${nextState.systemConfig.version}。`,
-    severity: "info",
-    entityType: "system_config_version",
-    entityId: nextState.configVersions[0].id,
-    createdAt,
-  });
 }
 
 export function withSystemConfigVersion(

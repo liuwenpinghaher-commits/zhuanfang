@@ -640,7 +640,7 @@ describe("Full cross-feature business journey: 团队授权与控制感", () => 
     // 语料学习类目应反映导入样本 + patch（count > 0）
     expect(privBefore.inventory.find((i: any) => i.id === "corpus_learning").count).toBeGreaterThan(0);
 
-    const purged = (await server.inject({ method: "POST", url: "/api/state/purge" })).json();
+    const purged = (await server.inject({ method: "POST", url: "/api/state/purge", payload: { confirm: "PURGE_PERSONAL_DATA" } })).json();
     // 个人数据清空
     expect(purged.profile.name).toBe("");
     expect(purged.sessions).toHaveLength(0);

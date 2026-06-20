@@ -3,6 +3,7 @@ import { createLivekitVoiceSession, type LivekitVoiceCallbacks } from "./livekit
 
 const mockSetMicrophoneEnabled = vi.fn().mockResolvedValue(undefined);
 const mockConnect = vi.fn().mockResolvedValue(undefined);
+const mockPublishData = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("livekit-client", () => {
   function MockRoom() {
@@ -13,7 +14,7 @@ vi.mock("livekit-client", () => {
       off: vi.fn(),
       localParticipant: {
         setMicrophoneEnabled: mockSetMicrophoneEnabled,
-        publishData: vi.fn(),
+        publishData: mockPublishData,
         on: vi.fn(),
       },
       remoteParticipants: new Map(),
@@ -27,10 +28,13 @@ vi.mock("livekit-client", () => {
       Connected: "connected",
       Disconnected: "disconnected",
       TrackSubscribed: "trackSubscribed",
+      TrackUnsubscribed: "trackUnsubscribed",
       DataReceived: "dataReceived",
       ConnectionStateChanged: "connectionStateChanged",
       ParticipantConnected: "participantConnected",
       TranscriptionReceived: "transcriptionReceived",
+      Reconnecting: "reconnecting",
+      Reconnected: "reconnected",
     },
     ConnectionState: {
       Connected: "connected",
@@ -95,11 +99,12 @@ describe("createLivekitVoiceSession", () => {
 // P1-7: interrupt() — honest behavior (SDK/architecture limitation annotated)
 // ---------------------------------------------------------------------------
 
-describe("createLivekitVoiceSession — P1-7: interrupt() honest behavior", () => {
+describe("createLivekitVoiceSession — P1-7/P1-10: interrupt() behavior", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockConnect.mockResolvedValue(undefined);
     mockSetMicrophoneEnabled.mockResolvedValue(undefined);
+    mockPublishData.mockResolvedValue(undefined);
   });
 
   it("interrupt() does not throw synchronously", async () => {
@@ -154,6 +159,38 @@ describe("createLivekitVoiceSession — P1-7: interrupt() honest behavior", () =
 
     expect(() => session.interrupt()).not.toThrow();
     // Allow the rejection to be swallowed internally
+    await new Promise((r) => setTimeout(r, 0));
+  });
+
+  it("P1-10: interrupt() publishes a reliable interrupt signal on the data channel", async () => {
+    const session = await createLivekitVoiceSession({
+      serverUrl: "ws://127.0.0.1:7880",
+      token: "test-token",
+      interviewSessionId: "test-session-id",
+      callbacks: makeCallbacks(),
+    });
+
+    session.interrupt();
+
+    expect(mockPublishData).toHaveBeenCalledTimes(1);
+    const [payload, opts] = mockPublishData.mock.calls[0];
+    // Payload is a UTF-8 encoded JSON envelope; decode + parse to assert shape.
+    const decoded = JSON.parse(new TextDecoder().decode(payload as Uint8Array));
+    expect(decoded.type).toBe("interrupt");
+    expect(opts).toMatchObject({ reliable: true });
+  });
+
+  it("P1-10: interrupt() does not throw when publishData rejects (agent not ready)", async () => {
+    mockPublishData.mockRejectedValueOnce(new Error("no agent"));
+
+    const session = await createLivekitVoiceSession({
+      serverUrl: "ws://127.0.0.1:7880",
+      token: "test-token",
+      interviewSessionId: "test-session-id",
+      callbacks: makeCallbacks(),
+    });
+
+    expect(() => session.interrupt()).not.toThrow();
     await new Promise((r) => setTimeout(r, 0));
   });
 });

@@ -46,6 +46,40 @@ describe("new zhuanfang routes", () => {
       });
       expect(res.statusCode).toBe(404);
     });
+
+    // P1-05: a single memory text field is capped (16KB) so it can't balloon prompt/embed cost.
+    it("PATCH /api/memory-records/:id rejects over-limit text with 422", async () => {
+      const seeded = {
+        ...stateRepo.getState(),
+        memoryRecords: [
+          {
+            id: "rec-limit",
+            text: "短记忆",
+            status: "confirmed",
+            sourceType: "interview_session",
+            sourceId: "s",
+            evidenceQuote: "",
+            createdAt: "2026-06-01T00:00:00Z",
+            updatedAt: "2026-06-01T00:00:00Z"
+          }
+        ]
+      };
+      stateRepo.replaceState(seeded as never);
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/api/memory-records/rec-limit",
+        payload: { text: "x".repeat(16 * 1024 + 1) }
+      });
+      expect(res.statusCode).toBe(422);
+      expect(res.json().error).toContain("limit");
+      // under-limit still succeeds
+      const ok = await app.inject({
+        method: "PATCH",
+        url: "/api/memory-records/rec-limit",
+        payload: { text: "更新后的记忆" }
+      });
+      expect(ok.statusCode).toBe(200);
+    });
   });
 
   describe("memory-candidates", () => {

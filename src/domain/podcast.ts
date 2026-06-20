@@ -165,7 +165,8 @@ export function generatePodcastEpisodeFromKnowledgeDebt(
   ]);
   const episode: PodcastEpisode = {
     id: makeId("podcast"),
-    noteId: debt.id,
+    // 非 note 来源不写入 noteId（避免异类 id 污染外键语义）；来源由 sourceType/sourceId 表达。
+    noteId: "",
     sourceType: "knowledge-debt",
     sourceId: debt.id,
     sourceLabel: debt.concept,
@@ -283,7 +284,8 @@ export function generatePodcastEpisodeFromSearchBrief(
   ]);
   const episode: PodcastEpisode = {
     id: makeId("podcast"),
-    noteId: brief.id,
+    // 非 note 来源不写入 noteId（避免异类 id 污染外键语义）；来源由 sourceType/sourceId 表达。
+    noteId: "",
     sourceType: "search-brief",
     sourceId: brief.id,
     sourceLabel: brief.topic,
@@ -394,7 +396,8 @@ export function generatePodcastEpisodeFromTheme(
   ]);
   const episode: PodcastEpisode = {
     id: makeId("podcast"),
-    noteId: theme.id,
+    // 非 note 来源不写入 noteId（避免异类 id 污染外键语义）；来源由 sourceType/sourceId 表达。
+    noteId: "",
     sourceType: "theme",
     sourceId: theme.id,
     sourceLabel: theme.name,

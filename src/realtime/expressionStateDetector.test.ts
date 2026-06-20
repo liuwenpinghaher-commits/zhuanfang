@@ -142,4 +142,34 @@ describe("createExpressionStateDetector", () => {
     // Second call: lower rate is still fluent (within 0.8× baseline range)
     expect(detector.evaluate(input({ speechRate: 3.3, energy: 0.35 }))).toBe("fluent");
   });
+
+  it("P2-15: baseline keeps adapting (EMA) and does not freeze after 3 frames", () => {
+    const detector = createExpressionStateDetector();
+    // Seed a fast baseline well past the old 3-frame freeze window (~4.0).
+    for (let i = 0; i < 4; i++) {
+      detector.evaluate(input({ speechRate: 4, energy: 0.4, pausePosition: "grammar_boundary" }));
+    }
+    // Sanity: against the (still-fast) baseline, a rate of 2.0 is below 0.8×4.0
+    // (=3.2) → NOT fluent. This is exactly what the old frozen baseline would
+    // have returned forever.
+    expect(detector.evaluate(input({
+      speechRate: 2.0, energy: 0.4, currentSilenceMs: 200, pausePosition: "grammar_boundary",
+      hasRepetition: false, hasFalseStart: false,
+    }))).toBe("organizing");
+
+    // Now sustain the slower rate for many frames. With the OLD frozen-at-3
+    // logic the baseline is locked at ~4.0 and 2.0 stays "organizing" forever.
+    // With the EMA the baseline drifts down toward ~2.0.
+    for (let i = 0; i < 80; i++) {
+      detector.evaluate(input({ speechRate: 2.0, energy: 0.4, pausePosition: "grammar_boundary" }));
+    }
+    // After adaptation, the SAME rate 2.0 now clears 0.8× the *adapted* baseline
+    // (~2.0 → 1.6) and reads fluent. The flip from "organizing" → "fluent" for an
+    // unchanged input is the proof that the baseline is no longer frozen.
+    const state = detector.evaluate(input({
+      speechRate: 2.0, energy: 0.4, currentSilenceMs: 200, pausePosition: "grammar_boundary",
+      hasRepetition: false, hasFalseStart: false,
+    }));
+    expect(state).toBe("fluent");
+  });
 });

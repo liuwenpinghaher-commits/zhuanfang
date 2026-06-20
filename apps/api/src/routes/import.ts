@@ -11,6 +11,11 @@ interface ImportRouteOptions {
   llmBudget?: LlmBudget;
 }
 
+// P1-05: cap import document content. 256KB is roomy for a pasted article/transcript while
+// keeping a single field from becoming a multi-MB prompt/embedding cost amplifier. (The
+// server-wide body limit is 28MB to allow base64 audio elsewhere, so this field needs its own.)
+const IMPORT_CONTENT_MAX_CHARS = 256 * 1024;
+
 export async function registerImportRoutes(
   server: FastifyInstance,
   repository: ProductStateRepository,
@@ -22,6 +27,9 @@ export async function registerImportRoutes(
     const input = normalizeImportInput(request.body);
     if (!input.content.trim()) {
       return reply.code(422).send({ error: "Document content is required." });
+    }
+    if (input.content.length > IMPORT_CONTENT_MAX_CHARS) {
+      return reply.code(422).send({ error: `Document content exceeds the ${IMPORT_CONTENT_MAX_CHARS}-character limit.` });
     }
 
     const state = repository.getState();

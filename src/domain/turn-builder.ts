@@ -37,35 +37,40 @@ function buildAssistantTurn(session: InterviewSession, userText: string): Interv
   const hasWorstCase = mentionsWorstCase(userText);
 
   let intent = decision.label;
-  // 默认 content 基于锚点的通用机制追问，不绑定特定场景词
-  let content = `你刚才的锚点是"${anchor}"。如果不从谁对谁错看，而从机制看：这个系统现在到底在奖励什么行为？`;
+  // 默认 content 基于锚点的通用机制追问，不绑定特定场景词（不预设职场/带团队语境）。
+  let content = `你刚才的锚点是"${anchor}"。先别停在对错上：让它一直这样的，背后是什么在推动？`;
 
   if (decision.strategy === "concrete_example_probe") {
-    content = `先别急着概括成判断。你能讲一个最近的具体时刻吗：当时谁在场，发生了什么，哪一句话让你觉得"${anchor}"？`;
+    content = `先别急着概括成判断。你能讲一个最近的具体时刻吗：当时是什么场景，发生了什么，哪一句话或哪个瞬间让你觉得"${anchor}"？`;
   } else if (decision.strategy === "mechanism_reversal_probe") {
-    content = `反过来看，这个具体时刻里可能不是某个人不主动，而是机制奖励了某种等待。如果把它当成一个系统问题，谁因为等待获得了安全感，谁承担了真实代价？`;
+    content = `反过来看，这个具体时刻里也许不是某个人的问题，而是某种安排让事情自然往这个方向走。如果把它当成一个机制问题：是什么让"${anchor}"反复发生，谁从中得到了好处，谁承担了代价？`;
   } else if (decision.strategy === "debt_followup") {
     const debt = session.guide.openDebts.find((item) => item.concept === session.guide.debtToAddress) ?? session.guide.openDebts[0];
     content = debt
-      ? `我想回访一个知识债：上次提到的"${debt.concept}"，你现在能用自己的话解释它吗？如果还不能，卡住你的到底是概念本身，还是它和你团队现场的关系？`
+      ? `我想回访一个知识债：上次提到的"${debt.concept}"，你现在能用自己的话解释它吗？如果还不能，卡住你的到底是概念本身，还是它和你眼前这件事的关系？`
       : `我想回访一个知识债："${session.guide.debtToAddress}"。你现在能用自己的话解释它和这件事的关系吗？`;
   } else if (decision.strategy === "perspective_shift") {
-    const perspective = decision.perspective ?? session.guide.recommendedPerspectives[0] ?? "系统论";
+    const perspective = decision.perspective ?? session.guide.recommendedPerspectives[0] ?? "另一个";
     const memory = decision.referencedMemory ?? session.card.historyReferences[0];
-    content = `如果从${perspective}视角看，我先引用一条你的历史："${memory}"。这件事里真正被系统奖励的行为是什么？谁因为等待而少承担了判断责任？`;
+    content = memory
+      ? `换到${perspective}视角，我先引用一条你说过的话："${memory}"。从这个角度看，"${anchor}"这件事真正在被什么推动？`
+      : `换到${perspective}视角看"${anchor}"：从这个角度，事情真正在被什么推动？`;
   } else if (decision.strategy === "blindspot_probe") {
-    const concept = decision.blindspotConcept ?? session.guide.blindspotCandidates[0]?.concept ?? "可承受的短期代价边界";
-    content = `你有没有想过"${concept}"也在影响这件事？如果不是某个人不主动，而是这个默认习惯一直被保留下来，你最该验证的一个信号是什么？`;
+    const concept = decision.blindspotConcept ?? session.guide.blindspotCandidates[0]?.concept ?? "你还没留意到的那一面";
+    content = `你有没有想过"${concept}"也在影响这件事？如果不是某个人的问题，而是这个被默认保留下来的习惯一直在起作用，你最该先验证的一个信号是什么？`;
   } else if (decision.strategy === "synthesis") {
-    content = `我们先收束一下：你反复提到的不是"${anchor}"本身，而是它背后的判断机制。到现在为止，最值得验证的一个假设是什么？`;
+    content = `我们先收束一下：你反复回到的不是"${anchor}"本身，而是它背后那层更让你在意的东西。到现在为止，最值得验证的一个假设是什么？`;
   } else if (pairIndex === 0 && hasAvoidance) {
     intent = "追问机制";
+    // scenario-agnostic：用户表达了"想放下/不想再承担"类意图，就顺着他自己的锚点追
+    // "放不下的到底是什么"，不预设职场/带团队的具体代价。
     content = hasWorstCase
-      ? `你把"${anchor}"和代价放在了一起。这里我想追具体一点：如果你真的放手，最坏的代价是什么——是执行延误、质量下滑，还是你对团队判断力的信任会被击穿？`
-      : `你说不想再承担"${anchor}"。这里先别急着找方法：你现在替他们承担的到底是执行的压力，还是判断的责任？`;
+      ? `你把"${anchor}"和你担心的代价放在了一起。先具体一点：如果你真的放下它，你最怕发生的那一幕是什么？`
+      : `你说想放下"${anchor}"。先别急着找办法：现在真正让你放不下的，是这件事本身，还是它牵动的某个你更在意的东西？`;
   } else if (pairIndex === 1 && hasWorstCase) {
     intent = "挑战前提";
-    content = `你已经说到了最坏情况。那我挑战一下：你是不是默认了"短期出现代价一定比长期依赖更糟"？这个前提还成立吗？`;
+    // 用户已触及"最坏情况/代价"，挑战其隐含前提，但不替他假设代价的内容。
+    content = `你已经说到了最坏的情况。我挑战一个藏在里面的前提：你是不是默认了"现在不动"一定比"承受那个代价"更安全？这个前提真的成立吗？`;
   } else if (session.mode === "point" || lower.includes("我觉得")) {
     intent = "反方观点";
     content = `如果把"${anchor}"当成一个观点，它最强的反例是什么？有没有一个场景里你会承认这个判断不成立？`;
@@ -74,7 +79,8 @@ function buildAssistantTurn(session: InterviewSession, userText: string): Interv
     content = `先不用讲你看了多少资料。你能不能用自己的话解释"${anchor}"，再说它能解释你当前哪个真实问题？`;
   } else if (pairIndex >= 2) {
     intent = "阶段总结";
-    content = `我先收一下：你不是单纯在说"${anchor}"，而是在问自己愿不愿意承受放手之后的短期代价。这里最值得下次继续的是：你到底能接受哪一种代价？`;
+    // 通用收束：扣回用户自己的锚点，不预设"放手/短期代价"这类职场框架。
+    content = `我先收一下：你反复回到的其实是"${anchor}"。到这里为止，最值得你下次继续想清楚的一个问题是什么？`;
   }
 
   if (isLongUserAnswer(userText)) {
@@ -125,12 +131,12 @@ function controlFeedback(
     case "different-angle":
       return {
         nextStrength: session.strength,
-        content: `我们换个角度：如果从系统视角看，"${anchor}"不是个人问题，而是机制一直在奖励某种行为，那它奖励的是什么？`
+        content: `我们换个角度：先不把"${anchor}"当成某个人的问题，而当成一个被什么推动着的局面——那真正在推动它的，是什么？`
       };
     case "summary":
       return {
         nextStrength: session.strength,
-        content: "我先做阶段总结：你不是单纯在说要不要继续介入，而是在问自己能不能承受放手后的短期代价。下一步最值得问的是：这个代价能否被小范围验证？"
+        content: `我先做阶段总结：你反复回到的其实是"${anchor}"背后那层更在意的东西。下一步最值得问的是：它能不能被一个小一点的具体例子先验证一下？`
       };
     case "do-not-save":
       return {

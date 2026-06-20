@@ -3,23 +3,16 @@ import type {
   InterviewSession,
   InterviewStrategyDecision,
   InterviewStrategyId,
-  InterviewQualityReport,
   ProductState,
   QualityOperationsReport,
   QualityRemediationAction,
 } from "./types";
 
-import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, extractAnchor, noQualityEvidenceScore } from "./utils";
+import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, extractAnchor } from "./utils";
 
 import { buildInterviewQualityReport, buildQualityOperationsReport } from "./quality-report";
 import { collectAppliedPlaybookRules, collectAppliedPlaybookRuleTypes } from "./context-pack";
 
-function average(values: number[]) {
-  if (values.length === 0) {
-    return 0;
-  }
-  return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
-}
 export function buildInterviewEnginePolicy(state: ProductState): InterviewEnginePolicy {
   return {
     allowWebInInterview: state.systemConfig.search.allowWebInInterview,
@@ -37,77 +30,16 @@ export function buildInterviewEnginePolicy(state: ProductState): InterviewEngine
     challengeBudgetPerSession: state.systemConfig.interview.challengeBudgetPerSession ?? 3
   };
 }
-function buildPlaybookQualityComparisons(completedSessions: InterviewSession[]): QualityOperationsReport["playbookComparisons"] {
-  const groups = new Map<string, InterviewSession[]>();
-
-  for (const session of completedSessions) {
-    const version = session.enginePolicy?.playbookVersion ?? "unknown";
-    groups.set(version, [...(groups.get(version) ?? []), session]);
-  }
-
-  const rows = Array.from(groups.entries()).map(([playbookVersion, sessions]) => {
-    const reports = sessions.map((session) => session.qualityReport ?? buildInterviewQualityReport(session));
-    return {
-      playbookVersion,
-      sessionCount: sessions.length,
-      averageQualityScore: average(reports.map((report) => report.score)),
-      averageMemoryCitationRate: average(reports.map((report) => Math.round(report.historyReferenceRate * 100))),
-      deltaFromBaseline: 0,
-      recommendation: "watch" as const
-    };
-  });
-
-  if (rows.length === 0) {
-    return [];
-  }
-
-  const baseline =
-    rows.find((row) => row.playbookVersion === "base-v1") ??
-    rows.find((row) => !row.playbookVersion.includes("+patch-")) ??
-    [...rows].sort((a, b) => a.averageQualityScore - b.averageQualityScore)[0];
-
-  return rows
-    .map((row) => {
-      const deltaFromBaseline = row.averageQualityScore - baseline.averageQualityScore;
-      return {
-        ...row,
-        deltaFromBaseline,
-        recommendation: recommendPlaybookVersion(row.averageQualityScore, deltaFromBaseline)
-      };
-    })
-    .sort((a, b) => b.averageQualityScore - a.averageQualityScore || a.playbookVersion.localeCompare(b.playbookVersion));
-}
-function buildQualityGate(
-  id: InterviewQualityReport["gates"][number]["id"],
-  label: string,
-  passed: boolean,
-  target: string,
-  actual: string,
-  detail: string
-): InterviewQualityReport["gates"][number] {
-  return { id, label, passed, target, actual, detail };
-}
-function buildQualityGuardrails(state: ProductState) {
-  return buildQualityOperationsReport(state)
-    .remediationActions.map((action) => action.nextInterviewInstruction)
+function buildQualityGuardrails(state: ProductState): string[] {
+  // Reuse the operations report's computed metrics + playbook comparisons, but
+  // derive the next-interview discipline sentences from buildQualityRemediationActions,
+  // which carries the real nextInterviewInstruction copy (the report's own
+  // buildRemediationAction leaves nextInterviewInstruction empty by design).
+  const report = buildQualityOperationsReport(state);
+  return buildQualityRemediationActions(state, report.metrics, report.playbookComparisons)
+    .map((action) => action.nextInterviewInstruction)
+    .filter((instruction) => instruction.trim().length > 0)
     .slice(0, 4);
-}
-function buildQualityOperationsMetric(
-  id: QualityOperationsReport["metrics"][number]["id"],
-  label: string,
-  score: number,
-  target: string,
-  detail: string
-): QualityOperationsReport["metrics"][number] {
-  const boundedScore = Math.max(0, Math.min(100, Math.round(score)));
-  return {
-    id,
-    label,
-    score: boundedScore,
-    target,
-    status: boundedScore >= 85 ? "pass" : boundedScore >= 70 ? "watch" : "risk",
-    detail
-  };
 }
 function buildQualityRemediationActions(
   state: ProductState,
@@ -285,57 +217,6 @@ function buildQualityRemediationActions(
       return qualityActionSourceRank(right) - qualityActionSourceRank(left);
     })
     .slice(0, 8);
-}
-function buildQualityRisks(state: ProductState, metrics: QualityOperationsReport["metrics"]) {
-  const risks = [
-    ...metrics
-      .filter((metric) => metric.status === "risk")
-      .map((metric) => `${metric.label}低于目标：${metric.detail}`),
-    ...(state.memoryCorrections.length > 0
-      ? ["最近有记忆修正，需要确认后续专访不会继续引用错误表达。"]
-      : []),
-    ...(state.aiRunEvents.some((event) => event.status === "failed")
-      ? ["存在失败 AI 运行事件，需要检查 provider 配置和用户提示。"]
-      : []),
-    ...(state.aiRunEvents.some((event) => event.status === "degraded")
-      ? ["存在降级 AI 运行事件，需要检查 provider 配置和用户提示。"]
-      : []),
-    ...(state.auditEvents.some((event) => event.severity === "critical")
-      ? ["存在 critical 审计事件，需要先处理再继续自动化沉淀。"]
-      : [])
-  ];
-  return Array.from(new Set(risks)).slice(0, 6);
-}
-function buildRealtimeTurnTakingGate(session: InterviewSession): InterviewQualityReport["gates"][number] | undefined {
-  const signals = session.realtimeSignals ?? [];
-  if (signals.length === 0) {
-    return undefined;
-  }
-
-  const holdCount = signals.filter((signal) => signal.eventType === "hold").length;
-  const interruptionCount = signals.filter((signal) => signal.eventType === "interruption").length;
-  const responseCount = signals.filter((signal) => signal.eventType === "assistant_response").length;
-  const violations = signals.filter((signal) => {
-    if (signal.eventType === "hold") {
-      return signal.phase !== "holding" || signal.shouldInterrupt;
-    }
-    if (signal.eventType === "interruption") {
-      return signal.phase !== "listening" || !signal.shouldInterrupt;
-    }
-    if (signal.eventType === "assistant_response") {
-      return !signal.assistantTurnId || signal.shouldInterrupt;
-    }
-    return false;
-  });
-
-  return buildQualityGate(
-    "realtime_turn_taking",
-    "实时轮替",
-    violations.length === 0,
-    "实时语音留白、打断和追问响应必须有可回溯信号，且不能在用户未说完时抢话。",
-    `留白 ${holdCount} 次，打断 ${interruptionCount} 次，语音追问 ${responseCount} 次，异常 ${violations.length} 次。`,
-    "用实时信号验证短暂停顿留白、用户打断交还控制权、语音追问可追溯。"
-  );
 }
 export function decideInterviewStrategy(session: InterviewSession, userText: string): InterviewStrategyDecision {
   const previousUserTurns = session.turns.filter((turn) => turn.role === "user").length;
@@ -518,10 +399,6 @@ function isAbstractInterviewClaim(text: string) {
   const hasConcreteSignal = concreteSignals.some((signal) => text.includes(signal));
   return hasAbstractSignal && !hasConcreteSignal;
 }
-function numericMetadata(metadata: Record<string, string | number | boolean>, key: string) {
-  const value = metadata[key];
-  return typeof value === "number" ? value : 0;
-}
 function pickReferencedMemory(session: InterviewSession, userText: string) {
   const anchor = extractAnchor(userText);
   return (
@@ -545,70 +422,6 @@ function qualityActionSourceRank(action: QualityRemediationAction) {
     source_faithfulness: 10
   };
   return action.sourceMetricId ? rank[action.sourceMetricId] ?? 0 : 0;
-}
-function recommendPlaybookVersion(
-  averageQualityScore: number,
-  deltaFromBaseline: number
-): QualityOperationsReport["playbookComparisons"][number]["recommendation"] {
-  if (deltaFromBaseline >= 10 && averageQualityScore >= 80) {
-    return "promote";
-  }
-  if (deltaFromBaseline <= -10 || averageQualityScore < 60) {
-    return "rollback";
-  }
-  return "watch";
-}
-function scoreContextPackRelevance(state: ProductState) {
-  const sessionsWithContext = state.sessions.filter((session) => {
-    const hasTopic = Boolean(session.guide.topicHint || session.card.title);
-    const hasMemory = session.card.historyReferences.length > 0 || session.guide.relevantMemories.length > 0;
-    const hasExternalSource = (session.card.sourceHighlights ?? []).length > 0;
-    const hasGraphReference = session.guide.graphReferences.length > 0;
-    return hasTopic && (hasMemory || hasExternalSource || hasGraphReference);
-  });
-  const contextPackRuns = state.workflowRuns.filter((run) => run.workflow === "context_pack_build");
-  const relevantContextPackRuns = contextPackRuns.filter((run) => {
-    const metadata = run.metadata ?? {};
-    const memoryCount = numericMetadata(metadata, "confirmedMemoryCount") + numericMetadata(metadata, "memoryRecordCount");
-    const sourceCount = numericMetadata(metadata, "sourceHighlightCount") + numericMetadata(metadata, "ragChunkCount");
-    const graphCount = numericMetadata(metadata, "graphReferenceCount");
-    return typeof metadata.topicHint === "string" && metadata.topicHint.trim().length > 0 && memoryCount + sourceCount + graphCount > 0;
-  });
-  const evidenceTotal = state.sessions.length + contextPackRuns.length;
-  const relevantTotal = sessionsWithContext.length + relevantContextPackRuns.length;
-
-  if (evidenceTotal === 0) {
-    return {
-      score: noQualityEvidenceScore,
-      detail: "还没有会话或 ContextPack workflow 可评估。"
-    };
-  }
-
-  return {
-    score: Math.round((relevantTotal / evidenceTotal) * 100),
-    detail: `${sessionsWithContext.length}/${state.sessions.length} 个会话具备上下文依据，${relevantContextPackRuns.length}/${contextPackRuns.length} 个 ContextPack workflow 带有主题相关证据。`
-  };
-}
-function scoreMemoryCandidatePrecision(state: ProductState) {
-  const approvedCount = state.memoryCandidates.filter((candidate) => candidate.status === "approved").length;
-  const rejectedCount = state.memoryCandidates.filter((candidate) => candidate.status === "rejected").length;
-  const pendingCount = state.memoryCandidates.filter((candidate) => candidate.status === "pending").length;
-  const reviewedCount = approvedCount + rejectedCount;
-
-  if (reviewedCount === 0) {
-    return {
-      score: pendingCount > 0 ? 50 : 100,
-      detail:
-        pendingCount > 0
-          ? `还没有已审核候选，${pendingCount} 个仍待审核。`
-          : "还没有候选记忆进入审核，暂未触发精度风险。"
-    };
-  }
-
-  return {
-    score: Math.round((approvedCount / reviewedCount) * 100),
-    detail: `${approvedCount}/${reviewedCount} 个已审核候选被确认，${pendingCount} 个仍待审核。`
-  };
 }
 function uniqueQualityRemediationActions(actions: QualityRemediationAction[]) {
   const seen = new Set<string>();

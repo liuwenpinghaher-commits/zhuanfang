@@ -102,7 +102,11 @@ describe("state routes", () => {
       const server = buildApiServer();
       // Seed some data first so purge has something to clear
       const cur = (await server.inject({ method: "GET", url: "/api/state" })).json();
-      const purgeRes = await server.inject({ method: "POST", url: "/api/state/purge" });
+      const purgeRes = await server.inject({
+        method: "POST",
+        url: "/api/state/purge",
+        payload: { confirm: "PURGE_PERSONAL_DATA" }
+      });
       expect(purgeRes.statusCode).toBe(200);
       const purgeBody = purgeRes.json();
       // createPurgedProductState clears all arrays and resets profile
@@ -119,6 +123,65 @@ describe("state routes", () => {
       expect(afterGet.sessions.length).toBe(0);
       expect(afterGet.auditEvents.length).toBe(1);
       expect(afterGet.auditEvents[0].type).toBe("privacy_data_purged");
+      await server.close();
+    });
+  });
+
+  describe("destructive-endpoint confirm guards (P0-B)", () => {
+    it("POST /api/state/purge without confirm returns 422 and does NOT mutate state", async () => {
+      const server = buildApiServer();
+      const before = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      const res = await server.inject({ method: "POST", url: "/api/state/purge" });
+      expect(res.statusCode).toBe(422);
+      expect(res.json().error).toContain("PURGE_PERSONAL_DATA");
+      // state untouched — sessions still present, no purge audit event written
+      const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      expect(after.sessions.length).toBe(before.sessions.length);
+      expect((after.auditEvents ?? []).some((e: { type: string }) => e.type === "privacy_data_purged")).toBe(false);
+      await server.close();
+    });
+
+    it("POST /api/state/purge with wrong confirm token returns 422", async () => {
+      const server = buildApiServer();
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/purge",
+        payload: { confirm: "yes" }
+      });
+      expect(res.statusCode).toBe(422);
+      await server.close();
+    });
+
+    it("POST /api/state/import without confirm returns 422 and does NOT overwrite state", async () => {
+      const server = buildApiServer();
+      const before = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/import",
+        payload: { state: { ...before, profile: { ...before.profile, name: "Overwritten" } } }
+      });
+      expect(res.statusCode).toBe(422);
+      const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      expect(after.profile.name).toBe(before.profile.name);
+      await server.close();
+    });
+
+    it("POST /api/state/import with confirm=REPLACE_ALL_STATE overwrites state (200)", async () => {
+      const server = buildApiServer();
+      const before = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/import",
+        payload: {
+          confirm: "REPLACE_ALL_STATE",
+          state: { ...before, profile: { ...before.profile, name: "Imported" } }
+        }
+      });
+      expect(res.statusCode).toBe(200);
+      const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      expect(after.profile.name).toBe("Imported");
+      // import is recorded as an audit event (state_imported)
+      expect((after.auditEvents ?? []).some((e: { type: string }) => e.type === "state_imported")).toBe(true);
       await server.close();
     });
   });

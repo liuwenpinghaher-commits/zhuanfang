@@ -55,8 +55,10 @@ function buildMockHarness() {
 
   let wsOnOpen!: () => void;
   let wsOnMessage!: (event: MessageEvent) => void;
+  let wsOnClose!: () => void;
   const wsSent: string[] = [];
   const wsClose = vi.fn();
+  let wsConstructCount = 0;
 
   const originalWebSocket = (globalThis as Record<string, unknown>).WebSocket;
   (globalThis as Record<string, unknown>).WebSocket = class MockWebSocket {
@@ -66,9 +68,13 @@ function buildMockHarness() {
     onerror: ((event: Event) => void) | null = null;
     onclose: ((event: CloseEvent) => void) | null = null;
     constructor() {
+      wsConstructCount += 1;
       this.readyState = WebSocket.CONNECTING;
+      // Always rebind to the CURRENT socket so a reconnect's fresh socket is the
+      // one driven by the helpers.
       wsOnOpen = () => { this.readyState = WebSocket.OPEN; this.onopen?.(); };
       wsOnMessage = (e) => this.onmessage?.(e);
+      wsOnClose = () => { this.readyState = WebSocket.CLOSED; this.onclose?.(new CloseEvent("close")); };
     }
     send(message: string) { wsSent.push(message); }
     close = wsClose;
@@ -106,7 +112,17 @@ function buildMockHarness() {
     (globalThis as Record<string, unknown>).AudioContext = originalAudioContext;
   }
 
-  return { stream, mediaDevices, wsOnOpen: () => wsOnOpen?.(), wsOnMessage: (e: MessageEvent) => wsOnMessage?.(e), wsSent, wsClose, teardown };
+  return {
+    stream,
+    mediaDevices,
+    wsOnOpen: () => wsOnOpen?.(),
+    wsOnMessage: (e: MessageEvent) => wsOnMessage?.(e),
+    wsOnClose: () => wsOnClose?.(),
+    wsSent,
+    wsClose,
+    getConstructCount: () => wsConstructCount,
+    teardown,
+  };
 }
 
 describe("connectBailianRealtimeWebsocket", () => {
@@ -251,6 +267,149 @@ describe("connectBailianRealtimeWebsocket", () => {
     expect(sessionUpdate).toBeTruthy();
     expect(sessionUpdate.session.instructions).toBe("新指令：本轮聚焦放权的具体事件");
 
+    teardown();
+  });
+
+  it("P1-07: warns on a malformed ASR delta (non-string text/stash) and drops it", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { mediaDevices, wsOnOpen, wsOnMessage, teardown } = buildMockHarness();
+
+    const onUserTranscript = vi.fn();
+    const connectionPromise = connectBailianRealtimeWebsocket(createWebsocketSession(), {
+      mediaDevices: mediaDevices as unknown as { getUserMedia(constraints: MediaStreamConstraints): Promise<MediaStream> },
+      productApiBaseUrl: "ws://127.0.0.1:8787",
+      onUserTranscript,
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+    wsOnOpen();
+    wsOnMessage(new MessageEvent("message", { data: JSON.stringify({ type: "proxy.connected" }) }));
+    await connectionPromise;
+
+    // text is a number — malformed. Should warn + skip, NOT emit a transcript.
+    wsOnMessage(new MessageEvent("message", {
+      data: JSON.stringify({ type: "conversation.item.input_audio_transcription.delta", text: 42 })
+    }));
+    expect(onUserTranscript).not.toHaveBeenCalled();
+    const warned = warnSpy.mock.calls.some((c) => String(c[0]).includes("asr_invalid_delta"));
+    expect(warned).toBe(true);
+
+    // A well-formed delta still flows through.
+    wsOnMessage(new MessageEvent("message", {
+      data: JSON.stringify({ type: "conversation.item.input_audio_transcription.delta", text: "你好" })
+    }));
+    expect(onUserTranscript).toHaveBeenCalledWith("你好", false);
+
+    warnSpy.mockRestore();
+    teardown();
+  });
+
+  it("P1-06: reconnects after an unexpected drop and fires onReconnected", async () => {
+    vi.useFakeTimers();
+    const { mediaDevices, wsOnOpen, wsOnMessage, wsOnClose, getConstructCount, teardown } = buildMockHarness();
+
+    const onReconnecting = vi.fn();
+    const onReconnected = vi.fn();
+    const onError = vi.fn();
+
+    const connectionPromise = connectBailianRealtimeWebsocket(createWebsocketSession(), {
+      mediaDevices: mediaDevices as unknown as { getUserMedia(constraints: MediaStreamConstraints): Promise<MediaStream> },
+      productApiBaseUrl: "ws://127.0.0.1:8787",
+      baseReconnectDelayMs: 10,
+      maxReconnectAttempts: 2,
+      onReconnecting,
+      onReconnected,
+      onError,
+    });
+
+    await vi.advanceTimersByTimeAsync(10);
+    wsOnOpen();
+    wsOnMessage(new MessageEvent("message", { data: JSON.stringify({ type: "proxy.connected" }) }));
+    const connection = await connectionPromise;
+    expect(getConstructCount()).toBe(1);
+
+    // Simulate an unexpected drop (network blip, not user-initiated).
+    wsOnClose();
+    expect(onReconnecting).toHaveBeenCalledWith(1, 2);
+
+    // Advance past the linear backoff (baseDelay * attempt = 10ms).
+    await vi.advanceTimersByTimeAsync(10);
+    expect(getConstructCount()).toBe(2); // a fresh socket was created
+
+    // The reconnect socket connects; proxy.connected fires onReconnected.
+    wsOnOpen();
+    wsOnMessage(new MessageEvent("message", { data: JSON.stringify({ type: "proxy.connected" }) }));
+    expect(onReconnected).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+
+    connection.close();
+    vi.useRealTimers();
+    teardown();
+  });
+
+  it("P1-06: user close() does NOT trigger reconnect", async () => {
+    vi.useFakeTimers();
+    const { mediaDevices, wsOnOpen, wsOnMessage, wsOnClose, getConstructCount, teardown } = buildMockHarness();
+
+    const onReconnecting = vi.fn();
+
+    const connectionPromise = connectBailianRealtimeWebsocket(createWebsocketSession(), {
+      mediaDevices: mediaDevices as unknown as { getUserMedia(constraints: MediaStreamConstraints): Promise<MediaStream> },
+      productApiBaseUrl: "ws://127.0.0.1:8787",
+      baseReconnectDelayMs: 10,
+      onReconnecting,
+    });
+
+    await vi.advanceTimersByTimeAsync(10);
+    wsOnOpen();
+    wsOnMessage(new MessageEvent("message", { data: JSON.stringify({ type: "proxy.connected" }) }));
+    const connection = await connectionPromise;
+
+    // User-initiated close, then the socket's onclose fires — must NOT reconnect.
+    connection.close();
+    wsOnClose();
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(onReconnecting).not.toHaveBeenCalled();
+    expect(getConstructCount()).toBe(1); // no new socket
+
+    vi.useRealTimers();
+    teardown();
+  });
+
+  it("P1-06: reports a terminal error after exhausting reconnect attempts", async () => {
+    vi.useFakeTimers();
+    const { mediaDevices, wsOnOpen, wsOnMessage, wsOnClose, teardown } = buildMockHarness();
+
+    const onError = vi.fn();
+
+    const connectionPromise = connectBailianRealtimeWebsocket(createWebsocketSession(), {
+      mediaDevices: mediaDevices as unknown as { getUserMedia(constraints: MediaStreamConstraints): Promise<MediaStream> },
+      productApiBaseUrl: "ws://127.0.0.1:8787",
+      baseReconnectDelayMs: 5,
+      maxReconnectAttempts: 2,
+      onError,
+    });
+
+    await vi.advanceTimersByTimeAsync(5);
+    wsOnOpen();
+    wsOnMessage(new MessageEvent("message", { data: JSON.stringify({ type: "proxy.connected" }) }));
+    await connectionPromise;
+
+    // Drop #1 → reconnect attempt 1 (delay 5*1). The fresh socket then drops
+    // again before connecting → attempt 2 (delay 5*2). Then drops once more →
+    // attempts exhausted → terminal onError.
+    wsOnClose();                                   // schedules attempt 1
+    await vi.advanceTimersByTimeAsync(5);          // builds socket #2
+    wsOnClose();                                   // socket #2 drops → attempt 2
+    await vi.advanceTimersByTimeAsync(10);         // builds socket #3
+    wsOnClose();                                   // socket #3 drops → exhausted
+
+    expect(onError).toHaveBeenCalled();
+    const msg = String(onError.mock.calls.at(-1)?.[0]?.message ?? "");
+    expect(msg).toContain("could not reconnect");
+
+    vi.useRealTimers();
     teardown();
   });
 });

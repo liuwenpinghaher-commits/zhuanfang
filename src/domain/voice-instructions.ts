@@ -52,12 +52,23 @@ export function buildRealtimeVoiceInstructions(
   const card = session?.card ?? fallbackCard;
   const guide = session?.guide;
   const appliedRules = session?.enginePolicy?.appliedPlaybookRules ?? [];
+  // 质量护栏：上一场质量门 / 记忆修正 / 实时轮替失败沉淀出的「本场提问纪律」。
+  // 由 domain 侧 buildInterviewEnginePolicy → buildQualityGuardrails 填充（本场我方系统生成，
+  // 非外部不可信内容），是产品核心学习闭环在语音路径上的落点。空时不注入。
+  // 与文本路 buildCharacterSystemPrompt 使用同一份措辞，保持单一事实来源。
+  const qualityGuardrails = (session?.enginePolicy?.qualityGuardrails ?? [])
+    .map((rule) => (typeof rule === "string" ? rule.trim() : ""))
+    .filter(Boolean);
+  const qualityGuardrailsBlock = qualityGuardrails.length
+    ? `【本场提问纪律·质量护栏】（基于过往复盘得出，本场务必照做）：\n${qualityGuardrails.map((rule) => `- ${rule}`).join("\n")}`
+    : "";
   return [
     card ? buildVoiceOpeningDiscipline(card) : "",
     "",
     INTERVIEWER_CRAFT_RULES,
     "",
     "【语音节奏】允许短反馈；用户一打断立刻停、把控制权还给用户；沉默时先留白，不要急着填满。不长篇、不替对方下结论、不像客服。",
+    qualityGuardrailsBlock,
     "",
     `本次主题：${session?.title ?? card?.title ?? "未命名专访"}`,
     card?.whyNow ? `为什么现在聊：${card.whyNow}` : "",

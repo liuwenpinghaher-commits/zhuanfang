@@ -346,6 +346,40 @@ describe("realtime-voice /livekit-token route", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().room).toMatch(/^session-/);
   });
+
+  // P1-03: when a state repo is wired, an interviewSessionId must belong to a real session
+  // before a publish/subscribe room token is minted (no signing for guessed/forged ids).
+  it("returns 404 for an interviewSessionId that does not exist when a stateRepo is wired (P1-03)", async () => {
+    const repoApp = Fastify();
+    const stateRepo = createInMemoryProductStateRepository(createInitialProductState());
+    await registerRealtimeVoiceRoutes(repoApp, { stateRepo });
+    await repoApp.ready();
+    const res = await repoApp.inject({
+      method: "GET",
+      url: "/api/realtime-voice/livekit-token?interviewSessionId=does-not-exist"
+    });
+    expect(res.statusCode).toBe(404);
+    await repoApp.close();
+  });
+
+  it("signs a token for an interviewSessionId that exists when a stateRepo is wired (P1-03)", async () => {
+    const { createInterviewSession } = await import("../../../../src/domain/engine");
+    const { generateSessionId } = await import("../../../../src/domain/identifiers");
+    const repoApp = Fastify();
+    const stateRepo = createInMemoryProductStateRepository(createInitialProductState());
+    const sid = generateSessionId();
+    const session = createInterviewSession({ id: sid, title: "Owned", createdAt: new Date().toISOString() });
+    stateRepo.replaceState({ ...stateRepo.getState(), sessions: [session] });
+    await registerRealtimeVoiceRoutes(repoApp, { stateRepo });
+    await repoApp.ready();
+    const res = await repoApp.inject({
+      method: "GET",
+      url: `/api/realtime-voice/livekit-token?interviewSessionId=${sid}`
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().room).toBe(`interview-${sid}`);
+    await repoApp.close();
+  });
 });
 
 describe("realtime-voice /agent-turn route", () => {
@@ -464,6 +498,43 @@ describe("realtime-voice TTS WebSocket proxy (/api/realtime-voice/ws/tts/:sessio
         });
         socket.on("error", () => {
           // Socket destroyed without response — also acceptable
+          httpServer.close(() => testApp.close().then(() => resolve()));
+        });
+      });
+    });
+  });
+
+  it("rejects a WS upgrade from a disallowed browser Origin (CSWSH, P1-02)", async () => {
+    // A browser-supplied Origin not in the allow-set (dev origins, since PRODUCT_WEB_ORIGINS
+    // is unset) must be refused BEFORE handleUpgrade — no 101 Switching Protocols.
+    const testApp = Fastify();
+    await registerRealtimeVoiceRoutes(testApp);
+    await testApp.ready();
+
+    await new Promise<void>((resolve) => {
+      const httpServer = testApp.server;
+      httpServer.listen(0, "127.0.0.1", () => {
+        const port = (httpServer.address() as { port: number }).port;
+        const net = require("node:net") as typeof import("node:net");
+        const socket = net.connect(port, "127.0.0.1", () => {
+          socket.write(
+            "GET /api/realtime-voice/ws/tts/any-session HTTP/1.1\r\n" +
+            `Host: 127.0.0.1:${port}\r\n` +
+            "Origin: http://evil.example.com\r\n" +
+            "Upgrade: websocket\r\nConnection: Upgrade\r\n" +
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
+            "Sec-WebSocket-Version: 13\r\n\r\n"
+          );
+        });
+        socket.on("data", (data: Buffer) => {
+          const text = data.toString();
+          expect(text).not.toMatch(/^HTTP\/1\.1 101/);
+          expect(text).toMatch(/^HTTP\/1\.1 403/);
+        });
+        socket.on("close", () => {
+          httpServer.close(() => testApp.close().then(() => resolve()));
+        });
+        socket.on("error", () => {
           httpServer.close(() => testApp.close().then(() => resolve()));
         });
       });

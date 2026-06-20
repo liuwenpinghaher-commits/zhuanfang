@@ -52,7 +52,7 @@ export interface ProductApiClient {
   createAutoBrief(input: CreateAutoBriefRequest): Promise<CreateAutoBriefResponse>;
   autoRunResearch(): Promise<AutoRunResearchResponse>;
   createInterviewSession(input: CreateInterviewSessionRequest): Promise<InterviewSessionResponse>;
-  sendInterviewTurn(sessionId: string, input: SendInterviewTurnRequest): Promise<InterviewSessionResponse>;
+  sendInterviewTurn(sessionId: string, input: SendInterviewTurnRequest, signal?: AbortSignal): Promise<InterviewSessionResponse>;
   recordInterviewTurn(sessionId: string, input: { role: "user" | "assistant"; content: string }): Promise<InterviewSessionResponse>;
   classifyTurnComplete(sessionId: string, transcript: string, signal?: AbortSignal): Promise<{ done: boolean; reason: string }>;
   logCascadeDecision(sessionId: string, trace: { layer: number; action: string; reason: string; silenceMs: number; expressionState: string; transcript: string }): Promise<void>;
@@ -391,11 +391,17 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
       return (await requestJson("/api/state/export", { method: "GET" })) as BackupRestoreRehearsalReport;
     },
     async importState(payload) {
+      // The /import endpoint requires an explicit confirm token (REPLACE_ALL_STATE);
+      // calling importState IS the intent to replace, so we attach it here.
+      const body =
+        payload && typeof payload === "object"
+          ? { ...(payload as Record<string, unknown>), confirm: "REPLACE_ALL_STATE" }
+          : { state: payload, confirm: "REPLACE_ALL_STATE" };
       return normalizeProductState(
         await requestJson("/api/state/import", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify(payload)
+          body: JSON.stringify(body)
         })
       );
     },
@@ -403,7 +409,13 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
       return (await requestJson("/api/state/privacy-report", { method: "GET" })) as PrivacyReport;
     },
     async purgeState() {
-      return normalizeProductState(await requestJson("/api/state/purge", { method: "POST" }));
+      return normalizeProductState(
+        await requestJson("/api/state/purge", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ confirm: "PURGE_PERSONAL_DATA" })
+        })
+      );
     },
     async getSystemCapabilities() {
       return (await requestJson("/api/system/capabilities", { method: "GET" })) as SystemCapabilitiesResponse;
@@ -559,11 +571,15 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         state: normalizeProductState(response.state)
       };
     },
-    async sendInterviewTurn(sessionId, input) {
+    async sendInterviewTurn(sessionId, input, signal) {
       const response = (await requestJson(`/api/interview-sessions/${sessionId}/turns`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(input)
+        body: JSON.stringify(input),
+        // Pass the barge-in AbortSignal so an interrupted cascade turn cancels the
+        // in-flight LLM call server-side instead of letting it run to completion and
+        // overwrite the user's newly-started turn (P0-D). Optional → backward compatible.
+        ...(signal ? { signal } : {})
       })) as InterviewSessionResponse;
 
       return {

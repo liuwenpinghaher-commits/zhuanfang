@@ -46,8 +46,16 @@ export async function registerStateRoutes(
   // bare ProductState. Normalizes before replacing so schema/field drift is healed.
   server.post("/api/state/import", async (request, reply) => {
     const body = request.body as
-      | { state?: unknown; exportPackage?: { state?: unknown } }
+      | { state?: unknown; exportPackage?: { state?: unknown }; confirm?: unknown }
       | undefined;
+    // P0-B: import is a full-state overwrite — require an explicit confirm token so a stray /
+    // CSRF POST can't silently replace all state. Accept the purge token or the import-specific
+    // alias (both are spelled out in the README / governance UI).
+    if (body?.confirm !== "PURGE_PERSONAL_DATA" && body?.confirm !== "REPLACE_ALL_STATE") {
+      return reply.code(422).send({
+        error: "Import requires explicit confirmation: send confirm=\"REPLACE_ALL_STATE\" (or \"PURGE_PERSONAL_DATA\")."
+      });
+    }
     const incoming = body?.exportPackage?.state ?? body?.state ?? body;
     if (!incoming || typeof incoming !== "object") {
       return reply
@@ -71,7 +79,15 @@ export async function registerStateRoutes(
   // P0-3: Purge — clears personal data from the state store AND deletes the referenced
   // local-object audio files on disk (previously the files were left behind while the
   // audit claimed a complete wipe). artifactPurge accounts for deleted/missing/skipped.
-  server.post("/api/state/purge", async () => {
+  server.post("/api/state/purge", async (request, reply) => {
+    // P0-B: purge is irreversible (clears personal data + deletes local audio files). Require
+    // the explicit confirm token from README:186 so a stray / CSRF POST can't wipe everything.
+    const body = request.body as { confirm?: unknown } | undefined;
+    if (body?.confirm !== "PURGE_PERSONAL_DATA") {
+      return reply.code(422).send({
+        error: "Purge requires explicit confirmation: send confirm=\"PURGE_PERSONAL_DATA\"."
+      });
+    }
     const state = repository.getState();
     const artifactPurge = purgeLocalObjectArtifactsForState(state, { env: options.env });
     let purged = createPurgedProductState(state);

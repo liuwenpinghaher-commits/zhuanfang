@@ -544,7 +544,11 @@ describe("product api client", () => {
 
     const result = await client.purgeState();
 
-    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:8787/api/state/purge", { method: "POST" });
+    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:8787/api/state/purge", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirm: "PURGE_PERSONAL_DATA" })
+    });
     expect(result.profile.name).toBe("Mia");
   });
 });

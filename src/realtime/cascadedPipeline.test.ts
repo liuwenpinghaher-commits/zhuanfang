@@ -79,13 +79,16 @@ function makeFakeAsr(fixedState: ExpressionState = "concluding"): AsrSource & {
 function makeFakeTts(): TtsSink & {
   segments: string[][];
   stopCalls: number;
+  closeCalls: number;
   reset(): void;
 } {
   const segments: string[][] = [];
   let stopCalls = 0;
+  let closeCalls = 0;
   return {
     segments,
     stopCalls: 0 as number,
+    closeCalls: 0 as number,
     speak(segs: string[]) {
       segments.push([...segs]);
       (this as any).stopCalls = stopCalls; // snapshot unused — mutated below
@@ -95,10 +98,16 @@ function makeFakeTts(): TtsSink & {
       stopCalls++;
       (this as any).stopCalls = stopCalls;
     },
+    close() {
+      closeCalls++;
+      (this as any).closeCalls = closeCalls;
+    },
     reset() {
       segments.length = 0;
       stopCalls = 0;
+      closeCalls = 0;
       (this as any).stopCalls = 0;
+      (this as any).closeCalls = 0;
     },
   };
 }
@@ -543,5 +552,41 @@ describe("connectCascadedPipeline", () => {
     expect(stateChanges).toContain("speaking");
     expect(tts.segments.flat().join("")).toContain("上次你说要追的那个问题");
     pipeline.close();
+  });
+
+  // -------------------------------------------------------------------------
+  // 15. 卫生: empty reply gives audible + visible feedback (not silent drop)
+  // -------------------------------------------------------------------------
+  it("empty assistant reply speaks a filler line and surfaces it (no silent drop)", async () => {
+    asr.setExpressionState("concluding");
+    // sendUserTurn returns an empty reply (no terminal punctuation / whitespace).
+    const emptyTurn = vi.fn(async (): Promise<{ assistantText: string }> => ({ assistantText: "   " }));
+    const pipeline = connectCascadedPipeline(makeOpts({ sendUserTurn: emptyTurn }));
+    await pipeline.startListening();
+    asr.pushDelta("嗯");
+    asr.pushSpeechStopped(1000);
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+
+    // A filler line was spoken (audible feedback) ...
+    expect(tts.segments.length).toBeGreaterThan(0);
+    const spoken = tts.segments.flat().join("");
+    expect(spoken.length).toBeGreaterThan(0);
+    // ... and surfaced to the UI (visible feedback), not an empty string.
+    expect(assistantTexts.some((t) => t.trim().length > 0)).toBe(true);
+    // Returns to listening so the user can continue.
+    expect(stateChanges.at(-1)).toBe("listening");
+    pipeline.close();
+  });
+
+  // -------------------------------------------------------------------------
+  // 16. P1-08: close() tears down the TTS sink (close(), not just stop())
+  // -------------------------------------------------------------------------
+  it("close() calls tts.close() to release the socket + AudioContext", async () => {
+    const pipeline = connectCascadedPipeline(makeOpts());
+    await pipeline.startListening();
+    pipeline.close();
+    expect((tts as any).closeCalls).toBe(1);
+    // stop() is still called before close() (so in-flight speak() resolves).
+    expect((tts as any).stopCalls).toBeGreaterThanOrEqual(1);
   });
 });

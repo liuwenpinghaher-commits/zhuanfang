@@ -261,7 +261,7 @@ describe("System journey A: config → research auto-run → interview → asset
     // =====================================================================
     // Step 8: 彻底清空 — 个人数据归零，但结构与 provider 配置保留
     // =====================================================================
-    const purgeRes = await server.inject({ method: "POST", url: "/api/state/purge" });
+    const purgeRes = await server.inject({ method: "POST", url: "/api/state/purge", payload: { confirm: "PURGE_PERSONAL_DATA" } });
     expect(purgeRes.statusCode).toBe(200);
     const purged = purgeRes.json();
     // 个人数据归零

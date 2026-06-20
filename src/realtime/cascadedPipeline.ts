@@ -71,6 +71,16 @@ export interface TtsSink {
   speak(segments: string[], voice?: string): Promise<void>;
   /** Stop any in-progress playback immediately. */
   stop(): void;
+  /**
+   * Release all underlying resources permanently (WS socket + AudioContext).
+   * Unlike stop() (which only halts the current utterance and keeps the socket
+   * warm for the next turn), close() is terminal — call it when the pipeline is
+   * shutting down so the proxy WS and AudioContext don't leak across repeated
+   * open/close cycles (P1-08: leaked AudioContexts eventually exhaust the
+   * browser's context budget → TTS goes silent). Optional for backward
+   * compatibility with test doubles that don't implement it.
+   */
+  close?(): void;
 }
 
 export type CascadePipelineState =
@@ -187,7 +197,11 @@ export function connectCascadedPipeline(
     if (maxWaitTimer !== null) return;
     maxWaitTimer = setTimeout(() => {
       maxWaitTimer = null;
-      if (!closed && state !== "thinking" && state !== "speaking") {
+      // P2-14: don't fire while the mic is suppressed (AI is speaking / echo
+      // window). Otherwise a timer armed before the AI started talking can fire
+      // mid-TTS and respond to the AI's own echoed transcript — the half-duplex
+      // feedback loop the echo guard exists to prevent.
+      if (!closed && !micSuppressed && state !== "thinking" && state !== "speaking") {
         onDecision?.({ layer: 0, action: "respond", reason: "max-wait timer fired", transcript, silenceMs: maxWaitMs, expressionState });
         void doRespond();
       }
@@ -208,6 +222,10 @@ export function connectCascadedPipeline(
       clearTimeout(echoGuardTimer);
       echoGuardTimer = null;
     }
+    // P2-14: cancel any pending 留白 safety-net timer when we enter the
+    // suppression window. The AI is about to speak; a timer that survives into
+    // the echo window would otherwise fire against stale/echoed transcript.
+    clearMaxWaitTimer();
   }
   function releaseMicAfterGuard() {
     if (echoGuardTimer !== null) clearTimeout(echoGuardTimer);
@@ -353,14 +371,30 @@ export function connectCascadedPipeline(
     // ctrl.abort(), so ctrl.signal.aborted is the supersession signal.
     if (closed || ctrl.signal.aborted) return;
 
-    callbacks.onAssistantText(assistantText);
-
     const sentences = splitSentences(assistantText);
     if (sentences.length === 0) {
-      setState("listening");
+      // 卫生: empty reply (no terminal punctuation / pure whitespace). Previously
+      // this silently dropped the whole turn — the user got no audio and no UI
+      // change, indistinguishable from a frozen app. Give explicit feedback:
+      // surface a visible filler line AND speak a short audible prompt so the
+      // user knows their turn registered and that it's their turn again.
+      const filler = "嗯，我在听，你可以继续说。";
+      callbacks.onAssistantText(filler);
+      setState("speaking");
+      suppressMic();
+      try {
+        await tts.speak([filler]);
+      } catch {
+        /* TTS stopped (barge-in) — handled by barge-in path */
+      } finally {
+        releaseMicAfterGuard();
+      }
+      if (!closed && (state as string) === "speaking") setState("listening");
       resetTurn();
       return;
     }
+
+    callbacks.onAssistantText(assistantText);
 
     setState("speaking");
     suppressMic();
@@ -451,7 +485,11 @@ export function connectCascadedPipeline(
       micSuppressed = false;
       classifyAbort?.abort(); classifyAbort = null;
       if (activeAbort) { activeAbort.abort(); activeAbort = null; }
+      // stop() halts the current utterance; close() then tears down the socket +
+      // AudioContext for good (P1-08). stop-before-close so any in-flight speak()
+      // resolves first, then resources are released.
       tts.stop();
+      tts.close?.();
       asr.stop();
     },
   };

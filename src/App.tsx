@@ -13,7 +13,7 @@ import {
   Upload,
   Volume2
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, MutableRefObject, useEffect, useMemo, useRef, useState } from "react";
 import {
   analyzeImportedInterview,
   approvePlaybookPatch,
@@ -53,7 +53,7 @@ import { productApiClient, getProductApiBaseUrl, isNetworkError, type ReviewsRes
 import type { RealtimeVoiceSessionResponse, SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigUpdateRequest, VoiceInfo } from "./api/productApi";
 // WebRTC omni client is incomplete (no callbacks/turn recording); the connect path is
 // downlined to WebSocket in startVoiceSession. Type kept for the connection union only.
-import type { BailianRealtimeWebrtcConnection } from "./realtime/bailianWebrtc";
+import type { BailianRealtimeWebrtcConnection } from "./realtime/realtimeTypes";
 import {
   connectBailianRealtimeWebsocket,
   type BailianRealtimeWebsocketConnection
@@ -147,6 +147,14 @@ export default function App() {
   const [livekitVoiceSession, setLivekitVoiceSession] = useState<LivekitVoiceSession | null>(null);
   // Cascade pipeline instance — held in a ref so closing it doesn't trigger re-render.
   const cascadePipelineRef = useRef<CascadedPipeline | null>(null);
+  // P1-12: which assistant turn index has already absorbed a `final` transcript
+  // segment. A realtime turn can emit MULTIPLE finals (omni: audio_transcript.done
+  // + text.done; livekit: one TranscriptionSegment per sentence) — the first final
+  // for a given turn REPLACES the turn content, later finals APPEND, so a multi-part
+  // reply isn't collapsed to its last segment. Reset implicitly: when the assistant
+  // turn index advances (a new user+assistant pair was appended) the first final
+  // again replaces. A ref (not state) so accumulation never triggers a re-render race.
+  const assistantTranscriptTurnRef = useRef<number>(-1);
   const [audioLevel, setAudioLevel] = useState(0);
   const [voiceStatus, setVoiceStatus] = useState<"idle" | "connecting" | "listening" | "speaking" | "interrupted">("idle");
   const [liveUserTranscript, setLiveUserTranscript] = useState("");
@@ -497,14 +505,6 @@ export default function App() {
       setVoiceStatus("interrupted");
       setTimeout(() => setVoiceStatus("listening"), 1500);
     }
-  }
-
-  function prepareInterview(mode: InterviewMode = "decision", searchBriefId = activeSearchBriefId) {
-    setPendingMode(mode);
-    setActiveSearchBriefId(searchBriefId);
-    setSession(null);
-    closeRealtimeVoiceSession();
-    setView("interview");
   }
 
   /** 打开单条主题线工作区。 */
@@ -1242,11 +1242,14 @@ export default function App() {
             const tts = createBrowserTtsSink(ttsWsUrl, productState.systemConfig.voice.defaultVoice);
 
             // sendUserTurn: POST to /api/interview-sessions/:id/turns, return assistantText
-            const sendUserTurn = async (text: string, _signal: AbortSignal) => {
+            const sendUserTurn = async (text: string, signal: AbortSignal) => {
               if (!interviewId) {
                 return { assistantText: "" };
               }
-              const r = await productApiClient.sendInterviewTurn(interviewId, { content: text });
+              // P0-D: forward the pipeline's barge-in signal so an interrupted turn
+              // aborts the server LLM call rather than running to completion (which
+              // would overwrite the user's newly-started turn and waste budget).
+              const r = await productApiClient.sendInterviewTurn(interviewId, { content: text }, signal);
               setSession(r.session);
               setProductState(r.state);
               setApiPersistenceEnabled(true);
@@ -1367,15 +1370,9 @@ export default function App() {
                 onAssistantTranscript: (text, isFinal) => {
                   if (!isFinal || !text.trim()) return;
                   setVoiceStatus("speaking");
-                  setSession((prev) => {
-                    if (!prev) return prev;
-                    const turns = [...prev.turns];
-                    const lastIdx = turns.length - 1;
-                    if (lastIdx >= 0 && turns[lastIdx].role === "assistant") {
-                      turns[lastIdx] = { ...turns[lastIdx], content: text };
-                    }
-                    return { ...prev, turns };
-                  });
+                  setSession((prev) =>
+                    prev ? appendAssistantTranscriptFinal(prev, text, assistantTranscriptTurnRef) : prev
+                  );
                 },
                 onAudioLevel: (level) => setAudioLevel(level),
                 onError: (err) => {
@@ -1492,15 +1489,9 @@ export default function App() {
                 },
                 onAssistantTranscript: (text, isFinal) => {
                   if (!isFinal || !text.trim()) return;
-                  setSession((prev) => {
-                    if (!prev) return prev;
-                    const turns = [...prev.turns];
-                    const lastAssistantIdx = turns.length - 1;
-                    if (lastAssistantIdx >= 0 && turns[lastAssistantIdx].role === "assistant") {
-                      turns[lastAssistantIdx] = { ...turns[lastAssistantIdx], content: text };
-                    }
-                    return { ...prev, turns };
-                  });
+                  setSession((prev) =>
+                    prev ? appendAssistantTranscriptFinal(prev, text, assistantTranscriptTurnRef) : prev
+                  );
                 },
                 onError: (err) => {
                   setNotice(buildNotice("warning", "语音连接异常", err.message));
@@ -1792,6 +1783,66 @@ export default function App() {
     </div>
     </>
   );
+}
+
+/**
+ * P1-12: fold a `final` assistant transcript segment into the live session without
+ * collapsing a multi-segment reply to its last segment.
+ *
+ * A single realtime assistant turn can emit several `final` segments:
+ *  - omni (bailian): both `response.audio_transcript.done` and `response.text.done`
+ *    fire for one response — usually the SAME text in two modalities (a duplicate),
+ *    occasionally distinct;
+ *  - livekit: the Python agent ships one `TranscriptionSegment` per sentence — genuine
+ *    distinct continuation segments.
+ *
+ * Rules:
+ *  - The FIRST final for a given assistant-turn index replaces that turn's content.
+ *  - Later finals for the SAME turn append — UNLESS the segment is already contained in
+ *    the accumulated content (the duplicate-modality case), which is skipped so the
+ *    spoken+text duplicate doesn't double the reply.
+ *  - The turn index advancing (a new user+assistant pair was appended) is what resets
+ *    "first final" — so the next turn starts clean.
+ *
+ * `turnRef` carries the assistant-turn index that has already absorbed a final.
+ */
+export function appendAssistantTranscriptFinal(
+  session: InterviewSession,
+  text: string,
+  turnRef: MutableRefObject<number>
+): InterviewSession {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return session;
+  }
+  const turns = [...session.turns];
+  const lastIdx = turns.length - 1;
+  if (lastIdx < 0 || turns[lastIdx].role !== "assistant") {
+    return session;
+  }
+
+  const isNewTurn = turnRef.current !== lastIdx;
+  const prevContent = turns[lastIdx].content;
+
+  if (isNewTurn) {
+    turns[lastIdx] = { ...turns[lastIdx], content: trimmed };
+    turnRef.current = lastIdx;
+    return { ...session, turns };
+  }
+
+  // Same turn, subsequent final: skip the duplicate-modality echo, otherwise append.
+  if (prevContent.includes(trimmed) || trimmed.includes(prevContent)) {
+    // Prefer the longer of the two so a fuller restatement isn't lost.
+    if (trimmed.length > prevContent.length) {
+      turns[lastIdx] = { ...turns[lastIdx], content: trimmed };
+      return { ...session, turns };
+    }
+    return session;
+  }
+
+  const separator = prevContent && !prevContent.endsWith(" ") ? " " : "";
+  turns[lastIdx] = { ...turns[lastIdx], content: `${prevContent}${separator}${trimmed}` };
+  return { ...session, turns };
 }
 
 function buildLocalAudioTranscriptionDraft(sourceUrl: string) {

@@ -11,6 +11,10 @@ interface UpdateMemoryRecordPayload {
   text?: unknown;
 }
 
+// P1-05: cap a single memory text field. Long-term memory is short, factual statements;
+// 16KB is generous for that while keeping one field from ballooning prompt/embedding cost.
+const MEMORY_TEXT_MAX_CHARS = 16 * 1024;
+
 export async function registerMemoryRecordRoutes(server: FastifyInstance, repository: ProductStateRepository) {
   server.patch("/api/memory-records/:id", async (request, reply) => {
     const state = repository.getState();
@@ -25,6 +29,9 @@ export async function registerMemoryRecordRoutes(server: FastifyInstance, reposi
     const text = normalizeOptionalString(normalizeObject<UpdateMemoryRecordPayload>(request.body).text);
     if (!text) {
       return reply.code(422).send({ error: "Memory record text is required." });
+    }
+    if (text.length > MEMORY_TEXT_MAX_CHARS) {
+      return reply.code(422).send({ error: `Memory record text exceeds the ${MEMORY_TEXT_MAX_CHARS}-character limit.` });
     }
 
     const nextState = updateMemoryRecordText(state, record.id, text);

@@ -260,4 +260,62 @@ describe("createBailianStreamingTtsClient", () => {
 
     await expect(p).rejects.toThrow("connection refused");
   });
+
+  // P1-09: a half-dead WS (opens but never emits task-started/audio) must not hang the
+  // turn forever. The connect/first-progress timer fails it with "TTS timeout" and
+  // closes the socket.
+  it("fails with 'TTS timeout' and closes the WS if no progress arrives within connectTimeoutMs", async () => {
+    const { factory, instances } = buildMockWsFactory();
+    const client = createBailianStreamingTtsClient({
+      apiKey: "test-key",
+      wsFactory: factory,
+      connectTimeoutMs: 10,
+      overallTimeoutMs: 10_000
+    });
+
+    const onError = vi.fn();
+    const p = client.synthesizeStream(
+      { segments: ["测试"] },
+      { onAudio: vi.fn(), onComplete: vi.fn(), onError }
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+    const [inst] = instances;
+    inst.handlers.onOpen!();
+    // Server stays silent (no task-started, no audio) — simulate the half-dead case.
+
+    await expect(p).rejects.toThrow("TTS timeout");
+    expect(inst.closed).toBe(true);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: "TTS timeout" }));
+  });
+
+  // P1-09: the connect timer must be cleared once real progress arrives, so a normal
+  // (if slow) synthesis is NOT killed mid-stream by the first-progress guard.
+  it("does not time out after task-started progress within the connect window", async () => {
+    const { factory, instances } = buildMockWsFactory();
+    const client = createBailianStreamingTtsClient({
+      apiKey: "test-key",
+      wsFactory: factory,
+      connectTimeoutMs: 30,
+      overallTimeoutMs: 10_000
+    });
+
+    const onComplete = vi.fn();
+    const p = client.synthesizeStream(
+      { segments: ["测试"] },
+      { onAudio: vi.fn(), onComplete }
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+    const [inst] = instances;
+    inst.handlers.onOpen!();
+    // Progress arrives before the connect timer fires → timer must be cleared.
+    inst.serverSendJson({ header: { event: "task-started" } });
+    // Wait past the (now-cleared) connect window to prove it no longer fires.
+    await new Promise((r) => setTimeout(r, 50));
+    inst.serverSendJson({ header: { event: "task-finished" } });
+
+    await expect(p).resolves.toBeUndefined();
+    expect(onComplete).toHaveBeenCalledTimes(1);
+  });
 });

@@ -17,6 +17,14 @@ import { BAILIAN_PODCAST_TTS_MODEL, BAILIAN_PODCAST_TTS_VOICE } from "./bailian"
 
 const BAILIAN_WS_TTS_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/inference";
 
+// ── Timeouts (P1-09) ──────────────────────────────────────────────────────────
+// A half-dead DashScope WS (socket open but never emitting task-started / audio)
+// would otherwise hang the turn forever. Two independent guards:
+//   • connect/first-progress: must see task-started (or any audio) within this window
+//   • overall: the whole synthesis must finish within this window regardless
+export const STREAMING_TTS_CONNECT_TIMEOUT_MS = 10_000;
+export const STREAMING_TTS_OVERALL_TIMEOUT_MS = 60_000;
+
 /**
  * Sample rate (Hz) of the raw PCM the cascade TTS streams. The browser sink
  * (cascadedTtsSink) builds 16-bit PCM AudioBuffers at exactly this rate, so the
@@ -46,6 +54,17 @@ export interface BailianStreamingTtsOptions {
   wsUrl?: string;
   /** Injectable WebSocket factory — used in tests to provide a mock WS. */
   wsFactory?: (url: string, opts: { headers: Record<string, string> }) => WsLike;
+  /**
+   * Connect / first-progress timeout (ms). If neither task-started nor any audio
+   * chunk arrives within this window, the stream fails with "TTS timeout".
+   * Defaults to STREAMING_TTS_CONNECT_TIMEOUT_MS. Injectable for tests.
+   */
+  connectTimeoutMs?: number;
+  /**
+   * Overall timeout (ms) for the whole synthesis. Defaults to
+   * STREAMING_TTS_OVERALL_TIMEOUT_MS. Injectable for tests.
+   */
+  overallTimeoutMs?: number;
 }
 
 // ── Internal WS duck-type ─────────────────────────────────────────────────────
@@ -69,7 +88,9 @@ export function createBailianStreamingTtsClient(
     model = BAILIAN_PODCAST_TTS_MODEL,
     voice: defaultVoice = BAILIAN_PODCAST_TTS_VOICE,
     wsUrl = BAILIAN_WS_TTS_URL,
-    wsFactory
+    wsFactory,
+    connectTimeoutMs = STREAMING_TTS_CONNECT_TIMEOUT_MS,
+    overallTimeoutMs = STREAMING_TTS_OVERALL_TIMEOUT_MS
   } = options;
 
   const createWs: (url: string, opts: { headers: Record<string, string> }) => WsLike =
@@ -78,7 +99,7 @@ export function createBailianStreamingTtsClient(
 
   return {
     synthesizeStream(input, handlers, signal) {
-      return synthesizeStream({ input, handlers, signal, apiKey, model, defaultVoice, wsUrl, createWs });
+      return synthesizeStream({ input, handlers, signal, apiKey, model, defaultVoice, wsUrl, createWs, connectTimeoutMs, overallTimeoutMs });
     }
   };
 }
@@ -98,10 +119,12 @@ interface SynthesizeStreamParams {
   defaultVoice: string;
   wsUrl: string;
   createWs: (url: string, opts: { headers: Record<string, string> }) => WsLike;
+  connectTimeoutMs: number;
+  overallTimeoutMs: number;
 }
 
 function synthesizeStream(params: SynthesizeStreamParams): Promise<void> {
-  const { input, handlers, signal, apiKey, model, defaultVoice, wsUrl, createWs } = params;
+  const { input, handlers, signal, apiKey, model, defaultVoice, wsUrl, createWs, connectTimeoutMs, overallTimeoutMs } = params;
   const { segments, voice = defaultVoice } = input;
   const { onAudio, onComplete, onError } = handlers;
 
@@ -109,9 +132,31 @@ function synthesizeStream(params: SynthesizeStreamParams): Promise<void> {
     let settled = false;
     let aborted = false;
 
+    // P1-09: connect/first-progress + overall timers. Cleared in finish() so a
+    // settled stream never fires a late timeout. The connect timer is also cleared
+    // the moment we see real progress (task-started or first audio chunk).
+    let connectTimer: ReturnType<typeof setTimeout> | undefined;
+    let overallTimer: ReturnType<typeof setTimeout> | undefined;
+
+    function clearConnectTimer() {
+      if (connectTimer !== undefined) {
+        clearTimeout(connectTimer);
+        connectTimer = undefined;
+      }
+    }
+
+    function clearTimers() {
+      clearConnectTimer();
+      if (overallTimer !== undefined) {
+        clearTimeout(overallTimer);
+        overallTimer = undefined;
+      }
+    }
+
     function finish(err?: Error) {
       if (settled) return;
       settled = true;
+      clearTimers();
       if (err) {
         onError?.(err);
         reject(err);
@@ -121,11 +166,30 @@ function synthesizeStream(params: SynthesizeStreamParams): Promise<void> {
       }
     }
 
+    /** Fail with a timeout and close the socket (idempotent via finish()'s guard). */
+    function failTimeout() {
+      if (settled || aborted) return;
+      // Settle with the timeout error FIRST so it wins the race: ws.close() may
+      // synchronously fire onClose → finish("WebSocket closed unexpectedly"),
+      // which must then be a no-op (settled already true).
+      finish(new Error("TTS timeout"));
+      try {
+        ws.close();
+      } catch {
+        // ignore close errors during timeout teardown
+      }
+    }
+
     const taskId = randomUUID();
 
     const ws = createWs(wsUrl, {
       headers: { Authorization: `Bearer ${apiKey}` }
     });
+
+    // Arm both timers up front. If the socket never opens / never streams, these
+    // are the only things that can still settle the promise.
+    connectTimer = setTimeout(failTimeout, connectTimeoutMs);
+    overallTimer = setTimeout(failTimeout, overallTimeoutMs);
 
     function sendJson(obj: unknown) {
       if (!settled && !aborted) {
@@ -221,6 +285,8 @@ function synthesizeStream(params: SynthesizeStreamParams): Promise<void> {
       // Binary frame = audio chunk
       if (isBinary || (Buffer.isBuffer(data) && !isJsonBuffer(data))) {
         if (!settled) {
+          // Real audio is progress — the connect/first-progress window is satisfied.
+          clearConnectTimer();
           onAudio(data as Buffer);
         }
         return;
@@ -237,6 +303,9 @@ function synthesizeStream(params: SynthesizeStreamParams): Promise<void> {
       const event = msg?.header?.event;
 
       if (event === "task-started") {
+        // task-started is progress — the connect/first-progress window is satisfied.
+        // The overall timer still guards the rest of the synthesis.
+        clearConnectTimer();
         // Send all segments then finish-task
         sendContinueTasks();
         if (!aborted) {

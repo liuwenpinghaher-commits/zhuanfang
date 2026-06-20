@@ -152,11 +152,10 @@ export function mergeFinalizedState(
   };
 
   if (session.doNotSave) {
+    // doNotSave：按用户要求不写入长期资产 —— 不把这次会话塞进 sessions[]（否则会留下
+    // 永久空壳、污染 timeline 并放大整-state 写），也不落 note/资产/记忆候选；只发结束审计事件。
     const nextState = withInterviewFinalizedEvents(
-      {
-        ...cloneState(state),
-        sessions: [baseCompletedSession, ...state.sessions]
-      },
+      cloneState(state),
       baseCompletedSession,
       note,
       completedAt

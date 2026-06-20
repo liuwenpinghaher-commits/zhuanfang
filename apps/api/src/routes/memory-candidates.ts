@@ -19,6 +19,9 @@ interface UpdateMemoryCandidatePayload {
   text?: unknown;
 }
 
+// P1-05: cap a single candidate text field (same budget as a confirmed memory record).
+const MEMORY_CANDIDATE_TEXT_MAX_CHARS = 16 * 1024;
+
 interface MemoryCandidateRouteOptions {
   embeddingClient?: BailianEmbeddingClient;
   /** M5: when present, a consolidation pass may summarize a merged cluster into a
@@ -44,6 +47,9 @@ export async function registerMemoryCandidateRoutes(
     const text = normalizeOptionalString(normalizeObject<UpdateMemoryCandidatePayload>(request.body).text);
     if (!text) {
       return reply.code(422).send({ error: "Memory candidate text is required." });
+    }
+    if (text.length > MEMORY_CANDIDATE_TEXT_MAX_CHARS) {
+      return reply.code(422).send({ error: `Memory candidate text exceeds the ${MEMORY_CANDIDATE_TEXT_MAX_CHARS}-character limit.` });
     }
 
     const nextState = updateMemoryCandidateText(state, candidate.id, text);

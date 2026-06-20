@@ -291,16 +291,6 @@ export function approvePlaybookPatch(
     createdAt: appliedAt
   });
 }
-export function formatCorpusMoveLabel(move: CorpusTurn["move"]) {
-  const labels: Record<CorpusTurn["move"], string> = {
-    opening: "开场",
-    "follow-up": "追问",
-    challenge: "反方挑战",
-    reflection: "复述",
-    answer: "回答"
-  };
-  return labels[move];
-}
 function parseCorpusTurns(content: string): CorpusTurn[] {
   return content
     .split(/\n+/)

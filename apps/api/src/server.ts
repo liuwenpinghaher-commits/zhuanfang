@@ -307,6 +307,21 @@ function registerCors(server: ReturnType<typeof Fastify>, env: Record<string, st
   });
 }
 
+/**
+ * P0-A: hard-fail a production launch that has no API token. The auth guard is a no-op
+ * without a token, so starting production this way would expose every /api/* route
+ * unauthenticated. Throwing here (only from startServer) refuses the launch with an
+ * actionable message instead of silently booting an open instance.
+ */
+export function assertProductionAuthConfigured(env: Record<string, string | undefined>) {
+  const isProduction = (env.DEPLOYMENT_PROFILE ?? "").trim().toLowerCase() === "production";
+  if (isProduction && !env.PRODUCT_API_TOKEN) {
+    throw new Error(
+      "生产部署 (DEPLOYMENT_PROFILE=production) 必须配置 PRODUCT_API_TOKEN：缺少令牌时鉴权守卫不会生效，所有 /api/* 路由（隐私导出、一键清空、修改 provider 配置、语音代理）将无凭据即可访问。请设置 PRODUCT_API_TOKEN 后再启动。"
+    );
+  }
+}
+
 // Paths exempted from bearer auth in production profile (healthcheck, metrics, etc.)
 const AUTH_EXEMPT_PREFIXES = ["/api/health"];
 
@@ -351,6 +366,15 @@ function isInMemoryDbPath(dbPath: string) {
 
 export async function startServer() {
   loadLocalEnvFile();
+
+  // P0-A fail-closed: in the production profile the bearer guard only activates when a
+  // token is present (see isAuthGuardActive). Refuse to start a production deployment
+  // without PRODUCT_API_TOKEN, otherwise every /api/* route (full privacy export, one-shot
+  // purge, provider-config writes, WS voice proxies) would be reachable with no credential.
+  // buildApiServer() stays token-free on purpose so tests can construct a server in-memory;
+  // this guard lives here so it only bites when a real, listening process is launched.
+  assertProductionAuthConfigured(process.env);
+
   // Persist by default so a server restart no longer drops all interview state.
   // Tests call buildApiServer() directly (no dbPath) and stay in-memory/isolated.
   const productStateDbPath = process.env.PRODUCT_STATE_DB_PATH ?? join(process.cwd(), ".data", "product-state.db");

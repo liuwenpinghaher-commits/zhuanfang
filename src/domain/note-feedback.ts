@@ -2,20 +2,10 @@
 // Split out of assets.ts (which now holds only asset-status operations) so each file
 // stays cohesive. engine.ts is the single re-export hub for both.
 import type {
-  InterviewFeedbackInput,
-  InterviewFeedbackTag,
-  InterviewStrength,
   ProductState,
 } from "./types";
 
 import { makeId, nowIso, withAuditEvent } from "./utils";
-
-function buildFeedbackCorrectionText(noteTitle: string, inaccurateSummary: string | undefined, tags: InterviewFeedbackTag[]) {
-  if (!inaccurateSummary && !tags.includes("memory-wrong")) {
-    return undefined;
-  }
-  return `会后反馈《${noteTitle}》：${inaccurateSummary ?? "用户标记 AI 记错了，需要下次避免重复这个理解。"}`;
-}
 
 export function createQuestionFromNote(state: ProductState, noteId: string, nextQuestionIndex: number): ProductState {
   const note = state.notes.find((item) => item.id === noteId);
@@ -45,19 +35,6 @@ export function createQuestionFromNote(state: ProductState, noteId: string, next
   };
 }
 
-function deriveFeedbackStrength(current: InterviewStrength, tags: InterviewFeedbackTag[]): InterviewStrength {
-  if (tags.includes("too-strong")) {
-    return "gentle";
-  }
-  if (tags.includes("too-gentle") || tags.includes("went-deep")) {
-    return "sharp";
-  }
-  if (tags.includes("off-track")) {
-    return "standard";
-  }
-  return current;
-}
-
 export function markMemoryCorrection(state: ProductState, text: string): ProductState {
   const createdAt = nowIso();
   const correction = {
@@ -80,86 +57,4 @@ export function markMemoryCorrection(state: ProductState, text: string): Product
       createdAt
     }
   );
-}
-
-function normalizeFeedbackTags(tags: InterviewFeedbackTag[]) {
-  return Array.from(new Set(tags)).filter((tag): tag is InterviewFeedbackTag =>
-    ["went-deep", "off-track", "too-gentle", "too-strong", "memory-wrong", "summary-accurate", "continue-next"].includes(tag)
-  );
-}
-
-function normalizeOptionalFeedbackText(value: string | undefined) {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : undefined;
-}
-
-export function submitInterviewFeedback(
-  state: ProductState,
-  noteId: string,
-  input: InterviewFeedbackInput
-): ProductState {
-  const note = state.notes.find((item) => item.id === noteId);
-  if (!note) {
-    return state;
-  }
-
-  const createdAt = nowIso();
-  const tags = normalizeFeedbackTags(input.tags);
-  const feedback = {
-    id: makeId("interview-feedback"),
-    noteId: note.id,
-    sessionId: note.sessionId,
-    tags,
-    mostValuableQuestion: normalizeOptionalFeedbackText(input.mostValuableQuestion),
-    inaccurateSummary: normalizeOptionalFeedbackText(input.inaccurateSummary),
-    uncomfortableButImportant: normalizeOptionalFeedbackText(input.uncomfortableButImportant),
-    newUnderstanding: normalizeOptionalFeedbackText(input.newUnderstanding),
-    continuePrompt: normalizeOptionalFeedbackText(input.continuePrompt),
-    createdAt
-  };
-
-  let nextState: ProductState = {
-    ...state,
-    profile: {
-      ...state.profile,
-      preferredStrength: deriveFeedbackStrength(state.profile.preferredStrength, tags)
-    },
-    notes: state.notes.map((item) => (item.id === note.id ? { ...item, feedback } : item))
-  };
-
-  const correction = buildFeedbackCorrectionText(note.title, feedback.inaccurateSummary, tags);
-  if (correction) {
-    nextState = markMemoryCorrection(nextState, correction);
-  }
-
-  if (tags.includes("continue-next") && feedback.continuePrompt) {
-    nextState = {
-      ...nextState,
-      questions: [
-        {
-          id: makeId("question-feedback"),
-          question: feedback.continuePrompt,
-          whyImportant: `来自会后反馈《${note.title}》，用户明确要求下次继续追问。`,
-          status: "正在聚焦",
-          appearances: 1,
-          // ponytail: inherit the source note's themes, not the hardcoded seed theme.
-          relatedThemeIds: note.relatedThemeIds ?? [],
-          nextPrompt: feedback.mostValuableQuestion ?? feedback.continuePrompt,
-          important: true,
-          updatedAt: createdAt
-        },
-        ...nextState.questions
-      ]
-    };
-  }
-
-  return withAuditEvent(nextState, {
-    type: "interview_feedback_submitted",
-    label: "会后反馈已记录",
-    detail: `《${note.title}》收到 ${tags.length} 个反馈标签，后续专访将参考这些偏好。`,
-    severity: tags.includes("memory-wrong") || tags.includes("off-track") ? "warning" : "info",
-    entityType: "dual_track_note",
-    entityId: note.id,
-    createdAt
-  });
 }

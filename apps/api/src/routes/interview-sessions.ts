@@ -21,7 +21,7 @@ import type {
   MemoryCorrection,
   ProductState
 } from "../../../../src/domain/types";
-import { makeId, nowIso, withAuditEvent } from "../../../../src/domain/utils";
+import { makeId, nowIso, withAiRunEvent, withAuditEvent } from "../../../../src/domain/utils";
 import { buildRealtimeVoiceInstructions } from "../../../../src/domain/voice-instructions";
 import { finalizeSessionWithLlm } from "../intelligence/finalize-llm";
 import { extractCandidateMemories, toSessionMemoryCandidates } from "../intelligence/memory-extraction-llm";
@@ -155,8 +155,24 @@ export async function registerInterviewSessionRoutes(
       allowLlm ? options.bailianInterviewClient : undefined,
       state.memoryCorrections
     );
-    const { nextSession, preSignals } = updatedSession;
-    const baseNextState = upsertSession(state, nextSession);
+    const { nextSession, preSignals, degradedReason } = updatedSession;
+    // P1-13: when the live turn LLM degraded to the deterministic engine, record an
+    // aiRunEvent(degraded) alongside the existing console.warn so transparency/quality
+    // reports can see it. Folded into the same state we persist below (no extra write).
+    const seedState = degradedReason
+      ? withAiRunEvent(state, {
+          workflow: "interview_turn_generation",
+          providerId: "bailian-character",
+          status: "degraded",
+          entityType: "interview_session",
+          entityId: nextSession.id,
+          inputSummary: `文本专访回合降级：${content.slice(0, 60)}`,
+          outputSummary: "LLM 追问失败，已回退到确定性策略引擎生成本回合。",
+          degradedReason,
+          createdAt: nowIso()
+        })
+      : state;
+    const baseNextState = upsertSession(seedState, nextSession);
 
     // M3 recency write-back: the records actually recalled into THIS turn's guide get
     // lastAccessedAt = now, so the recency factor reflects "recently used" rather than
@@ -221,11 +237,26 @@ export async function registerInterviewSessionRoutes(
       ? undefined
       : await extractSessionMemoryCandidates(session, options.bailianChatClient, budget);
     const result = await finalizeInterview(baseState, session, options.bailianChatClient, providedCandidates);
-    const completedSession = result.nextState.sessions.find((item) => item.id === session.id) ?? session;
+    // P1-13: if the LLM diary degraded to the deterministic finalize, record an
+    // aiRunEvent(degraded) on the finalized state (single write below).
+    const finalizedState = result.degradedReason
+      ? withAiRunEvent(result.nextState, {
+          workflow: "interview_preparation",
+          providerId: "bailian-chat",
+          status: "degraded",
+          entityType: "interview_session",
+          entityId: session.id,
+          inputSummary: `专访收尾归档降级：${session.title}`,
+          outputSummary: "LLM 日记生成失败，已回退到确定性 finalize 生成双轨笔记与资产。",
+          degradedReason: result.degradedReason,
+          createdAt: nowIso()
+        })
+      : result.nextState;
+    const completedSession = finalizedState.sessions.find((item) => item.id === session.id) ?? session;
 
-    repository.replaceState(result.nextState);
+    repository.replaceState(finalizedState);
     budget.reset(session.id);
-    return { session: completedSession, note: result.note, state: result.nextState };
+    return { session: completedSession, note: result.note, state: finalizedState };
   });
 
   // Voice path: generate interaction pre_signals for the next turn on demand
@@ -241,8 +272,24 @@ export async function registerInterviewSessionRoutes(
     // and the offline buildFallbackPreSignals was a dead import.
     if (!options.bailianChatClient || !budget.tryConsume(session.id)) {
       if (!options.bailianChatClient) {
+        // Steady-state offline (no key) — surfaced via /capabilities, not recorded per-turn here.
         console.warn(JSON.stringify({ event: "llm_unavailable", capability: "pre_signals", sessionId: session.id }));
+        return { preSignals: buildFallbackPreSignals(session.guide), session };
       }
+      // P1-13: budget exhausted while a client IS configured — a real degrade from a working
+      // state, so record an aiRunEvent(degraded) (the offline result is still returned).
+      console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "pre_signals", sessionId: session.id }));
+      repository.replaceState(withAiRunEvent(state, {
+        workflow: "interview_turn_generation",
+        providerId: "bailian-chat",
+        status: "degraded",
+        entityType: "interview_session",
+        entityId: session.id,
+        inputSummary: `语音 pre_signals 降级：${session.title}`,
+        outputSummary: "per-session LLM 预算耗尽，已回退到确定性 pre_signals。",
+        degradedReason: "per-session LLM budget exhausted",
+        createdAt: nowIso()
+      }));
       return { preSignals: buildFallbackPreSignals(session.guide), session };
     }
     try {
@@ -251,7 +298,20 @@ export async function registerInterviewSessionRoutes(
       repository.replaceState(upsertSession(state, updatedSession));
       return { preSignals, session: updatedSession };
     } catch (error) {
-      console.warn(JSON.stringify({ event: "llm_fallback", capability: "pre_signals", error: error instanceof Error ? error.message : String(error) }));
+      // P1-13: LLM pre_signals failed — record an aiRunEvent(degraded) alongside the warn.
+      const degradedReason = error instanceof Error ? error.message : String(error);
+      console.warn(JSON.stringify({ event: "llm_fallback", capability: "pre_signals", error: degradedReason }));
+      repository.replaceState(withAiRunEvent(state, {
+        workflow: "interview_turn_generation",
+        providerId: "bailian-chat",
+        status: "degraded",
+        entityType: "interview_session",
+        entityId: session.id,
+        inputSummary: `语音 pre_signals 降级：${session.title}`,
+        outputSummary: "LLM pre_signals 生成失败，已回退到确定性 pre_signals。",
+        degradedReason,
+        createdAt: nowIso()
+      }));
       return { preSignals: buildFallbackPreSignals(session.guide), session };
     }
   });
@@ -464,12 +524,16 @@ async function finalizeInterview(
   session: InterviewSession,
   chatClient: BailianChatClient | undefined,
   providedCandidates?: MemoryCandidate[]
-): Promise<FinalizeResult> {
+): Promise<FinalizeResult & { degradedReason?: string }> {
   if (chatClient) {
     try {
       return await finalizeSessionWithLlm(state, session, chatClient, providedCandidates);
     } catch (error) {
-      console.warn(JSON.stringify({ event: "llm_fallback", capability: "finalize", error: error instanceof Error ? error.message : String(error) }));
+      // P1-13: capture the reason so the route records an aiRunEvent(degraded) — the LLM diary
+      // failed and we're falling back to the deterministic finalize.
+      const degradedReason = error instanceof Error ? error.message : String(error);
+      console.warn(JSON.stringify({ event: "llm_fallback", capability: "finalize", error: degradedReason }));
+      return { ...finalizeSession(state, session, providedCandidates), degradedReason };
     }
   }
   return finalizeSession(state, session, providedCandidates);
@@ -525,7 +589,11 @@ async function receiveTurn(
   content: string,
   bailianInterviewClient: BailianCharacterInterviewClient | undefined,
   corrections: MemoryCorrection[] = []
-): Promise<{ nextSession: InterviewSession; preSignals?: import("../../../../src/domain/types").InteractionPreSignals }> {
+): Promise<{
+  nextSession: InterviewSession;
+  preSignals?: import("../../../../src/domain/types").InteractionPreSignals;
+  degradedReason?: string;
+}> {
   if (!bailianInterviewClient) {
     return { nextSession: receiveUserTurn(session, content) };
   }
@@ -544,7 +612,10 @@ async function receiveTurn(
     return { nextSession: { ...nextSession, interactionPreSignals: assistant.preSignals }, preSignals: assistant.preSignals };
   } catch (error) {
     // Honest degrade signal — LLM turn failed, falling back to the deterministic engine.
-    console.warn(JSON.stringify({ event: "llm_fallback", capability: "interview_turn", error: error instanceof Error ? error.message : String(error) }));
-    return { nextSession: receiveUserTurn(session, content) };
+    const degradedReason = error instanceof Error ? error.message : String(error);
+    console.warn(JSON.stringify({ event: "llm_fallback", capability: "interview_turn", error: degradedReason }));
+    // P1-13: surface the degrade so the route records an aiRunEvent(degraded) (caller folds
+    // it into the same replaceState), making the fallback visible to transparency/quality.
+    return { nextSession: receiveUserTurn(session, content), degradedReason };
   }
 }

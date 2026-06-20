@@ -596,11 +596,13 @@ function normalizeRuntimeConfigValue(value: unknown, definition: RuntimeSettingD
 }
 
 function maskSecretValue(value: string | undefined) {
+  // Never reveal any portion of the secret (previously leaked the last 4 chars, readable by
+  // anyone when auth is off). The boolean `configured` field on the setting already tells the
+  // UI whether a value exists; the display string stays a fixed, value-free mask.
   if (!value) {
     return "未配置";
   }
-  const suffix = value.slice(-4);
-  return `已配置（末 4 位 ${suffix}）`;
+  return "已配置（••••）";
 }
 
 function buildRealtimeDetail(keyConfigured: boolean, endpointConfigured: boolean, transport: string) {

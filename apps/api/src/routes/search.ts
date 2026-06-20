@@ -69,7 +69,12 @@ export async function registerSearchRoutes(
         : await executeSearchProvider(searchInput);
 
     if (run.task.status === "failed" || run.result === undefined) {
-      return reply.code(502).send({ task: run.task });
+      // P0-E: a provider failure no longer hard-502s. Degrade to a deterministic local-demo
+      // brief (returned 200, flagged degraded) so this main route behaves like auto-briefs /
+      // refresh / generateBriefForTopic, which all fall back instead of erroring.
+      const { brief, nextState } = buildSearchBrief(state, searchInput.topic, "local-demo");
+      repository.replaceState(nextState);
+      return { brief, state: nextState, task: run.task, degraded: true };
     }
 
     // Replace templated insights with LLM synthesis over the real sources

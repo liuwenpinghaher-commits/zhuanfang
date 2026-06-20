@@ -8,7 +8,7 @@ describe("migration", () => {
     const manifest = buildProductStateMigrationManifest(state);
     expect(manifest.entityCounts.length).toBeGreaterThan(0);
     expect(manifest.checks.length).toBeGreaterThan(0);
-    expect(manifest.recommendedTarget).toBe("postgres-jsonb-first");
+    expect(manifest.recommendedTarget).toBe("sqlite-json-snapshot");
     expect(manifest.sourceTables).toContain("product_state_snapshots");
   });
 
