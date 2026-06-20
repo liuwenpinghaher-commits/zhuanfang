@@ -305,7 +305,13 @@ export function buildInterruptionContext(params: {
 
   switch (scene) {
     case "key_insight":
-      return "";
+      return [
+        "【打断恢复 — 关键洞察】",
+        `你刚才想点出的关键之处是："${spoken}"`,
+        unspoken ? `还没说完的部分："${unspoken}"` : "",
+        `用户说："${user}"`,
+        "先接住用户的新内容，再用一句话把刚才那个洞察或盲区自然带出来，不要生硬重复原话。"
+      ].filter(Boolean).join("\n");
     case "anchor_probe":
       return [
         "【打断恢复 — 追问锚点】",
@@ -323,7 +329,12 @@ export function buildInterruptionContext(params: {
         "请先简短补充你之前未说完的观点（可以结合用户新说的内容调整表述），再回应当前问题。"
       ].filter(Boolean).join("\n");
     case "transition":
-      return "";
+      return [
+        "【打断恢复 — 过渡】",
+        spoken ? `你刚才正要把话题从："${spoken}" 自然转出去` : "",
+        `用户说："${user}"`,
+        "顺着用户的新内容承接，再自然完成这次过渡，不要硬把话题拉回原处。"
+      ].filter(Boolean).join("\n");
     case "backchannel":
       return "";
     default:

@@ -195,7 +195,9 @@ export function receiveUserTurnWithAssistant(
     strategyTrace: assistant.strategyDecision
       ? [...(session.strategyTrace ?? []), assistant.strategyDecision]
       : session.strategyTrace,
-    askedAnchor: extractAnchor(trimmed)
+    askedAnchor: extractAnchor(trimmed),
+    // The pending control directive was applied to this turn's prompt — clear it.
+    pendingControl: undefined
   };
 }
 export function updateInterviewControl(session: InterviewSession, action: InterviewControlAction): InterviewSession {
@@ -205,6 +207,8 @@ export function updateInterviewControl(session: InterviewSession, action: Interv
     ...session,
     strength: feedback.nextStrength,
     doNotSave: action === "do-not-save" ? true : session.doNotSave,
+    // Structured directive for the next turn's prompt (robust, not话术-matched).
+    pendingControl: action,
     turns: [
       ...session.turns,
       {

@@ -521,6 +521,12 @@ export interface InterviewSession {
   completedAt?: string;
   askedAnchor?: string;
   doNotSave?: boolean;
+  /**
+   * The control action the user just applied, consumed by the NEXT turn's prompt as an
+   * explicit directive then cleared. Replaces fragile substring-matching of the control
+   * feedback话术 (findPendingControlAction) for the live LLM path.
+   */
+  pendingControl?: InterviewControlAction;
   interactionPreSignals?: InteractionPreSignals;
   /** v2 软标签：本会话软归属的主题线（可多归属、可为空）。 */
   relatedThemeIds?: string[];

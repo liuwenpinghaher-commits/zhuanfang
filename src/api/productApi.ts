@@ -341,13 +341,30 @@ export function getProductApiBaseUrl() {
   return import.meta.env.VITE_PRODUCT_API_BASE_URL ?? "http://127.0.0.1:3210";
 }
 
+/**
+ * Thrown when the API returns a non-2xx status — i.e. the server WAS reachable and
+ * answered with a business error. Distinguished from a thrown fetch (network down)
+ * so callers don't mistake a 422/409 for "backend offline" and tear down persistence.
+ */
+export class ApiError extends Error {
+  constructor(public readonly status: number, path: string) {
+    super(`Product API request failed: ${status} (${path})`);
+    this.name = "ApiError";
+  }
+}
+
+/** True when the error means the server was unreachable (fetch threw), not a 4xx/5xx. */
+export function isNetworkError(err: unknown): boolean {
+  return !(err instanceof ApiError);
+}
+
 export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchImpl: FetchLike = fetch): ProductApiClient {
   const normalizedBaseUrl = baseUrl.replace(/\/$/, "");
 
   async function requestJson(path: string, init: RequestInit): Promise<unknown> {
     const response = await fetchImpl(`${normalizedBaseUrl}${path}`, init);
     if (!response.ok) {
-      throw new Error(`Product API request failed: ${response.status}`);
+      throw new ApiError(response.status, path);
     }
     return response.json();
   }
@@ -355,7 +372,7 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
   async function requestText(path: string, init: RequestInit): Promise<string> {
     const response = await fetchImpl(`${normalizedBaseUrl}${path}`, init);
     if (!response.ok) {
-      throw new Error(`Product API request failed: ${response.status}`);
+      throw new ApiError(response.status, path);
     }
     return response.text();
   }

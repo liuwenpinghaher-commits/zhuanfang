@@ -315,18 +315,6 @@ const runtimeSettingDefinitions: RuntimeSettingDefinition[] = [
     defaultValue: "false"
   },
   {
-    key: "REALTIME_MODE",
-    section: "voice",
-    label: "实时语音模式",
-    description: "选择实时语音的运行模式：端到端 Omni S2S 或级联 LiveKit 模式。",
-    valueKind: "select",
-    defaultValue: "s2s",
-    options: [
-      { label: "端到端 (Omni S2S)", value: "s2s" },
-      { label: "级联 LiveKit (Paraformer→Qwen→CosyVoice)", value: "livekit" },
-    ]
-  },
-  {
     key: "PRODUCT_STATE_DB_PATH",
     section: "storage",
     label: "Product State DB Path",

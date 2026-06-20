@@ -3,7 +3,7 @@ import httpx
 from livekit.agents import function_tool, RunContext
 
 
-BACKEND_URL = os.getenv("INTERVIEW_BACKEND_URL", "http://127.0.0.1:8787")
+BACKEND_URL = os.getenv("INTERVIEW_BACKEND_URL", "http://127.0.0.1:3210")
 
 
 @function_tool()

@@ -1,5 +1,5 @@
 import { SpanStatusCode, trace } from "@opentelemetry/api";
-import type { InteractionPreSignals, InterviewSession, MemoryCorrection, SearchBriefInput, SearchProviderId, SourceHighlight } from "../../../../src/domain/types";
+import type { InteractionPreSignals, InterviewControlAction, InterviewSession, InterviewStrategyDecision, MemoryCorrection, SearchBriefInput, SearchProviderId, SourceHighlight } from "../../../../src/domain/types";
 import { INTERVIEWER_CRAFT_RULES } from "../../../../src/domain/interviewer-craft";
 import { buildAppliedPlaybookRulesBlock, buildCorrectionsBlock } from "../../../../src/domain/voice-instructions";
 
@@ -78,6 +78,12 @@ export interface BailianCharacterInterviewRequest {
    * the same "别再当成已确认事实" guidance the LiveKit voice path already had.
    */
   corrections?: MemoryCorrection[];
+  /**
+   * Strategy decision for THIS turn (from decideInterviewStrategy). Injected into the
+   * system prompt as a soft "recommended action" so the strategy engine actually steers
+   * the live LLM question — not just labels the turn after the fact.
+   */
+  strategyDecision?: InterviewStrategyDecision;
 }
 
 export interface BailianCharacterInterviewResult {
@@ -403,7 +409,7 @@ export function createBailianCharacterInterviewClient(
   return {
     async createAssistantTurn(input) {
       const rawContent = await chatClient.complete({
-        messages: buildCharacterMessages(input.session, input.userText, input.corrections ?? []),
+        messages: buildCharacterMessages(input.session, input.userText, input.corrections ?? [], input.strategyDecision),
         maxTokens: 800
       });
 
@@ -801,12 +807,13 @@ function buildSearchPrompt(input: BailianSearchBriefRequest) {
 function buildCharacterMessages(
   session: InterviewSession,
   userText: string,
-  corrections: MemoryCorrection[] = []
+  corrections: MemoryCorrection[] = [],
+  strategyDecision?: InterviewStrategyDecision
 ): BailianChatMessage[] {
   return [
     {
       role: "system",
-      content: buildCharacterSystemPrompt(session, corrections)
+      content: buildCharacterSystemPrompt(session, corrections, strategyDecision)
     },
     {
       role: "assistant",
@@ -826,7 +833,11 @@ function buildCharacterMessages(
 // Exported for unit tests that assert the system prompt carries applied playbook
 // rules + recent corrections — the cascade/text interview path's real downstream
 // (createAssistantTurn → buildCharacterMessages → here → chatClient.complete).
-export function buildCharacterSystemPrompt(session: InterviewSession, corrections: MemoryCorrection[] = []) {
+export function buildCharacterSystemPrompt(
+  session: InterviewSession,
+  corrections: MemoryCorrection[] = [],
+  strategyDecision?: InterviewStrategyDecision
+) {
   const guide = session.guide;
   const lines: string[] = [
     INTERVIEWER_CRAFT_RULES,
@@ -835,8 +846,41 @@ export function buildCharacterSystemPrompt(session: InterviewSession, correction
     `本次主题：${session.title}。`,
     `为什么现在聊：${session.card.whyNow}`,
     `潜在张力：${session.card.potentialTension}`,
-    `建议视角：${session.card.suggestedPerspectives.join("、")}`,
+    // 建议视角不在此重复注入 —— guide.recommendedPerspectives 已覆盖（见下方 guide 块），
+    // 避免同一份数据喂两遍。
   ];
+
+  // 启动卡里的历史原话与联网素材 —— 文本路此前不注入（只有 guide 的 relevantMemories /
+  // knowledgeFragments），导致素材引用能力打折。补进来，仍「仅自然相关时引用」。
+  if (session.card.historyReferences.length) {
+    lines.push(`【可引用的历史原话】（自然相关时引用，可指出前后变化）：${session.card.historyReferences.slice(0, 3).join("；")}`);
+  }
+  if (session.card.sourceHighlights?.length) {
+    lines.push(`【联网素材】（仅当与用户所谈自然相关时引用，务必回到用户自己的具体经历）：${session.card.sourceHighlights.slice(0, 2).map((s) => `${s.title}｜${s.snippet}`).join("；")}`);
+  }
+
+  // 用户刚下达的控制动作 —— 作为明确指令注入（替代脆弱的话术子串匹配）。
+  if (session.pendingControl) {
+    const controlDirectives: Record<InterviewControlAction, string> = {
+      skip: "用户刚要求跳过上一个问题。不要再追那个问题，换一个更低压力、更具体的方向继续。",
+      "different-angle": "用户刚要求换个角度。从一个明显不同的视角（如系统/机制/他人视角）重新切入同一主题。",
+      summary: "用户刚要求做阶段小结。先用一两句话凝练目前为止的关键点，再抛出下一个最值得深挖的问题。",
+      softer: "用户希望更温和。避免尖锐挑战，先把事实和真实感受分开问清楚。",
+      sharper: "用户希望更直接。优先检查前提、代价和用户可能在回避的地方。",
+      "do-not-save": "本次按不写入长期资产处理，但继续正常、自然地追问。"
+    };
+    lines.push(`【用户控制·本轮务必照做】${controlDirectives[session.pendingControl]}`);
+  }
+
+  // 策略引擎为本轮选定的动作方向 —— 作为软指引注入，让策略真正驱动 LLM 提问，
+  // 而不是事后只贴个标签。要顺着用户刚说的具体内容自然展开，不报动作名。
+  if (strategyDecision) {
+    const perspectiveHint = strategyDecision.perspective ? `，可引入「${strategyDecision.perspective}」视角` : "";
+    const blindspotHint = strategyDecision.blindspotConcept ? `，留意盲区「${strategyDecision.blindspotConcept}」` : "";
+    lines.push(
+      `【本轮建议动作】${strategyDecision.label}（${strategyDecision.reason}）${perspectiveHint}${blindspotHint}。把它作为提问方向参考，顺着用户刚说的具体内容自然展开，不要生硬执行、不要报出动作名。`
+    );
+  }
 
   // 注入长期上下文：让追问能引用历史、指出前后矛盾、回访知识债、戳盲区。
   // 全部「仅当自然相关时使用」，避免硬塞。

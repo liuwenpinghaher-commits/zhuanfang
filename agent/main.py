@@ -14,7 +14,7 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 load_dotenv()
 
-BACKEND_URL = os.getenv("INTERVIEW_BACKEND_URL", "http://127.0.0.1:8787")
+BACKEND_URL = os.getenv("INTERVIEW_BACKEND_URL", "http://127.0.0.1:3210")
 
 
 async def _fetch_agent_context(

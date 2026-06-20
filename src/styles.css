@@ -240,6 +240,48 @@ select:focus-visible {
   box-shadow: var(--shadow-panel);
 }
 
+.resume-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  max-width: 1360px;
+  margin: 0 auto 18px;
+  padding: 14px 18px;
+  border: 1px solid var(--action-primary, #7c5cff);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-panel);
+}
+
+.resume-banner-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.resume-banner-eyebrow {
+  font-size: 0.78rem;
+  color: var(--action-primary, #7c5cff);
+  font-weight: 600;
+}
+
+.resume-banner-main p {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.resume-banner .primary-action {
+  flex: 0 0 auto;
+}
+
 .notice strong {
   flex: 0 0 auto;
 }

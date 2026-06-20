@@ -5,6 +5,7 @@ import {
   Compass,
   Headphones,
   Mic,
+  Play,
   Search,
   Settings,
   ShieldCheck,
@@ -18,6 +19,7 @@ import {
   approvePlaybookPatch,
   buildCognitiveRadar,
   buildInterviewCard,
+  buildInterviewResumeCard,
   buildMonthlyReview,
   buildRealtimeTurnState,
   buildSearchBrief,
@@ -47,12 +49,11 @@ import {
 } from "./domain/engine";
 import { executeSearchProvider } from "./capabilities/search";
 import { createIdleCapabilityTask, startCapabilityTask } from "./capabilities/task";
-import { productApiClient, getProductApiBaseUrl, type ReviewsResponse } from "./api/productApi";
+import { productApiClient, getProductApiBaseUrl, isNetworkError, type ReviewsResponse } from "./api/productApi";
 import type { RealtimeVoiceSessionResponse, SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigUpdateRequest, VoiceInfo } from "./api/productApi";
-import {
-  connectBailianRealtimeWebrtc,
-  type BailianRealtimeWebrtcConnection
-} from "./realtime/bailianWebrtc";
+// WebRTC omni client is incomplete (no callbacks/turn recording); the connect path is
+// downlined to WebSocket in startVoiceSession. Type kept for the connection union only.
+import type { BailianRealtimeWebrtcConnection } from "./realtime/bailianWebrtc";
 import {
   connectBailianRealtimeWebsocket,
   type BailianRealtimeWebsocketConnection
@@ -131,6 +132,8 @@ export default function App() {
   const [pendingMode, setPendingMode] = useState<InterviewMode>("decision");
   const [notice, setNotice] = useState<UiNotice | null>(null);
   const [interviewInput, setInterviewInput] = useState("");
+  const [submittingTurn, setSubmittingTurn] = useState(false);
+  const [startingInterview, setStartingInterview] = useState(false);
   const [correctionText, setCorrectionText] = useState("");
   const [assetQuery, setAssetQuery] = useState("");
   const [assetFilter, setAssetFilter] = useState<AssetFilter>("all");
@@ -290,6 +293,8 @@ export default function App() {
   }, []);
 
   const card = useMemo(() => buildInterviewCard(productState, activeSearchBriefId), [activeSearchBriefId, productState]);
+  // Resume: surface the most-recent unfinished (active) session so it isn't stranded.
+  const resumeCard = useMemo(() => buildInterviewResumeCard(productState), [productState]);
   const localMonthlyReview = useMemo(() => buildMonthlyReview(productState), [productState]);
   const localYearlyReview = useMemo(() => buildYearlyReview(productState), [productState]);
   const localRadar = useMemo(() => buildCognitiveRadar(productState), [productState]);
@@ -392,25 +397,19 @@ export default function App() {
             isAssistantSpeaking: voiceStatus === "speaking"
           })
         : null,
-    [recording, session, audioLevel, voiceStatus, liveUserTranscript, guidanceState]
+    [recording, session, audioLevel, voiceStatus, liveUserTranscript]
   );
 
-  // 引导触发时的副作用
+  // 引导指示器自动消失:由语音管线的 onGuidance 信号点亮(见 connect* 的 onGuidance),
+  // active 后 2.5s 自动收起。(此前这里读 realtimeState.guidance —— 那个字段从不被
+  // 填充,指示器永不触发;现改为消费真实的 onGuidance 信号。)
   useEffect(() => {
-    if (realtimeState?.guidance && !guidanceState.active) {
-      setGuidanceState(prev => ({
-        active: true,
-        kind: realtimeState.guidance!.kind,
-        text: realtimeState.guidance!.text,
-        countThisTurn: prev.countThisTurn + 1,
-        lastTimestamp: new Date().toISOString()
-      }));
-      const timer = setTimeout(() => {
-        setGuidanceState(prev => ({ ...prev, active: false }));
-      }, 2500);
-      return () => clearTimeout(timer);
+    if (!guidanceState.active) {
+      return;
     }
-  }, [realtimeState?.guidance]);
+    const timer = setTimeout(() => setGuidanceState(prev => ({ ...prev, active: false })), 2500);
+    return () => clearTimeout(timer);
+  }, [guidanceState.active, guidanceState.lastTimestamp]);
 
   // 用户开始新轮时重置引导计数
   useEffect(() => {
@@ -463,10 +462,27 @@ export default function App() {
     setNotice(buildNotice("warning", "音色已删除", `音色 "${voiceId}" 已移除。`));
   }
 
-  async function interruptAssistant() {
+  function interruptAssistant() {
     setGuidanceState(prev => ({ ...prev, countThisTurn: 0, active: false }));
+    // Hit whichever transport is live. cascade (pipeline.interrupt) and omni
+    // (connection.interruptAssistant) have real barge-in; livekit's interrupt is a
+    // best-effort no-op (SDK-limited) but harmless. Previously only livekit was wired,
+    // so the manual 打断 button did nothing in the default cascade / omni modes.
+    let interrupted = false;
+    if (cascadePipelineRef.current) {
+      cascadePipelineRef.current.interrupt();
+      interrupted = true;
+    }
+    const conn = realtimeVoiceConnection as { interruptAssistant?: () => void } | null;
+    if (conn?.interruptAssistant) {
+      conn.interruptAssistant();
+      interrupted = true;
+    }
     if (livekitVoiceSession) {
       livekitVoiceSession.interrupt();
+      interrupted = true;
+    }
+    if (interrupted) {
       setVoiceStatus("interrupted");
       setTimeout(() => setVoiceStatus("listening"), 1500);
     }
@@ -486,6 +502,17 @@ export default function App() {
     setView("track");
   }
 
+  /** 继续一个未完成的 active 会话:把它装回 session 并切到工作台。 */
+  function continueInterview(sessionId: string) {
+    const target = productState.sessions.find((item) => item.id === sessionId && item.status === "active");
+    if (!target) {
+      setNotice(buildNotice("warning", "无法继续", "这条未完成的专访已不存在或已结束。"));
+      return;
+    }
+    setSession(target);
+    setView("interview");
+  }
+
   /** 一键开始：直接传参给 startInterview，不依赖 setState 后的值。 */
   async function launchInterview(mode: InterviewMode = "decision", searchBriefId = activeSearchBriefId) {
     setPendingMode(mode);
@@ -495,6 +522,7 @@ export default function App() {
   }
 
   async function startInterview(mode: InterviewMode = pendingMode, searchBriefId = activeSearchBriefId) {
+    setStartingInterview(true);
     try {
       const apiRun = await productApiClient.createInterviewSession({
         mode,
@@ -507,8 +535,16 @@ export default function App() {
       setApiPersistenceEnabled(true);
       setView("interview");
       return;
-    } catch {
+    } catch (err) {
+      if (!isNetworkError(err)) {
+        // Server is up but rejected the request — don't fork to a phantom offline session.
+        setNotice(buildNotice("warning", "无法开始专访", "服务返回错误，请稍后重试。"));
+        return;
+      }
       setApiPersistenceEnabled(false);
+      setNotice(buildNotice("info", "已进入离线模式", "后端不可用，本次专访在本地进行，稍后可同步。"));
+    } finally {
+      setStartingInterview(false);
     }
 
     setSession(createSessionDraft(productState, mode, productState.profile.preferredStrength, { searchBriefId }));
@@ -978,6 +1014,7 @@ export default function App() {
     }
     const content = interviewInput;
     setInterviewInput("");
+    setSubmittingTurn(true);
 
     try {
       const apiRun = await productApiClient.sendInterviewTurn(session.id, { content });
@@ -998,6 +1035,8 @@ export default function App() {
         return;
       }
       setApiPersistenceEnabled(false);
+    } finally {
+      setSubmittingTurn(false);
     }
 
     // Genuinely offline fallback — only reached when !apiPersistenceEnabled.
@@ -1005,7 +1044,14 @@ export default function App() {
   }
 
   async function finishInterview() {
-    if (!session || session.turns.length === 0) {
+    if (!session) {
+      return;
+    }
+    // Align with the server's rule: at least one USER turn (control feedback turns
+    // don't count). Pre-checking avoids a 422 that the catch would misread as offline.
+    const userTurnCount = session.turns.filter((turn) => turn.role === "user").length;
+    if (userTurnCount === 0) {
+      setNotice(buildNotice("warning", "还不能结束", "先回答至少一轮，再结束并生成档案。"));
       return;
     }
 
@@ -1018,15 +1064,21 @@ export default function App() {
       setNotice(buildNotice("success", "专访档案已生成", "双轨笔记和认知资产已更新。"));
       setView("notes");
       return;
-    } catch {
+    } catch (err) {
+      if (!isNetworkError(err)) {
+        setNotice(buildNotice("warning", "结束失败", "服务返回错误，请稍后重试。本次未生成档案。"));
+        return;
+      }
       setApiPersistenceEnabled(false);
     }
 
+    // Offline path (network error only): the deterministic finalize produces a
+    // lightweight note with NO extracted assets — say so honestly, not "资产已更新".
     const result = finalizeSession(productState, session);
     setProductState(result.nextState);
     setSession(null);
     closeRealtimeVoiceSession();
-    setNotice(buildNotice("success", "专访档案已生成", "双轨笔记和认知资产已更新。"));
+    setNotice(buildNotice("warning", "已保存轻量档案", "后端不可用，仅保留双轨笔记，未做 AI 资产抽取。"));
     setView("notes");
   }
 
@@ -1044,7 +1096,11 @@ export default function App() {
       setApiPersistenceEnabled(true);
       setNotice(buildNotice("info", "访谈控制已应用", `下一轮会按「${controlLabel}」调整。`));
       return;
-    } catch {
+    } catch (err) {
+      if (!isNetworkError(err)) {
+        setNotice(buildNotice("warning", "控制未生效", "服务返回错误，请稍后重试。"));
+        return;
+      }
       setApiPersistenceEnabled(false);
     }
 
@@ -1332,17 +1388,29 @@ export default function App() {
             ...voiceSession,
             ...(card.suggestedOpening ? { openingLine: card.suggestedOpening } : {})
           };
-          const connection = voiceSession.transport === "webrtc"
-            ? await connectBailianRealtimeWebrtc(voiceSession, { productApiClient })
-            : await connectBailianRealtimeWebsocket(sessionWithOpening, {
+          if (voiceSession.transport === "webrtc") {
+            // ponytail: the WebRTC omni client is incomplete (no transcript/audio/turn
+            // callbacks, no DataChannel parsing) — it would connect but record nothing.
+            // Until it's finished, fall back to the working WebSocket path.
+            console.warn(JSON.stringify({ event: "webrtc_incomplete_fallback_to_ws" }));
+            setNotice(buildNotice("info", "已改用 WebSocket 实时语音", "WebRTC 通道尚未完整支持，已自动切换。"));
+          }
+          const connection = await connectBailianRealtimeWebsocket(sessionWithOpening, {
                 productApiBaseUrl: `ws://${location.hostname}:3210`,
                 preSignals: session?.interactionPreSignals,
                 onAudioLevel: (level) => setAudioLevel(level),
                 onSpeechStart: () => setVoiceStatus("listening"),
                 onSpeechEnd: () => setVoiceStatus("speaking"),
                 onGuidance: (text) => {
-                  // Inject guidance whisper via browser SpeechSynthesis.
-                  // Short utterances only — long guidance gets shown in UI.
+                  // Light up the in-conversation guidance indicator (the visual badge
+                  // in InterviewView), and whisper short guidance via SpeechSynthesis.
+                  setGuidanceState(prev => ({
+                    active: true,
+                    kind: "nudge",
+                    text,
+                    countThisTurn: prev.countThisTurn + 1,
+                    lastTimestamp: new Date().toISOString()
+                  }));
                   if (text.length < 40) {
                     try {
                       const utterance = new SpeechSynthesisUtterance(text);
@@ -1353,7 +1421,6 @@ export default function App() {
                       speechSynthesis.speak(utterance);
                     } catch { /* SpeechSynthesis not available */ }
                   }
-                  setNotice(buildNotice("info", "引导", text));
                 },
                 onUserTranscript: (text, isFinal) => {
                   setLiveUserTranscript(text);
@@ -1419,7 +1486,7 @@ export default function App() {
             buildNotice(
               "success",
               "实时语音会话已就绪",
-              `${voiceSession.model} · ${voiceSession.transport === "webrtc" ? "WebRTC" : "WebSocket"} 已连接`
+              `${voiceSession.model} · WebSocket 已连接`
             )
           );
         } catch {
@@ -1427,9 +1494,7 @@ export default function App() {
             buildNotice(
               "warning",
               "语音连接失败",
-              voiceSession.transport === "webrtc"
-                ? "WebRTC 连接失败，可设置 BAILIAN_REALTIME_TRANSPORT=websocket 使用 WebSocket。"
-                : "百炼 WebSocket 连接失败。"
+              "百炼 WebSocket 连接失败。"
             )
           );
           return;
@@ -1501,6 +1566,18 @@ export default function App() {
             {notice.detail && <span>{notice.detail}</span>}
           </section>
         )}
+        {resumeCard && view !== "interview" && session?.id !== resumeCard.sessionId && (
+          <section className="resume-banner" aria-label="未完成的专访">
+            <div className="resume-banner-main">
+              <span className="resume-banner-eyebrow">未完成的专访 · 已进行 {resumeCard.turnCount} 轮</span>
+              <strong>{resumeCard.title}</strong>
+              <p>{resumeCard.pendingQuestion}</p>
+            </div>
+            <button className="primary-action" type="button" onClick={() => continueInterview(resumeCard.sessionId)}>
+              <Play size={16} />继续专访
+            </button>
+          </section>
+        )}
         {view === "home" && (
           <HomeView
             state={productState}
@@ -1524,7 +1601,8 @@ export default function App() {
             liveUserTranscript={liveUserTranscript}
             voiceTransport={
               livekitVoiceSession ? "livekit"
-              : realtimeVoiceSession?.transport ?? null
+              : realtimeVoiceSession ? "websocket"
+              : null
             }
             onInput={setInterviewInput}
             onStart={startInterview}
@@ -1533,6 +1611,8 @@ export default function App() {
             onControl={applyInterviewControl}
             onToggleRecording={toggleRealtimeRecording}
             onInterrupt={interruptAssistant}
+            submitting={submittingTurn}
+            starting={startingInterview}
             guidanceState={guidanceState}
           />
         )}

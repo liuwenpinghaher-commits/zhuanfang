@@ -25,6 +25,8 @@ interface InterviewViewProps {
   onControl: (action: InterviewControlAction) => void;
   onToggleRecording: () => void | Promise<void>;
   onInterrupt: () => void;
+  submitting?: boolean;
+  starting?: boolean;
   guidanceState?: {
     active: boolean;
     kind: string | null;
@@ -51,6 +53,8 @@ export function InterviewView({
   onControl,
   onToggleRecording,
   onInterrupt,
+  submitting,
+  starting,
   guidanceState
 }: InterviewViewProps) {
   // Hooks must run unconditionally on every render (Rules of Hooks). Keep them
@@ -81,8 +85,8 @@ export function InterviewView({
               <p>{card.sourceHighlights[0].snippet}</p>
             </div>
           )}
-          <button className="launch-action" type="button" onClick={() => onStart(pendingMode)}>
-            <Play size={18} />开始专访
+          <button className="launch-action" type="button" onClick={() => onStart(pendingMode)} disabled={starting} aria-busy={starting}>
+            <Play size={18} />{starting ? "正在准备…" : "开始专访"}
           </button>
         </div>
       </section>
@@ -109,8 +113,8 @@ export function InterviewView({
         eyebrow="实时专访"
         title={session.title}
         subtitle={voiceTransport
-          ? `文本和语音共用同一条专访流程 · ${voiceTransport === "websocket" ? "WebSocket 实时语音" : voiceTransport === "webrtc" ? "WebRTC 实时语音" : "LiveKit 级联语音"}`
-          : "文本和语音共用同一条专访流程；点击语音按钮开始实时对话。"}
+          ? `${voiceTransport === "websocket" ? "WebSocket 实时语音" : voiceTransport === "livekit" ? "LiveKit 级联语音" : "实时语音"} · 语音回合与文本写入同一份专访记录`
+          : "文本追问已接入策略引擎；点击语音按钮开始实时对话。"}
       />
 
       <section className="interview-layout">
@@ -192,22 +196,26 @@ export function InterviewView({
             </div>
           )}
 
-          <div className="interview-rhythm" aria-live="polite">
-            <div className="rhythm-main">
-              <span className="label">会中节奏</span>
-              <strong>{phaseLabel}</strong>
-              <p>{realtimeState?.nextAction ?? "先让表达完整出现，再决定是否追问。"}</p>
-            </div>
-            <div className="rhythm-side">
-              <div className="rhythm-meter" aria-label={`系统把握 ${confidence}%`}>
-                <span style={{ width: `${confidence}%` }} />
+          {/* 会中节奏/把握度由实时语音管线驱动；仅在录音(语音对话)时有意义。文字访谈下
+              这些值是静态的(phase 恒 holding、confidence 恒 72%),会误导,故只在录音时显示。 */}
+          {recording && (
+            <div className="interview-rhythm" aria-live="polite">
+              <div className="rhythm-main">
+                <span className="label">会中节奏</span>
+                <strong>{phaseLabel}</strong>
+                <p>{realtimeState?.nextAction ?? "先让表达完整出现，再决定是否追问。"}</p>
               </div>
-              <div className="rhythm-meta">
-                <span>追问强度：{strengthLabel}</span>
-                <span>{session.doNotSave ? "不写入长期资产" : "可写入资产"}</span>
+              <div className="rhythm-side">
+                <div className="rhythm-meter" aria-label={`系统把握 ${confidence}%`}>
+                  <span style={{ width: `${confidence}%` }} />
+                </div>
+                <div className="rhythm-meta">
+                  <span>追问强度：{strengthLabel}</span>
+                  <span>{session.doNotSave ? "不写入长期资产" : "可写入资产"}</span>
+                </div>
               </div>
             </div>
-          </div>
+          )}
           <div className="control-groups" aria-label="访谈控制">
             {interviewControlGroups.map((group, groupIdx) => (
               <section className="control-group" key={`group-${groupIdx}`} aria-label={group.description}>
@@ -268,10 +276,12 @@ export function InterviewView({
               <span className="field-help">可以先写片段，系统会保留停顿，并围绕表达里的锚点继续追问。</span>
             </label>
             <div className="composer-actions">
-              <button className="secondary-action" type="button" onClick={onFinish} disabled={session.turns.length === 0}>
+              <button className="secondary-action" type="button" onClick={onFinish} disabled={session.turns.length === 0 || submitting}>
                 结束并生成档案
               </button>
-              <button className="primary-action" type="submit"><ChevronRight size={18} />提交表达</button>
+              <button className="primary-action" type="submit" disabled={submitting || !input.trim()} aria-busy={submitting}>
+                <ChevronRight size={18} />{submitting ? "思考中…" : "提交表达"}
+              </button>
             </div>
           </form>
         </div>

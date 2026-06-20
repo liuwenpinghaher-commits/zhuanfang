@@ -65,6 +65,7 @@ export function buildRealtimeVoiceInstructions(
     guide?.blindspotCandidates?.[0] ? `盲区候选：${guide.blindspotCandidates[0].concept}。${guide.blindspotCandidates[0].reason}` : "",
     (guide?.relevantMemories ?? []).length ? `可引用记忆/历史：${guide!.relevantMemories.slice(0, 3).join("；")}` : "",
     (guide?.statedPositions ?? []).length ? `用户过去的立场（出现矛盾就温和点出）：${guide!.statedPositions.slice(0, 3).join("；")}` : "",
+    (guide?.opinionEvolution ?? []).length ? `观点演变（可顺势确认变化是否成立）：${guide!.opinionEvolution.slice(0, 2).map((e) => `「${e.topic}」从「${e.oldView}」到「${e.newView}」`).join("；")}` : "",
     (card?.historyReferences ?? []).length ? `历史原话：${card!.historyReferences.slice(0, 3).join("；")}` : "",
     (card?.sourceHighlights ?? []).length ? `全网素材：${card!.sourceHighlights!.slice(0, 2).map((s) => `${s.title}｜${s.snippet}`).join("；")}` : "",
     (guide?.knowledgeFragments ?? []).length ? `调研要点（自然相关时引一条作事实/反方依据，务必回到用户自己的经历，别堆资料）：${guide!.knowledgeFragments.slice(0, 2).join("；")}` : "",

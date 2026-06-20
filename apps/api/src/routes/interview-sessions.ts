@@ -3,6 +3,7 @@ import {
   buildInterviewEnginePolicy,
   buildInterviewGuide,
   createSessionDraft,
+  decideInterviewStrategy,
   finalizeSession,
   receiveUserTurn,
   receiveUserTurnWithAssistant,
@@ -499,14 +500,21 @@ async function receiveTurn(
     return { nextSession: receiveUserTurn(session, content) };
   }
 
+  // Strategy engine decides this turn's action; injected into the LLM prompt AND
+  // backfilled onto the assistant turn so strategyTrace / turn.strategy / the technique
+  // badge / quality-report all have real data on the live path (not just offline).
+  const strategyDecision = decideInterviewStrategy(session, content);
   try {
-    const assistant = await bailianInterviewClient.createAssistantTurn({ session, userText: content, corrections });
+    const assistant = await bailianInterviewClient.createAssistantTurn({ session, userText: content, corrections, strategyDecision });
     const nextSession = receiveUserTurnWithAssistant(session, content, {
       content: assistant.content,
-      intent: assistant.intent
+      intent: assistant.intent,
+      strategyDecision
     });
     return { nextSession: { ...nextSession, interactionPreSignals: assistant.preSignals }, preSignals: assistant.preSignals };
-  } catch {
+  } catch (error) {
+    // Honest degrade signal — LLM turn failed, falling back to the deterministic engine.
+    console.warn(JSON.stringify({ event: "llm_fallback", capability: "interview_turn", error: error instanceof Error ? error.message : String(error) }));
     return { nextSession: receiveUserTurn(session, content) };
   }
 }
