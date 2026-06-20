@@ -16,7 +16,7 @@ RUN npm run build
 FROM ${NODE_IMAGE} AS runtime
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
-    PORT=8787 \
+    PORT=3210 \
     DEPLOYMENT_PROFILE=production \
     PRODUCT_STATIC_DIR=/app/dist \
     PRODUCT_STATE_DB_PATH=/app/.data/product-state.sqlite \
@@ -31,7 +31,7 @@ COPY packages ./packages
 COPY src ./src
 RUN mkdir -p /app/.data/corpus-audio && chown -R node:node /app
 USER node
-EXPOSE 8787
+EXPOSE 3210
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || '8787') + '/api/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || '3210') + '/api/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
 CMD ["npm", "run", "start:api"]

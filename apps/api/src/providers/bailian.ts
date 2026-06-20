@@ -865,6 +865,9 @@ export function buildCharacterSystemPrompt(session: InterviewSession, correction
     if (guide.recommendedPerspectives?.length) {
       lines.push(`【建议引入的认知视角】（以一个自然问题呈现，绝不要讲理论课）：${guide.recommendedPerspectives.slice(0, 3).join("、")}`);
     }
+    if (guide.knowledgeFragments?.length) {
+      lines.push(`【外部资料/调研要点】（如与用户所谈自然相关，可引用其中一条作为追问的事实依据或反方视角；务必回到用户自己的具体经历，不要照本宣科、不要堆砌资料）：${guide.knowledgeFragments.slice(0, 3).join("；")}`);
+    }
   }
 
   // Applied playbook rules + recent corrections — reuse the SAME copy as the

@@ -360,6 +360,50 @@ export function ConfigView({
               </section>
 
               <section className="runtime-config-section">
+                <h3>外部调研自动化</h3>
+                <div className="runtime-setting-grid">
+                  <label className="field-stack runtime-setting-field" htmlFor="product-research-auto-schedule">
+                    <span className="field-label">后台定时调研</span>
+                    <select
+                      id="product-research-auto-schedule"
+                      name="research.autoScheduleEnabled"
+                      value={String(productDraft.research?.autoScheduleEnabled ?? false)}
+                      onChange={(event) => {
+                        const nextValue = event.target.value === "true";
+                        updateProductConfig((config) => ({
+                          ...config,
+                          research: { ...config.research, autoScheduleEnabled: nextValue }
+                        }));
+                      }}
+                    >
+                      <option value="true">开启</option>
+                      <option value="false">关闭</option>
+                    </select>
+                    <span className="field-help">开启后，常驻服务会按下方间隔自动生成新简报、刷新过期的追踪简报并去重来源。需 API 服务保持运行；改动在下一个调度周期生效。</span>
+                  </label>
+                  <label className="field-stack runtime-setting-field" htmlFor="product-research-interval">
+                    <span className="field-label">调度间隔（分钟）</span>
+                    <input
+                      id="product-research-interval"
+                      name="research.scheduleIntervalMin"
+                      type="number"
+                      min={15}
+                      max={10080}
+                      value={productDraft.research?.scheduleIntervalMin ?? 1440}
+                      onInput={(event) => {
+                        const nextValue = clampInteger(event.currentTarget.value, 15, 10080);
+                        updateProductConfig((config) => ({
+                          ...config,
+                          research: { ...config.research, scheduleIntervalMin: nextValue }
+                        }));
+                      }}
+                    />
+                    <span className="field-help">默认 1440（24 小时）。最短 15 分钟。非常驻部署可改用「外部调研 → 自动盯梢」手动触发。</span>
+                  </label>
+                </div>
+              </section>
+
+              <section className="runtime-config-section">
                 <h3>语音与访谈</h3>
                 <div className="runtime-setting-grid">
                   <label className="field-stack runtime-setting-field" htmlFor="product-default-voice">

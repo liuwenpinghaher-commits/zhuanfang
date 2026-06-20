@@ -25,6 +25,9 @@ import {
   buildSystemStatus,
   buildYearlyReview,
   createQuestionFromNote,
+  createKnowledgeDebtFromSearchBrief,
+  createPointFromSearchBrief,
+  createQuestionFromSearchBrief,
   createSessionDraft,
   finalizeSession,
   generatePodcastEpisode,
@@ -36,6 +39,7 @@ import {
   searchProductAssets,
   toggleAssetImportance,
   buildRealtimeVoiceInstructions,
+  updateDecisionStatus,
   updateInterviewControl,
   updateKnowledgeDebtStatus,
   updatePointStatus,
@@ -76,7 +80,6 @@ import type {
   SearchProviderId,
   SystemConfig
 } from "./domain/types";
-import { AssetsView } from "./features/assets/AssetsView";
 import { MyAssetsView } from "./features/my-assets/MyAssetsView";
 import { ConfigView } from "./features/config/ConfigView";
 import { CorpusLearningView } from "./features/corpus/CorpusLearningView";
@@ -107,7 +110,6 @@ const navIconByView: Record<View, typeof Compass> = {
   corpus: Upload,
   podcast: Headphones,
   notes: BookOpen,
-  assets: Archive,
   "my-assets": Archive,
   themes: Brain,
   memory: Brain,
@@ -133,6 +135,7 @@ export default function App() {
   const [assetQuery, setAssetQuery] = useState("");
   const [assetFilter, setAssetFilter] = useState<AssetFilter>("all");
   const [selectedAssetKey, setSelectedAssetKey] = useState<string | undefined>(undefined);
+  const [confirmingDecisionId, setConfirmingDecisionId] = useState<string | undefined>(undefined);
   const [configSection, setConfigSection] = useState<ConfigSection>("status");
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const [recording, setRecording] = useState(false);
@@ -158,7 +161,6 @@ export default function App() {
   const [searchTask, setSearchTask] = useState(() => createIdleCapabilityTask<SearchBriefInput>("联网搜索"));
   const [refreshingBriefId, setRefreshingBriefId] = useState<string | null>(null);
   const [trackingBriefId, setTrackingBriefId] = useState<string | null>(null);
-  const [usingBriefId, setUsingBriefId] = useState<string | null>(null);
   const [podcastNoteId, setPodcastNoteId] = useState(() => productState.notes[0]?.id ?? "");
   const [podcastVoice, setPodcastVoice] = useState(productState.systemConfig.voice.podcastVoice);
   const [podcastSourceType, setPodcastSourceType] = useState<PodcastSourceType>("note");
@@ -196,9 +198,11 @@ export default function App() {
         .saveState(productState)
         .then(({ state: server, conflicted }) => {
           if (conflicted) {
-            // Another writer advanced the server — adopt its newer content wholesale.
+            // Another writer advanced the server — adopt its newer content wholesale,
+            // and tell the user so a silently-dropped local edit isn't mistaken for saved.
             lastSavedContentRef.current = productStateContentSignature(server);
             setProductState(server);
+            setNotice(buildNotice("warning", "改动已被其他更新覆盖", "已加载最新版本，刚才的修改如仍需要请重新操作。"));
           } else {
             // Our write landed. Record what we saved, and sync only the revision so the
             // next PUT isn't stale. A revision-only change won't re-trigger a save (the
@@ -214,6 +218,17 @@ export default function App() {
     }, 300);
     return () => clearTimeout(timer);
   }, [apiPersistenceEnabled, productState]);
+
+  // 打开即更新：首次进入外部调研视图时自动跑一次盯梢(每会话一次,静默,失败不打扰)。
+  // 即时手动刷新走视图内的「自动盯梢」按钮;后台周期刷新走配置里的定时调度。
+  const researchAutoOpenedRef = useRef(false);
+  useEffect(() => {
+    if (view !== "search" || researchAutoOpenedRef.current || !apiPersistenceEnabled) {
+      return;
+    }
+    researchAutoOpenedRef.current = true;
+    autoRunResearch().catch(() => {});
+  }, [view, apiPersistenceEnabled]);
 
   useEffect(() => {
     if (view !== "config") {
@@ -337,10 +352,12 @@ export default function App() {
       .catch(() => setNotice(buildNotice("warning", "操作失败", "记忆治理需要后端在线。")));
   }
   function confirmDecision(id: string) {
+    setConfirmingDecisionId(id);
     productApiClient
       .confirmDecision(id)
       .then((next) => setProductState(next))
-      .catch(() => setNotice(buildNotice("warning", "操作失败", "确认决策需要后端在线。")));
+      .catch(() => setNotice(buildNotice("warning", "操作失败", "确认决策需要后端在线。")))
+      .finally(() => setConfirmingDecisionId(undefined));
   }
 
   const approveCandidate = (id: string) => withMemoryAction(() => productApiClient.approveMemoryCandidate(id));
@@ -555,6 +572,36 @@ export default function App() {
     launchInterview("learning", briefId);
   }
 
+  function briefToDebt(briefId: string) {
+    const result = createKnowledgeDebtFromSearchBrief(productState, briefId);
+    if (!result) {
+      setNotice(buildNotice("warning", "转换失败", "未找到该搜索简报。"));
+      return;
+    }
+    setProductState(result.nextState);
+    setNotice(buildNotice("success", "已转为知识债", "已加入资产库，可在下一次专访中校验。"));
+  }
+
+  function briefToPoint(briefId: string) {
+    const result = createPointFromSearchBrief(productState, briefId);
+    if (!result) {
+      setNotice(buildNotice("warning", "转换失败", "未找到该搜索简报。"));
+      return;
+    }
+    setProductState(result.nextState);
+    setNotice(buildNotice("success", "已转为观点", "已从简报生成观点草稿，可在资产库继续打磨。"));
+  }
+
+  function briefToQuestion(briefId: string) {
+    const result = createQuestionFromSearchBrief(productState, briefId);
+    if (!result) {
+      setNotice(buildNotice("warning", "转换失败", "未找到该搜索简报。"));
+      return;
+    }
+    setProductState(result.nextState);
+    setNotice(buildNotice("success", "已转为专访问题", "已加入问题资产，可带入下一次专访。"));
+  }
+
   function removeSearchBrief(briefId: string) {
     if (typeof window !== "undefined" && !window.confirm("确定要删除这份搜索简报吗？已生成的访谈和资产不会被删除。")) {
       return;
@@ -591,10 +638,21 @@ export default function App() {
       setApiPersistenceEnabled(false);
     }
 
-    const { brief, nextState } = buildSearchBrief(productState, "本周值得讨论的 AI 产品变化", productState.systemConfig.search.activeProvider);
+    // Local fallback: derive the topic from the requested theme/debt so "从主题 X"
+    // doesn't silently produce an unrelated fixed brief; flag it as an offline placeholder.
+    const fallbackTopic = themeId
+      ? productState.themes.find((theme) => theme.id === themeId)?.name
+      : debtId
+        ? productState.debts.find((debt) => debt.id === debtId)?.concept
+        : undefined;
+    const { brief, nextState } = buildSearchBrief(
+      productState,
+      fallbackTopic ?? "本周值得讨论的 AI 产品变化",
+      productState.systemConfig.search.activeProvider
+    );
     setProductState(nextState);
     setActiveSearchBriefId(brief.id);
-    setNotice(buildNotice("success", "自动简报已生成（本地）", `已选中「${brief.topic}」，可以带入下一次专访。`));
+    setNotice(buildNotice("warning", "自动简报已生成（本地占位）", `后端不可用，已用本地占位简报「${brief.topic}」，联网后可刷新获取真实资料。`));
   }
 
   async function refreshBrief(briefId: string) {
@@ -995,9 +1053,16 @@ export default function App() {
   }
 
   function saveNoteQuestion(noteId: string, index: number) {
-    setProductState(createQuestionFromNote(productState, noteId, index));
-    setNotice(buildNotice("success", "问题已保存到资产库", "你可以在问题资产中继续标记状态。"));
-    setView("assets");
+    const next = createQuestionFromNote(productState, noteId, index);
+    if (next === productState) {
+      // createQuestionFromNote returns the original state untouched when the note
+      // or the回访 question can't be found — don't claim a false success.
+      setNotice(buildNotice("warning", "未能保存问题", "该回访问题不存在或已失效，请刷新后重试。"));
+      return;
+    }
+    setProductState(next);
+    setNotice(buildNotice("success", "问题已保存到资产库", "在「我的资产 → 资产库」中可继续标记状态。"));
+    setView("my-assets");
   }
 
   function addCorrection() {
@@ -1082,7 +1147,7 @@ export default function App() {
           // Cascade pipeline: real ASR (text-only omni WS) → LLM HTTP → CosyVoice TTS WS
           try {
             setVoiceStatus("connecting");
-            const baseWsUrl = `ws://${location.hostname}:8787`;
+            const baseWsUrl = `ws://${location.hostname}:3210`;
             const asrWsUrl = `${baseWsUrl}/api/realtime-voice/ws/${voiceSession.sessionId}`;
             const ttsWsUrl = `${baseWsUrl}/api/realtime-voice/ws/tts/${voiceSession.sessionId}`;
             const interviewId = session?.id ?? "";
@@ -1270,7 +1335,7 @@ export default function App() {
           const connection = voiceSession.transport === "webrtc"
             ? await connectBailianRealtimeWebrtc(voiceSession, { productApiClient })
             : await connectBailianRealtimeWebsocket(sessionWithOpening, {
-                productApiBaseUrl: `ws://${location.hostname}:8787`,
+                productApiBaseUrl: `ws://${location.hostname}:3210`,
                 preSignals: session?.interactionPreSignals,
                 onAudioLevel: (level) => setAudioLevel(level),
                 onSpeechStart: () => setVoiceStatus("listening"),
@@ -1487,9 +1552,11 @@ export default function App() {
             onRefreshBrief={refreshBrief}
             onTrackBrief={trackBrief}
             onAutoRun={autoRunResearch}
+            onConvertToDebt={briefToDebt}
+            onConvertToPoint={briefToPoint}
+            onConvertToQuestion={briefToQuestion}
             refreshingBriefId={refreshingBriefId}
             trackingBriefId={trackingBriefId}
-            usingBriefId={usingBriefId}
           />
         )}
         {view === "corpus" && (
@@ -1536,22 +1603,6 @@ export default function App() {
           />
         )}
         {view === "notes" && <NotesView state={productState} onStart={launchInterview} onSaveQuestion={saveNoteQuestion} />}
-        {view === "assets" && (
-          <AssetsView
-            query={assetQuery}
-            results={assetResults}
-            filter={assetFilter}
-            selectedAssetKey={selectedAssetKey}
-            onQuery={setAssetQuery}
-            onFilter={setAssetFilter}
-            onSelectAsset={setSelectedAssetKey}
-            onToggleImportant={(assetId) => setProductState(toggleAssetImportance(productState, assetId))}
-            onPointStatus={(assetId, status) => setProductState(updatePointStatus(productState, assetId, status))}
-            onQuestionStatus={(assetId, status) => setProductState(updateQuestionStatus(productState, assetId, status))}
-            onDebtStatus={(assetId, status) => setProductState(updateKnowledgeDebtStatus(productState, assetId, status))}
-            onDecisionConfirm={confirmDecision}
-          />
-        )}
         {view === "my-assets" && (
           <MyAssetsView
             state={productState}
@@ -1566,7 +1617,9 @@ export default function App() {
             onPointStatus={(assetId, status) => setProductState(updatePointStatus(productState, assetId, status))}
             onQuestionStatus={(assetId, status) => setProductState(updateQuestionStatus(productState, assetId, status))}
             onDebtStatus={(assetId, status) => setProductState(updateKnowledgeDebtStatus(productState, assetId, status))}
+            onDecisionStatus={(assetId, status) => setProductState(updateDecisionStatus(productState, assetId, status))}
             onDecisionConfirm={confirmDecision}
+            confirmingDecisionId={confirmingDecisionId}
             onGeneratePodcast={(noteId) => {
               setPodcastNoteId(noteId);
               setPodcastSourceType("note");

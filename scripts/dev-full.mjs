@@ -2,8 +2,8 @@ import { spawn } from "node:child_process";
 import { EOL } from "node:os";
 
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
-const apiHealthUrl = process.env.PRODUCT_API_HEALTH_URL ?? "http://127.0.0.1:8787/api/health";
-const webUrl = process.env.PRODUCT_WEB_URL ?? "http://127.0.0.1:5173";
+const apiHealthUrl = process.env.PRODUCT_API_HEALTH_URL ?? "http://127.0.0.1:3210/api/health";
+const webUrl = process.env.PRODUCT_WEB_URL ?? "http://127.0.0.1:3220";
 const children = [];
 let shuttingDown = false;
 

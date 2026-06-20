@@ -338,7 +338,7 @@ export interface CreateVoiceRequest {
 }
 
 export function getProductApiBaseUrl() {
-  return import.meta.env.VITE_PRODUCT_API_BASE_URL ?? "http://127.0.0.1:8787";
+  return import.meta.env.VITE_PRODUCT_API_BASE_URL ?? "http://127.0.0.1:3210";
 }
 
 export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchImpl: FetchLike = fetch): ProductApiClient {

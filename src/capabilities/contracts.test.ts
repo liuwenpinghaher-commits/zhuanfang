@@ -6,6 +6,6 @@ describe("capability contracts", () => {
     expect(searchProviderLabels["local-demo"]).toBe("Local Demo Search");
     expect(searchProviderLabels.bailian).toBe("百炼内置联网");
     expect(searchProviderLabels.anysearch).toBe("AnySearch");
-    expect(Object.keys(searchProviderLabels)).toEqual(["local-demo", "bailian", "anysearch", "tavily", "exa", "brave"]);
+    expect(Object.keys(searchProviderLabels)).toEqual(["local-demo", "bailian", "anysearch"]);
   });
 });

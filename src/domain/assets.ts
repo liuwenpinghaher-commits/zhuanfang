@@ -1,20 +1,16 @@
+// Asset-status operations: confirm/review decisions, toggle importance, update the
+// status of points/questions/debts, and cross-asset search. Note→question promotion,
+// post-interview feedback, and memory corrections live in note-feedback.ts.
 import type {
-  AssetStatus,
-  InterviewFeedbackInput,
-  InterviewFeedbackTag,
-  InterviewStrength,
+  DebtStatus,
+  PointStatus,
   ProductState,
+  QuestionStatus,
   SearchResult,
 } from "./types";
 
-import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent } from "./utils";
+import { nowIso, withAuditEvent } from "./utils";
 
-function buildFeedbackCorrectionText(noteTitle: string, inaccurateSummary: string | undefined, tags: InterviewFeedbackTag[]) {
-  if (!inaccurateSummary && !tags.includes("memory-wrong")) {
-    return undefined;
-  }
-  return `会后反馈《${noteTitle}》：${inaccurateSummary ?? "用户标记 AI 记错了，需要下次避免重复这个理解。"}`;
-}
 export function confirmDecisionCandidate(state: ProductState, decisionId: string): ProductState {
   const decision = state.decisions.find((item) => item.id === decisionId);
   if (!decision || decision.confirmationStatus === "用户确认") {
@@ -46,75 +42,7 @@ export function confirmDecisionCandidate(state: ProductState, decisionId: string
     createdAt: confirmedAt
   });
 }
-export function createQuestionFromNote(state: ProductState, noteId: string, nextQuestionIndex: number): ProductState {
-  const note = state.notes.find((item) => item.id === noteId);
-  const question = note?.nextQuestions[nextQuestionIndex];
-  if (!note || !question) {
-    return state;
-  }
 
-  return {
-    ...state,
-    questions: [
-      {
-        id: makeId("question-from-note"),
-        question,
-        whyImportant: `来自访谈《${note.title}》的下次回访问题。`,
-        status: "开放",
-        appearances: 1,
-        relatedThemeIds: ["theme-control"],
-        nextPrompt: question,
-        important: true,
-        updatedAt: nowIso()
-      },
-      ...state.questions
-    ]
-  };
-}
-function deriveFeedbackStrength(current: InterviewStrength, tags: InterviewFeedbackTag[]): InterviewStrength {
-  if (tags.includes("too-strong")) {
-    return "gentle";
-  }
-  if (tags.includes("too-gentle") || tags.includes("went-deep")) {
-    return "sharp";
-  }
-  if (tags.includes("off-track")) {
-    return "standard";
-  }
-  return current;
-}
-export function markMemoryCorrection(state: ProductState, text: string): ProductState {
-  const createdAt = nowIso();
-  const correction = {
-    id: makeId("correction"),
-    text,
-    createdAt
-  };
-  return withAuditEvent(
-    {
-      ...state,
-      memoryCorrections: [correction, ...state.memoryCorrections]
-    },
-    {
-      type: "memory_correction_created",
-      label: "记忆修正已创建",
-      detail: text,
-      severity: "warning",
-      entityType: "memory",
-      entityId: correction.id,
-      createdAt
-    }
-  );
-}
-function normalizeFeedbackTags(tags: InterviewFeedbackTag[]) {
-  return Array.from(new Set(tags)).filter((tag): tag is InterviewFeedbackTag =>
-    ["went-deep", "off-track", "too-gentle", "too-strong", "memory-wrong", "summary-accurate", "continue-next"].includes(tag)
-  );
-}
-function normalizeOptionalFeedbackText(value: string | undefined) {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : undefined;
-}
 export function searchProductAssets(state: ProductState, query: string): SearchResult {
   const normalized = query.trim().toLowerCase();
   const match = (values: string[]) =>
@@ -158,75 +86,7 @@ export function searchProductAssets(state: ProductState, query: string): SearchR
     themes
   };
 }
-export function submitInterviewFeedback(
-  state: ProductState,
-  noteId: string,
-  input: InterviewFeedbackInput
-): ProductState {
-  const note = state.notes.find((item) => item.id === noteId);
-  if (!note) {
-    return state;
-  }
 
-  const createdAt = nowIso();
-  const tags = normalizeFeedbackTags(input.tags);
-  const feedback = {
-    id: makeId("interview-feedback"),
-    noteId: note.id,
-    sessionId: note.sessionId,
-    tags,
-    mostValuableQuestion: normalizeOptionalFeedbackText(input.mostValuableQuestion),
-    inaccurateSummary: normalizeOptionalFeedbackText(input.inaccurateSummary),
-    uncomfortableButImportant: normalizeOptionalFeedbackText(input.uncomfortableButImportant),
-    newUnderstanding: normalizeOptionalFeedbackText(input.newUnderstanding),
-    continuePrompt: normalizeOptionalFeedbackText(input.continuePrompt),
-    createdAt
-  };
-
-  let nextState: ProductState = {
-    ...cloneState(state),
-    profile: {
-      ...state.profile,
-      preferredStrength: deriveFeedbackStrength(state.profile.preferredStrength, tags)
-    },
-    notes: state.notes.map((item) => (item.id === note.id ? { ...item, feedback } : item))
-  };
-
-  const correction = buildFeedbackCorrectionText(note.title, feedback.inaccurateSummary, tags);
-  if (correction) {
-    nextState = markMemoryCorrection(nextState, correction);
-  }
-
-  if (tags.includes("continue-next") && feedback.continuePrompt) {
-    nextState = {
-      ...nextState,
-      questions: [
-        {
-          id: makeId("question-feedback"),
-          question: feedback.continuePrompt,
-          whyImportant: `来自会后反馈《${note.title}》，用户明确要求下次继续追问。`,
-          status: "正在聚焦",
-          appearances: 1,
-          relatedThemeIds: ["theme-control"],
-          nextPrompt: feedback.mostValuableQuestion ?? feedback.continuePrompt,
-          important: true,
-          updatedAt: createdAt
-        },
-        ...nextState.questions
-      ]
-    };
-  }
-
-  return withAuditEvent(nextState, {
-    type: "interview_feedback_submitted",
-    label: "会后反馈已记录",
-    detail: `《${note.title}》收到 ${tags.length} 个反馈标签，后续专访将参考这些偏好。`,
-    severity: tags.includes("memory-wrong") || tags.includes("off-track") ? "warning" : "info",
-    entityType: "dual_track_note",
-    entityId: note.id,
-    createdAt
-  });
-}
 export function toggleAssetImportance(state: ProductState, assetId: string): ProductState {
   return {
     ...state,
@@ -238,6 +98,7 @@ export function toggleAssetImportance(state: ProductState, assetId: string): Pro
     )
   };
 }
+
 export function updateDecisionStatus(
   state: ProductState,
   decisionId: string,
@@ -246,51 +107,33 @@ export function updateDecisionStatus(
   return {
     ...state,
     decisions: state.decisions.map((decision) =>
-      decision.id === decisionId
-        ? {
-            ...decision,
-            status,
-            updatedAt: nowIso()
-          }
-        : decision
+      decision.id === decisionId ? { ...decision, status, updatedAt: nowIso() } : decision
     )
   };
 }
-export function updateKnowledgeDebtStatus(
-  state: ProductState,
-  debtId: string,
-  status: Extract<AssetStatus, "待了解" | "能复述" | "已应用" | "不相关">
-): ProductState {
+
+export function updateKnowledgeDebtStatus(state: ProductState, debtId: string, status: DebtStatus): ProductState {
   return {
     ...state,
     debts: state.debts.map((debt) =>
-      debt.id === debtId
-        ? {
-            ...debt,
-            status,
-            updatedAt: nowIso()
-          }
-        : debt
+      debt.id === debtId ? { ...debt, status, updatedAt: nowIso() } : debt
     )
   };
 }
-export function updatePointStatus(
-  state: ProductState,
-  pointId: string,
-  status: Extract<AssetStatus, "临时想法" | "稳定观点" | "被挑战中" | "已修正" | "已放弃">
-): ProductState {
+
+export function updatePointStatus(state: ProductState, pointId: string, status: PointStatus): ProductState {
   return {
     ...state,
     points: state.points.map((point) =>
-      point.id === pointId ? { ...point, status, confidence: "用户确认", updatedAt: nowIso() } : point
+      // ponytail: status and confidence are orthogonal — a status change must not
+      // forge the confidence field. Confidence is owned by LLM extraction / a
+      // dedicated action, not by status toggles.
+      point.id === pointId ? { ...point, status, updatedAt: nowIso() } : point
     )
   };
 }
-export function updateQuestionStatus(
-  state: ProductState,
-  questionId: string,
-  status: Extract<AssetStatus, "开放" | "反复出现" | "正在聚焦" | "阶段性回答">
-): ProductState {
+
+export function updateQuestionStatus(state: ProductState, questionId: string, status: QuestionStatus): ProductState {
   return {
     ...state,
     questions: state.questions.map((question) =>

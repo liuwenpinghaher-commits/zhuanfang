@@ -1020,7 +1020,17 @@ function isSearchBriefDiscussionTopic(searchBrief: SearchBrief | undefined, topi
   if (!searchBrief || !topicHint) {
     return false;
   }
-  return searchBrief.topic === topicHint || searchBrief.discussionTopics.some((topic) => topic === topicHint);
+  // ponytail: normalized bidirectional containment instead of exact ===, so a topic
+  // hint that isn't a byte-for-byte copy of brief.topic no longer silently drops the
+  // tracked brief. Over-match (feeding a loosely-related brief) is safer than dropping.
+  const hint = topicHint.trim().toLowerCase();
+  if (!hint) {
+    return false;
+  }
+  return [searchBrief.topic, ...searchBrief.discussionTopics].some((topic) => {
+    const candidate = topic.trim().toLowerCase();
+    return candidate === hint || candidate.includes(hint) || hint.includes(candidate);
+  });
 }
 function isUserRequestedFollowUpQuestion(question: ProductState["questions"][number]) {
   return question.whyImportant.includes("会后反馈") || question.question.startsWith("下次继续追问");

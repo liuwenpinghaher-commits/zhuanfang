@@ -32,7 +32,7 @@ npm install
 npm run dev:full
 ```
 
-`dev:full` 会同时启动 Product API 和 Vite 前端；默认前端是 `127.0.0.1:5173`，Product API 默认监听 `127.0.0.1:8787`。
+`dev:full` 会同时启动 Product API 和 Vite 前端；默认前端是 `127.0.0.1:3220`，Product API 默认监听 `127.0.0.1:3210`。
 如果前端端口、预览端口或部署域名发生变化，在系统配置页或 `.env.local` 中更新 `PRODUCT_WEB_ORIGINS` 即可放行对应浏览器来源。
 
 也可以分两个终端启动：
@@ -55,7 +55,7 @@ cp .env.production.example .env.production.local
 docker compose --env-file .env.production.local up --build
 ```
 
-容器会在同一个 `PORT` 上托管前端静态产物和 Product API，默认访问 `http://127.0.0.1:8787`。`VITE_PRODUCT_API_BASE_URL` 在生产模板中保持空值，表示浏览器同源请求 `/api/*`；如果前端和 API 分域部署，再把它改成公开 API 地址。详细步骤见 [docs/deployment-runbook.md](docs/deployment-runbook.md)。
+容器会在同一个 `PORT` 上托管前端静态产物和 Product API，默认访问 `http://127.0.0.1:3210`。`VITE_PRODUCT_API_BASE_URL` 在生产模板中保持空值，表示浏览器同源请求 `/api/*`；如果前端和 API 分域部署，再把它改成公开 API 地址。详细步骤见 [docs/deployment-runbook.md](docs/deployment-runbook.md)。
 
 测试：
 
@@ -102,10 +102,10 @@ PROVIDER_SMOKE_TEST_AUDIO_URL=
 PROVIDER_SMOKE_TEST_WEBRTC_OFFER_SDP=
 
 HOST=127.0.0.1
-PORT=8787
-VITE_PRODUCT_API_BASE_URL=http://127.0.0.1:8787
-PRODUCT_API_HEALTH_URL=http://127.0.0.1:8787/api/health
-PRODUCT_WEB_URL=http://127.0.0.1:5173
+PORT=3210
+VITE_PRODUCT_API_BASE_URL=http://127.0.0.1:3210
+PRODUCT_API_HEALTH_URL=http://127.0.0.1:3210/api/health
+PRODUCT_WEB_URL=http://127.0.0.1:3220
 PRODUCT_STATIC_DIR=dist
 PROVIDER_REQUEST_TIMEOUT_MS=30000
 SEARCH_REQUEST_TIMEOUT_MS=30000
@@ -136,7 +136,7 @@ BAILIAN_REALTIME_SILENCE_DURATION_MS=800
 
 PRODUCT_STATE_DB_PATH=.data/product-state.sqlite
 PRODUCT_BACKUP_STRATEGY=manual-json-export
-PRODUCT_WEB_ORIGINS=http://127.0.0.1:5173,http://localhost:5173
+PRODUCT_WEB_ORIGINS=http://127.0.0.1:3220,http://localhost:3220
 CORPUS_UPLOAD_DIR=.data/corpus-audio
 CORPUS_AUDIO_PUBLIC_BASE_URL=
 CORPUS_AUDIO_MAX_BYTES=52428800
@@ -155,7 +155,7 @@ PODCAST_AUTO_RENDER_ON_CREATE=auto
 
 `PRODUCT_STATE_DB_PATH` 为空或不写时，`npm run start:api` 会默认使用 `.data/product-state.sqlite`；设置为 `memory`、`:memory:` 或 `in-memory` 时使用内存状态库，重启后回到 seed 状态。
 
-`PRODUCT_WEB_ORIGINS` 是允许访问 Product API 的浏览器来源白名单，多个 origin 用逗号分隔，例如 `http://127.0.0.1:5173,https://app.example.com`；保存后会立即影响 CORS 响应。
+`PRODUCT_WEB_ORIGINS` 是允许访问 Product API 的浏览器来源白名单，多个 origin 用逗号分隔，例如 `http://127.0.0.1:3220,https://app.example.com`；保存后会立即影响 CORS 响应。
 
 `CORPUS_AUDIO_MAX_BYTES` 控制本地语料音频单文件上传上限，默认 50MB；超过上限时 Product API 返回 413，不会写入本地对象目录。
 

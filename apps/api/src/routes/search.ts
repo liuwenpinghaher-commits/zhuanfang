@@ -19,7 +19,7 @@ import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import type { BailianChatClient } from "../providers/bailian";
 import type { ProductStateRepository } from "../product-state-repository";
 
-const searchProviderIds: SearchProviderId[] = ["local-demo", "bailian", "anysearch", "tavily", "exa", "brave"];
+const searchProviderIds: SearchProviderId[] = ["local-demo", "bailian", "anysearch"];
 
 interface SearchBriefRequestPayload {
   topic?: unknown;

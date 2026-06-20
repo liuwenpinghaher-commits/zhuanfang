@@ -92,11 +92,13 @@ export {
 } from "./memory";
 
 export {
-  confirmDecisionCandidate, createQuestionFromNote, markMemoryCorrection,
-  searchProductAssets, submitInterviewFeedback, toggleAssetImportance,
+  confirmDecisionCandidate, searchProductAssets, toggleAssetImportance,
   updateDecisionStatus, updateKnowledgeDebtStatus, updatePointStatus,
   updateQuestionStatus,
 } from "./assets";
+export {
+  createQuestionFromNote, markMemoryCorrection, submitInterviewFeedback,
+} from "./note-feedback";
 
 export {
   analyzeImportedInterview, approvePlaybookPatch, formatCorpusMoveLabel,

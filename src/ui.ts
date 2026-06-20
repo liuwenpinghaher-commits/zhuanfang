@@ -8,7 +8,6 @@ export type View =
   | "corpus"
   | "podcast"
   | "notes"
-  | "assets"
   | "my-assets"
   | "themes"
   | "memory"

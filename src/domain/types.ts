@@ -10,7 +10,7 @@ export type InterviewStrength = "gentle" | "standard" | "sharp";
 
 export type InterviewControlAction = "skip" | "softer" | "sharper" | "different-angle" | "summary" | "do-not-save";
 
-export type SearchProviderId = "local-demo" | "bailian" | "anysearch" | "tavily" | "exa" | "brave";
+export type SearchProviderId = "local-demo" | "bailian" | "anysearch";
 
 export type ProviderKind = "search" | "llm" | "voice" | "storage";
 
@@ -82,20 +82,15 @@ export interface ConfigVersion {
   snapshot: SystemConfig;
 }
 
-export type AssetStatus =
-  | "临时想法"
-  | "稳定观点"
-  | "被挑战中"
-  | "已修正"
-  | "已放弃"
-  | "开放"
-  | "反复出现"
-  | "正在聚焦"
-  | "阶段性回答"
-  | "待了解"
-  | "能复述"
-  | "已应用"
-  | "不相关";
+// Each asset type draws from a disjoint subset of statuses. Naming the subsets lets
+// the asset interfaces below carry the precise status set, so the compiler rejects
+// assigning a question status to a point, etc. AssetStatus stays as the full union
+// for the few places that handle assets generically (e.g. search).
+export type PointStatus = "临时想法" | "稳定观点" | "被挑战中" | "已修正" | "已放弃";
+export type QuestionStatus = "开放" | "反复出现" | "正在聚焦" | "阶段性回答";
+export type DebtStatus = "待了解" | "能复述" | "已应用" | "不相关";
+
+export type AssetStatus = PointStatus | QuestionStatus | DebtStatus;
 
 export interface UserProfile {
   name: string;
@@ -616,7 +611,7 @@ export interface PointAsset {
   id: string;
   title: string;
   content: string;
-  status: AssetStatus;
+  status: PointStatus;
   confidence: "用户确认" | "AI 推断" | "待验证";
   evidence: string[];
   relatedThemeIds: string[];
@@ -630,7 +625,7 @@ export interface QuestionAsset {
   id: string;
   question: string;
   whyImportant: string;
-  status: AssetStatus;
+  status: QuestionStatus;
   appearances: number;
   relatedThemeIds: string[];
   nextPrompt: string;
@@ -661,7 +656,7 @@ export interface KnowledgeDebt {
   concept: string;
   context: string;
   whyImportant: string;
-  status: AssetStatus;
+  status: DebtStatus;
   nextQuestion: string;
   updatedAt: string;
   relatedThemeIds?: string[];

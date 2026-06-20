@@ -32,8 +32,8 @@ export function normalizeProductState(value: unknown): ProductState {
     },
     sessions: Array.isArray(candidate.sessions) ? migrateSessionStatuses(candidate.sessions) : fallback.sessions,
     notes: Array.isArray(candidate.notes) ? candidate.notes : fallback.notes,
-    points: Array.isArray(candidate.points) ? candidate.points : fallback.points,
-    questions: Array.isArray(candidate.questions) ? candidate.questions : fallback.questions,
+    points: Array.isArray(candidate.points) ? backfillPointDefaults(candidate.points) : fallback.points,
+    questions: Array.isArray(candidate.questions) ? backfillQuestionDefaults(candidate.questions) : fallback.questions,
     decisions: Array.isArray(candidate.decisions) ? candidate.decisions : fallback.decisions,
     debts: Array.isArray(candidate.debts) ? candidate.debts : fallback.debts,
     themes: Array.isArray(candidate.themes) ? migrateThemesToTracks(candidate.themes) : fallback.themes,
@@ -105,6 +105,27 @@ export function normalizeProductState(value: unknown): ProductState {
   delete legacy.intelItems;
   delete legacy.readings;
   return pruneDanglingThemeRefs(normalized);
+}
+
+// ponytail: backfill only the asset fields read unguarded downstream — point.evidence
+// is spread in searchProductAssets (crashes if undefined), important drives the toggle,
+// relatedThemeIds is pruned by theme cleanup. decisions/debts read these optionally, so
+// they need no backfill.
+function backfillPointDefaults(points: ProductState["points"]): ProductState["points"] {
+  return points.map((point) => ({
+    ...point,
+    important: point.important ?? false,
+    evidence: Array.isArray(point.evidence) ? point.evidence : [],
+    relatedThemeIds: Array.isArray(point.relatedThemeIds) ? point.relatedThemeIds : []
+  }));
+}
+
+function backfillQuestionDefaults(questions: ProductState["questions"]): ProductState["questions"] {
+  return questions.map((question) => ({
+    ...question,
+    important: question.important ?? false,
+    relatedThemeIds: Array.isArray(question.relatedThemeIds) ? question.relatedThemeIds : []
+  }));
 }
 
 function migrateSessionStatuses(value: unknown[]): import("./types").InterviewSession[] {
@@ -250,10 +271,14 @@ function normalizeSearchConfig(systemConfig: Partial<SystemConfig>, fallbackConf
     ...systemConfig.search
   };
   const activeProvider = searchConfig.activeProvider as SearchProviderId;
+  // ponytail: reset unknown/removed providers (e.g. legacy tavily/exa/brave) and the
+  // local-demo placeholder to the real default, so the config dropdown never holds a
+  // value with no matching option.
+  const validProviders = new Set<SearchProviderId>(["bailian", "anysearch"]);
 
   return {
     ...searchConfig,
-    activeProvider: activeProvider === "local-demo" ? fallbackConfig.search.activeProvider : activeProvider
+    activeProvider: validProviders.has(activeProvider) ? activeProvider : fallbackConfig.search.activeProvider
   };
 }
 

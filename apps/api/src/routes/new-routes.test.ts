@@ -135,45 +135,9 @@ describe("new zhuanfang routes", () => {
   });
 
   describe("assets", () => {
-    it("PATCH /api/assets/points/:id/status updates point status", async () => {
-      const state = stateRepo.getState();
-      const pointId = state.points[0].id;
-      const res = await app.inject({
-        method: "PATCH",
-        url: `/api/assets/points/${pointId}/status`,
-        payload: { status: "稳定观点" },
-      });
-      expect(res.statusCode).toBe(200);
-      const body = JSON.parse(res.body);
-      expect(body.asset.status).toBe("稳定观点");
-    });
-
-    it("PATCH /api/assets/questions/:id/status updates question status", async () => {
-      const state = stateRepo.getState();
-      const questionId = state.questions[0].id;
-      const res = await app.inject({
-        method: "PATCH",
-        url: `/api/assets/questions/${questionId}/status`,
-        payload: { status: "阶段性回答" },
-      });
-      expect(res.statusCode).toBe(200);
-      const body = JSON.parse(res.body);
-      expect(body.asset.status).toBe("阶段性回答");
-    });
-
-    it("PATCH /api/assets/debts/:id/status updates knowledge debt status", async () => {
-      const state = stateRepo.getState();
-      const debtId = state.debts[0].id;
-      const res = await app.inject({
-        method: "PATCH",
-        url: `/api/assets/debts/${debtId}/status`,
-        payload: { status: "能复述" },
-      });
-      expect(res.statusCode).toBe(200);
-      const body = JSON.parse(res.body);
-      expect(body.asset.status).toBe("能复述");
-    });
-
+    // Asset status mutations (points/questions/debts/decision-review) are local-first
+    // reducers persisted via PUT /api/state — they have no dedicated routes. Only the
+    // authoritative "confirm decision" write is server-side.
     it("POST /api/assets/decisions/:id/confirm confirms a decision", async () => {
       const state = stateRepo.getState();
       const decisionId = state.decisions[0].id;
@@ -186,24 +150,10 @@ describe("new zhuanfang routes", () => {
       expect(body.asset.confirmationStatus).toBe("用户确认");
     });
 
-    it("PATCH /api/assets/decisions/:id/status updates decision review status", async () => {
-      const state = stateRepo.getState();
-      const decisionId = state.decisions[0].id;
+    it("POST /api/assets/decisions/:id/confirm returns 404 for missing decision", async () => {
       const res = await app.inject({
-        method: "PATCH",
-        url: `/api/assets/decisions/${decisionId}/status`,
-        payload: { status: "已复盘" },
-      });
-      expect(res.statusCode).toBe(200);
-      const body = JSON.parse(res.body);
-      expect(body.asset.status).toBe("已复盘");
-    });
-
-    it("PATCH /api/assets/points/:id/status returns 404 for missing point", async () => {
-      const res = await app.inject({
-        method: "PATCH",
-        url: "/api/assets/points/nonexistent/status",
-        payload: { status: "稳定观点" },
+        method: "POST",
+        url: "/api/assets/decisions/nonexistent/confirm",
       });
       expect(res.statusCode).toBe(404);
     });

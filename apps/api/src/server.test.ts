@@ -50,7 +50,7 @@ describe("Product API", () => {
       method: "OPTIONS",
       url: "/api/system/capabilities",
       headers: {
-        origin: "http://127.0.0.1:5173",
+        origin: "http://127.0.0.1:3220",
         "access-control-request-method": "GET"
       }
     });
@@ -58,14 +58,14 @@ describe("Product API", () => {
       method: "GET",
       url: "/api/health",
       headers: {
-        origin: "http://127.0.0.1:5173"
+        origin: "http://127.0.0.1:3220"
       }
     });
 
     expect(preflight.statusCode).toBe(204);
-    expect(preflight.headers["access-control-allow-origin"]).toBe("http://127.0.0.1:5173");
+    expect(preflight.headers["access-control-allow-origin"]).toBe("http://127.0.0.1:3220");
     expect(response.statusCode).toBe(200);
-    expect(response.headers["access-control-allow-origin"]).toBe("http://127.0.0.1:5173");
+    expect(response.headers["access-control-allow-origin"]).toBe("http://127.0.0.1:3220");
   });
 
   it("reports system capabilities without exposing secret values", async () => {
@@ -1086,11 +1086,11 @@ describe("Product API", () => {
       const response = await server.inject({
         method: "GET",
         url: "/api/health",
-        headers: { origin: "http://localhost:5173" }
+        headers: { origin: "http://localhost:3220" }
       });
 
       expect(response.statusCode).toBe(200);
-      expect(response.headers["access-control-allow-origin"]).toBe("http://localhost:5173");
+      expect(response.headers["access-control-allow-origin"]).toBe("http://localhost:3220");
     });
 
     it("handles preflight OPTIONS for a configured PRODUCT_WEB_ORIGINS origin", async () => {

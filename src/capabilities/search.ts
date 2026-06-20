@@ -64,10 +64,7 @@ function createShellSearchProvider(id: Exclude<SearchProviderId, "local-demo">, 
 const providers: Record<SearchProviderId, SearchProvider> = {
   "local-demo": localDemoSearchProvider,
   bailian: createShellSearchProvider("bailian", searchProviderLabels.bailian),
-  anysearch: createShellSearchProvider("anysearch", searchProviderLabels.anysearch),
-  tavily: createShellSearchProvider("tavily", searchProviderLabels.tavily),
-  exa: createShellSearchProvider("exa", searchProviderLabels.exa),
-  brave: createShellSearchProvider("brave", searchProviderLabels.brave)
+  anysearch: createShellSearchProvider("anysearch", searchProviderLabels.anysearch)
 };
 
 export function getSearchProvider(providerId: SearchProviderId): SearchProvider {

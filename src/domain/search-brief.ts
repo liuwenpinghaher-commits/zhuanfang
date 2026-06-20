@@ -103,8 +103,12 @@ export function buildSearchBrief(
   return createSearchBriefFromInput(state, {
     topic: normalizedTopic,
     provider,
-    status: provider === "local-demo" ? "ready" : "needs-review",
-    summary: `${normalizedTopic} 正在影响用户的产品判断、团队分工和长期主题，适合在专访里作为外部参照，而不是替代个人经验。`,
+    // ponytail: buildSearchBrief is always the offline template path (no live web
+    // sources). Mark it needs-review so the UI never shows fabricated content as a
+    // confirmed "ready" brief, and prefix the summary so the placeholder nature
+    // propagates anywhere this text flows (knowledge debt / memory candidate).
+    status: "needs-review",
+    summary: `【示例数据·未联网】${normalizedTopic} 可作为专访的外部参照线索，但本条为离线占位内容，需配置搜索 provider 后刷新获取真实资料，且始终以用户自己的具体经验为准。`,
     facts: [
       `${normalizedTopic} 已经进入可讨论的业务流程层面，而不只是工具热闹。`,
       "外部资料只能作为追问线索，需要回到用户自己的具体事件里验证。",

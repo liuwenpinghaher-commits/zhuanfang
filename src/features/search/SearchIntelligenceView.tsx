@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Database, Mic, RefreshCw, Search, Trash2, Wand2, Bookmark, BookmarkCheck, Play, X, AlertTriangle, Star } from "lucide-react";
+import { Database, Mic, RefreshCw, Search, Trash2, Wand2, Bookmark, BookmarkCheck, Play, X, AlertTriangle, Star, BookOpen, Lightbulb, HelpCircle } from "lucide-react";
 import { searchProviderIds, searchProviderLabels } from "../../capabilities/contracts";
 import type { CapabilityTask } from "../../capabilities/task";
 import { HeaderBlock } from "../../components/HeaderBlock";
@@ -28,9 +28,11 @@ interface SearchIntelligenceViewProps {
   onRefreshBrief?: (briefId: string) => void | Promise<void>;
   onTrackBrief?: (briefId: string, tracked: boolean) => void | Promise<void>;
   onAutoRun?: () => Promise<AutoRunSummary | null>;
+  onConvertToDebt?: (briefId: string) => void;
+  onConvertToPoint?: (briefId: string) => void;
+  onConvertToQuestion?: (briefId: string) => void;
   refreshingBriefId?: string | null;
   trackingBriefId?: string | null;
-  usingBriefId?: string | null;
 }
 
 export function SearchIntelligenceView({
@@ -48,9 +50,11 @@ export function SearchIntelligenceView({
   onRefreshBrief,
   onTrackBrief,
   onAutoRun,
+  onConvertToDebt,
+  onConvertToPoint,
+  onConvertToQuestion,
   refreshingBriefId,
-  trackingBriefId,
-  usingBriefId
+  trackingBriefId
 }: SearchIntelligenceViewProps) {
   const isRunning = task.status === "running";
   const now = new Date().toISOString();
@@ -320,7 +324,6 @@ export function SearchIntelligenceView({
             const isStale = isSearchBriefStale(brief, now);
             const isRefreshing = refreshingBriefId === brief.id;
             const isTracking = trackingBriefId === brief.id;
-            const isUsing = usingBriefId === brief.id;
             const isActive = brief.id === activeBriefId;
 
             return (
@@ -368,12 +371,11 @@ export function SearchIntelligenceView({
                   </div>
                   <div className="record-actions" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()} role="presentation">
                     <button
-                      className={isUsing ? "secondary-action btn-loading" : "secondary-action"}
+                      className="secondary-action"
                       type="button"
-                      disabled={isUsing}
                       onClick={() => onUseBrief(brief.id)}
                     >
-                      {isUsing ? <span className="spinner" aria-hidden="true" /> : <Mic size={16} />}
+                      <Mic size={16} />
                       带入专访
                     </button>
                     {onTrackBrief && (
@@ -404,6 +406,36 @@ export function SearchIntelligenceView({
                       >
                         {isRefreshing ? <span className="spinner" aria-hidden="true" /> : <RefreshCw size={16} />}
                         重新调研
+                      </button>
+                    )}
+                    {onConvertToDebt && (
+                      <button
+                        className="secondary-action"
+                        type="button"
+                        title="把这份调研转成一条待验证知识债，进入资产库"
+                        onClick={() => onConvertToDebt(brief.id)}
+                      >
+                        <BookOpen size={16} />转知识债
+                      </button>
+                    )}
+                    {onConvertToPoint && (
+                      <button
+                        className="secondary-action"
+                        type="button"
+                        title="把这份调研转成一条观点草稿，进入资产库"
+                        onClick={() => onConvertToPoint(brief.id)}
+                      >
+                        <Lightbulb size={16} />转观点
+                      </button>
+                    )}
+                    {onConvertToQuestion && (
+                      <button
+                        className="secondary-action"
+                        type="button"
+                        title="把这份调研转成一条专访问题，可带入下一次专访"
+                        onClick={() => onConvertToQuestion(brief.id)}
+                      >
+                        <HelpCircle size={16} />转问题
                       </button>
                     )}
                     <button

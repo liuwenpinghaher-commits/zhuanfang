@@ -62,7 +62,7 @@ export async function connectBailianRealtimeWebsocket(
     throw new Error(`Unsupported realtime transport: ${session.transport}`);
   }
 
-  const baseUrl = options.productApiBaseUrl ?? "ws://127.0.0.1:8787";
+  const baseUrl = options.productApiBaseUrl ?? "ws://127.0.0.1:3210";
   const wsUrl = `${baseUrl}/api/realtime-voice/ws/${session.sessionId}`;
   const mediaDevices = options.mediaDevices ?? navigator.mediaDevices;
 

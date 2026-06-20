@@ -67,6 +67,11 @@ interface BuildApiServerOptions {
   embeddingClient?: BailianEmbeddingClient;
   env?: Record<string, string | undefined>;
   envFilePath?: string;
+  /**
+   * Start the background research scheduler. Only the persistent process
+   * (startServer) sets this; buildApiServer/tests leave it off so no timers leak.
+   */
+  enableResearchScheduler?: boolean;
 }
 
 interface ProviderClients {
@@ -222,6 +227,19 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     void server.register(fastifyStatic, { root: staticDir });
   }
 
+  // Background research scheduler — only in the persistent process (startServer sets
+  // the flag). Started here so it shares the real provider clients + the same LLM
+  // budget as the search routes. It self-gates per tick on systemConfig.research.
+  if (options.enableResearchScheduler) {
+    const research = productStateRepository.getState().systemConfig.research;
+    startResearchScheduler({
+      repository: productStateRepository,
+      clients: providerClients, // live ref — picks up runtime key refreshes
+      budget: sharedBudget,
+      intervalMs: (research?.scheduleIntervalMin ?? 1440) * 60 * 1000
+    });
+  }
+
   return server;
 }
 
@@ -260,7 +278,7 @@ function registerCors(server: ReturnType<typeof Fastify>, env: Record<string, st
     ? new Set(env.PRODUCT_WEB_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean))
     : null;
 
-  const devOrigins = new Set(["http://127.0.0.1:5173", "http://localhost:5173"]);
+  const devOrigins = new Set(["http://127.0.0.1:3220", "http://localhost:3220"]);
 
   server.addHook("onRequest", async (request: FastifyRequest, reply: FastifyReply) => {
     const origin = request.headers.origin;
@@ -272,7 +290,7 @@ function registerCors(server: ReturnType<typeof Fastify>, env: Record<string, st
         allowedOrigin = origin;
       } else if (!extraOrigins) {
         // No PRODUCT_WEB_ORIGINS configured — keep old fallback for dev
-        allowedOrigin = "http://127.0.0.1:5173";
+        allowedOrigin = "http://127.0.0.1:3220";
       }
     }
 
@@ -349,23 +367,17 @@ export async function startServer() {
   const productStateDbPath = process.env.PRODUCT_STATE_DB_PATH ?? join(process.cwd(), ".data", "product-state.db");
 
   const repository = createSqliteProductStateRepository({ dbPath: productStateDbPath });
-  const server = buildApiServer({ productStateDbPath, productStateRepository: repository });
-  const port = Number(process.env.PORT ?? 8787);
+  // enableResearchScheduler: only the persistent process runs the background scheduler.
+  // It self-gates per tick on systemConfig.research.autoScheduleEnabled (default off),
+  // so users can toggle it on at runtime without a restart.
+  const server = buildApiServer({
+    productStateDbPath,
+    productStateRepository: repository,
+    enableResearchScheduler: true
+  });
+  const port = Number(process.env.PORT ?? 3210);
   const host = process.env.HOST ?? "127.0.0.1";
   await server.listen({ host, port });
-
-  // 后台调研调度器：仅在常驻进程（startServer）中启动，buildApiServer/测试不触发。
-  // 默认关闭（autoScheduleEnabled: false）；在 systemConfig.research.autoScheduleEnabled
-  // 设为 true 后，重启服务即激活。非常驻环境靠 POST /api/research/auto-run 手动触发。
-  const researchConfig = repository.getState().systemConfig.research;
-  const schedulerEnabled = researchConfig?.autoScheduleEnabled ?? false;
-  const schedulerIntervalMin = researchConfig?.scheduleIntervalMin ?? 1440;
-  startResearchScheduler({
-    repository,
-    clients: {}, // provider clients 在运行时从 env 注入；调度器默认降级 local-demo
-    intervalMs: schedulerIntervalMin * 60 * 1000,
-    enabled: schedulerEnabled
-  });
 
   return server;
 }

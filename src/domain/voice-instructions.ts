@@ -67,6 +67,7 @@ export function buildRealtimeVoiceInstructions(
     (guide?.statedPositions ?? []).length ? `用户过去的立场（出现矛盾就温和点出）：${guide!.statedPositions.slice(0, 3).join("；")}` : "",
     (card?.historyReferences ?? []).length ? `历史原话：${card!.historyReferences.slice(0, 3).join("；")}` : "",
     (card?.sourceHighlights ?? []).length ? `全网素材：${card!.sourceHighlights!.slice(0, 2).map((s) => `${s.title}｜${s.snippet}`).join("；")}` : "",
+    (guide?.knowledgeFragments ?? []).length ? `调研要点（自然相关时引一条作事实/反方依据，务必回到用户自己的经历，别堆资料）：${guide!.knowledgeFragments.slice(0, 2).join("；")}` : "",
     guide?.recommendedPerspectives?.length ? `建议视角（以一个自然问题呈现，别讲理论课）：${guide.recommendedPerspectives.slice(0, 3).join("、")}` : "",
     buildAppliedPlaybookRulesBlock(appliedRules),
     buildCorrectionsBlock(corrections)

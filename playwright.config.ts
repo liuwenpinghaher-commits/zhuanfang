@@ -6,7 +6,7 @@ export default defineConfig({
   workers: 1,
   reporter: [["list"]],
   use: {
-    baseURL: "http://127.0.0.1:5173",
+    baseURL: "http://127.0.0.1:3220",
     trace: "on-first-retry"
   },
   webServer: [
@@ -14,9 +14,9 @@ export default defineConfig({
       command: "npm run start:api",
       reuseExistingServer: true,
       timeout: 120_000,
-      url: "http://127.0.0.1:8787/api/health",
+      url: "http://127.0.0.1:3210/api/health",
       env: {
-        PORT: "8787",
+        PORT: "3210",
         HOST: "127.0.0.1",
         PRODUCT_STATE_DB_PATH: "memory",
         DASHSCOPE_API_KEY: "",
@@ -26,14 +26,14 @@ export default defineConfig({
         EXA_API_KEY: "",
         BRAVE_SEARCH_API_KEY: "",
         BAILIAN_REALTIME_WEBRTC_ENDPOINT: "",
-        PRODUCT_WEB_ORIGINS: "http://127.0.0.1:5173,http://localhost:5173"
+        PRODUCT_WEB_ORIGINS: "http://127.0.0.1:3220,http://localhost:3220"
       }
     },
     {
       command: "npm run dev -- --host 127.0.0.1",
       reuseExistingServer: true,
       timeout: 120_000,
-      url: "http://127.0.0.1:5173"
+      url: "http://127.0.0.1:3220"
     }
   ],
   projects: [

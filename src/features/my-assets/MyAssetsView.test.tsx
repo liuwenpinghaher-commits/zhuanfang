@@ -26,6 +26,7 @@ function makeAssetsProps(state: ProductState) {
     onPointStatus: vi.fn(),
     onQuestionStatus: vi.fn(),
     onDebtStatus: vi.fn(),
+    onDecisionStatus: vi.fn(),
     onDecisionConfirm: vi.fn(),
     onGeneratePodcast: vi.fn()
   };

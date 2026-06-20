@@ -114,7 +114,9 @@ function buildDeterministicFinalizeContent(session: InterviewSession, completedA
     id: makeId("note"),
     sessionId: session.id,
     title: session.title,
-    summary: keyQuote ? `本次专访的关键表达：${keyQuote}` : "本次专访暂未形成可总结的核心表达。",
+    // ponytail: flag the degraded path in the prominent summary line so empty asset
+    // counts read as "AI offline", not a bug. learnedTrack below repeats the detail.
+    summary: `【轻量记录·未生成资产】${keyQuote ? `关键表达：${keyQuote}` : "本次暂未形成可总结的核心表达。"}`,
     keyQuote,
     saidTrack: saidTrack.length ? saidTrack : [keyQuote].filter(Boolean),
     learnedTrack: [

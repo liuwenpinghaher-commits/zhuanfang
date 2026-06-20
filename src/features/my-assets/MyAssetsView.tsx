@@ -5,7 +5,7 @@ import { buildSessionArchive } from "../../domain/session-archive";
 import type { ProductState } from "../../domain/types";
 import { AssetsView } from "../assets/AssetsView";
 import type { searchProductAssets } from "../../domain/engine";
-import type { AssetStatus } from "../../domain/types";
+import type { AssetStatus, DecisionAsset } from "../../domain/types";
 import type { AssetFilter } from "../../ui";
 
 type Tab = "archive" | "assets";
@@ -25,7 +25,9 @@ interface MyAssetsViewProps {
   onPointStatus: (assetId: string, status: Extract<AssetStatus, "临时想法" | "稳定观点" | "被挑战中" | "已修正" | "已放弃">) => void;
   onQuestionStatus: (assetId: string, status: Extract<AssetStatus, "开放" | "反复出现" | "正在聚焦" | "阶段性回答">) => void;
   onDebtStatus: (assetId: string, status: Extract<AssetStatus, "待了解" | "能复述" | "已应用" | "不相关">) => void;
+  onDecisionStatus: (assetId: string, status: DecisionAsset["status"]) => void;
   onDecisionConfirm: (assetId: string) => void;
+  confirmingDecisionId?: string;
   onGeneratePodcast: (noteId: string) => void;
 }
 
@@ -43,7 +45,9 @@ export function MyAssetsView({
   onPointStatus,
   onQuestionStatus,
   onDebtStatus,
+  onDecisionStatus,
   onDecisionConfirm,
+  confirmingDecisionId,
   onGeneratePodcast
 }: MyAssetsViewProps) {
   const [activeTab, setActiveTab] = useState<Tab>(initialTab);
@@ -200,7 +204,9 @@ export function MyAssetsView({
           onPointStatus={onPointStatus}
           onQuestionStatus={onQuestionStatus}
           onDebtStatus={onDebtStatus}
+          onDecisionStatus={onDecisionStatus}
           onDecisionConfirm={onDecisionConfirm}
+          confirmingDecisionId={confirmingDecisionId}
         />
       )}
     </section>
