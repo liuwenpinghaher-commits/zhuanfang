@@ -629,7 +629,9 @@ function resolveSearchBriefThemeIds(state: ProductState, brief: SearchBrief) {
       return corpus.includes(theme.name) || (summarySignal.length >= 4 && corpus.includes(summarySignal));
     })
     .map((theme) => theme.id);
-  return matched.length > 0 ? matched.slice(0, 2) : state.themes.slice(0, 1).map((theme) => theme.id);
+  // ponytail: no match → leave the brief unclassified ([]), rather than force-attaching it
+  // to themes[0]. Forcing首个主题 systematically pollutes that theme line with unrelated材料.
+  return matched.length > 0 ? matched.slice(0, 2) : [];
 }
 function slugifyAgendaQuery(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "-").replace(/^-|-$/g, "").slice(0, 24) || "query";

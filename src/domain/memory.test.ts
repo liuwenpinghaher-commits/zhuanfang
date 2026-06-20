@@ -168,6 +168,27 @@ describe("dedupeMemoryRecords (lightweight consolidation, M5)", () => {
     expect(out.find((r) => r.id === "newer")?.status).toBe("confirmed");
   });
 
+  it("3-way transitive cluster: every loser points at the single surviving keeper", () => {
+    // Regression for the pairwise-loop bug: a record chosen as keeper of one pair could
+    // later become a loser of another, leaving a third record pointing at a dead keeper.
+    const recs = [
+      confirmedRecord({ id: "a", text: "先验证再放权", importance: 6, embedding: [0.1, 0.2] }),
+      confirmedRecord({ id: "b", text: "先验证再授权", importance: 5, embedding: [0.1, 0.205] }),
+      confirmedRecord({ id: "c", text: "先验证后授权扩大", importance: 8, embedding: [0.1, 0.21] })
+    ];
+    const out = dedupeMemoryRecords(recs, { threshold: 0.9 });
+    // Strongest (c, importance 8) survives; the other two are deprecated.
+    expect(out.find((r) => r.id === "c")?.status).toBe("confirmed");
+    expect(out.find((r) => r.id === "a")?.status).toBe("deprecated");
+    expect(out.find((r) => r.id === "b")?.status).toBe("deprecated");
+    // CRITICAL: each deprecated record must point at a SURVIVING (confirmed) keeper.
+    const survivingIds = new Set(out.filter((r) => r.status === "confirmed").map((r) => r.id));
+    for (const id of ["a", "b"]) {
+      const keptId = out.find((r) => r.id === id)?.deprecatedReason?.match(/与\s+(\S+)\s+合并/)?.[1];
+      expect(survivingIds.has(keptId as string)).toBe(true);
+    }
+  });
+
   it("merges near-duplicates via token overlap when embeddings are absent", () => {
     const recs = [
       confirmedRecord({ id: "keep", text: "用户偏好先小范围验证再放权后扩大试点", importance: 7 }),

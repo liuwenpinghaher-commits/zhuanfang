@@ -70,7 +70,11 @@ export async function registerMemoryCandidateRoutes(
     // created without an embedding (keyword retrieval still works). importance is
     // backfilled inside approveMemoryCandidate from the candidate's reviewScore.
     const embedding = await embedCandidateText(candidate.text, options.embeddingClient);
-    const nextState = approveMemoryCandidate(state, candidate.id, embedding ? { embedding } : {});
+    const nextState = approveMemoryCandidate(state, candidate.id, {
+      ...(embedding ? { embedding } : {}),
+      // Consolidation summaries carry the keeper's importance; honor it over the reviewScore band.
+      ...(candidate.importance != null ? { importance: candidate.importance } : {})
+    });
     const reviewedCandidate = findCandidate(nextState, candidate.id);
     const record = nextState.memoryRecords.find((item) => item.sourceCandidateId === candidate.id);
     repository.replaceState(nextState);
@@ -110,7 +114,14 @@ export async function registerMemoryCandidateRoutes(
     const clusters = collectMergedClusters(before, after);
     const deprecated = clusters.reduce((sum, cluster) => sum + cluster.losers.length, 0);
 
-    let nextState: ProductState = { ...state, memoryRecords: after };
+    // Drop graph edges originating from records we just deprecated, matching
+    // deleteMemoryRecord's edge hygiene (otherwise the graph keeps dangling edges).
+    const loserIds = new Set(clusters.flatMap((cluster) => cluster.losers.map((loser) => loser.id)));
+    const prunedEdges = loserIds.size > 0
+      ? state.memoryEdges.filter((edge) => !loserIds.has(edge.fromMemoryRecordId))
+      : state.memoryEdges;
+
+    let nextState: ProductState = { ...state, memoryRecords: after, memoryEdges: prunedEdges };
     if (deprecated > 0) {
       const reviewedAt = nowIso();
       // Optional LLM summaries — one pending candidate per merged cluster.
@@ -223,6 +234,9 @@ async function buildClusterSummaryCandidates(
           evidenceQuote: cluster.keeper.evidenceQuote,
           reason: "记忆整理：由多条相近记忆概括而成，待用户确认是否替换。",
           sensitivity: cluster.keeper.sensitivity ?? "normal",
+          // Inherit the keeper's importance so approving the summary keeps显著性 (the
+          // keeper is the cluster's strongest, so this is the cluster max).
+          ...(cluster.keeper.importance != null ? { importance: cluster.keeper.importance } : {}),
           createdAt
         })
       );

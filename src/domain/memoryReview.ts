@@ -17,7 +17,7 @@ type MemoryCandidateReviewInput = {
 };
 
 const externalSourceTypes: MemorySourceType[] = ["search_brief", "import_source", "corpus_import"];
-const interviewSourceTypes: MemorySourceType[] = ["interview_session", "dual_track_note", "manual_correction"];
+const interviewSourceTypes: MemorySourceType[] = ["interview_session", "dual_track_note"];
 
 export function scoreMemoryCandidate(candidate: MemoryCandidateReviewInput): Pick<MemoryCandidate, "reviewScore" | "reviewSignals"> {
   const signals: string[] = [];

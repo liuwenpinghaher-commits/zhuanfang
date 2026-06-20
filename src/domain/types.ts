@@ -747,8 +747,7 @@ export type MemorySourceType =
   | "dual_track_note"
   | "corpus_import"
   | "import_source"
-  | "search_brief"
-  | "manual_correction";
+  | "search_brief";
 export type MemoryRecordStatus = "confirmed" | "deprecated" | "deleted";
 export type MemoryCandidateStatus = "pending" | "approved" | "rejected";
 export type MemorySensitivity = "normal" | "sensitive";
@@ -792,6 +791,11 @@ export interface MemoryCandidate {
   similarToRecordId?: string;
   /** M3: 去重操作建议 */
   suggestedUpdate?: "add" | "update" | "noop" | "conflict";
+  /**
+   * M5: suggested importance carried from a consolidation source (the merged cluster's
+   * keeper), so approving the summary doesn't dilute显著性 back down to a reviewScore band.
+   */
+  importance?: number;
 }
 
 export interface MemoryEdge {

@@ -101,6 +101,10 @@ export function buildYearlyReview(state: ProductState): YearlyReview {
   const usedPerspectiveWords = state.notes.map((note) => `${note.summary} ${note.learnedTrack.join(" ")}`).join(" ");
   const missingPerspectives = ["哲学", "人类学", "叙事"].filter((perspective) => !usedPerspectiveWords.includes(perspective));
 
+  // ponytail: derive next-year focus from the user's own still-open themes, instead of a
+  // hardcoded "控制感/授权/问题定义权" line that was wrong for everyone but the seed user.
+  const openThemeNames = state.themes.filter((theme) => theme.maturity !== "关闭").slice(0, 3).map((theme) => theme.name);
+
   return {
     coreQuestions,
     changedViews: changedViews.length > 0
@@ -109,6 +113,8 @@ export function buildYearlyReview(state: ProductState): YearlyReview {
     unresolvedPatterns,
     importantDecisions,
     missingPerspectives,
-    nextYearFocus: "继续追踪控制感、授权机制和问题定义权之间的关系。"
+    nextYearFocus: openThemeNames.length
+      ? `继续追踪${openThemeNames.join("、")}这些尚未收口的主题，把它们之间的关系说清楚。`
+      : "继续把模糊判断追问成可复盘的具体结论。"
   };
 }

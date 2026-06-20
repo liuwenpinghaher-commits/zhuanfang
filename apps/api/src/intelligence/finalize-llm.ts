@@ -175,7 +175,7 @@ function mapToFinalizeContent(
   // Resolve theme ids up front so assets can link to them and so existing
   // themes (matched by name) keep their id through mergeFinalizedState.
   const themes: FinalizeThemeUpsert[] = parsed.themes.map((theme) => {
-    const existing = state.themes.find((item) => item.name === theme.name);
+    const existing = state.themes.find((item) => item.name.trim() === theme.name.trim());
     return {
       id: existing?.id ?? makeId("theme"),
       name: theme.name,
@@ -186,6 +186,15 @@ function mapToFinalizeContent(
     };
   });
   const themeIds = themes.map((theme) => theme.id as string);
+  // Attribute an asset to the theme(s) whose name actually appears in its text, instead of
+  // blanket-linking every asset to every theme of the session. Falls back to all themeIds
+  // when nothing matches, so an asset is never orphaned (and Track stays populated).
+  const attributeThemeIds = (text: string): string[] => {
+    const matched = themes
+      .filter((theme) => theme.name.trim().length >= 2 && text.includes(theme.name.trim()))
+      .map((theme) => theme.id as string);
+    return matched.length ? matched : themeIds;
+  };
 
   const note: DualTrackNote = {
     id: makeId("note"),
@@ -206,7 +215,7 @@ function mapToFinalizeContent(
     status: "临时想法",
     confidence: "AI 推断",
     evidence: point.evidence.length ? point.evidence : [parsed.keyQuote],
-    relatedThemeIds: themeIds,
+    relatedThemeIds: attributeThemeIds(`${point.title} ${point.content}`),
     important: false,
     updatedAt: completedAt
   }));
@@ -217,7 +226,7 @@ function mapToFinalizeContent(
     whyImportant: question.whyImportant || "这个问题值得在后续专访中继续追问。",
     status: "正在聚焦",
     appearances: 1,
-    relatedThemeIds: themeIds,
+    relatedThemeIds: attributeThemeIds(`${question.question} ${question.whyImportant ?? ""}`),
     nextPrompt: question.nextPrompt || question.question,
     important: false,
     updatedAt: completedAt
@@ -233,6 +242,7 @@ function mapToFinalizeContent(
     riskHypothesis: decision.riskHypothesis || "（待补充风险假设）",
     reviewAt: normalizeReviewAt(decision.reviewAt, completedAt),
     status: "待复盘",
+    relatedThemeIds: attributeThemeIds(`${decision.title} ${decision.choice ?? ""}`),
     updatedAt: completedAt
   }));
 
@@ -243,6 +253,7 @@ function mapToFinalizeContent(
     whyImportant: debt.whyImportant || "补全它有助于把模糊判断说清楚。",
     status: "待了解",
     nextQuestion: debt.nextQuestion || `你能用一个具体例子说明「${debt.concept}」吗？`,
+    relatedThemeIds: attributeThemeIds(`${debt.concept} ${debt.context ?? ""}`),
     updatedAt: completedAt
   }));
 

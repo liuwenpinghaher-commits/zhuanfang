@@ -912,6 +912,11 @@ export function buildCharacterSystemPrompt(
     if (guide.knowledgeFragments?.length) {
       lines.push(`【外部资料/调研要点】（如与用户所谈自然相关，可引用其中一条作为追问的事实依据或反方视角；务必回到用户自己的具体经历，不要照本宣科、不要堆砌资料）：${guide.knowledgeFragments.slice(0, 3).join("；")}`);
     }
+    // 记忆图谱软链:本次召回的记忆关联到的长期主题。让模型在自然处把当下话题接回主题线。
+    const graphThemes = Array.from(new Set((guide.graphReferences ?? []).map((ref) => ref.themeLabel).filter(Boolean)));
+    if (graphThemes.length) {
+      lines.push(`【相关长期主题】（这些记忆关联到用户的长期主题，合适时可顺势把当下话题接回其中一条，不要生硬切换）：${graphThemes.slice(0, 3).join("、")}`);
+    }
   }
 
   // Applied playbook rules + recent corrections — reuse the SAME copy as the

@@ -20,7 +20,7 @@ describe("migration", () => {
           id: "memory-candidate-pending",
           text: "用户正在把专访系统作为长期认知资产库使用。",
           status: "pending" as const,
-          sourceType: "manual_correction" as const,
+          sourceType: "interview_session" as const,
           sourceId: "manual",
           evidenceQuote: "作为长期认知资产库使用",
           reason: "需要用户确认后才能进入长期记忆。",

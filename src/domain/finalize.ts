@@ -144,7 +144,7 @@ export function mergeFinalizedState(
   providedCandidates?: MemoryCandidate[]
 ): FinalizeResult {
   const { note } = content;
-  const completedSession: InterviewSession = {
+  const baseCompletedSession: InterviewSession = {
     ...session,
     status: "completed",
     completedAt,
@@ -155,9 +155,9 @@ export function mergeFinalizedState(
     const nextState = withInterviewFinalizedEvents(
       {
         ...cloneState(state),
-        sessions: [completedSession, ...state.sessions]
+        sessions: [baseCompletedSession, ...state.sessions]
       },
-      completedSession,
+      baseCompletedSession,
       note,
       completedAt
     );
@@ -165,17 +165,27 @@ export function mergeFinalizedState(
     return { note, nextState };
   }
 
+  // themeIds were resolved by finalize-llm into content.themes (existing id by name, or a
+  // fresh id). Attach them to the session AND note so the "by theme" axis — Track 工作区 /
+  // timeline / 会后反馈续问 — can actually aggregate this session's output. Deterministic
+  // path has no themes → empty → no-op (no dangling refs).
+  const themeIds = content.themes.map((theme) => theme.id).filter((id): id is string => Boolean(id));
+  const completedSession: InterviewSession = themeIds.length
+    ? { ...baseCompletedSession, relatedThemeIds: Array.from(new Set([...(session.relatedThemeIds ?? []), ...themeIds])) }
+    : baseCompletedSession;
+  const finalNote = themeIds.length ? { ...note, relatedThemeIds: themeIds } : note;
+
   const nextState = cloneState(state);
   nextState.sessions = [completedSession, ...nextState.sessions];
   nextState.searchBriefs = markSearchBriefAppliedToSession(nextState.searchBriefs, completedSession);
-  nextState.notes = [note, ...nextState.notes];
+  nextState.notes = [finalNote, ...nextState.notes];
   if (providedCandidates && providedCandidates.length > 0) {
     // Use externally provided candidates (e.g. from LLM extraction in Task 2+).
     const annotated = annotateCandidatesWithDedupHint(providedCandidates, nextState.memoryRecords);
     nextState.memoryCandidates = [...annotated, ...(nextState.memoryCandidates ?? [])];
   } else if (note.keyQuote.trim()) {
     // Derive candidate from actual session content (deterministic fallback).
-    const memoryCandidate = buildMemoryCandidateFromSession(session, note, note.keyQuote, completedAt);
+    const memoryCandidate = buildMemoryCandidateFromSession(session, finalNote, note.keyQuote, completedAt);
     const [annotated] = annotateCandidatesWithDedupHint([memoryCandidate], nextState.memoryRecords);
     nextState.memoryCandidates = [annotated, ...(nextState.memoryCandidates ?? [])];
   }
@@ -186,8 +196,8 @@ export function mergeFinalizedState(
   nextState.themes = upsertFinalizeThemes(nextState.themes, content.themes, completedAt);
 
   return {
-    note,
-    nextState: withInterviewFinalizedEvents(nextState, completedSession, note, completedAt)
+    note: finalNote,
+    nextState: withInterviewFinalizedEvents(nextState, completedSession, finalNote, completedAt)
   };
 }
 
@@ -199,9 +209,12 @@ function upsertFinalizeThemes(
 ): LongTermTheme[] {
   let themes = existingThemes;
   for (const upsert of upserts) {
-    if (themes.some((theme) => theme.name === upsert.name)) {
+    // ponytail: trim-normalize the name match so "控制感" and "控制感 " don't split into
+    // two themes (which would dilute appearances and fragment the theme line).
+    const key = upsert.name.trim();
+    if (themes.some((theme) => theme.name.trim() === key)) {
       themes = themes.map((theme) =>
-        theme.name === upsert.name
+        theme.name.trim() === key
           ? {
               ...theme,
               maturity: upsert.maturity,
@@ -222,6 +235,9 @@ function upsertFinalizeThemes(
           representativeQuote: upsert.representativeQuote,
           appearances: 1,
           nextQuestion: upsert.nextQuestion,
+          // ponytail: stamp createdAt at birth so the timeline shows the theme's萌芽
+          // moment, not whatever the last upsert refreshed updatedAt to.
+          createdAt: completedAt,
           updatedAt: completedAt
         },
         ...themes

@@ -155,7 +155,23 @@ export async function registerInterviewSessionRoutes(
       state.memoryCorrections
     );
     const { nextSession, preSignals } = updatedSession;
-    const nextState = upsertSession(state, nextSession);
+    const baseNextState = upsertSession(state, nextSession);
+
+    // M3 recency write-back: the records actually recalled into THIS turn's guide get
+    // lastAccessedAt = now, so the recency factor reflects "recently used" rather than
+    // only "recently confirmed" (which would otherwise decay a frequently-cited memory).
+    // Route layer owns this because it has the clock; the domain scorer stays pure.
+    const recalledTexts = new Set(refreshedGuide.relevantMemories ?? []);
+    const nextState = recalledTexts.size > 0
+      ? {
+          ...baseNextState,
+          memoryRecords: baseNextState.memoryRecords.map((record) =>
+            record.status === "confirmed" && recalledTexts.has(record.text)
+              ? { ...record, lastAccessedAt: nowIso() }
+              : record
+          )
+        }
+      : baseNextState;
 
     repository.replaceState(nextState);
     return { session: nextSession, state: nextState, ...(preSignals ? { preSignals } : {}) };
@@ -198,7 +214,11 @@ export async function registerInterviewSessionRoutes(
     // the conversation and hand them to finalize (replacing the heuristic template
     // candidate). On budget exhaustion / extraction failure we pass nothing and
     // mergeFinalizedState falls back to the Task-1 session heuristic.
-    const providedCandidates = await extractSessionMemoryCandidates(session, options.bailianChatClient, budget);
+    // doNotSave skips extraction entirely — mergeFinalizedState would discard the
+    // candidates anyway, so spending LLM budget + a round-trip on them is pure waste.
+    const providedCandidates = session.doNotSave
+      ? undefined
+      : await extractSessionMemoryCandidates(session, options.bailianChatClient, budget);
     const result = await finalizeInterview(baseState, session, options.bailianChatClient, providedCandidates);
     const completedSession = result.nextState.sessions.find((item) => item.id === session.id) ?? session;
 

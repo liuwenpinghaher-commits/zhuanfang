@@ -156,30 +156,71 @@ export function dedupeMemoryRecords(
   records: MemoryRecord[],
   opts: { threshold?: number } = {}
 ): MemoryRecord[] {
-  // recordId -> kept record id that supersedes it (the merge target).
-  const deprecatedBy = new Map<string, string>();
-
   const confirmed = records.filter((record) => record.status === "confirmed");
+
+  // Union-find: group all transitively-similar records into one cluster FIRST, then pick
+  // a single global-strongest keeper per cluster. The old pairwise loop could pick A as
+  // keeper of (A,B) then demote A as loser of (A,C), leaving B pointing at the now-dead A.
+  const parent = new Map<string, string>();
+  confirmed.forEach((record) => parent.set(record.id, record.id));
+  const find = (x: string): string => {
+    let root = x;
+    while (parent.get(root) !== root) {
+      root = parent.get(root) as string;
+    }
+    // path compression
+    let cur = x;
+    while (parent.get(cur) !== root) {
+      const next = parent.get(cur) as string;
+      parent.set(cur, root);
+      cur = next;
+    }
+    return root;
+  };
+  const union = (a: string, b: string) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) {
+      parent.set(ra, rb);
+    }
+  };
+
   for (let i = 0; i < confirmed.length; i += 1) {
     for (let j = i + 1; j < confirmed.length; j += 1) {
       const a = confirmed[i];
       const b = confirmed[j];
-      // A record already marked a loser is out of the running on both sides:
-      // it can neither be kept nor re-deprecated.
-      if (deprecatedBy.has(a.id) || deprecatedBy.has(b.id)) {
-        continue;
-      }
       const { score, usedEmbedding } = recordSimilarity(a, b);
       // M5 merge deprecates a record, so it is more conservative than the M2 hint;
       // token-Jaccard path uses a lower bar than cosine since Jaccard is far stricter.
       const pairThreshold =
         opts.threshold ?? (usedEmbedding ? DEDUP_MERGE_COSINE_THRESHOLD : DEDUP_MERGE_TOKEN_THRESHOLD);
-      if (score <= pairThreshold) {
-        continue;
+      if (score > pairThreshold) {
+        union(a.id, b.id);
       }
-      const keeper = strongerRecord(a, b);
-      const loser = keeper.id === a.id ? b : a;
-      deprecatedBy.set(loser.id, keeper.id);
+    }
+  }
+
+  // recordId -> surviving keeper id that supersedes it (always a kept, non-deprecated record).
+  const deprecatedBy = new Map<string, string>();
+  const clusters = new Map<string, MemoryRecord[]>();
+  for (const record of confirmed) {
+    const root = find(record.id);
+    const group = clusters.get(root);
+    if (group) {
+      group.push(record);
+    } else {
+      clusters.set(root, [record]);
+    }
+  }
+  for (const group of clusters.values()) {
+    if (group.length < 2) {
+      continue;
+    }
+    const keeper = group.reduce((best, record) => strongerRecord(best, record));
+    for (const record of group) {
+      if (record.id !== keeper.id) {
+        deprecatedBy.set(record.id, keeper.id);
+      }
     }
   }
 
