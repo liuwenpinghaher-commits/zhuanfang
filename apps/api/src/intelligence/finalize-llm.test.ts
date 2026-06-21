@@ -7,7 +7,7 @@
  *
  * Key robustness points (from parseFinalizeJson):
  *  - Missing required fields (summary/saidTrack/learnedTrack) → throws
- *  - Invalid maturity → clampMaturity defaults to "聚焦"
+ *  - Invalid maturity → clampMaturity defaults to "萌芽"
  *  - malformed reviewAt → normalizeReviewAt adds 30 days from completedAt
  *  - Missing optional arrays → empty arrays in output (no crash)
  */
@@ -82,7 +82,7 @@ describe("finalizeSessionWithLlm", () => {
     ).rejects.toThrow();
   });
 
-  it("invalid maturity value → clamped to '聚焦' (default) in nextState.themes", async () => {
+  it("invalid maturity value → clamped to '萌芽' (default) in nextState.themes", async () => {
     const json = JSON.stringify({
       ...JSON.parse(VALID_JSON),
       themes: [
@@ -98,10 +98,12 @@ describe("finalizeSessionWithLlm", () => {
     const result = await finalizeSessionWithLlm(baseState, makeSession(), mockChat(json));
     const theme = result.nextState.themes.find((t) => t.name === "某主题");
     expect(theme).toBeDefined();
-    expect(theme!.maturity).toBe("聚焦"); // clampMaturity default
+    expect(theme!.maturity).toBe("萌芽"); // clampMaturity default → 萌芽 (bias toward under-, not over-stating)
   });
 
-  it("all valid maturity values pass through unchanged", async () => {
+  it("a brand-new theme is clamped to 萌芽 regardless of the maturity the LLM labeled it", async () => {
+    // Maturity must track REAL recurrence: a first-appearance theme is 萌芽 no matter how developed
+    // the single conversation felt. The LLM's over-eager 成型/聚焦 label is clamped down by appearances.
     const validMaturities = ["萌芽", "重复", "聚焦", "成型", "变化", "关闭"] as const;
     for (const maturity of validMaturities) {
       const json = JSON.stringify({
@@ -110,7 +112,7 @@ describe("finalizeSessionWithLlm", () => {
       });
       const result = await finalizeSessionWithLlm(baseState, makeSession(), mockChat(json));
       const theme = result.nextState.themes.find((t) => t.name === "主题");
-      expect(theme!.maturity).toBe(maturity);
+      expect(theme!.maturity).toBe("萌芽");
     }
   });
 

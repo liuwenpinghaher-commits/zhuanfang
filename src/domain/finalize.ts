@@ -204,24 +204,49 @@ export function mergeFinalizedState(
   };
 }
 
-/** Upsert each theme by name: update appearances/quote/maturity if it exists, else prepend. */
-function upsertFinalizeThemes(
+const MATURITY_LADDER: LongTermTheme["maturity"][] = ["萌芽", "重复", "聚焦", "成型", "变化", "关闭"];
+
+/**
+ * Maturity must reflect REAL recurrence, not a one-shot LLM impression. A theme can be at most
+ * as mature as its appearance count allows (1 appearance → 萌芽, 2 → 重复, 3 → 聚焦, 4 → 成型,
+ * 5 → 变化, 6+ → 关闭). The LLM's per-conversation label is clamped DOWN to this ceiling (never
+ * up) — fixing the "出现 1 次却标成型/聚焦" incoherence where maturity was decoupled from tracking.
+ */
+export function clampMaturityByAppearances(
+  maturity: LongTermTheme["maturity"] | string,
+  appearances: number
+): LongTermTheme["maturity"] {
+  const idx = Math.max(0, MATURITY_LADDER.indexOf(maturity as LongTermTheme["maturity"]));
+  const ceiling = Math.min(MATURITY_LADDER.length - 1, Math.max(0, appearances - 1));
+  return MATURITY_LADDER[Math.min(idx, ceiling)];
+}
+
+/** Normalize a theme name for matching so trivial variants ("控制感" / "控制感。" / "控制感 ")
+ *  merge into one theme line instead of fragmenting into several. */
+function normalizeThemeName(name: string): string {
+  return name.trim().replace(/[\s。，、；：！？·.,;:!?]/g, "");
+}
+
+/** Upsert each theme: merge into an existing theme line by normalized name (increment
+ *  appearances, refresh quote/next-question, clamp maturity to the new count), else create a
+ *  fresh theme born at 萌芽. */
+export function upsertFinalizeThemes(
   existingThemes: LongTermTheme[],
   upserts: FinalizeThemeUpsert[],
   completedAt: string
 ): LongTermTheme[] {
   let themes = existingThemes;
   for (const upsert of upserts) {
-    // ponytail: trim-normalize the name match so "控制感" and "控制感 " don't split into
-    // two themes (which would dilute appearances and fragment the theme line).
-    const key = upsert.name.trim();
-    if (themes.some((theme) => theme.name.trim() === key)) {
+    const key = normalizeThemeName(upsert.name);
+    const match = themes.find((theme) => normalizeThemeName(theme.name) === key);
+    if (match) {
+      const appearances = match.appearances + 1;
       themes = themes.map((theme) =>
-        theme.name.trim() === key
+        theme.id === match.id
           ? {
               ...theme,
-              maturity: upsert.maturity,
-              appearances: theme.appearances + 1,
+              maturity: clampMaturityByAppearances(upsert.maturity, appearances),
+              appearances,
               representativeQuote: upsert.representativeQuote,
               nextQuestion: upsert.nextQuestion,
               updatedAt: completedAt
@@ -234,12 +259,12 @@ function upsertFinalizeThemes(
           id: upsert.id ?? makeId("theme"),
           name: upsert.name,
           summary: upsert.summary,
-          maturity: upsert.maturity,
+          // A brand-new theme has appeared exactly once — it is 萌芽, no matter how developed it
+          // felt in this single conversation.
+          maturity: clampMaturityByAppearances(upsert.maturity, 1),
           representativeQuote: upsert.representativeQuote,
           appearances: 1,
           nextQuestion: upsert.nextQuestion,
-          // ponytail: stamp createdAt at birth so the timeline shows the theme's萌芽
-          // moment, not whatever the last upsert refreshed updatedAt to.
           createdAt: completedAt,
           updatedAt: completedAt
         },

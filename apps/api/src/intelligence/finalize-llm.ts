@@ -82,7 +82,13 @@ function buildFinalizePrompt(state: ProductState, session: InterviewSession): st
     .map((turn) => `${turn.role === "user" ? "用户" : "主持人"}：${turn.content}`)
     .join("\n");
 
-  const existingThemes = state.themes.map((theme) => theme.name).slice(0, 12);
+  // Feed ALL existing theme lines (name + a summary cue), most-recurring first, so the LLM can
+  // recognize when this conversation continues one of them and reuse its exact name (which then
+  // merges in upsertFinalizeThemes). The old slice(0,12) hid older themes → guaranteed fragmentation.
+  const existingThemes = [...state.themes]
+    .sort((a, b) => b.appearances - a.appearances)
+    .slice(0, 40)
+    .map((theme) => `「${theme.name}」（${(theme.summary ?? "").slice(0, 28)}）`);
   const openDebts = (session.guide?.openDebts ?? []).map((debt) => debt.concept).slice(0, 8);
   const blindspots = (session.guide?.blindspotCandidates ?? []).map((b) => b.concept).slice(0, 8);
 
@@ -97,7 +103,7 @@ function buildFinalizePrompt(state: ProductState, session: InterviewSession): st
     `· 系统预设话题（可能与实际对话不符，仅供参考）：${session.title}`,
     `· 访谈模式：${session.mode}；追问强度：${session.strength}`,
     existingThemes.length
-      ? `· 已有长期主题（仅当本次对话确实属于其中某个时才沿用同名，否则请按对话真实内容命名新主题）：${existingThemes.join("、")}`
+      ? `· 已有长期主题线（仅当本次对话确实是在【延续】其中某一条——同一个反复出现的问题/张力——时，才【逐字沿用它的名称】让它累积成一条线、出现次数+1；如果本次只是话题相关、角度不同、或你拿不准，就按真实内容【另起一条新主题】，绝不要把新话题硬塞进某条既有主题）：\n${existingThemes.join("\n")}`
       : "",
     openDebts.length ? `· 既往未还知识债（仅当本次对话真的涉及时才引用）：${openDebts.join("、")}` : "",
     blindspots.length ? `· 盲区候选（仅参考）：${blindspots.join("、")}` : "",
@@ -113,7 +119,7 @@ function buildFinalizePrompt(state: ProductState, session: InterviewSession): st
   "questions": [{"question":"值得长期追的问题","whyImportant":"为什么重要","nextPrompt":"下次怎么问"}],
   "decisions": [{"title":"决策标题","choice":"用户倾向的选择","tradeOff":"取舍","riskHypothesis":"风险假设","reviewAt":"复盘日期YYYY-MM-DD，没有就留空"}],
   "debts": [{"concept":"概念","context":"在本次对话中如何出现","whyImportant":"为什么值得补","nextQuestion":"下次的引导问题"}],
-  "themes": [{"name":"主题名","summary":"主题概述","representativeQuote":"代表性原话","nextQuestion":"下次追问","maturity":"萌芽|重复|聚焦|成型|变化|关闭"}]
+  "themes": [{"name":"主题名：必须是能在别的对话里再次认出的【可复现主题】——一个反复出现的问题/张力/取舍，不要用一次性金句、比喻或诗意短语当名字","summary":"这条主题在追踪什么，以及下次靠什么线索能认出它又出现了","representativeQuote":"代表性原话","nextQuestion":"下次追问","maturity":"按它真实出现过几次填：只出现一次就是萌芽，不要凭单次对话的深度就标成型/聚焦"}]
 }`
   ]
     .filter(Boolean)
@@ -306,7 +312,10 @@ function asObjectArray(value: unknown): Array<Record<string, unknown>> {
 }
 
 function clampMaturity(value: string): LongTermTheme["maturity"] {
-  return THEME_MATURITIES.includes(value as LongTermTheme["maturity"]) ? (value as LongTermTheme["maturity"]) : "聚焦";
+  // Unknown maturity falls back to 萌芽 (nascent), never a mid-ladder value — the upsert step
+  // clamps it to the real appearance count anyway, but the floor should bias toward under-, not
+  // over-stating how developed a theme is.
+  return THEME_MATURITIES.includes(value as LongTermTheme["maturity"]) ? (value as LongTermTheme["maturity"]) : "萌芽";
 }
 
 function normalizeReviewAt(value: string, completedAt: string): string {

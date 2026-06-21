@@ -1,5 +1,46 @@
 import { describe, it, expect } from "vitest";
 import { finalizeSession, createInterviewSession, addTurn, createInitialProductState } from "./engine";
+import { clampMaturityByAppearances, upsertFinalizeThemes } from "./finalize";
+import type { LongTermTheme } from "./types";
+
+describe("theme maturity coherence (#1)", () => {
+  it("caps a single-appearance theme at 萌芽 no matter what the LLM labeled it", () => {
+    expect(clampMaturityByAppearances("成型", 1)).toBe("萌芽");
+    expect(clampMaturityByAppearances("聚焦", 1)).toBe("萌芽");
+    expect(clampMaturityByAppearances("变化", 1)).toBe("萌芽");
+  });
+  it("raises the ceiling only as the theme actually recurs", () => {
+    expect(clampMaturityByAppearances("成型", 2)).toBe("重复");
+    expect(clampMaturityByAppearances("成型", 3)).toBe("聚焦");
+    expect(clampMaturityByAppearances("成型", 4)).toBe("成型");
+  });
+  it("never forces maturity UP — the LLM can keep a recurring theme nascent", () => {
+    expect(clampMaturityByAppearances("萌芽", 5)).toBe("萌芽");
+  });
+});
+
+describe("upsertFinalizeThemes tracking + maturity (#1/#2a)", () => {
+  const theme = (over: Partial<LongTermTheme>): LongTermTheme => ({
+    id: "t1", name: "控制感", summary: "s", maturity: "萌芽", representativeQuote: "q",
+    appearances: 1, nextQuestion: "nq", createdAt: "2026-06-01T00:00:00.000Z", updatedAt: "2026-06-01T00:00:00.000Z", ...over
+  });
+  it("merges by normalized name (trailing space/punct), increments appearances, clamps maturity", () => {
+    const result = upsertFinalizeThemes(
+      [theme({})],
+      [{ name: "控制感。", summary: "new", maturity: "成型", representativeQuote: "q2", nextQuestion: "nq2" }],
+      "2026-06-21T00:00:00.000Z"
+    );
+    expect(result.length).toBe(1); // merged, NOT split into two theme lines
+    expect(result[0].appearances).toBe(2);
+    expect(result[0].maturity).toBe("重复"); // LLM said 成型 → clamped to ceiling for 2 appearances
+  });
+  it("a brand-new theme is born 萌芽 even if the LLM said 成型", () => {
+    const result = upsertFinalizeThemes([], [{ name: "新主题", summary: "s", maturity: "成型", representativeQuote: "q", nextQuestion: "nq" }], "2026-06-21T00:00:00.000Z");
+    expect(result.length).toBe(1);
+    expect(result[0].appearances).toBe(1);
+    expect(result[0].maturity).toBe("萌芽");
+  });
+});
 
 describe("finalize memory extraction (M1a)", () => {
   it("derives candidate text from actual session content, not a fixed template", () => {
