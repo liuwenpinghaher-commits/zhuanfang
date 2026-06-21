@@ -76,7 +76,8 @@ export const groupedNavigation: NavigationGroup[] = [
     items: [
       { id: "home", label: "今日访谈台" },
       { id: "interview", label: "实时专访" },
-      { id: "themes", label: "主题线" }
+      { id: "themes", label: "主题线" },
+      { id: "notes", label: "双轨笔记" }
     ]
   },
   {
