@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { resolveEvidenceAnchors } from "./raw-material";
+import { resolveEvidenceAnchors, addAnnotation, removeAnnotation } from "./raw-material";
+import { createInitialProductState } from "./engine";
 import type { InterviewTurn } from "./types";
 
 const turn = (id: string, role: "user" | "assistant", content: string): InterviewTurn => ({
@@ -31,5 +32,35 @@ describe("resolveEvidenceAnchors", () => {
   it("只在 user 轮里找(默认不锚到主持人的话)", () => {
     const a = resolveEvidenceAnchors("你怕的是结果失控", "s1", turns);
     expect(a).toEqual([]);
+  });
+});
+
+describe("interview annotations", () => {
+  it("addAnnotation 追加一条带 turn 锚点的旁注,trim,记审计", () => {
+    const s = createInitialProductState();
+    const next = addAnnotation(s, "sess-1", "turn-9", "  这里他其实在回避  ");
+    expect(next.interviewAnnotations).toHaveLength(1);
+    expect(next.interviewAnnotations[0].text).toBe("这里他其实在回避");
+    expect(next.interviewAnnotations[0].sessionId).toBe("sess-1");
+    expect(next.interviewAnnotations[0].turnId).toBe("turn-9");
+    expect(next.auditEvents.some((e) => e.type === "annotation_created")).toBe(true);
+  });
+
+  it("空白旁注被忽略", () => {
+    const s = createInitialProductState();
+    expect(addAnnotation(s, "sess-1", "turn-9", "   ").interviewAnnotations).toHaveLength(0);
+  });
+
+  it("removeAnnotation 删除指定 id,不存在则原样返回", () => {
+    const s = addAnnotation(createInitialProductState(), "sess-1", "turn-9", "x");
+    const id = s.interviewAnnotations[0].id;
+    expect(removeAnnotation(s, id).interviewAnnotations).toHaveLength(0);
+    expect(removeAnnotation(s, "nope")).toBe(s);
+  });
+
+  it("不可变:不改输入 state", () => {
+    const s = createInitialProductState();
+    addAnnotation(s, "sess-1", "turn-9", "x");
+    expect(s.interviewAnnotations).toHaveLength(0);
   });
 });
