@@ -9,9 +9,15 @@ import type { BailianChatClient } from "../providers/bailian";
 import { asArray, asObject, asString, parseJsonObjectLoose } from "./llm-json";
 
 const SYSTEM_PROMPT = [
-  "你从用户导入的资料里抽取值得长期记住的【候选记忆】：稳定的事实、明确的观点、决策、未解的问题/知识债。",
-  "每条都要给出资料里的原文片段作为 evidence。判断敏感度：涉及隐私/健康/财务/人际冲突标 sensitive，否则 normal。",
-  "铁律：只抽资料里真实出现的内容，不编造。资料很薄就少抽几条。只输出一个 JSON 对象。"
+  "你从下面的内容里抽取值得【长期记住】的候选记忆：跨时间仍成立的稳定观点/事实、明确的决策(含取舍)、未解的知识债/盲区。",
+  "硬门槛——每条必须能落地为下面至少一种，否则不要抽：",
+  "  (1) 一个可测量信号或量化判断；",
+  "  (2) 一个可触发的条件/机制（形如「当X时会Y」「因为A所以B」「不是A而是B」）；",
+  "  (3) 一个可证伪的假设（你能想象它在什么情况下不成立）。",
+  "明确排除（这些不要抽）：纯修辞金句/比喻/诗意表达、情绪性一次性感慨、含「总是/永远/所有/完全/必须」的空泛绝对化、与已抽条目语义重复的。",
+  "优先抽「可复用的知识债与机制」，而不是「读起来很妙的话」。宁可少而精，不要多而水；内容很薄就少抽几条甚至不抽。",
+  "每条都要给出原文片段作为 evidence。判断敏感度：涉及隐私/健康/财务/人际冲突标 sensitive，否则 normal。",
+  "铁律：只抽真实出现的内容，不编造。只输出一个 JSON 对象。"
 ].join("\n");
 
 export async function extractCandidateMemories(
@@ -28,7 +34,10 @@ export async function extractCandidateMemories(
           `资料标题：${title}`,
           "",
           "=== 资料内容 ===",
-          sanitizeExternalMaterialBlock(content, "（外部资料片段已清洗）").slice(0, 8000),
+          // Cover a full long interview (~20K chars). At 8000 the back ~60% of a 20K-char
+          // session was never mined for memories, so durable knowledge from the second half
+          // (often the deepest part) was silently dropped.
+          sanitizeExternalMaterialBlock(content, "（外部资料片段已清洗）").slice(0, 24000),
           "=== 内容结束 ===",
           "",
           "请输出 JSON：",

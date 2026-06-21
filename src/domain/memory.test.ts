@@ -1,7 +1,36 @@
 import { describe, it, expect } from "vitest";
 
-import { dedupeMemoryRecords, planMemoryUpdate } from "./memory";
-import type { MemoryRecord } from "./types";
+import { dedupeMemoryRecords, planMemoryUpdate, approveMemoryCandidate } from "./memory";
+import { createInitialProductState } from "./engine";
+import type { MemoryRecord, MemoryCandidate } from "./types";
+
+function pendingCandidate(id: string, text: string): MemoryCandidate {
+  return {
+    id, text, status: "pending", sourceType: "interview_session", sourceId: "s2",
+    evidenceQuote: "原文片段足够长可作证据", reason: "需确认", sensitivity: "normal",
+    createdAt: "2026-06-20T00:00:00.000Z", reviewScore: 80, reviewSignals: []
+  } as MemoryCandidate;
+}
+
+describe("approveMemoryCandidate dedup-merge (#3)", () => {
+  it("merges into an existing near-duplicate confirmed record instead of adding a new one", () => {
+    const existing = confirmedRecord({ id: "m1", text: "用户偏好先小范围验证再放权后扩大试点", updatedAt: "2026-06-01T00:00:00.000Z" });
+    const state = { ...createInitialProductState(), memoryRecords: [existing], memoryCandidates: [pendingCandidate("c1", "用户偏好先小范围验证再放权后扩大")] };
+    const next = approveMemoryCandidate(state, "c1");
+    expect(next.memoryRecords.length).toBe(1); // merged, NOT added
+    expect(next.memoryCandidates.find((c) => c.id === "c1")!.status).toBe("approved");
+    expect(next.memoryRecords.find((r) => r.id === "m1")!.updatedAt).not.toBe("2026-06-01T00:00:00.000Z"); // refreshed
+  });
+
+  it("adds a new record when the candidate is not a near-duplicate", () => {
+    const existing = confirmedRecord({ id: "m1", text: "用户偏好先小范围验证再放权" });
+    const state = { ...createInitialProductState(), memoryRecords: [existing], memoryCandidates: [pendingCandidate("c1", "芯片推理瓶颈往往在卡间通信而非单卡算力")] };
+    const next = approveMemoryCandidate(state, "c1");
+    expect(next.memoryRecords.length).toBe(2); // genuinely new
+    expect(next.memoryCandidates.find((c) => c.id === "c1")!.status).toBe("approved");
+  });
+});
+
 
 function confirmedRecord(partial: Partial<MemoryRecord> & { id: string; text: string }): MemoryRecord {
   return {

@@ -292,6 +292,45 @@ export function approveMemoryCandidate(
   }
 
   const reviewedAt = nowIso();
+
+  // #3 dedup-on-approve: if this candidate is a near-duplicate of an existing confirmed record,
+  // merge into that record (refresh recency + keep the stronger importance) instead of creating a
+  // second long-term memory that says the same thing. Stops the库 from accumulating redundant
+  // entries the user would otherwise have to consolidate by hand.
+  const dedupPlan = planMemoryUpdate(
+    { text: candidate.text, ...(opts.embedding && opts.embedding.length > 0 ? { embedding: opts.embedding } : {}) },
+    state.memoryRecords ?? []
+  );
+  if (dedupPlan.op === "update" && dedupPlan.similarToRecordId) {
+    const targetId = dedupPlan.similarToRecordId;
+    const cloned = cloneState(state);
+    const mergedState: ProductState = {
+      ...cloned,
+      memoryRecords: (cloned.memoryRecords ?? []).map((item) =>
+        item.id === targetId
+          ? {
+              ...item,
+              updatedAt: reviewedAt,
+              lastAccessedAt: reviewedAt,
+              importance: Math.max(item.importance ?? 5, reviewScoreToImportance(candidate.reviewScore))
+            }
+          : item
+      ),
+      memoryCandidates: state.memoryCandidates.map((item) =>
+        item.id === candidate.id ? { ...item, status: "approved", reviewedAt } : item
+      )
+    };
+    return withAuditEvent(mergedState, {
+      type: "memory_candidate_approved",
+      label: "候选记忆已确认（合并到近重复的既有记忆）",
+      detail: candidate.text,
+      severity: "info",
+      entityType: "memory_record",
+      entityId: targetId,
+      createdAt: reviewedAt
+    });
+  }
+
   const importance = opts.importance ?? reviewScoreToImportance(candidate.reviewScore);
   const record: MemoryRecord = {
     id: makeId("memory-record"),

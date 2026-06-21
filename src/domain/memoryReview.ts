@@ -51,9 +51,29 @@ export function scoreMemoryCandidate(candidate: MemoryCandidateReviewInput): Pic
     signals.push("敏感候选需谨慎");
   }
 
-  if (/总是|一定|永远|所有|完全/.test(text)) {
+  if (/总是|一定|永远|所有|完全|必须|从不|绝不|根本|一律/.test(text)) {
     score -= 6;
     signals.push("含泛化表达");
+  }
+
+  // Durability / actionability — what actually makes something worth long-term memory:
+  // a triggerable mechanism or falsifiable structure ("当X时会Y" / "因为A所以B" / "不是A而是B"),
+  // and/or a quantified anchor. A flat assertion with neither is likely rhetoric or a vague
+  // opinion that won't stay useful — nudge the reviewer away from it.
+  const hasMechanism =
+    /如果|一旦|因为|所以|导致|取决于|前提是|不是[^，。；]+而是|越[^，。；]+越|当[^，。；]{0,24}[时则]/.test(text);
+  const hasQuantifiedAnchor = /\d/.test(text);
+  if (hasMechanism) {
+    score += 12;
+    signals.push("含可操作机制/可证伪结构");
+  }
+  if (hasQuantifiedAnchor) {
+    score += 6;
+    signals.push("含量化锚点");
+  }
+  if (!hasMechanism && !hasQuantifiedAnchor) {
+    score -= 10;
+    signals.push("缺可操作/量化锚点（疑似泛泛断言或修辞）");
   }
 
   return {
