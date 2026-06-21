@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import { buildApiServer } from "../server";
 import { buildPrivacyReport } from "../../../../src/domain/privacy";
 import { buildBackupRestoreRehearsalReport } from "../../../../src/domain/backup";
+import { createInMemoryRawMaterialRepository } from "../raw-material-repository";
+import type { InterviewRawMaterial } from "../../../../src/domain/types";
 
 describe("state routes", () => {
   it("rejects a stale whole-state PUT with 409 and returns the current state", async () => {
@@ -232,6 +234,78 @@ describe("state routes", () => {
       expect(after.profile.name).toBe("Imported");
       // import is recorded as an audit event (state_imported)
       expect((after.auditEvents ?? []).some((e: { type: string }) => e.type === "state_imported")).toBe(true);
+      await server.close();
+    });
+  });
+
+  describe("cold-layer raw material in export/import/purge (Task 13)", () => {
+    const sampleMaterial = (sessionId: string): InterviewRawMaterial => ({
+      sessionId,
+      turns: [
+        {
+          id: `${sessionId}-t1`,
+          role: "assistant",
+          content: "你最近在想什么？",
+          intent: "open",
+          timestamp: "2026-06-20T00:00:00.000Z"
+        },
+        {
+          id: `${sessionId}-t2`,
+          role: "user",
+          content: "在想冷层材料的隐私闭环。",
+          intent: "answer",
+          timestamp: "2026-06-20T00:00:05.000Z"
+        }
+      ],
+      strategyTrace: [],
+      createdAt: "2026-06-20T00:00:10.000Z"
+    });
+
+    it("purge(all) 清空冷层 raw material", async () => {
+      const rawRepo = createInMemoryRawMaterialRepository();
+      rawRepo.put(sampleMaterial("cold-session-1"));
+      expect(rawRepo.get("cold-session-1")).toBeDefined();
+
+      const server = buildApiServer({ rawMaterialRepository: rawRepo });
+      const purgeRes = await server.inject({
+        method: "POST",
+        url: "/api/state/purge",
+        payload: { confirm: "PURGE_PERSONAL_DATA" }
+      });
+      expect(purgeRes.statusCode).toBe(200);
+      // Cold layer wiped
+      expect(rawRepo.get("cold-session-1")).toBeUndefined();
+      await server.close();
+    });
+
+    it("export 打包冷层原始材料，可经 import 恢复", async () => {
+      const rawRepo = createInMemoryRawMaterialRepository();
+      rawRepo.put(sampleMaterial("cold-session-A"));
+
+      const server = buildApiServer({ rawMaterialRepository: rawRepo });
+      const exportRes = await server.inject({ method: "GET", url: "/api/state/export" });
+      expect(exportRes.statusCode).toBe(200);
+      const body = exportRes.json();
+      // Export package carries the cold-layer raw materials
+      expect(Array.isArray(body.rawMaterials)).toBe(true);
+      const exported = body.rawMaterials.find(
+        (m: InterviewRawMaterial) => m.sessionId === "cold-session-A"
+      );
+      expect(exported).toBeDefined();
+      expect(exported.turns.length).toBe(2);
+
+      // Import into a fresh server's cold layer restores the raw material
+      const freshRepo = createInMemoryRawMaterialRepository();
+      const freshServer = buildApiServer({ rawMaterialRepository: freshRepo });
+      const importRes = await freshServer.inject({
+        method: "POST",
+        url: "/api/state/import",
+        payload: { confirm: "REPLACE_ALL_STATE", ...body }
+      });
+      expect(importRes.statusCode).toBe(200);
+      expect(freshRepo.get("cold-session-A")).toBeDefined();
+      expect(freshRepo.get("cold-session-A")?.turns.length).toBe(2);
+      await freshServer.close();
       await server.close();
     });
   });

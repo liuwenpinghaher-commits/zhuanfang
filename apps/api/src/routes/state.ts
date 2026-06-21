@@ -5,9 +5,18 @@ import { normalizeProductState } from "../../../../src/domain/storage";
 import { withAuditEvent } from "../../../../src/domain/utils";
 import { purgeLocalObjectArtifactsForState } from "../local-object-artifacts";
 import type { ProductStateRepository } from "../product-state-repository";
+import type { RawMaterialRepository } from "../raw-material-repository";
+import type { InterviewRawMaterial } from "../../../../src/domain/types";
 
 interface StateRouteOptions {
   env?: Record<string, string | undefined>;
+  /**
+   * Cold-layer raw-material store. Export bundles it into the package (`rawMaterials`),
+   * import restores it, and a full purge wipes it — so the privacy loop covers the cold
+   * layer, not just hot ProductState. Optional so existing call sites without a repo keep
+   * working (export simply omits `rawMaterials`, purge skips the cold wipe).
+   */
+  rawMaterialRepository?: RawMaterialRepository;
 }
 
 export async function registerStateRoutes(
@@ -15,6 +24,7 @@ export async function registerStateRoutes(
   repository: ProductStateRepository,
   options: StateRouteOptions = {}
 ) {
+  const rawMaterialRepository = options.rawMaterialRepository;
   server.get("/api/state", async () => repository.getState());
   server.put("/api/state", async (request, reply) => {
     const stored = repository.getState();
@@ -38,7 +48,12 @@ export async function registerStateRoutes(
   // so the downloaded JSON is genuinely restorable via POST /api/state/import below.
   server.get("/api/state/export", async () => {
     const state = repository.getState();
-    return buildBackupRestoreRehearsalReport(state);
+    const report = buildBackupRestoreRehearsalReport(state);
+    // Cold-layer raw material lives outside ProductState (its own SQLite store), so the
+    // hot-state rehearsal report doesn't see it. Bundle it here so a downloaded export is a
+    // complete backup and the matching import below can restore the cold layer too.
+    const rawMaterials: InterviewRawMaterial[] = rawMaterialRepository?.list() ?? [];
+    return { ...report, rawMaterials };
   });
 
   // P0-2b: Import — restore a previously exported package (or a raw ProductState).
@@ -46,7 +61,7 @@ export async function registerStateRoutes(
   // bare ProductState. Normalizes before replacing so schema/field drift is healed.
   server.post("/api/state/import", async (request, reply) => {
     const body = request.body as
-      | { state?: unknown; exportPackage?: { state?: unknown }; confirm?: unknown }
+      | { state?: unknown; exportPackage?: { state?: unknown }; confirm?: unknown; rawMaterials?: unknown }
       | undefined;
     // P0-B: import is a full-state overwrite — require an explicit confirm token so a stray /
     // CSRF POST can't silently replace all state. Accept the purge token or the import-specific
@@ -73,7 +88,18 @@ export async function registerStateRoutes(
       entityId: "local-product-state",
       createdAt: new Date().toISOString()
     });
-    return repository.replaceState(imported);
+    const replaced = repository.replaceState(imported);
+    // Restore the cold layer from the export bundle (Task 13). Each entry is upserted by
+    // sessionId, so re-importing the same package is idempotent. Done after the hot-state
+    // overwrite so a partial/legacy package without `rawMaterials` still imports cleanly.
+    if (rawMaterialRepository && Array.isArray(body?.rawMaterials)) {
+      for (const material of body.rawMaterials as InterviewRawMaterial[]) {
+        if (material && typeof material.sessionId === "string") {
+          rawMaterialRepository.put(material);
+        }
+      }
+    }
+    return replaced;
   });
 
   // P0-3: Purge — clears personal data from the state store AND deletes the referenced
@@ -119,11 +145,19 @@ export async function registerStateRoutes(
         });
       }
       const nextState = repository.replaceState(purged);
+      // Cold layer (raw-material store) holds the verbatim interview transcripts. A full wipe
+      // must clear it too, otherwise the original Q&A survives the "complete" purge (Task 13).
+      rawMaterialRepository?.deleteAll();
       return { ...nextState, artifactPurge, deletedScope: "all" as PurgeScope, deletedCount };
     }
 
     const { nextState: scopedState, deletedScope, deletedCount } = createScopedPurge(state, scope);
     const nextState = repository.replaceState(scopedState);
+    // The interviews scope clears all sessions from hot state; their cold-layer raw materials
+    // are keyed by sessionId and would otherwise be orphaned, so wipe the cold layer too.
+    if (scope === "interviews") {
+      rawMaterialRepository?.deleteAll();
+    }
     return { ...nextState, deletedScope, deletedCount };
   });
 }

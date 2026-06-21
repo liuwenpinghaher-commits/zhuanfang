@@ -41,6 +41,7 @@ export function createSqliteRawMaterialRepository(
        created_at = excluded.created_at`
   );
   const selectOne = database.prepare("SELECT * FROM interview_raw_material WHERE session_id = ?");
+  const selectAll = database.prepare("SELECT * FROM interview_raw_material ORDER BY created_at ASC");
   const deleteOne = database.prepare("DELETE FROM interview_raw_material WHERE session_id = ?");
   const deleteAllStmt = database.prepare("DELETE FROM interview_raw_material");
 
@@ -56,6 +57,15 @@ export function createSqliteRawMaterialRepository(
         strategyTrace: row.strategy_trace_json ? JSON.parse(row.strategy_trace_json) : [],
         createdAt: row.created_at
       };
+    },
+    list() {
+      const rows = selectAll.all() as unknown as RawMaterialRow[];
+      return rows.map((row) => ({
+        sessionId: row.session_id,
+        turns: JSON.parse(row.turns_json),
+        strategyTrace: row.strategy_trace_json ? JSON.parse(row.strategy_trace_json) : [],
+        createdAt: row.created_at
+      }));
     },
     put(material) {
       upsert.run(
