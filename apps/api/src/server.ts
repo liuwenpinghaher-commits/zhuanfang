@@ -52,6 +52,7 @@ import { registerMemoryCandidateRoutes } from "./routes/memory-candidates";
 import { registerPlaybookPatchRoutes } from "./routes/playbook-patches";
 import { registerPodcastRoutes } from "./routes/podcast";
 import { registerRagRoutes } from "./routes/rag";
+import { registerChatRoutes } from "./routes/chat";
 import { registerRealtimeVoiceRoutes } from "./routes/realtime-voice";
 import { registerReviewRoutes } from "./routes/reviews";
 import { registerSearchRoutes } from "./routes/search";
@@ -270,6 +271,13 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
         llmBudget: sharedBudget
       }
     );
+  });
+  void server.register(async (registeredServer) => {
+    await registerChatRoutes(registeredServer, productStateRepository, knowledgeIndexRepository, {
+      embeddingClient: providerClients.embeddingClient,
+      bailianChatClient: providerClients.bailianChatClient,
+      llmBudget: sharedBudget
+    });
   });
 
   // Static file serving: when PRODUCT_STATIC_DIR is set (production Docker image),

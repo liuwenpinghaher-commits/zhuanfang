@@ -1,6 +1,7 @@
 import type { ChatCitation, ChatMessage, ChatSession, InterviewTurn, KnowledgeChunk, KnowledgeSourceType, ProductState } from "./types";
 import { cloneState, makeId, nowIso, withAuditEvent } from "./utils";
 import { tokenizeMemoryGraphText } from "./context-pack";
+import { cosineSimilarity } from "./vector";
 
 /** chat 会话总数上限：每个 ProductState 最多保留的会话数，超出按 updatedAt 升序淘汰最旧。 */
 const MAX_CHAT_SESSIONS = 50;
@@ -270,4 +271,83 @@ export function deleteChatSession(state: ProductState, sessionId: string): Produ
   const next = cloneState(state);
   next.chatSessions = next.chatSessions.filter((item) => item.id !== sessionId);
   return next;
+}
+
+/** chat prompt 里 history 拼接的最近条数上限。 */
+const CHAT_HISTORY_LIMIT = 6;
+/** 资料列表中每块正文截断的字符上限。 */
+const CHAT_CHUNK_TEXT_LIMIT = 400;
+
+/**
+ * 召回排序：从全量 chunks 里选出与 query 最相关的前 topK。
+ *  - 有 queryEmbedding 且块有 embedding → 余弦相似度排序（复用 cosineSimilarity）。
+ *  - 否则关键词重叠：query 的 token 与 chunk.keywords ∪ chunk.text 的 token 交集计数。
+ * 纯函数、不可变；返回前 topK 个。
+ */
+export function rankKnowledgeChunks(
+  chunks: KnowledgeChunk[],
+  queryText: string,
+  queryEmbedding: number[] | undefined,
+  topK: number
+): KnowledgeChunk[] {
+  if (queryEmbedding && queryEmbedding.length > 0) {
+    const scored = chunks
+      .filter((c) => Array.isArray(c.embedding) && c.embedding.length > 0)
+      .map((c) => ({ chunk: c, score: cosineSimilarity(queryEmbedding, c.embedding as number[]) }))
+      .sort((a, b) => b.score - a.score);
+    if (scored.length > 0) {
+      return scored.slice(0, topK).map((s) => s.chunk);
+    }
+    // 没有任何块带 embedding → 退化到关键词重叠（下方逻辑）。
+  }
+
+  const queryTokens = new Set(tokenizeMemoryGraphText(queryText));
+  const scored = chunks
+    .map((c) => {
+      const chunkTokens = new Set([...c.keywords, ...tokenizeMemoryGraphText(c.text)]);
+      let overlap = 0;
+      for (const t of queryTokens) {
+        if (chunkTokens.has(t)) overlap += 1;
+      }
+      return { chunk: c, score: overlap };
+    })
+    .sort((a, b) => b.score - a.score);
+  return scored.slice(0, topK).map((s) => s.chunk);
+}
+
+/**
+ * 构建通用 AI 助手对话 prompt。
+ *  - system：私人认知助手人设 + 接地指令（优先依据用户资料并标来源编号；不足时可推断，但明确区分
+ *    '你的资料显示' 与 '我的推断'，不把推断伪装成用户资料）+ 编号资料列表。
+ *  - user：近 history（最多 CHAT_HISTORY_LIMIT 条）拼接 + 当前 message。
+ * 纯函数、不可变。
+ */
+export function buildChatPrompt(
+  retrieved: KnowledgeChunk[],
+  history: ChatMessage[],
+  message: string
+): { system: string; user: string } {
+  const materials = retrieved.length
+    ? retrieved
+        .map((c, i) => `[${i + 1}] (${c.sourceType}) ${c.title}: ${truncate(c.text, CHAT_CHUNK_TEXT_LIMIT)}`)
+        .join("\n")
+    : "（暂未检索到相关资料）";
+
+  const system =
+    "你是用户的私人认知助手。下面是检索到的用户自己的资料(带编号)。" +
+    "优先依据这些资料回答并在用到处标注来源编号(如[1]);" +
+    "资料不足时可基于常识和推理补充,但要明确区分'你的资料显示'与'我的推断'," +
+    "不要把推断伪装成用户资料。\n\n" +
+    `检索到的资料:\n${materials}`;
+
+  const recent = history.slice(-CHAT_HISTORY_LIMIT);
+  const historyText = recent
+    .map((m) => `${m.role === "user" ? "用户" : "助手"}: ${m.content}`)
+    .join("\n");
+
+  const user = historyText
+    ? `对话历史:\n${historyText}\n\n当前问题: ${message}`
+    : `当前问题: ${message}`;
+
+  return { system, user };
 }

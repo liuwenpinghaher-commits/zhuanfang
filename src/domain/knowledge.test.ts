@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { buildKnowledgeChunks, diffIndexableSources, createChatSession, appendChatMessage, renameChatSession, deleteChatSession } from "./knowledge";
+import { buildKnowledgeChunks, diffIndexableSources, createChatSession, appendChatMessage, renameChatSession, deleteChatSession, rankKnowledgeChunks, buildChatPrompt } from "./knowledge";
 import { createInitialProductState } from "./engine";
-import type { InterviewTurn, MemoryRecord, ProductState } from "./types";
+import type { ChatMessage, InterviewTurn, KnowledgeChunk, MemoryRecord, ProductState } from "./types";
 
 describe("buildKnowledgeChunks", () => {
   it("把蒸馏资产各切成块,带 sourceType/sourceId,离线无嵌入", () => {
@@ -137,5 +137,73 @@ describe("chat 会话域函数", () => {
     const before = createInitialProductState();
     createChatSession(before);
     expect(before.chatSessions).toHaveLength(0); // 输入不变
+  });
+});
+
+function makeKChunk(overrides: Partial<KnowledgeChunk> & { id: string }): KnowledgeChunk {
+  return {
+    sourceType: "memory",
+    sourceId: overrides.id,
+    title: "块",
+    text: "内容",
+    keywords: [],
+    createdAt: "2026-06-22T00:00:00.000Z",
+    ...overrides
+  };
+}
+
+describe("rankKnowledgeChunks", () => {
+  it("有 queryEmbedding 且块有 embedding → 余弦排序,近的排前", () => {
+    const near = makeKChunk({ id: "near", embedding: [1, 0, 0] });
+    const far = makeKChunk({ id: "far", embedding: [0, 1, 0] });
+    const out = rankKnowledgeChunks([far, near], "query", [1, 0, 0], 8);
+    expect(out[0].id).toBe("near"); // cosine=1 排第一
+    expect(out[1].id).toBe("far");
+  });
+
+  it("无 queryEmbedding → 关键词重叠排序", () => {
+    const hit = makeKChunk({ id: "hit", text: "放权失控的担忧", keywords: ["放权", "失控"] });
+    const miss = makeKChunk({ id: "miss", text: "天气不错", keywords: ["天气"] });
+    const out = rankKnowledgeChunks([miss, hit], "我担心放权失控", undefined, 8);
+    expect(out[0].id).toBe("hit");
+  });
+
+  it("topK 截断", () => {
+    const chunks = Array.from({ length: 10 }, (_, i) =>
+      makeKChunk({ id: `c${i}`, text: "放权", keywords: ["放权"] })
+    );
+    const out = rankKnowledgeChunks(chunks, "放权", undefined, 3);
+    expect(out).toHaveLength(3);
+  });
+});
+
+describe("buildChatPrompt", () => {
+  it("system 含区分指令 + 编号资料;user 含 message", () => {
+    const retrieved = [
+      makeKChunk({ id: "r1", sourceType: "memory", title: "担忧记录", text: "我担心放权失控" })
+    ];
+    const history: ChatMessage[] = [
+      { id: "m1", role: "user", content: "之前的问题", createdAt: "2026-06-22T00:00:00.000Z" },
+      { id: "m2", role: "assistant", content: "之前的回答", createdAt: "2026-06-22T00:00:00.000Z" }
+    ];
+    const { system, user } = buildChatPrompt(retrieved, history, "我现在担心什么?");
+    // 区分 '你的资料显示' 与 '我的推断'
+    expect(system).toContain("区分");
+    expect(system).toContain("[1]"); // 编号资料
+    expect(system).toContain("担忧记录");
+    expect(user).toContain("我现在担心什么?"); // 当前 message
+    expect(user).toContain("之前的问题"); // history 拼接
+  });
+
+  it("history 最多 6 条", () => {
+    const history: ChatMessage[] = Array.from({ length: 10 }, (_, i) => ({
+      id: `m${i}`,
+      role: (i % 2 === 0 ? "user" : "assistant") as "user" | "assistant",
+      content: `历史消息${i}`,
+      createdAt: "2026-06-22T00:00:00.000Z"
+    }));
+    const { user } = buildChatPrompt([], history, "当前");
+    expect(user).not.toContain("历史消息0"); // 最旧被截断
+    expect(user).toContain("历史消息9"); // 最新保留
   });
 });
