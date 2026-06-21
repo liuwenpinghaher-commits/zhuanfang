@@ -4,6 +4,7 @@ import {
   Brain,
   Compass,
   Headphones,
+  Library,
   Mic,
   Play,
   Search,
@@ -48,6 +49,7 @@ import {
   updateQuestionStatus
 } from "./domain/engine";
 import { addAnnotation, removeAnnotation } from "./domain/raw-material";
+import { deleteImportSource } from "./domain/material";
 import { executeSearchProvider } from "./capabilities/search";
 import { createIdleCapabilityTask, failCapabilityTask, startCapabilityTask } from "./capabilities/task";
 import { productApiClient, getProductApiBaseUrl, isNetworkError, type ReviewsResponse } from "./api/productApi";
@@ -96,6 +98,7 @@ import { SearchIntelligenceView } from "./features/search/SearchIntelligenceView
 import { ThemesView } from "./features/themes/ThemesView";
 import { TrackWorkspaceView } from "./features/track/TrackWorkspaceView";
 import { MemoryGovernanceView } from "./features/memory/MemoryGovernanceView";
+import { MaterialLibraryView } from "./features/material/MaterialLibraryView";
 import { buildTrackWorkspace } from "./domain/timeline";
 import {
   buildNotice,
@@ -114,6 +117,7 @@ const navIconByView: Record<View, typeof Compass> = {
   corpus: Upload,
   podcast: Headphones,
   notes: BookOpen,
+  material: Library,
   "my-assets": Archive,
   themes: Brain,
   memory: Brain,
@@ -1846,6 +1850,14 @@ export default function App() {
             getAudioMeta={(sessionId, role) => productApiClient.getSessionAudioMeta(sessionId, role)}
             audioUrl={(sessionId) => productApiClient.sessionAudioUrl(sessionId)}
             getAudioBlob={(sessionId, role) => productApiClient.fetchSessionAudioBlob(sessionId, role)}
+          />
+        )}
+        {view === "material" && (
+          <MaterialLibraryView
+            state={productState}
+            onImport={importMemoryDocument}
+            onRebuildIndex={() => productApiClient.rebuildKnowledgeIndex()}
+            onDeleteSource={(id) => setProductState(deleteImportSource(productState, id))}
           />
         )}
         {view === "my-assets" && (

@@ -8,6 +8,7 @@ export type View =
   | "corpus"
   | "podcast"
   | "notes"
+  | "material"
   | "my-assets"
   | "themes"
   | "memory"
@@ -83,6 +84,7 @@ export const groupedNavigation: NavigationGroup[] = [
     label: "认知资产",
     items: [
       { id: "notes", label: "双轨笔记" },
+      { id: "material", label: "素材库" },
       { id: "my-assets", label: "我的资产" },
       { id: "search", label: "外部调研" },
       { id: "memory", label: "记忆" }

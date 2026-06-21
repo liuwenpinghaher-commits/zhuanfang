@@ -38,6 +38,8 @@ export interface ProductApiClient {
   getState(): Promise<ProductState>;
   getReviews(): Promise<ReviewsResponse>;
   importDocument(input: ImportDocumentRequest): Promise<ImportDocumentResponse>;
+  /** Full rebuild of the server-side knowledge index. Returns how many chunks were indexed. */
+  rebuildKnowledgeIndex(): Promise<{ chunkCount: number }>;
   confirmDecision(id: string): Promise<ProductState>;
   approveMemoryCandidate(id: string): Promise<ProductState>;
   rejectMemoryCandidate(id: string, reviewNote?: string): Promise<ProductState>;
@@ -512,6 +514,9 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         body: JSON.stringify(input)
       })) as ImportDocumentResponse;
       return { ...response, state: normalizeProductState(response.state) };
+    },
+    async rebuildKnowledgeIndex() {
+      return (await requestJson("/api/knowledge/rebuild", { method: "POST" })) as { chunkCount: number };
     },
     async confirmDecision(id) {
       const response = (await requestJson(`/api/assets/decisions/${id}/confirm`, { method: "POST" })) as { state: ProductState };
