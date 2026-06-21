@@ -30,9 +30,11 @@ import { generatePreSignals } from "../intelligence/pre-signals-llm";
 import { classifyTurnComplete } from "../intelligence/turn-endpoint-llm";
 import type { ProductStateRepository } from "../product-state-repository";
 import type { RawMaterialRepository } from "../raw-material-repository";
+import type { KnowledgeIndexRepository } from "../knowledge-index-repository";
 import type { BailianChatClient, BailianCharacterInterviewClient, BailianEmbeddingClient } from "../providers/bailian";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import { offloadCompletedSession } from "./raw-material";
+import { reindexTranscript } from "./knowledge";
 
 interface CreateSessionPayload {
   mode?: unknown;
@@ -54,6 +56,7 @@ interface InterviewSessionRouteOptions {
   bailianChatClient?: BailianChatClient;
   embeddingClient?: BailianEmbeddingClient;
   rawMaterialRepository?: RawMaterialRepository;
+  knowledgeIndexRepository?: KnowledgeIndexRepository;
   llmBudget?: LlmBudget;
 }
 
@@ -305,11 +308,13 @@ export async function registerInterviewSessionRoutes(
     // GET /api/sessions/:id/raw-material. The end screen shows the dual-track
     // note, not the transcript, so a light state doesn't degrade it.
     let stateToPersist = finalizedState;
+    let offloadedTurns: InterviewTurn[] | undefined;
     if (options.rawMaterialRepository) {
       const { hotState, material } = offloadCompletedSession(finalizedState, session.id);
       if (material) {
         options.rawMaterialRepository.put(material);
         stateToPersist = hotState;
+        offloadedTurns = material.turns;
       }
     }
     // Return the light, persisted session (turns stripped, rawMaterialOffloaded),
@@ -317,6 +322,19 @@ export async function registerInterviewSessionRoutes(
     const persistedSession = stateToPersist.sessions.find((item) => item.id === session.id) ?? completedSession;
 
     repository.replaceState(stateToPersist);
+    // 知识索引补点：该会话降冷后的 transcript 块（逐字稿冷层，不在持久化边界 diff 内）。
+    // note 块已由包装后的 replaceState 自动增量（note 在 diffIndexableSources 内）。
+    // fire-and-forget——不 await、不阻塞响应、不抛回写路径。
+    if (options.knowledgeIndexRepository && offloadedTurns) {
+      void reindexTranscript(
+        stateToPersist,
+        session.id,
+        offloadedTurns,
+        options.knowledgeIndexRepository,
+        options.embeddingClient,
+        budget
+      );
+    }
     budget.reset(session.id);
     return { session: persistedSession, note: result.note, state: stateToPersist };
   });

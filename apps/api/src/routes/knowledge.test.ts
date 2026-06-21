@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { buildApiServer } from "../server";
 import { createInMemoryKnowledgeIndexRepository } from "../knowledge-index-repository";
-import { embedChunks } from "./knowledge";
+import { embedChunks, reindexOnStateChange } from "./knowledge";
 import { createLlmBudget } from "../llm-budget";
-import type { KnowledgeChunk } from "../../../../src/domain/types";
+import { createInitialProductState } from "../../../../src/domain/engine";
+import type { KnowledgeChunk, MemoryRecord, ProductState } from "../../../../src/domain/types";
 import type { BailianEmbeddingClient } from "../providers/bailian";
 
 function makeChunk(id: string): KnowledgeChunk {
@@ -99,5 +100,85 @@ describe("embedChunks", () => {
     };
     const out = await embedChunks([makeChunk("a")], client, createLlmBudget());
     expect(out[0].embedding).toBeUndefined();
+  });
+});
+
+describe("reindexOnStateChange", () => {
+  function rec(id: string, text: string): MemoryRecord {
+    return {
+      id,
+      text,
+      status: "confirmed",
+      sourceType: "interview_session",
+      sourceId: "x",
+      evidenceQuote: "",
+      createdAt: "2026-06-22T00:00:00.000Z",
+      updatedAt: "2026-06-22T00:00:00.000Z"
+    };
+  }
+
+  it("修改一条 memory → 该来源块被替换为新内容；删除一条 → 块被清除", async () => {
+    const base = createInitialProductState();
+    const prev: ProductState = {
+      ...base,
+      memoryRecords: [rec("m1", "旧文本"), rec("m2", "将删除")]
+    };
+    const next: ProductState = {
+      ...base,
+      memoryRecords: [rec("m1", "新文本")]
+    };
+    const repo = createInMemoryKnowledgeIndexRepository();
+    // 预置：m1/m2 的旧块各一条
+    repo.put({ ...makeChunk("old1"), sourceType: "memory", sourceId: "m1", text: "旧文本" });
+    repo.put({ ...makeChunk("old2"), sourceType: "memory", sourceId: "m2", text: "将删除" });
+
+    await reindexOnStateChange(prev, next, repo, undefined, createLlmBudget());
+
+    const all = repo.listAll();
+    const m1 = all.filter((c) => c.sourceType === "memory" && c.sourceId === "m1");
+    const m2 = all.filter((c) => c.sourceType === "memory" && c.sourceId === "m2");
+    expect(m1).toHaveLength(1);
+    expect(m1[0].text).toBe("新文本"); // 被重建为新内容
+    expect(m2).toHaveLength(0); // 删除来源的块被清除
+  });
+
+  it("无变更 → 不动索引、不抛", async () => {
+    const base = createInitialProductState();
+    const repo = createInMemoryKnowledgeIndexRepository();
+    repo.put({ ...makeChunk("k"), sourceType: "memory", sourceId: "m1" });
+    await reindexOnStateChange(base, base, repo, undefined, createLlmBudget());
+    expect(repo.listAll()).toHaveLength(1);
+  });
+});
+
+describe("PUT /api/state 触发增量重索引(经包装的 replaceState)", () => {
+  it("PUT 改一条 theme summary 后，knowledgeRepo 里该 theme 的块被更新为新内容", async () => {
+    const knowledgeIndexRepository = createInMemoryKnowledgeIndexRepository();
+    const server = buildApiServer({ env: {}, knowledgeIndexRepository });
+    // 先全量建索引，确保 theme 块入库
+    await server.inject({ method: "POST", url: "/api/knowledge/rebuild" });
+
+    const cur = (await server.inject({ method: "GET", url: "/api/state" })).json() as ProductState;
+    const target = cur.themes[0];
+    expect(target).toBeDefined();
+    const newSummary = "增量索引验证：被修改的主题摘要";
+    const nextState: ProductState = {
+      ...cur,
+      themes: cur.themes.map((t, i) => (i === 0 ? { ...t, summary: newSummary } : t))
+    };
+
+    const put = await server.inject({ method: "PUT", url: "/api/state", payload: nextState });
+    expect(put.statusCode).toBe(200);
+
+    // reindex 是 fire-and-forget(微任务)，让事件循环转一圈再断言。
+    await new Promise((r) => setTimeout(r, 20));
+
+    const block = knowledgeIndexRepository
+      .listAll()
+      .find((c) => c.sourceType === "theme" && c.sourceId === target.id);
+    expect(block).toBeDefined();
+    expect(block?.text).toContain(newSummary);
+
+    await server.close();
   });
 });

@@ -1,4 +1,4 @@
-import type { InterviewTurn, KnowledgeChunk, ProductState } from "./types";
+import type { InterviewTurn, KnowledgeChunk, KnowledgeSourceType, ProductState } from "./types";
 import { makeId, nowIso } from "./utils";
 import { tokenizeMemoryGraphText } from "./context-pack";
 
@@ -101,4 +101,70 @@ export function buildKnowledgeChunks(
   }
 
   return chunks;
+}
+
+/** 单个可索引来源的引用：类型 + 该来源的稳定 id。 */
+export interface SourceRef {
+  sourceType: KnowledgeSourceType;
+  sourceId: string;
+}
+
+/** 两个 ProductState 之间可索引来源的增量：内容变化的（新增/修改）与被删除的。 */
+export interface IndexDiff {
+  changed: SourceRef[];
+  removed: SourceRef[];
+}
+
+/** 一个可索引数组在 diff 时的描述：sourceType + 取 id + 该来源数组的取值器。 */
+interface DiffableArray {
+  sourceType: KnowledgeSourceType;
+  pick: (state: ProductState) => ReadonlyArray<{ id: string }>;
+}
+
+// material / transcript 不在此 diff 内：material 由 import 端点补、transcript 由 /end 降冷后补，
+// 它们的内容不完全（或根本不）落在 ProductState 的对应数组里。
+const DIFFABLE_ARRAYS: DiffableArray[] = [
+  { sourceType: "note", pick: (s) => s.notes },
+  { sourceType: "memory", pick: (s) => s.memoryRecords },
+  { sourceType: "theme", pick: (s) => s.themes },
+  { sourceType: "point", pick: (s) => s.points },
+  { sourceType: "decision", pick: (s) => s.decisions },
+  { sourceType: "debt", pick: (s) => s.debts }
+];
+
+/**
+ * 持久化边界增量：比对 prev / next 的可索引资产数组（note/memory/theme/point/decision/debt），
+ * 逐条按 id 配对：
+ *  - next 有、prev 无 → changed（新增）
+ *  - next 有、prev 有但内容变（JSON.stringify 逐条比对）→ changed（修改）
+ *  - prev 有、next 无 → removed（删除）
+ * 纯函数，不可变、不嵌入；material/transcript 由各自端点单独补点，不在此 diff。
+ */
+export function diffIndexableSources(prev: ProductState, next: ProductState): IndexDiff {
+  const changed: SourceRef[] = [];
+  const removed: SourceRef[] = [];
+
+  for (const { sourceType, pick } of DIFFABLE_ARRAYS) {
+    const prevItems = pick(prev);
+    const nextItems = pick(next);
+    const prevById = new Map(prevItems.map((it) => [it.id, it] as const));
+    const nextIds = new Set(nextItems.map((it) => it.id));
+
+    for (const item of nextItems) {
+      const before = prevById.get(item.id);
+      if (before === undefined) {
+        changed.push({ sourceType, sourceId: item.id }); // 新增
+      } else if (JSON.stringify(before) !== JSON.stringify(item)) {
+        changed.push({ sourceType, sourceId: item.id }); // 修改
+      }
+    }
+
+    for (const item of prevItems) {
+      if (!nextIds.has(item.id)) {
+        removed.push({ sourceType, sourceId: item.id }); // 删除
+      }
+    }
+  }
+
+  return { changed, removed };
 }

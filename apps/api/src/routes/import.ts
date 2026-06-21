@@ -4,11 +4,14 @@ import { extractCandidateMemories } from "../intelligence/memory-extraction-llm"
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import type { BailianChatClient, BailianEmbeddingClient } from "../providers/bailian";
 import type { ProductStateRepository } from "../product-state-repository";
+import type { KnowledgeIndexRepository } from "../knowledge-index-repository";
+import { reindexMaterial } from "./knowledge";
 
 interface ImportRouteOptions {
   bailianChatClient?: BailianChatClient;
   embeddingClient?: BailianEmbeddingClient;
   llmBudget?: LlmBudget;
+  knowledgeIndexRepository?: KnowledgeIndexRepository;
 }
 
 // P1-05: cap import document content. 256KB is roomy for a pasted article/transcript while
@@ -56,6 +59,11 @@ export async function registerImportRoutes(
       options.embeddingClient
     );
     repository.replaceState(nextState);
+    // 知识索引补点：新 importSource 的 material 块（不在持久化边界 diff 内）。
+    // fire-and-forget——不 await、不阻塞响应、不抛回写路径。
+    if (options.knowledgeIndexRepository) {
+      void reindexMaterial(nextState, sourceId, options.knowledgeIndexRepository, options.embeddingClient, budget);
+    }
     return { sourceId, candidateCount, state: nextState };
   });
 }

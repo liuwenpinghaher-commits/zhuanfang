@@ -1,11 +1,11 @@
 import type { FastifyInstance } from "fastify";
-import type { InterviewTurn, KnowledgeChunk } from "../../../../src/domain/types";
+import type { InterviewTurn, KnowledgeChunk, ProductState } from "../../../../src/domain/types";
 import type { ProductStateRepository } from "../product-state-repository";
 import type { RawMaterialRepository } from "../raw-material-repository";
 import type { KnowledgeIndexRepository } from "../knowledge-index-repository";
 import type { BailianEmbeddingClient } from "../providers/bailian";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
-import { buildKnowledgeChunks } from "../../../../src/domain/knowledge";
+import { buildKnowledgeChunks, diffIndexableSources } from "../../../../src/domain/knowledge";
 
 const EMBED_BATCH = 32;
 
@@ -42,6 +42,135 @@ export async function embedChunks(
     }
   }
   return out;
+}
+
+/**
+ * 持久化边界增量重索引：对 prev→next 的可索引资产 diff，删除被删来源的块、重建变更来源的块。
+ * material/transcript 不在此处（由 import / /end 单独补点）。
+ *
+ * fire-and-forget 语义：调用方 void 它、不 await；本函数自身整体 try/catch 吞所有异常，
+ * 绝不把错误抛回写路径——重索引失败只记一条 warn，不影响已落库的状态写入。
+ */
+export async function reindexOnStateChange(
+  prev: ProductState,
+  next: ProductState,
+  knowledgeRepo: KnowledgeIndexRepository,
+  embeddingClient: BailianEmbeddingClient | undefined,
+  budget: LlmBudget
+): Promise<void> {
+  try {
+    const diff = diffIndexableSources(prev, next);
+
+    // 先处理删除：被删来源的块直接清掉。
+    for (const ref of diff.removed) {
+      knowledgeRepo.deleteBySource(ref.sourceType, ref.sourceId);
+    }
+
+    if (diff.changed.length === 0) return;
+
+    // 对 changed 的来源：从 next 全量切块，再过滤出这些来源的块。
+    // 增量不含 transcript（空 map），material 在 next.importSources 里但不会出现在 changedKeys 中。
+    const changedKeys = new Set(diff.changed.map((r) => `${r.sourceType}::${r.sourceId}`));
+    const allChunks = buildKnowledgeChunks(next, new Map());
+    const relevant = allChunks.filter((c) => changedKeys.has(`${c.sourceType}::${c.sourceId}`));
+    const embedded = await embedChunks(relevant, embeddingClient, budget);
+
+    // 按来源分组后整组 replaceSource，保证一个来源的旧块被一次性替换（即便它现在没有块也清空）。
+    const bySource = new Map<string, KnowledgeChunk[]>();
+    for (const c of embedded) {
+      const k = `${c.sourceType}::${c.sourceId}`;
+      const list = bySource.get(k);
+      if (list) {
+        list.push(c);
+      } else {
+        bySource.set(k, [c]);
+      }
+    }
+    for (const ref of diff.changed) {
+      const k = `${ref.sourceType}::${ref.sourceId}`;
+      knowledgeRepo.replaceSource(ref.sourceType, ref.sourceId, bySource.get(k) ?? []);
+    }
+  } catch (err) {
+    console.warn(
+      JSON.stringify({
+        event: "reindex_failed",
+        error: err instanceof Error ? err.message : String(err)
+      })
+    );
+  }
+}
+
+/**
+ * import 端点专用补点：把指定 importSource 的 material 块重建进索引。
+ * material 不在 diffIndexableSources 内（内容截断、不走 PUT 编辑路径），故由 import 显式补。
+ * fire-and-forget 友好：整体 try/catch，绝不抛。
+ */
+export async function reindexMaterial(
+  state: ProductState,
+  sourceId: string,
+  knowledgeRepo: KnowledgeIndexRepository,
+  embeddingClient: BailianEmbeddingClient | undefined,
+  budget: LlmBudget
+): Promise<void> {
+  try {
+    const chunks = buildKnowledgeChunks(state, new Map()).filter(
+      (c) => c.sourceType === "material" && c.sourceId === sourceId
+    );
+    const embedded = await embedChunks(chunks, embeddingClient, budget);
+    knowledgeRepo.replaceSource("material", sourceId, embedded);
+  } catch (err) {
+    console.warn(
+      JSON.stringify({
+        event: "reindex_material_failed",
+        sourceId,
+        error: err instanceof Error ? err.message : String(err)
+      })
+    );
+  }
+}
+
+/**
+ * /end 端点专用补点：会话降冷后，把该会话的 transcript 块（逐字稿冷层）重建进索引。
+ * transcript 不在 ProductState 里（属冷层），需调用方把该会话的 turns 传入。
+ * 按 buildKnowledgeChunks 的约定，transcript 的 sourceId 形如 `${sessionId}#${turnId}`，
+ * 故按 sourceId 逐条 replaceSource。fire-and-forget 友好：整体 try/catch，绝不抛。
+ */
+export async function reindexTranscript(
+  state: ProductState,
+  sessionId: string,
+  turns: InterviewTurn[],
+  knowledgeRepo: KnowledgeIndexRepository,
+  embeddingClient: BailianEmbeddingClient | undefined,
+  budget: LlmBudget
+): Promise<void> {
+  try {
+    const all = buildKnowledgeChunks(state, new Map([[sessionId, turns]]));
+    const chunks = all.filter(
+      (c) => c.sourceType === "transcript" && c.sourceId.startsWith(`${sessionId}#`)
+    );
+    const embedded = await embedChunks(chunks, embeddingClient, budget);
+    // 每条 user 轮一个独立 sourceId，逐条整组替换。
+    const bySource = new Map<string, KnowledgeChunk[]>();
+    for (const c of embedded) {
+      const list = bySource.get(c.sourceId);
+      if (list) {
+        list.push(c);
+      } else {
+        bySource.set(c.sourceId, [c]);
+      }
+    }
+    for (const [sid, list] of bySource) {
+      knowledgeRepo.replaceSource("transcript", sid, list);
+    }
+  } catch (err) {
+    console.warn(
+      JSON.stringify({
+        event: "reindex_transcript_failed",
+        sessionId,
+        error: err instanceof Error ? err.message : String(err)
+      })
+    );
+  }
 }
 
 export interface KnowledgeRouteOptions {

@@ -44,7 +44,7 @@ import { registerCorpusRoutes } from "./routes/corpus";
 import { registerHealthRoutes } from "./routes/health";
 import { registerImportRoutes } from "./routes/import";
 import { registerInterviewSessionRoutes } from "./routes/interview-sessions";
-import { registerKnowledgeRoutes } from "./routes/knowledge";
+import { registerKnowledgeRoutes, reindexOnStateChange } from "./routes/knowledge";
 import { registerRawMaterialRoutes } from "./routes/raw-material";
 import { registerAudioRoutes } from "./routes/audio";
 import { registerMemoryRecordRoutes } from "./routes/memory-records";
@@ -109,7 +109,7 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   registerProductionAuth(server, runtimeEnv);
   registerWriteSerialization(server);
   registerErrorHandler(server);
-  const productStateRepository = options.productStateRepository ?? createDefaultProductStateRepository(options.productStateDbPath);
+  const innerProductStateRepository = options.productStateRepository ?? createDefaultProductStateRepository(options.productStateDbPath);
   const providerClients: ProviderClients = {};
   const refreshProviderClients = () => refreshRuntimeProviderClients(providerClients, runtimeEnv, options);
   refreshProviderClients();
@@ -135,6 +135,16 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   // pre-signals, corpus insights, reviews, import, search enrichment, podcast script).
   // Uses "system" key for non-session endpoints and session.id for session endpoints.
   const sharedBudget = createLlmBudget();
+
+  // 持久化边界增量索引：包住 product-state 仓库，每次 replaceState 后 fire-and-forget 触发
+  // 增量重索引（diff 出变更的可索引资产 → 删/重建块）。绝不 await、绝不阻塞写、绝不把错误抛回写路径。
+  // 包装在 sharedBudget / knowledgeIndexRepository 就绪后做，使下游所有路由共用包装后的仓库。
+  const productStateRepository = withKnowledgeReindex(
+    innerProductStateRepository,
+    knowledgeIndexRepository,
+    () => providerClients.embeddingClient,
+    sharedBudget
+  );
 
   void server.register(registerHealthRoutes);
   void server.register(async (registeredServer) => {
@@ -174,6 +184,7 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     await registerInterviewSessionRoutes(registeredServer, productStateRepository, {
       ...providerClients,
       rawMaterialRepository,
+      knowledgeIndexRepository,
       llmBudget: sharedBudget
     });
   });
@@ -220,6 +231,7 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   void server.register(async (registeredServer) => {
     await registerImportRoutes(registeredServer, productStateRepository, {
       ...providerClients,
+      knowledgeIndexRepository,
       llmBudget: sharedBudget
     });
   });
@@ -291,6 +303,36 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   }
 
   return server;
+}
+
+/**
+ * 把 product-state 仓库包一层：每次 replaceState 后 fire-and-forget 触发增量重索引。
+ *
+ * - 先 inner.getState() 取写前快照（getState 返回深拷贝，安全）；
+ * - 调 inner.replaceState 真正落库、拿到返回的新状态（也是深拷贝）；
+ * - void reindexOnStateChange(...)：不 await、不阻塞写、不抛——reindex 自身已整体 try/catch。
+ *
+ * embeddingClient 通过 getter 取，因为运行时 refresh 会重建该 client（key 变更），
+ * 装配期一次性捕获会拿到陈旧引用。其余方法显式转发（接口仅 4 个方法，显式比展开更稳）。
+ */
+function withKnowledgeReindex(
+  inner: ProductStateRepository,
+  knowledgeRepo: KnowledgeIndexRepository,
+  getEmbeddingClient: () => BailianEmbeddingClient | undefined,
+  budget: ReturnType<typeof createLlmBudget>
+): ProductStateRepository {
+  return {
+    getState: () => inner.getState(),
+    resetState: () => inner.resetState(),
+    getInterviewSession: (id) => inner.getInterviewSession(id),
+    replaceState(next, opts) {
+      const prev = inner.getState();
+      const result = inner.replaceState(next, opts);
+      // fire-and-forget：reindex 用落库后的真实下一态(result)，而非传入的 next（revision 已由仓库 bump）。
+      void reindexOnStateChange(prev, result, knowledgeRepo, getEmbeddingClient(), budget);
+      return result;
+    }
+  };
 }
 
 function refreshRuntimeProviderClients(
