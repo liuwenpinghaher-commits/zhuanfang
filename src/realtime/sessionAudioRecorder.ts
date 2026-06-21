@@ -22,7 +22,7 @@ export interface MediaRecorderLike {
 
 export interface SessionAudioRecorder {
   start(): void;
-  stop(): Promise<{ blob: Blob; mime: string; durationMs: number }>;
+  stop(): Promise<{ blob: Blob; mime: string; durationMs: number; recordingStartedAt: string }>;
 }
 
 export interface CreateSessionAudioRecorderOptions {
@@ -34,6 +34,13 @@ export interface CreateSessionAudioRecorderOptions {
   recorderFactory?: (stream: MediaStream, mime: string) => MediaRecorderLike;
   /** Monotonic clock (ms). Defaults to performance.now(); injectable for tests. */
   now?: () => number;
+  /**
+   * Wall-clock at start(), as an ISO-8601 string. Defaults to
+   * () => new Date().toISOString(); injectable for deterministic tests. This is
+   * intentionally a wall clock (not the monotonic `now`): the backend aligns each
+   * turn's timestamp against it to seek the right offset in the recording.
+   */
+  wallClock?: () => string;
 }
 
 /** Picks the best supported container/codec, falling back to plain webm. */
@@ -58,6 +65,7 @@ export function createSessionAudioRecorder(
   opts: CreateSessionAudioRecorderOptions = {}
 ): SessionAudioRecorder {
   const now = opts.now ?? (() => performance.now());
+  const wallClock = opts.wallClock ?? (() => new Date().toISOString());
   // pickMime() guards its MediaRecorder probe — when a factory is injected (the
   // test path) the probe simply returns the plain "audio/webm" fallback, so the
   // factory still receives a concrete mime without a real MediaRecorder present.
@@ -67,6 +75,7 @@ export function createSessionAudioRecorder(
   const recorder = factory(stream, mime);
   const chunks: Blob[] = [];
   let startTime = 0;
+  let recordingStartedAt = "";
   let started = false;
 
   return {
@@ -74,6 +83,7 @@ export function createSessionAudioRecorder(
       if (started) return;
       started = true;
       startTime = now();
+      recordingStartedAt = wallClock();
       recorder.ondataavailable = (e) => {
         if (e.data && e.data.size > 0) {
           chunks.push(e.data);
@@ -82,13 +92,14 @@ export function createSessionAudioRecorder(
       recorder.start();
     },
 
-    stop(): Promise<{ blob: Blob; mime: string; durationMs: number }> {
+    stop(): Promise<{ blob: Blob; mime: string; durationMs: number; recordingStartedAt: string }> {
       return new Promise((resolve) => {
         recorder.onstop = () => {
           resolve({
             blob: new Blob(chunks, { type: mime }),
             mime,
             durationMs: Math.max(0, now() - startTime),
+            recordingStartedAt,
           });
         };
         recorder.stop();

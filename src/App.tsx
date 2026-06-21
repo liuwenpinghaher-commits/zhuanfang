@@ -1145,8 +1145,8 @@ export default function App() {
       if (recorder) {
         void recorder
           .stop()
-          .then(({ blob, durationMs }) =>
-            productApiClient.uploadSessionAudio(endedSessionId, blob, durationMs)
+          .then(({ blob, durationMs, recordingStartedAt }) =>
+            productApiClient.uploadSessionAudio(endedSessionId, blob, durationMs, recordingStartedAt)
           )
           .catch(() =>
             setNotice(buildNotice("warning", "录音未保存", "本场语音录音上传失败，不影响笔记与资产。"))
@@ -1813,6 +1813,7 @@ export default function App() {
             getRawMaterial={(sessionId) => productApiClient.getRawMaterial(sessionId)}
             getAudioMeta={(sessionId) => productApiClient.getSessionAudioMeta(sessionId)}
             audioUrl={(sessionId) => productApiClient.sessionAudioUrl(sessionId)}
+            getAudioBlob={(sessionId) => productApiClient.fetchSessionAudioBlob(sessionId)}
           />
         )}
         {view === "my-assets" && (
@@ -1852,6 +1853,7 @@ export default function App() {
             getRawMaterial={(sessionId) => productApiClient.getRawMaterial(sessionId)}
             getAudioMeta={(sessionId) => productApiClient.getSessionAudioMeta(sessionId)}
             audioUrl={(sessionId) => productApiClient.sessionAudioUrl(sessionId)}
+            getAudioBlob={(sessionId) => productApiClient.fetchSessionAudioBlob(sessionId)}
           />
         )}
         {view === "memory" && (
@@ -1870,6 +1872,7 @@ export default function App() {
             getRawMaterial={(sessionId) => productApiClient.getRawMaterial(sessionId)}
             getAudioMeta={(sessionId) => productApiClient.getSessionAudioMeta(sessionId)}
             audioUrl={(sessionId) => productApiClient.sessionAudioUrl(sessionId)}
+            getAudioBlob={(sessionId) => productApiClient.fetchSessionAudioBlob(sessionId)}
           />
         )}
         {view === "config" && (

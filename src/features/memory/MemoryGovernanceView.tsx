@@ -21,6 +21,7 @@ interface MemoryGovernanceViewProps {
   getRawMaterial: (sessionId: string) => Promise<InterviewRawMaterial | null>;
   getAudioMeta?: (sessionId: string) => Promise<SessionAudioMeta>;
   audioUrl?: (sessionId: string) => string;
+  getAudioBlob?: (sessionId: string) => Promise<Blob | null>;
 }
 
 type ActionState = "idle" | "loading" | "done" | "error";
@@ -57,7 +58,8 @@ export function MemoryGovernanceView({
   onRemoveAnnotation,
   getRawMaterial,
   getAudioMeta,
-  audioUrl
+  audioUrl,
+  getAudioBlob
 }: MemoryGovernanceViewProps) {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
@@ -529,6 +531,7 @@ export function MemoryGovernanceView({
               getRawMaterial={getRawMaterial}
               getAudioMeta={getAudioMeta}
               audioUrl={audioUrl}
+              getAudioBlob={getAudioBlob}
             />
           </div>
         </div>

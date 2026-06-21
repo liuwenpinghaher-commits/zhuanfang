@@ -16,6 +16,7 @@ interface TrackWorkspaceViewProps {
   getRawMaterial: (sessionId: string) => Promise<InterviewRawMaterial | null>;
   getAudioMeta?: (sessionId: string) => Promise<SessionAudioMeta>;
   audioUrl?: (sessionId: string) => string;
+  getAudioBlob?: (sessionId: string) => Promise<Blob | null>;
 }
 
 const MATURITY_COLOR: Record<string, string> = {
@@ -36,7 +37,8 @@ export function TrackWorkspaceView({
   onRemoveAnnotation,
   getRawMaterial,
   getAudioMeta,
-  audioUrl
+  audioUrl,
+  getAudioBlob
 }: TrackWorkspaceViewProps) {
   // Task 12 扩展：代表性引文「查看原文出处」弹层 — 渲染 RawMaterialViewer 并定位到锚点轮。
   const [sourceOverlay, setSourceOverlay] = useState<{ sessionId: string; turnId: string } | null>(null);
@@ -300,6 +302,7 @@ export function TrackWorkspaceView({
               getRawMaterial={getRawMaterial}
               getAudioMeta={getAudioMeta}
               audioUrl={audioUrl}
+              getAudioBlob={getAudioBlob}
             />
           </div>
         </div>

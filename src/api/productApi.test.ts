@@ -612,6 +612,47 @@ describe("product api client", () => {
     expect(result.durationMs).toBe(9000);
   });
 
+  it("includes recordingStartedAt in the upload body when supplied, omits when absent", async () => {
+    const fetchImpl = vi.fn(
+      async (_input: string, _init?: RequestInit) => new Response(JSON.stringify({ ok: true }), { status: 200 })
+    );
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+    const blob = new Blob([new Uint8Array([1, 2, 3])], { type: "audio/webm" });
+
+    await client.uploadSessionAudio("sess-rs", blob, 3000, "2026-06-21T10:00:00.000Z");
+    const withTs = JSON.parse(fetchImpl.mock.calls[0][1]?.body as string);
+    expect(withTs.recordingStartedAt).toBe("2026-06-21T10:00:00.000Z");
+
+    fetchImpl.mockClear();
+    await client.uploadSessionAudio("sess-no-rs", blob, 3000);
+    const withoutTs = JSON.parse(fetchImpl.mock.calls[0][1]?.body as string);
+    expect("recordingStartedAt" in withoutTs).toBe(false);
+  });
+
+  it("fetchSessionAudioBlob returns the Blob on 200 via fetch (carries auth headers)", async () => {
+    const audioBlob = new Blob([new Uint8Array([1, 2, 3])], { type: "audio/webm" });
+    const fetchImpl = vi.fn(async () => new Response(audioBlob, { status: 200 }));
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+
+    const result = await client.fetchSessionAudioBlob("sess-6");
+
+    // Uses fetch (carries any client-configured auth header) rather than <audio src>.
+    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:8787/api/sessions/sess-6/audio", { method: "GET" });
+    // jsdom's Blob<->Response round-trip is unreliable for byte size, so assert
+    // the contract that matters: a non-null Blob came back via fetch (not a URL).
+    expect(result).toBeInstanceOf(Blob);
+  });
+
+  it("fetchSessionAudioBlob returns null on 404 and throws ApiError on other non-2xx", async () => {
+    const notFound = vi.fn(async () => new Response("none", { status: 404 }));
+    const clientNf = createProductApiClient("http://127.0.0.1:8787", notFound);
+    expect(await clientNf.fetchSessionAudioBlob("sess-7")).toBeNull();
+
+    const serverErr = vi.fn(async () => new Response("boom", { status: 500 }));
+    const clientErr = createProductApiClient("http://127.0.0.1:8787", serverErr);
+    await expect(clientErr.fetchSessionAudioBlob("sess-8")).rejects.toMatchObject({ name: "ApiError", status: 500 });
+  });
+
   it("builds an absolute audio stream URL with the trailing slash stripped from base", () => {
     const client = createProductApiClient("http://127.0.0.1:8787/", vi.fn());
     expect(client.sessionAudioUrl("sess-5")).toBe("http://127.0.0.1:8787/api/sessions/sess-5/audio");

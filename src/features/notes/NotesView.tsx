@@ -14,6 +14,7 @@ interface NotesViewProps {
   getRawMaterial: (sessionId: string) => Promise<InterviewRawMaterial | null>;
   getAudioMeta?: (sessionId: string) => Promise<SessionAudioMeta>;
   audioUrl?: (sessionId: string) => string;
+  getAudioBlob?: (sessionId: string) => Promise<Blob | null>;
 }
 
 export function NotesView({
@@ -24,7 +25,8 @@ export function NotesView({
   onRemoveAnnotation,
   getRawMaterial,
   getAudioMeta,
-  audioUrl
+  audioUrl,
+  getAudioBlob
 }: NotesViewProps) {
   const [openSessionId, setOpenSessionId] = useState<string | null>(null);
   return (
@@ -85,6 +87,7 @@ export function NotesView({
                 getRawMaterial={getRawMaterial}
                 getAudioMeta={getAudioMeta}
                 audioUrl={audioUrl}
+                getAudioBlob={getAudioBlob}
               />
             )}
           </article>

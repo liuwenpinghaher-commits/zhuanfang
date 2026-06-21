@@ -93,6 +93,25 @@ describe("createSessionAudioRecorder", () => {
     expect(result.durationMs).toBe(0);
   });
 
+  it("resolves with the injected wall-clock recordingStartedAt captured at start()", async () => {
+    const fake = makeFakeRecorder("audio/webm");
+
+    const recorder = createSessionAudioRecorder(fakeStream, {
+      recorderFactory: () => fake,
+      now: () => 0,
+      // Deterministic wall clock so the ISO start timestamp is assertable.
+      wallClock: () => "2026-06-21T10:00:00.000Z",
+    });
+
+    recorder.start();
+    fake.emitData(new Blob(["x"], { type: "audio/webm" }));
+    const stopPromise = recorder.stop();
+    fake.emitStop();
+
+    const result = await stopPromise;
+    expect(result.recordingStartedAt).toBe("2026-06-21T10:00:00.000Z");
+  });
+
   it("passes the injected mime straight through when a recorderFactory is supplied", async () => {
     const seen: { stream: MediaStream; mime: string }[] = [];
     const fake = makeFakeRecorder("audio/webm");

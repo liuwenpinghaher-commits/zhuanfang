@@ -85,12 +85,24 @@ export interface ProductApiClient {
   listVoices(): Promise<VoiceListResponse>;
   createVoice(input: CreateVoiceRequest): Promise<VoiceInfo>;
   deleteVoice(voiceId: string): Promise<void>;
-  /** Upload the whole-session voice recording. Best-effort: callers must not let a failure block ending the interview. */
-  uploadSessionAudio(sessionId: string, blob: Blob, durationMs?: number): Promise<void>;
+  /**
+   * Upload the whole-session voice recording. Best-effort: callers must not let a
+   * failure block ending the interview. recordingStartedAt (ISO wall-clock at the
+   * moment recording began) lets the viewer align each turn to a seek offset.
+   */
+  uploadSessionAudio(sessionId: string, blob: Blob, durationMs?: number, recordingStartedAt?: string): Promise<void>;
   /** Metadata for a session's stored audio (exists:false when none). */
   getSessionAudioMeta(sessionId: string): Promise<SessionAudioMeta>;
   /** Absolute URL to stream the stored audio, for an <audio src>. */
   sessionAudioUrl(sessionId: string): string;
+  /**
+   * Fetch the stored audio as a Blob via fetch (so any client-configured auth
+   * header rides along) rather than handing the URL to a native <audio src>,
+   * which cannot carry an Authorization header and 401s under production bearer
+   * auth. Returns null when no audio exists yet (404); throws ApiError on other
+   * non-2xx. Caller wraps the Blob in URL.createObjectURL for playback.
+   */
+  fetchSessionAudioBlob(sessionId: string): Promise<Blob | null>;
 }
 
 export interface SessionAudioMeta {
@@ -98,6 +110,8 @@ export interface SessionAudioMeta {
   mime?: string;
   byteSize?: number;
   durationMs?: number | null;
+  /** ISO wall-clock of when recording started; used to align turns to seek offsets. */
+  recordingStartedAt?: string | null;
 }
 
 export type SystemCapabilityStatus = "ready" | "degraded" | "needs-key" | "needs-endpoint" | "disabled";
@@ -782,7 +796,7 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         method: "DELETE"
       });
     },
-    async uploadSessionAudio(sessionId, blob, durationMs) {
+    async uploadSessionAudio(sessionId, blob, durationMs, recordingStartedAt) {
       // Prefer Blob.arrayBuffer() (real browsers); fall back to Response(blob)
       // for environments (jsdom) whose Blob lacks arrayBuffer.
       const arrayBuffer = typeof blob.arrayBuffer === "function"
@@ -796,7 +810,8 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         body: JSON.stringify({
           audioBase64,
           mime: blob.type || "audio/webm",
-          ...(typeof durationMs === "number" ? { durationMs } : {})
+          ...(typeof durationMs === "number" ? { durationMs } : {}),
+          ...(typeof recordingStartedAt === "string" ? { recordingStartedAt } : {})
         })
       });
       if (!response.ok) {
@@ -805,6 +820,20 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
     },
     async getSessionAudioMeta(sessionId) {
       return (await requestJson(`/api/sessions/${sessionId}/audio/meta`, { method: "GET" })) as SessionAudioMeta;
+    },
+    async fetchSessionAudioBlob(sessionId) {
+      // Use fetch (carries client-configured headers) instead of <audio src>,
+      // which cannot send Authorization and 401s under production bearer auth.
+      const response = await fetchImpl(`${normalizedBaseUrl}/api/sessions/${sessionId}/audio`, {
+        method: "GET"
+      });
+      if (response.status === 404) {
+        return null;
+      }
+      if (!response.ok) {
+        throw new ApiError(response.status, `/api/sessions/${sessionId}/audio`);
+      }
+      return response.blob();
     },
     sessionAudioUrl(sessionId) {
       // 用于 <audio src>。注意：原生 audio 元素无法附带 Authorization 头，因此若启用

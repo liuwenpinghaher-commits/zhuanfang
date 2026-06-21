@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Bot, Headphones, MessageSquare, PenLine, Trash2 } from "lucide-react";
+import { Bot, Headphones, MessageSquare, PenLine, Play, Trash2 } from "lucide-react";
 import type {
   EvidenceAnchor,
   InterviewRawMaterial,
@@ -12,6 +12,8 @@ interface SessionAudioMeta {
   mime?: string;
   byteSize?: number;
   durationMs?: number | null;
+  /** ISO wall-clock of when recording started; used to align turns to seek offsets. */
+  recordingStartedAt?: string | null;
 }
 
 interface RawMaterialViewerProps {
@@ -24,8 +26,14 @@ interface RawMaterialViewerProps {
   focusTurnId?: string;
   /** 若提供，拉取整场录音元数据；exists 时在顶部渲染录音播放器。失败静默。 */
   getAudioMeta?: (sessionId: string) => Promise<SessionAudioMeta>;
-  /** 若提供，给 <audio src> 用的整场录音流 URL。 */
+  /** 若提供，给 <audio src> 用的整场录音流 URL（fetch-blob 回退路径）。 */
   audioUrl?: (sessionId: string) => string;
+  /**
+   * 若提供，用 fetch 拉录音为 Blob（带上 client 配置的鉴权头），再用
+   * URL.createObjectURL 回放——修复生产 bearer 鉴权下原生 <audio src> 取不到头会 401。
+   * 优先于 audioUrl；返回 null（无录音）或失败时静默退回 audioUrl。
+   */
+  getAudioBlob?: (sessionId: string) => Promise<Blob | null>;
 }
 
 type LoadStatus = "loading" | "ready" | "empty" | "error";
@@ -59,7 +67,8 @@ export function RawMaterialViewer({
   getRawMaterial,
   focusTurnId,
   getAudioMeta,
-  audioUrl
+  audioUrl,
+  getAudioBlob
 }: RawMaterialViewerProps) {
   const [status, setStatus] = useState<LoadStatus>("loading");
   const [material, setMaterial] = useState<InterviewRawMaterial | null>(null);
@@ -67,7 +76,9 @@ export function RawMaterialViewer({
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [highlightTurnId, setHighlightTurnId] = useState<string | null>(null);
   const [audioMeta, setAudioMeta] = useState<SessionAudioMeta | null>(null);
+  const [audioBlobUrl, setAudioBlobUrl] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -121,6 +132,35 @@ export function RawMaterialViewer({
     };
   }, [sessionId, getAudioMeta]);
 
+  // fetch-blob 回放：录音存在且提供了 getAudioBlob 时，用 fetch（带鉴权头）拉 Blob 并
+  // 转成 object URL 回放。修复生产 bearer 鉴权下原生 <audio src> 取不到头会 401。
+  // 切换 session / 卸载时 revokeObjectURL 释放，避免内存泄漏。失败一律静默退回 audioUrl。
+  useEffect(() => {
+    if (!getAudioBlob || !audioMeta?.exists) {
+      return;
+    }
+    let cancelled = false;
+    let createdUrl: string | null = null;
+    getAudioBlob(sessionId)
+      .then((blob) => {
+        if (cancelled || !blob) {
+          return;
+        }
+        createdUrl = URL.createObjectURL(blob);
+        setAudioBlobUrl(createdUrl);
+      })
+      .catch(() => {
+        /* 静默：退回 audioUrl 整段播放 */
+      });
+    return () => {
+      cancelled = true;
+      if (createdUrl) {
+        URL.revokeObjectURL(createdUrl);
+      }
+      setAudioBlobUrl(null);
+    };
+  }, [sessionId, getAudioBlob, audioMeta?.exists]);
+
   // 加载完成后，若有 focusTurnId 则滚动到该轮并临时高亮。
   useEffect(() => {
     if (status !== "ready" || !focusTurnId || !containerRef.current) {
@@ -172,12 +212,50 @@ export function RawMaterialViewer({
   });
   let assistantOrdinal = -1;
 
-  const showAudio = Boolean(audioMeta?.exists && audioUrl);
+  // 回放源：优先 fetch-blob 的 object URL（带鉴权头，生产安全），未拿到则退回 audioUrl（本地/dev）。
+  const playbackSrc = audioBlobUrl ?? (audioUrl ? audioUrl(sessionId) : null);
+  const showAudio = Boolean(audioMeta?.exists && playbackSrc);
   const audioCaption = audioMeta ? describeAudio(audioMeta) : null;
+
+  // 逐轮 seek 的起始墙钟：有它才算偏移、渲染"▶ 播这一段"。
+  const recordingStartedAt = audioMeta?.recordingStartedAt ?? null;
+  const recordingStartedMs = recordingStartedAt ? Date.parse(recordingStartedAt) : NaN;
+  const durationMs = typeof audioMeta?.durationMs === "number" ? audioMeta.durationMs : null;
+
+  /** 该轮相对录音起点的偏移（秒）；越界 / 无起点 / 无播放器时返回 null（不渲染该轮按钮）。 */
+  function turnOffsetSec(turnTimestamp: string): number | null {
+    if (!showAudio || Number.isNaN(recordingStartedMs)) {
+      return null;
+    }
+    const turnMs = Date.parse(turnTimestamp);
+    if (Number.isNaN(turnMs)) {
+      return null;
+    }
+    const offsetSec = (turnMs - recordingStartedMs) / 1000;
+    if (offsetSec < 0) {
+      return null;
+    }
+    // durationMs 未知则不卡上界；已知则越界丢弃（防止 seek 到录音之外）。
+    if (durationMs !== null && offsetSec * 1000 > durationMs) {
+      return null;
+    }
+    return offsetSec;
+  }
+
+  function playFromOffset(offsetSec: number) {
+    const el = audioRef.current;
+    if (!el) {
+      return;
+    }
+    el.currentTime = offsetSec;
+    void el.play().catch(() => {
+      /* 浏览器可能因未交互拒绝自动播放；用户可手动用整段播放器 */
+    });
+  }
 
   return (
     <div ref={containerRef} className="panel" style={{ marginTop: "0.75rem", display: "flex", flexDirection: "column", gap: "0.85rem" }}>
-      {showAudio && audioUrl && (
+      {showAudio && playbackSrc && (
         <section
           className="field-stack"
           style={{
@@ -193,7 +271,7 @@ export function RawMaterialViewer({
             </span>
             {audioCaption && <span className="field-help" style={{ fontVariantNumeric: "tabular-nums" }}>{audioCaption}</span>}
           </div>
-          <audio controls preload="metadata" src={audioUrl(sessionId)} style={{ width: "100%" }} />
+          <audio ref={audioRef} controls preload="metadata" src={playbackSrc} style={{ width: "100%" }} />
         </section>
       )}
       {material.turns.map((turn, turnIndex) => {
@@ -265,6 +343,27 @@ export function RawMaterialViewer({
               <span className="field-help" style={{ fontVariantNumeric: "tabular-nums" }}>
                 {new Date(turn.timestamp).toLocaleString("zh-CN")}
               </span>
+              {(() => {
+                // 仅当能算出有效偏移（有起始墙钟、不越界、有播放器）才渲染"▶ 播这一段"。
+                // 无录音 / 无 recordingStartedAt / 越界则降级：整段播放器仍可用。
+                const offsetSec = turnOffsetSec(turn.timestamp);
+                if (offsetSec === null) {
+                  return null;
+                }
+                return (
+                  <button
+                    className="icon-button"
+                    type="button"
+                    aria-label="从这一轮开始播放录音"
+                    title="播这一段"
+                    onClick={() => playFromOffset(offsetSec)}
+                    style={{ display: "inline-flex", alignItems: "center", gap: "0.25rem", marginLeft: "auto", fontSize: "0.78rem" }}
+                  >
+                    <Play size={13} aria-hidden="true" />
+                    播这一段
+                  </button>
+                );
+              })()}
             </div>
             <p style={{ margin: 0, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{turn.content}</p>
 
