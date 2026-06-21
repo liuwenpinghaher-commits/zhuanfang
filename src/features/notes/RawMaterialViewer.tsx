@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Bot, MessageSquare, Trash2 } from "lucide-react";
+import { Bot, MessageSquare, PenLine, Trash2 } from "lucide-react";
 import type {
   EvidenceAnchor,
   InterviewRawMaterial,
@@ -230,7 +230,7 @@ export function RawMaterialViewer({
                     key={annotation.id}
                     style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.6rem" }}
                   >
-                    <span style={{ fontSize: "0.875rem" }}>📝 {annotation.text}</span>
+                    <span style={{ fontSize: "0.875rem", display: "inline-flex", alignItems: "center", gap: "0.4rem" }}><PenLine size={13} /> {annotation.text}</span>
                     <button
                       className="icon-button"
                       type="button"
