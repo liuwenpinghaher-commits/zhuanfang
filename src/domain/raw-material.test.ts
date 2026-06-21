@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveEvidenceAnchors, addAnnotation, removeAnnotation, stampFinalizeAnchors } from "./raw-material";
+import { resolveEvidenceAnchors, addAnnotation, removeAnnotation, stampFinalizeAnchors, backfillEvidenceAnchors } from "./raw-material";
 import { createInitialProductState } from "./engine";
 import type { InterviewTurn } from "./types";
 
@@ -75,5 +75,19 @@ describe("stampFinalizeAnchors", () => {
   it("匹配不到则不加 evidenceAnchors(保持 undefined)", () => {
     const out = stampFinalizeAnchors([{ evidenceQuote: "没有的话" } as any], "s1", turns);
     expect(out[0].evidenceAnchors).toBeUndefined();
+  });
+});
+
+describe("backfillEvidenceAnchors", () => {
+  it("用 sessions 的 turns 给已有 memoryRecords 补锚点,幂等", () => {
+    const base = createInitialProductState();
+    const state = {
+      ...base,
+      sessions: [{ id: "s1", turns: [turn("t2", "user", "其实是怕我自己不再被需要。")] } as any],
+      memoryRecords: [{ id: "m1", evidenceQuote: "其实是怕我自己不再被需要。", sourceId: "s1" } as any]
+    };
+    const out = backfillEvidenceAnchors(state);
+    expect(out.memoryRecords[0].evidenceAnchors).toEqual([{ sessionId: "s1", turnId: "t2" }]);
+    expect(backfillEvidenceAnchors(out).memoryRecords[0].evidenceAnchors).toEqual([{ sessionId: "s1", turnId: "t2" }]);
   });
 });

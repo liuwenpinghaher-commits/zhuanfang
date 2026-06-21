@@ -45,6 +45,32 @@ export function stampFinalizeAnchors<T extends { evidenceQuote?: string; evidenc
   });
 }
 
+/** 给存量 state 回填证据锚点:用各会话仍在热层的 turns,给已有的 memoryRecords / memoryCandidates
+ *  补上 evidenceAnchors。已有锚点的或没有来源会话的不动;匹配不到来源的保持原样——绝不伪造来源。
+ *  幂等:再次运行不会改动已盖好锚点的条目。注意须在降冷(turns 被剥离)之前跑。 */
+export function backfillEvidenceAnchors(state: ProductState): ProductState {
+  const turnsBySession = new Map<string, InterviewTurn[]>();
+  for (const s of state.sessions) {
+    turnsBySession.set(s.id, s.turns ?? []);
+  }
+  const stamp = <T extends { evidenceQuote?: string; evidenceAnchors?: EvidenceAnchor[]; sourceId?: string }>(
+    items: T[]
+  ): T[] =>
+    items.map((item) => {
+      if (item.evidenceAnchors?.length || !item.sourceId) {
+        return item;
+      }
+      const turns = turnsBySession.get(item.sourceId) ?? [];
+      const anchors = resolveEvidenceAnchors(item.evidenceQuote ?? "", item.sourceId, turns);
+      return anchors.length ? { ...item, evidenceAnchors: anchors } : item;
+    });
+  return {
+    ...cloneState(state),
+    memoryRecords: stamp(state.memoryRecords),
+    memoryCandidates: stamp(state.memoryCandidates)
+  };
+}
+
 export function addAnnotation(
   state: ProductState,
   sessionId: string,

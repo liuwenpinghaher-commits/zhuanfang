@@ -158,7 +158,7 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     });
   });
   void server.register(async (registeredServer) => {
-    await registerRawMaterialRoutes(registeredServer, rawMaterialRepository);
+    await registerRawMaterialRoutes(registeredServer, rawMaterialRepository, productStateRepository);
   });
   void server.register(async (registeredServer) => {
     await registerSearchRoutes(registeredServer, productStateRepository, {
