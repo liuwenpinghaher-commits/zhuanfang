@@ -17,7 +17,7 @@ import { withMemoryCandidateReview } from "./memoryReview";
 import { addProfileSuggestions, type ProfileSuggestionInput } from "./profile";
 import { buildInterviewQualityReport, planMemoryUpdate, tokenizeMemoryGraphText } from "./engine";
 import { uniqueStrings } from "./signals";
-import { stampFinalizeAnchors } from "./raw-material";
+import { resolveEvidenceAnchors, stampFinalizeAnchors } from "./raw-material";
 
 /**
  * M2 (Task 6): tag each fresh candidate with an extract-then-update dedup hint
@@ -195,7 +195,10 @@ export function mergeFinalizedState(
     // Derive candidate from actual session content (deterministic fallback).
     const memoryCandidate = buildMemoryCandidateFromSession(session, finalNote, note.keyQuote, completedAt);
     const [annotated] = annotateCandidatesWithDedupHint([memoryCandidate], nextState.memoryRecords);
-    nextState.memoryCandidates = [annotated, ...(nextState.memoryCandidates ?? [])];
+    // M3: anchor the offline/deterministic candidate too, so the evidence chain isn't
+    // exclusive to the LLM path.
+    const [anchored] = stampFinalizeAnchors([annotated], session.id, session.turns);
+    nextState.memoryCandidates = [anchored, ...(nextState.memoryCandidates ?? [])];
   }
   nextState.points = [...content.points.map(p => ({ ...p, sourceSessionId: session.id })), ...nextState.points];
   nextState.questions = [...content.questions.map(q => ({ ...q, sourceSessionId: session.id })), ...nextState.questions];
@@ -203,14 +206,46 @@ export function mergeFinalizedState(
   nextState.debts = [...content.debts.map(db => ({ ...db, sourceSessionId: session.id })), ...nextState.debts];
   nextState.themes = upsertFinalizeThemes(nextState.themes, content.themes, completedAt);
 
+  // ── 证据锚点扩展：把 LLM 逐字摘录回匹配到来自的 user 轮。匹配不到不盖、不伪造来源。──
+  const anchor = (quote: string | undefined) => resolveEvidenceAnchors(quote ?? "", session.id, session.turns)[0];
+
+  // points: 本次 session 产生且尚未盖锚点的，用首个非空证据原话解析。
+  nextState.points = nextState.points.map((point) => {
+    if (point.sourceSessionId !== session.id || (point.evidenceAnchors && point.evidenceAnchors.length > 0)) {
+      return point;
+    }
+    const evidenceQuote = point.evidence?.find((e) => e.trim());
+    const anchors = resolveEvidenceAnchors(evidenceQuote ?? "", session.id, session.turns);
+    return anchors.length > 0 ? { ...point, evidenceAnchors: anchors } : point;
+  });
+
+  // note.keyQuoteAnchor: 单 anchor。已有则不动。
+  const keyQuoteAnchor = finalNote.keyQuoteAnchor ?? anchor(finalNote.keyQuote);
+  const anchoredNote: DualTrackNote = keyQuoteAnchor ? { ...finalNote, keyQuoteAnchor } : finalNote;
+  if (anchoredNote !== finalNote) {
+    nextState.notes = nextState.notes.map((n) => (n.id === finalNote.id ? anchoredNote : n));
+  }
+
+  // themes: 对本次 content.themes 涉及的主题线（按归一化名匹配定位），用 representativeQuote 解析。
+  const upsertNameKeys = new Set(content.themes.map((t) => normalizeThemeName(t.name)));
+  if (upsertNameKeys.size > 0) {
+    nextState.themes = nextState.themes.map((theme) => {
+      if (!upsertNameKeys.has(normalizeThemeName(theme.name)) || theme.representativeQuoteAnchor) {
+        return theme;
+      }
+      const representativeQuoteAnchor = anchor(theme.representativeQuote);
+      return representativeQuoteAnchor ? { ...theme, representativeQuoteAnchor } : theme;
+    });
+  }
+
   // P0b: queue any proposed currentFocus/longTermGoal shift for HITL approval (no-ops dropped).
   const withSuggestions = content.profileSuggestions?.length
     ? addProfileSuggestions(nextState, content.profileSuggestions, session.id, completedAt)
     : nextState;
 
   return {
-    note: finalNote,
-    nextState: withInterviewFinalizedEvents(withSuggestions, completedSession, finalNote, completedAt)
+    note: anchoredNote,
+    nextState: withInterviewFinalizedEvents(withSuggestions, completedSession, anchoredNote, completedAt)
   };
 }
 

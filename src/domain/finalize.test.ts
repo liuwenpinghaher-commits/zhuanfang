@@ -143,3 +143,131 @@ describe("finalize memory extraction (M1a)", () => {
     expect(nextState.memoryCandidates[0].text).not.toContain("判断责任和机制代价");
   });
 });
+
+describe("finalize 证据锚点扩展 (Phase 1 收尾)", () => {
+  // 共用的会话：两条 user 原话，能被各资产的逐字摘录回匹配到。
+  const buildSession = async () => {
+    const { createInterviewSession: cis, addTurn: at } = await import("./engine");
+    let s = cis({ id: "anchor-s1", title: "关于放权的纠结" });
+    s = at(s, { role: "user", content: "我一直不敢把审批权交给团队，怕出错。" });
+    s = at(s, { role: "assistant", content: "你怕的是结果失控，还是判断力被质疑？" });
+    s = at(s, { role: "user", content: "其实是怕我自己不再被需要。" });
+    return s;
+  };
+
+  const userTurnId = (s: { turns: { id: string; role: string; content: string }[] }, content: string) =>
+    s.turns.find((t) => t.role === "user" && t.content.includes(content))!.id;
+
+  it("points 的首个非空 evidence 命中 user 轮 → 盖 evidenceAnchors", async () => {
+    const { mergeFinalizedState } = await import("./finalize");
+    const { createInitialProductState: initState } = await import("./engine");
+    const { nowIso } = await import("./utils");
+
+    const state = initState();
+    const s = await buildSession();
+    const completedAt = nowIso();
+    const note = {
+      id: "note-pt", sessionId: s.id, title: s.title, summary: "测试",
+      keyQuote: "其实是怕我自己不再被需要。", saidTrack: [], learnedTrack: [], nextQuestions: [], createdAt: completedAt
+    };
+    const point = {
+      id: "pt-1", title: "放权焦虑", content: "用户难以下放审批权",
+      status: "临时想法" as const, confidence: "AI 推断" as const,
+      evidence: ["", "我一直不敢把审批权交给团队，怕出错。"], relatedThemeIds: [],
+      important: false, updatedAt: completedAt
+    };
+    const content = { note, points: [point], questions: [], decisions: [], debts: [], themes: [] };
+
+    const { nextState } = mergeFinalizedState(state, s, content, completedAt, undefined);
+    const stored = nextState.points.find((p) => p.id === "pt-1")!;
+    expect(stored.evidenceAnchors).toEqual([{ sessionId: s.id, turnId: userTurnId(s, "审批权") }]);
+  });
+
+  it("points 的 evidence 匹配不到 → 不加 evidenceAnchors", async () => {
+    const { mergeFinalizedState } = await import("./finalize");
+    const { createInitialProductState: initState } = await import("./engine");
+    const { nowIso } = await import("./utils");
+
+    const state = initState();
+    const s = await buildSession();
+    const completedAt = nowIso();
+    const note = {
+      id: "note-pt2", sessionId: s.id, title: s.title, summary: "测试",
+      keyQuote: "其实是怕我自己不再被需要。", saidTrack: [], learnedTrack: [], nextQuestions: [], createdAt: completedAt
+    };
+    const point = {
+      id: "pt-2", title: "无来源", content: "x",
+      status: "临时想法" as const, confidence: "AI 推断" as const,
+      evidence: ["对话里根本不存在的一句话"], relatedThemeIds: [],
+      important: false, updatedAt: completedAt
+    };
+    const content = { note, points: [point], questions: [], decisions: [], debts: [], themes: [] };
+
+    const { nextState } = mergeFinalizedState(state, s, content, completedAt, undefined);
+    const stored = nextState.points.find((p) => p.id === "pt-2")!;
+    expect(stored.evidenceAnchors).toBeUndefined();
+  });
+
+  it("note.keyQuote 命中 user 轮 → 盖 keyQuoteAnchor（单 anchor）", async () => {
+    const { mergeFinalizedState } = await import("./finalize");
+    const { createInitialProductState: initState } = await import("./engine");
+    const { nowIso } = await import("./utils");
+
+    const state = initState();
+    const s = await buildSession();
+    const completedAt = nowIso();
+    const note = {
+      id: "note-kq", sessionId: s.id, title: s.title, summary: "测试",
+      keyQuote: "其实是怕我自己不再被需要。", saidTrack: [], learnedTrack: [], nextQuestions: [], createdAt: completedAt
+    };
+    const content = { note, points: [], questions: [], decisions: [], debts: [], themes: [] };
+
+    const { note: finalNote } = mergeFinalizedState(state, s, content, completedAt, undefined);
+    expect(finalNote.keyQuoteAnchor).toEqual({ sessionId: s.id, turnId: userTurnId(s, "不再被需要") });
+  });
+
+  it("theme.representativeQuote 命中 user 轮 → 盖 representativeQuoteAnchor（单 anchor）", async () => {
+    const { mergeFinalizedState } = await import("./finalize");
+    const { createInitialProductState: initState } = await import("./engine");
+    const { nowIso } = await import("./utils");
+
+    const state = initState();
+    const s = await buildSession();
+    const completedAt = nowIso();
+    const note = {
+      id: "note-th", sessionId: s.id, title: s.title, summary: "测试",
+      keyQuote: "其实是怕我自己不再被需要。", saidTrack: [], learnedTrack: [], nextQuestions: [], createdAt: completedAt
+    };
+    const theme = {
+      name: "控制感", summary: "对放权的焦虑", representativeQuote: "我一直不敢把审批权交给团队，怕出错。",
+      nextQuestion: "下次问什么", maturity: "萌芽" as const
+    };
+    const content = { note, points: [], questions: [], decisions: [], debts: [], themes: [theme] };
+
+    const { nextState } = mergeFinalizedState(state, s, content, completedAt, undefined);
+    const stored = nextState.themes.find((t) => t.name === "控制感")!;
+    expect(stored.representativeQuoteAnchor).toEqual({ sessionId: s.id, turnId: userTurnId(s, "审批权") });
+  });
+
+  it("M3 确定性回退候选也带锚点（keyQuote 命中）", async () => {
+    const { mergeFinalizedState } = await import("./finalize");
+    const { createInitialProductState: initState } = await import("./engine");
+    const { nowIso } = await import("./utils");
+
+    const state = initState();
+    const s = await buildSession();
+    const completedAt = nowIso();
+    const note = {
+      id: "note-m3", sessionId: s.id, title: s.title, summary: "测试",
+      keyQuote: "其实是怕我自己不再被需要。", saidTrack: [], learnedTrack: [], nextQuestions: [], createdAt: completedAt
+    };
+    const content = { note, points: [], questions: [], decisions: [], debts: [], themes: [] };
+
+    // 无 providedCandidates → 走确定性回退分支
+    const { nextState } = mergeFinalizedState(state, s, content, completedAt, undefined);
+    const cand = nextState.memoryCandidates[0];
+    expect(cand).toBeDefined();
+    expect(cand.evidenceQuote).toBe("其实是怕我自己不再被需要。");
+    expect(cand.evidenceAnchors).toEqual([{ sessionId: s.id, turnId: userTurnId(s, "不再被需要") }]);
+  });
+});

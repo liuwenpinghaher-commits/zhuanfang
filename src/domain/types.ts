@@ -727,6 +727,8 @@ export interface LongTermTheme {
   updatedAt: string;
   // ── v2 Track 升级字段（可选以兼容 v1 数据；迁移函数补默认值）──
   createdAt?: string;
+  /** representativeQuote 逐字摘录回匹配到的用户原话锚点；匹配不到则缺省——绝不伪造来源。 */
+  representativeQuoteAnchor?: EvidenceAnchor;
 }
 
 /** Track 是 LongTermTheme 升级后的对外概念名（软聚合主题线）。
