@@ -1,12 +1,28 @@
 #!/usr/bin/env bash
-# Run all 10 personas end-to-end through the REAL system: each purges to a clean state,
-# runs a >=20K-char interview, finalizes, then is quality-analyzed. Sequential (shared state,
-# isolated by the per-interview purge). Usage: bash scripts/run-all-interviews.sh
+# Run all 10 personas end-to-end through the REAL system: each runs a >=20K-char interview,
+# finalizes, then is quality-analyzed. Sequential (shared state). Usage: bash scripts/run-all-interviews.sh
+#
+# Two modes:
+#   ACCUMULATE (default) — purge ONCE at the start, then every interview accumulates into the same
+#     state, so 专访档案 + 认知资产库 end up holding ALL 10 interviews. Use this to populate the app.
+#   ISOLATE (ISOLATE=1)  — each interview purges to a clean state first, so per-interview quality is
+#     measured without cross-contamination. NOTE: only the LAST interview survives in the archive.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 OUT=/tmp/interviews
 mkdir -p "$OUT"
 TARGET="${TARGET_CHARS:-20000}"
+API="${PRODUCT_API_BASE:-http://127.0.0.1:3210}"
+
+if [ "${ISOLATE:-0}" = "1" ]; then
+  echo "MODE = ISOLATE (每次专访独立净化；只有最后一次会留在档案里，适合逐次质量测量)"
+  # run-interview.mjs purges per-interview by default
+else
+  echo "MODE = ACCUMULATE (开头清一次，10 次专访累积进同一档案/资产库)"
+  curl -fsS -X POST "$API/api/state/purge" -H 'content-type: application/json' \
+    -d '{"confirm":"PURGE_PERSONAL_DATA","scope":"all"}' >/dev/null && echo "  initial purge ok"
+  export SKIP_PURGE=1  # subsequent interviews skip the per-interview purge → accumulate
+fi
 
 for p in scripts/personas/*.json; do
   n=$(basename "$p" .json)
