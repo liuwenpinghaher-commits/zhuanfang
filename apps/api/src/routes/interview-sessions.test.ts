@@ -539,6 +539,44 @@ describe("interview-sessions routes", () => {
     await server.close();
   });
 
+  // C1: the /end RESPONSE must return the SAME light state that was persisted
+  // (turns stripped + rawMaterialOffloaded), not the heavy finalized state. The
+  // client adopts the response and an autosave effect would PUT it straight back;
+  // if it carried full turns the cold-storage offload (28MB wall fix) would be
+  // undone on the very next save. The heavy transcript stays only in cold storage,
+  // served lazily via GET /api/sessions/:id/raw-material.
+  it("/end: response state is the light (offloaded) state, heavy turns live only in cold storage", async () => {
+    const server = buildApiServer({ env: {} }); // in-memory product + raw-material repos, deterministic engine
+    const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "decision" } })).json();
+    const id = created.session.id as string;
+    await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/turns`, payload: { content: "我现在带的是 12 个人，最难的是放权。" } });
+    await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/turns`, payload: { content: "我总想自己复核，结果反而成了瓶颈。" } });
+
+    const res = await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/end` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+
+    // The completed session in the RESPONSE must be light: turns stripped, flagged offloaded.
+    const completed = (body.state.sessions as Array<{ id: string; turns?: unknown[]; rawMaterialOffloaded?: boolean }>).find(
+      (s) => s.id === id
+    );
+    expect(completed).toBeTruthy();
+    expect(completed!.turns?.length ?? 0).toBe(0);
+    expect(completed!.rawMaterialOffloaded).toBe(true);
+    // The top-level `session` field is the same light, offloaded record.
+    expect((body.session.turns?.length ?? 0)).toBe(0);
+    expect(body.session.rawMaterialOffloaded).toBe(true);
+
+    // The heavy transcript is preserved in cold storage and served lazily.
+    const raw = await server.inject({ method: "GET", url: `/api/sessions/${id}/raw-material` });
+    expect(raw.statusCode).toBe(200);
+    const material = raw.json();
+    expect(material.turns.length).toBeGreaterThan(0);
+    expect(material.turns.some((t: { role: string }) => t.role === "user")).toBe(true);
+
+    await server.close();
+  });
+
   // --- M3c: semantic recall is REALLY wired into the interview line ---
   //
   // This is the anti-fake-wiring test. Two confirmed memories are crafted so the

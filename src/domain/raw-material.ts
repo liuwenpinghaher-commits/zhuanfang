@@ -13,10 +13,34 @@ export function resolveEvidenceAnchors(
     return [];
   }
   const userTurns = turns.filter((t) => t.role === "user");
-  const exact = userTurns.find((t) => t.content.includes(q) || q.includes(t.content.trim()));
-  if (exact) {
-    return [{ sessionId, turnId: exact.id }];
+  // Minimum length for a turn to win via REVERSE matching (quote contains the
+  // turn). Without this, trivial fillers like "嗯。"/"对。" — which sort before
+  // the real source turn — get misanchored whenever they happen to be a
+  // substring of a long quote.
+  const MIN_REVERSE = 6;
+
+  // 1) Exact equality wins outright — never let a substring steal an exact match.
+  const exactEq = userTurns.find((t) => t.content.trim() === q);
+  if (exactEq) {
+    return [{ sessionId, turnId: exactEq.id }];
   }
+  // 2) Forward substring: the quote is a substring of a turn (the normal case —
+  //    LLM lifted a fragment of what the user said).
+  const forward = userTurns.find((t) => t.content.includes(q));
+  if (forward) {
+    return [{ sessionId, turnId: forward.id }];
+  }
+  // 3) Reverse substring: the quote is longer than the turn (rare), guarded by a
+  //    minimum turn length so fillers can't latch onto a long quote.
+  const reverse = userTurns.find((t) => {
+    const c = t.content.trim();
+    return c.length >= MIN_REVERSE && q.includes(c);
+  });
+  if (reverse) {
+    return [{ sessionId, turnId: reverse.id }];
+  }
+
+  // 4) Normalized (whitespace/punctuation-stripped) degraded matching.
   const norm = (s: string) => s.replace(/[\s。，、；：！？·.,;:!?"'「」（）()]/g, "");
   const nq = norm(q);
   if (!nq) {
@@ -24,7 +48,9 @@ export function resolveEvidenceAnchors(
   }
   const fuzzy = userTurns.find((t) => {
     const nt = norm(t.content);
-    return nt.includes(nq) || nq.includes(nt);
+    // Forward (turn contains quote) is unguarded; reverse keeps the same
+    // minimum-length guard so a normalized filler can't win either.
+    return nt.includes(nq) || (nt.length >= MIN_REVERSE && nq.includes(nt));
   });
   return fuzzy ? [{ sessionId, turnId: fuzzy.id }] : [];
 }

@@ -1114,7 +1114,10 @@ export default function App() {
 
     try {
       const apiRun = await productApiClient.endInterviewSession(session.id);
-      setProductState(apiRun.state);
+      // The /end response is already the authoritative LIGHT state (turns
+      // offloaded to cold storage). Adopt it so the autosave effect doesn't PUT
+      // the (now empty) turns back and re-inflate the just-offloaded session.
+      adoptServerState(apiRun.state);
       setApiPersistenceEnabled(true);
       setSession(null);
       closeRealtimeVoiceSession();

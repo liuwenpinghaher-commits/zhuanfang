@@ -33,6 +33,20 @@ describe("resolveEvidenceAnchors", () => {
     const a = resolveEvidenceAnchors("你怕的是结果失控", "s1", turns);
     expect(a).toEqual([]);
   });
+
+  // I2: a short filler turn ("嗯。") that is a substring of a long quote must NOT
+  // be misanchored even though it sorts before the real source turn. Reverse
+  // substring matching (quote.includes(turn)) needs a minimum-length guard so
+  // trivial fillers never win over the turn the quote actually came from.
+  it("极短填充轮不被长引用误锚(反向子串最小长度守卫)", () => {
+    const withFiller = [
+      turn("t0", "user", "嗯。"),
+      turn("t1", "assistant", "你当时是怎么想的？"),
+      turn("t2", "user", "嗯。我当时其实特别犹豫要不要继续撑下去。")
+    ];
+    const a = resolveEvidenceAnchors("嗯。我当时其实特别犹豫要不要继续撑下去。", "s1", withFiller);
+    expect(a).toEqual([{ sessionId: "s1", turnId: "t2" }]);
+  });
 });
 
 describe("interview annotations", () => {

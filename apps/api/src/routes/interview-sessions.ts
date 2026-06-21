@@ -291,10 +291,13 @@ export async function registerInterviewSessionRoutes(
 
     // Cold-storage offload: move this just-completed session's heavy evidence
     // (turns + strategyTrace) into the raw-material repository and persist only
-    // the lightweight hot state. The response still returns the full finalized
-    // state/session so the client sees the conversation right after ending; a
-    // later getState() yields the offloaded (light) session, with the raw
-    // material served lazily via GET /api/sessions/:id/raw-material.
+    // the lightweight hot state. The RESPONSE must return the same light state
+    // we persist — the client adopts it (adoptServerState) and its autosave
+    // effect would PUT it straight back; returning the heavy finalized state
+    // would re-inflate the just-offloaded turns on the next save (the 28MB-wall
+    // regression). The raw material is served lazily via
+    // GET /api/sessions/:id/raw-material. The end screen shows the dual-track
+    // note, not the transcript, so a light state doesn't degrade it.
     let stateToPersist = finalizedState;
     if (options.rawMaterialRepository) {
       const { hotState, material } = offloadCompletedSession(finalizedState, session.id);
@@ -303,10 +306,13 @@ export async function registerInterviewSessionRoutes(
         stateToPersist = hotState;
       }
     }
+    // Return the light, persisted session (turns stripped, rawMaterialOffloaded),
+    // not the heavy completedSession from finalizedState.
+    const persistedSession = stateToPersist.sessions.find((item) => item.id === session.id) ?? completedSession;
 
     repository.replaceState(stateToPersist);
     budget.reset(session.id);
-    return { session: completedSession, note: result.note, state: finalizedState };
+    return { session: persistedSession, note: result.note, state: stateToPersist };
   });
 
   // Voice path: generate interaction pre_signals for the next turn on demand
