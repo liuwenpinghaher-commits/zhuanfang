@@ -1751,7 +1751,16 @@ export default function App() {
             onSaveDefaultVoice={saveDefaultPodcastVoice}
           />
         )}
-        {view === "notes" && <NotesView state={productState} onStart={launchInterview} onSaveQuestion={saveNoteQuestion} />}
+        {view === "notes" && (
+          <NotesView
+            state={productState}
+            onStart={launchInterview}
+            onSaveQuestion={saveNoteQuestion}
+            onAddAnnotation={addInterviewAnnotation}
+            onRemoveAnnotation={removeInterviewAnnotation}
+            getRawMaterial={(sessionId) => productApiClient.getRawMaterial(sessionId)}
+          />
+        )}
         {view === "my-assets" && (
           <MyAssetsView
             state={productState}

@@ -1,14 +1,27 @@
-import { BookmarkCheck, FileText, Play } from "lucide-react";
+import { BookmarkCheck, FileText, FileSearch, Play } from "lucide-react";
+import { useState } from "react";
 import { HeaderBlock } from "../../components/HeaderBlock";
-import type { InterviewMode, ProductState } from "../../domain/types";
+import type { InterviewMode, InterviewRawMaterial, ProductState } from "../../domain/types";
+import { RawMaterialViewer } from "./RawMaterialViewer";
 
 interface NotesViewProps {
   state: ProductState;
   onStart: (mode?: InterviewMode) => void;
   onSaveQuestion: (noteId: string, index: number) => void;
+  onAddAnnotation: (sessionId: string, turnId: string, text: string) => void;
+  onRemoveAnnotation: (id: string) => void;
+  getRawMaterial: (sessionId: string) => Promise<InterviewRawMaterial | null>;
 }
 
-export function NotesView({ state, onStart, onSaveQuestion }: NotesViewProps) {
+export function NotesView({
+  state,
+  onStart,
+  onSaveQuestion,
+  onAddAnnotation,
+  onRemoveAnnotation,
+  getRawMaterial
+}: NotesViewProps) {
+  const [openSessionId, setOpenSessionId] = useState<string | null>(null);
   return (
     <section className="view-stack">
       <HeaderBlock
@@ -48,7 +61,25 @@ export function NotesView({ state, onStart, onSaveQuestion }: NotesViewProps) {
                   <BookmarkCheck size={16} aria-hidden="true" />保存问题：{question}
                 </button>
               ))}
+              <button
+                className="secondary-action"
+                type="button"
+                aria-expanded={openSessionId === note.sessionId}
+                onClick={() => setOpenSessionId((prev) => (prev === note.sessionId ? null : note.sessionId))}
+              >
+                <FileSearch size={16} aria-hidden="true" />
+                {openSessionId === note.sessionId ? "收起原始材料" : "查看原始材料"}
+              </button>
             </div>
+            {openSessionId === note.sessionId && (
+              <RawMaterialViewer
+                sessionId={note.sessionId}
+                state={state}
+                onAddAnnotation={onAddAnnotation}
+                onRemoveAnnotation={onRemoveAnnotation}
+                getRawMaterial={getRawMaterial}
+              />
+            )}
           </article>
         ))}
       </div>

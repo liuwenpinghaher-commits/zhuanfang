@@ -135,6 +135,9 @@ describe("empty-state render guards", () => {
         state={s}
         onStart={() => {}}
         onSaveQuestion={() => {}}
+        onAddAnnotation={() => {}}
+        onRemoveAnnotation={() => {}}
+        getRawMaterial={async () => null}
       />
     );
     expect(html).toContain("还没有专访笔记");
