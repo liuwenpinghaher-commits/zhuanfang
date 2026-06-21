@@ -37,6 +37,7 @@ describe("domain types", () => {
       profile: { name: "", role: "", industry: "", currentFocus: "", longTermGoal: "", preferredStrength: "standard", explicitBoundaries: [] },
       profileSuggestions: [],
       interviewAnnotations: [],
+      chatSessions: [],
       sessions: [], notes: [], points: [], questions: [], decisions: [], debts: [], themes: [],
       memoryCorrections: [], searchBriefs: [], podcastEpisodes: [], corpusImports: [], corpusInsights: [], playbookPatches: [],
       memoryRecords: [], memoryCandidates: [], memoryEdges: [],

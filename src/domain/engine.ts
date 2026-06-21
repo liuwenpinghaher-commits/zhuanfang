@@ -496,6 +496,7 @@ export function createEmptyProductState(): ProductState {
     profile: { ...base.profile },
     profileSuggestions: [],
     interviewAnnotations: [],
+    chatSessions: [],
     revision: 0
   };
 }

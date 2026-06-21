@@ -10,6 +10,7 @@ const MAX_REVIEWED_CANDIDATES = 200;
 const MAX_EVENT_LOG = 1000;
 // ponytail: 有界常量 — normalize 时保留的最大旁注数
 const MAX_ANNOTATIONS = 500;
+const MAX_CHAT_SESSIONS = 50;
 
 export function normalizeProductState(value: unknown): ProductState {
   const fallback = createInitialProductState();
@@ -41,6 +42,9 @@ export function normalizeProductState(value: unknown): ProductState {
     interviewAnnotations: Array.isArray(candidate.interviewAnnotations)
       ? candidate.interviewAnnotations.slice(0, MAX_ANNOTATIONS)
       : fallback.interviewAnnotations,
+    chatSessions: Array.isArray(candidate.chatSessions)
+      ? candidate.chatSessions.slice(0, MAX_CHAT_SESSIONS)
+      : fallback.chatSessions,
     sessions: Array.isArray(candidate.sessions) ? migrateSessionStatuses(candidate.sessions) : fallback.sessions,
     notes: Array.isArray(candidate.notes) ? candidate.notes : fallback.notes,
     points: Array.isArray(candidate.points) ? backfillPointDefaults(candidate.points) : fallback.points,

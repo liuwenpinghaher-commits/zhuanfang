@@ -12,6 +12,7 @@ export const initialProductState: ProductState = {
   },
   profileSuggestions: [],
   interviewAnnotations: [],
+  chatSessions: [],
   sessions: [],
   notes: [
     {

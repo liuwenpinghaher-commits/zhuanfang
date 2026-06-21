@@ -15,6 +15,7 @@ function makeMinimalState(overrides: Partial<ProductState> = {}): ProductState {
     },
     profileSuggestions: [],
     interviewAnnotations: [],
+    chatSessions: [],
     sessions: [],
     notes: [],
     points: [],

@@ -239,6 +239,7 @@ export function createPurgedProductState(currentState: ProductState, createdAt =
     },
     profileSuggestions: [],
     interviewAnnotations: [],
+    chatSessions: [],
     sessions: [],
     notes: [],
     points: [],
