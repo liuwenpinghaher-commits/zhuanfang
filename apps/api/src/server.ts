@@ -8,10 +8,12 @@ import { pathToFileURL } from "node:url";
 import { createSqliteProductStateRepository } from "../../../packages/db/src/sqlite-product-state-repository";
 import { createSqliteRawMaterialRepository } from "../../../packages/db/src/sqlite-raw-material-repository";
 import { createSqliteAudioRepository } from "../../../packages/db/src/sqlite-audio-repository";
+import { createSqliteKnowledgeIndexRepository } from "../../../packages/db/src/sqlite-knowledge-index-repository";
 import { loadLocalEnvFile } from "./env";
 import { createInMemoryProductStateRepository, type ProductStateRepository } from "./product-state-repository";
 import { createInMemoryRawMaterialRepository, type RawMaterialRepository } from "./raw-material-repository";
 import { createInMemoryAudioRepository, type AudioRepository } from "./audio-repository";
+import { createInMemoryKnowledgeIndexRepository, type KnowledgeIndexRepository } from "./knowledge-index-repository";
 import { createAnySearchClientFromEnv, type AnySearchClient } from "./providers/anysearch";
 import {
   createBailianAudioTranscriptionClientFromEnv,
@@ -42,6 +44,7 @@ import { registerCorpusRoutes } from "./routes/corpus";
 import { registerHealthRoutes } from "./routes/health";
 import { registerImportRoutes } from "./routes/import";
 import { registerInterviewSessionRoutes } from "./routes/interview-sessions";
+import { registerKnowledgeRoutes } from "./routes/knowledge";
 import { registerRawMaterialRoutes } from "./routes/raw-material";
 import { registerAudioRoutes } from "./routes/audio";
 import { registerMemoryRecordRoutes } from "./routes/memory-records";
@@ -61,6 +64,7 @@ interface BuildApiServerOptions {
   productStateDbPath?: string;
   rawMaterialRepository?: RawMaterialRepository;
   audioRepository?: AudioRepository;
+  knowledgeIndexRepository?: KnowledgeIndexRepository;
   bailianSearchClient?: BailianSearchClient;
   anySearchClient?: AnySearchClient;
   bailianPodcastAudioClient?: BailianPodcastAudioClient;
@@ -120,6 +124,11 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   // Interview raw-audio cold storage lives next to the product-state db (audio.sqlite in
   // the same directory). Tests / in-memory deployments stay in-memory. Injected repo wins.
   const audioRepository = options.audioRepository ?? createDefaultAudioRepository(effectiveDbPath);
+  // Knowledge index (cross-source RAG chunks) lives next to the product-state db
+  // (knowledge.sqlite in the same directory). Tests / in-memory deployments stay
+  // in-memory. Injected repo wins.
+  const knowledgeIndexRepository =
+    options.knowledgeIndexRepository ?? createDefaultKnowledgeIndexRepository(effectiveDbPath);
   const envFilePath = options.envFilePath ?? join(process.cwd(), ".env.local");
 
   // Single shared budget instance — covers all LLM entry points (interview turns,
@@ -237,6 +246,18 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
       ...providerClients,
       llmBudget: sharedBudget
     });
+  });
+  void server.register(async (registeredServer) => {
+    await registerKnowledgeRoutes(
+      registeredServer,
+      productStateRepository,
+      rawMaterialRepository,
+      knowledgeIndexRepository,
+      {
+        embeddingClient: providerClients.embeddingClient,
+        llmBudget: sharedBudget
+      }
+    );
   });
 
   // Static file serving: when PRODUCT_STATIC_DIR is set (production Docker image),
@@ -458,6 +479,15 @@ function createDefaultRawMaterialRepository(productStateDbPath?: string) {
     });
   }
   return createInMemoryRawMaterialRepository();
+}
+
+function createDefaultKnowledgeIndexRepository(productStateDbPath?: string) {
+  if (productStateDbPath && !isInMemoryDbPath(productStateDbPath)) {
+    return createSqliteKnowledgeIndexRepository({
+      dbPath: join(dirname(productStateDbPath), "knowledge.sqlite")
+    });
+  }
+  return createInMemoryKnowledgeIndexRepository();
 }
 
 function createDefaultAudioRepository(productStateDbPath?: string) {
