@@ -7,9 +7,11 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createSqliteProductStateRepository } from "../../../packages/db/src/sqlite-product-state-repository";
 import { createSqliteRawMaterialRepository } from "../../../packages/db/src/sqlite-raw-material-repository";
+import { createSqliteAudioRepository } from "../../../packages/db/src/sqlite-audio-repository";
 import { loadLocalEnvFile } from "./env";
 import { createInMemoryProductStateRepository, type ProductStateRepository } from "./product-state-repository";
 import { createInMemoryRawMaterialRepository, type RawMaterialRepository } from "./raw-material-repository";
+import { createInMemoryAudioRepository, type AudioRepository } from "./audio-repository";
 import { createAnySearchClientFromEnv, type AnySearchClient } from "./providers/anysearch";
 import {
   createBailianAudioTranscriptionClientFromEnv,
@@ -41,6 +43,7 @@ import { registerHealthRoutes } from "./routes/health";
 import { registerImportRoutes } from "./routes/import";
 import { registerInterviewSessionRoutes } from "./routes/interview-sessions";
 import { registerRawMaterialRoutes } from "./routes/raw-material";
+import { registerAudioRoutes } from "./routes/audio";
 import { registerMemoryRecordRoutes } from "./routes/memory-records";
 import { registerMemoryCandidateRoutes } from "./routes/memory-candidates";
 import { registerPlaybookPatchRoutes } from "./routes/playbook-patches";
@@ -57,6 +60,7 @@ interface BuildApiServerOptions {
   productStateRepository?: ProductStateRepository;
   productStateDbPath?: string;
   rawMaterialRepository?: RawMaterialRepository;
+  audioRepository?: AudioRepository;
   bailianSearchClient?: BailianSearchClient;
   anySearchClient?: AnySearchClient;
   bailianPodcastAudioClient?: BailianPodcastAudioClient;
@@ -113,6 +117,9 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   // never touch disk. An explicitly injected repo (tests) always wins.
   const rawMaterialRepository =
     options.rawMaterialRepository ?? createDefaultRawMaterialRepository(effectiveDbPath);
+  // Interview raw-audio cold storage lives next to the product-state db (audio.sqlite in
+  // the same directory). Tests / in-memory deployments stay in-memory. Injected repo wins.
+  const audioRepository = options.audioRepository ?? createDefaultAudioRepository(effectiveDbPath);
   const envFilePath = options.envFilePath ?? join(process.cwd(), ".env.local");
 
   // Single shared budget instance — covers all LLM entry points (interview turns,
@@ -162,6 +169,9 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   });
   void server.register(async (registeredServer) => {
     await registerRawMaterialRoutes(registeredServer, rawMaterialRepository, productStateRepository);
+  });
+  void server.register(async (registeredServer) => {
+    await registerAudioRoutes(registeredServer, audioRepository);
   });
   void server.register(async (registeredServer) => {
     await registerSearchRoutes(registeredServer, productStateRepository, {
@@ -447,6 +457,15 @@ function createDefaultRawMaterialRepository(productStateDbPath?: string) {
     });
   }
   return createInMemoryRawMaterialRepository();
+}
+
+function createDefaultAudioRepository(productStateDbPath?: string) {
+  if (productStateDbPath && !isInMemoryDbPath(productStateDbPath)) {
+    return createSqliteAudioRepository({
+      dbPath: join(dirname(productStateDbPath), "audio.sqlite")
+    });
+  }
+  return createInMemoryAudioRepository();
 }
 
 function isInMemoryDbPath(dbPath: string) {
