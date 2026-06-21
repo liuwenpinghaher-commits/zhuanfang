@@ -138,6 +138,24 @@ export interface InterviewAudio {
   createdAt: string;
 }
 
+export type KnowledgeSourceType =
+  | "note" | "memory" | "theme" | "point" | "decision" | "debt" | "transcript" | "material";
+
+export interface KnowledgeChunk {
+  id: string;
+  sourceType: KnowledgeSourceType;
+  sourceId: string;
+  title: string;
+  text: string;
+  keywords: string[];
+  embedding?: number[];
+  createdAt: string;
+}
+
+export interface ChatCitation { sourceType: KnowledgeSourceType; sourceId: string; title: string; snippet: string; }
+export interface ChatMessage { id: string; role: "user" | "assistant"; content: string; citations?: ChatCitation[]; createdAt: string; }
+export interface ChatSession { id: string; title: string; messages: ChatMessage[]; createdAt: string; updatedAt: string; }
+
 export type ProfileSuggestionStatus = "pending" | "approved" | "rejected";
 /** Only the two profile fields that actually shape interviews and can plausibly evolve over time. */
 export type ProfileSuggestionField = "currentFocus" | "longTermGoal";
@@ -339,7 +357,9 @@ export interface AuditEvent {
     | "profile_suggestion_rejected"
     | "cascade_decision_logged"
     | "annotation_created"
-    | "annotation_removed";
+    | "annotation_removed"
+    | "chat_session_created"
+    | "knowledge_index_rebuilt";
   label: string;
   detail: string;
   severity: AuditEventSeverity;
@@ -357,7 +377,9 @@ export interface AuditEvent {
     | "dual_track_note"
     | "decision"
     | "privacy_operation"
-    | "user_profile";
+    | "user_profile"
+    | "chat_session"
+    | "knowledge_index";
   entityId: string;
   createdAt: string;
 }
@@ -1255,6 +1277,7 @@ export interface ProductState {
   profile: UserProfile;
   profileSuggestions: ProfileSuggestion[];
   interviewAnnotations: InterviewAnnotation[];
+  chatSessions: ChatSession[];
   sessions: InterviewSession[];
   notes: DualTrackNote[];
   points: PointAsset[];
