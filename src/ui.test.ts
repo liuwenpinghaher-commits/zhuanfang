@@ -24,6 +24,7 @@ describe("ui helpers", () => {
       "my-assets",
       "search",
       "memory",
+      "podcast",
       "config",
       "corpus",
       "profile"

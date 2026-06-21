@@ -89,7 +89,8 @@ export const groupedNavigation: NavigationGroup[] = [
       { id: "asset-chat", label: "资产对话" },
       { id: "my-assets", label: "我的资产" },
       { id: "search", label: "外部调研" },
-      { id: "memory", label: "记忆" }
+      { id: "memory", label: "记忆" },
+      { id: "podcast", label: "播客" }
     ]
   },
   {

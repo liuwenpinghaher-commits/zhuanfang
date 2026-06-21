@@ -1,5 +1,5 @@
 import { MessagesSquare, Plus, Quote, SendHorizontal, Trash2 } from "lucide-react";
-import { useMemo, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { ChatCitation, ChatSession, KnowledgeSourceType, ProductState } from "../../domain/types";
 
@@ -56,6 +56,12 @@ export function AssetChatView({
 
   const canSend = draft.trim().length > 0 && !sending;
 
+  // 新消息后自动滚到底,避免长对话把输入框推出屏幕、需手动滚动才能继续。
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [activeSession?.id, activeSession?.messages.length]);
+
   async function handleSend() {
     const message = draft.trim();
     if (!message || sending) {
@@ -94,14 +100,7 @@ export function AssetChatView({
         }
       />
 
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "minmax(220px, 280px) 1fr",
-          gap: "1rem",
-          alignItems: "start"
-        }}
-      >
+      <div className="asset-chat-grid">
         {/* 左列：会话列表 */}
         <section className="panel" style={{ minWidth: 0 }}>
           <div className="panel-title">
@@ -165,7 +164,15 @@ export function AssetChatView({
 
         {/* 右列：消息流 + 输入 */}
         <section className="panel" style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: "0.85rem" }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "0.75rem",
+              maxHeight: "60vh",
+              overflowY: "auto"
+            }}
+          >
             {!activeSession || activeSession.messages.length === 0 ? (
               <p className="field-help">问点什么吧——比如「我对 X 的判断有哪些」「最近一次专访留下了哪些问题」。</p>
             ) : (
@@ -229,6 +236,7 @@ export function AssetChatView({
                 );
               })
             )}
+            <div ref={messagesEndRef} />
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>

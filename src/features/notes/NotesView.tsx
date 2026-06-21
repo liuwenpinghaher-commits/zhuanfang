@@ -1,5 +1,5 @@
 import { BookmarkCheck, FileText, FileSearch, Play } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { InterviewMode, InterviewRawMaterial, ProductState } from "../../domain/types";
 import type { SessionAudioMeta } from "../../api/productApi";
@@ -15,6 +15,8 @@ interface NotesViewProps {
   getAudioMeta?: (sessionId: string, role?: "interviewee" | "interviewer") => Promise<SessionAudioMeta>;
   audioUrl?: (sessionId: string) => string;
   getAudioBlob?: (sessionId: string, role?: "interviewee" | "interviewer") => Promise<Blob | null>;
+  // 引用跳源:外部(如资产对话的逐字稿引用)指定要展开的会话与高亮的轮次。
+  focus?: { sessionId: string; turnId?: string } | null;
 }
 
 export function NotesView({
@@ -26,9 +28,17 @@ export function NotesView({
   getRawMaterial,
   getAudioMeta,
   audioUrl,
-  getAudioBlob
+  getAudioBlob,
+  focus
 }: NotesViewProps) {
   const [openSessionId, setOpenSessionId] = useState<string | null>(null);
+
+  // 收到跳源 focus → 自动展开对应会话的原始材料(RawMaterialViewer 再按 focusTurnId 滚动高亮该轮)。
+  useEffect(() => {
+    if (focus?.sessionId) {
+      setOpenSessionId(focus.sessionId);
+    }
+  }, [focus?.sessionId, focus?.turnId]);
   return (
     <section className="view-stack">
       <HeaderBlock
@@ -84,6 +94,7 @@ export function NotesView({
                 <RawMaterialViewer
                   sessionId={note.sessionId}
                   state={state}
+                  focusTurnId={focus?.sessionId === note.sessionId ? focus?.turnId : undefined}
                   onAddAnnotation={onAddAnnotation}
                   onRemoveAnnotation={onRemoveAnnotation}
                   getRawMaterial={getRawMaterial}

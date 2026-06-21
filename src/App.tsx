@@ -211,6 +211,8 @@ export default function App() {
   );
   const [corpusFocus, setCorpusFocus] = useState("");
   const [chatSessionId, setChatSessionId] = useState<string | null>(null);
+  // 引用跳源:逐字稿引用点击后,要在双轨笔记里展开的会话 + 高亮的轮次。
+  const [notesFocus, setNotesFocus] = useState<{ sessionId: string; turnId?: string } | null>(null);
 
   useEffect(() => {
     saveProductState(productState);
@@ -392,6 +394,13 @@ export default function App() {
       debt: "my-assets"
     };
     const target = targetByType[citation.sourceType] ?? "my-assets";
+    // 逐字稿引用:解析 sourceId(形如 sessionId#turnId),在双轨笔记里展开该会话并滚动高亮该轮。
+    if (citation.sourceType === "transcript") {
+      const [sessionId, turnId] = citation.sourceId.split("#");
+      if (sessionId) {
+        setNotesFocus({ sessionId, ...(turnId ? { turnId } : {}) });
+      }
+    }
     setView(target);
     setNotice(buildNotice("info", "已定位来源", `${citation.title}（${citation.sourceType}）`));
   }
@@ -1874,6 +1883,7 @@ export default function App() {
             getAudioMeta={(sessionId, role) => productApiClient.getSessionAudioMeta(sessionId, role)}
             audioUrl={(sessionId) => productApiClient.sessionAudioUrl(sessionId)}
             getAudioBlob={(sessionId, role) => productApiClient.fetchSessionAudioBlob(sessionId, role)}
+            focus={notesFocus}
           />
         )}
         {view === "material" && (
@@ -1881,7 +1891,13 @@ export default function App() {
             state={productState}
             onImport={importMemoryDocument}
             onRebuildIndex={() => productApiClient.rebuildKnowledgeIndex()}
-            onDeleteSource={(id) => setProductState(deleteImportSource(productState, id))}
+            onDeleteSource={(id) => {
+              // 素材删除会连带清其知识索引块(经包装的 PUT autosave 触发 reindex),不可撤销 → 二次确认。
+              if (typeof window !== "undefined" && !window.confirm("确定删除这份素材吗？它在知识库/资产对话中的索引也会一并移除，无法撤销。")) {
+                return;
+              }
+              setProductState(deleteImportSource(productState, id));
+            }}
           />
         )}
         {view === "asset-chat" && (
@@ -1897,6 +1913,10 @@ export default function App() {
               setChatSessionId(result.sessionId);
             }}
             onDeleteChat={(id) => {
+              // 删除整条对话历史不可撤销 → 二次确认(与全站删除约定一致)。
+              if (typeof window !== "undefined" && !window.confirm("确定删除这条对话吗？整段对话历史将被移除，无法撤销。")) {
+                return;
+              }
               setProductState(deleteChatSession(productState, id));
               if (chatSessionId === id) {
                 setChatSessionId(null);

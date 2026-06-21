@@ -2454,7 +2454,19 @@ select:focus-visible {
   }
 }
 
+/* 资产对话两列布局:桌面端会话列表 + 消息流;窄屏塌成单列(此前用内联 grid 绕过断点,移动端不可用)。 */
+.asset-chat-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+
 @media (max-width: 760px) {
+  .asset-chat-grid {
+    grid-template-columns: 1fr;
+  }
+
   .main-area,
   .sidebar {
     padding: 18px;
