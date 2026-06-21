@@ -122,6 +122,15 @@ export interface InterviewRawMaterial {
   createdAt: string;
 }
 
+export interface InterviewAudio {
+  sessionId: string;
+  audio: Uint8Array;
+  mime: string;
+  byteSize: number;
+  durationMs?: number;
+  createdAt: string;
+}
+
 export type ProfileSuggestionStatus = "pending" | "approved" | "rejected";
 /** Only the two profile fields that actually shape interviews and can plausibly evolve over time. */
 export type ProfileSuggestionField = "currentFocus" | "longTermGoal";
