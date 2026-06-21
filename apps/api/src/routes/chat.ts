@@ -102,7 +102,9 @@ export async function registerChatRoutes(
 
     if (allowLlm) {
       const session = state.chatSessions.find((s) => s.id === sessionId) as ChatSession;
-      const { system, user } = buildChatPrompt(retrieved, session.messages, message);
+      // history 不含刚 append 的当前 user 消息(session.messages 末尾即它)，
+      // 否则它会同时出现在 buildChatPrompt 的"对话历史"与"当前问题"里，造成最新问题重复。
+      const { system, user } = buildChatPrompt(retrieved, session.messages.slice(0, -1), message);
       try {
         answer = await options.bailianChatClient!.complete({
           messages: [

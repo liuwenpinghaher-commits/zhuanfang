@@ -66,6 +66,17 @@ export async function reindexOnStateChange(
       knowledgeRepo.deleteBySource(ref.sourceType, ref.sourceId);
     }
 
+    // material 不在 diffIndexableSources 内（新增/变更由 import 端点补点），但"删除"必须在此清理：
+    // 前端 deleteImportSource 只清 ProductState 的 importSources/ragChunks，不动知识索引；
+    // 经包装的 replaceState → 本函数收到 prev/next，比对 importSources 按 id，
+    // 对 prev 有、next 无的来源逐个删其 material 块，避免删素材后遗留孤儿块仍被 chat 引用。
+    const nextSourceIds = new Set(next.importSources.map((s) => s.id));
+    for (const source of prev.importSources) {
+      if (!nextSourceIds.has(source.id)) {
+        knowledgeRepo.deleteBySource("material", source.id);
+      }
+    }
+
     if (diff.changed.length === 0) return;
 
     // 对 changed 的来源：从 next 全量切块，再过滤出这些来源的块。

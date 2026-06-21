@@ -149,6 +149,36 @@ describe("reindexOnStateChange", () => {
     await reindexOnStateChange(base, base, repo, undefined, createLlmBudget());
     expect(repo.listAll()).toHaveLength(1);
   });
+
+  it("删除一条 importSource → 其 material 孤儿块被清除(终审#1)", async () => {
+    const base = createInitialProductState();
+    const at = "2026-06-22T00:00:00.000Z";
+    const prev: ProductState = {
+      ...base,
+      importSources: [
+        {
+          id: "s1",
+          title: "素材一",
+          sourceType: "text",
+          content: "正文一",
+          status: "chunked",
+          sensitivity: "normal",
+          chunkIds: [],
+          createdAt: at,
+          updatedAt: at
+        }
+      ]
+    };
+    const next: ProductState = { ...base, importSources: [] };
+    const repo = createInMemoryKnowledgeIndexRepository();
+    // 预置：s1 的 material 块
+    repo.put({ ...makeChunk("mat1"), sourceType: "material", sourceId: "s1", text: "正文一" });
+
+    await reindexOnStateChange(prev, next, repo, undefined, createLlmBudget());
+
+    const orphan = repo.listAll().filter((c) => c.sourceType === "material" && c.sourceId === "s1");
+    expect(orphan).toHaveLength(0);
+  });
 });
 
 describe("PUT /api/state 触发增量重索引(经包装的 replaceState)", () => {
