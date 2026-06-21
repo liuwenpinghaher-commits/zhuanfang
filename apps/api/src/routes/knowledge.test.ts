@@ -179,6 +179,24 @@ describe("reindexOnStateChange", () => {
     const orphan = repo.listAll().filter((c) => c.sourceType === "material" && c.sourceId === "s1");
     expect(orphan).toHaveLength(0);
   });
+
+  it("一个会话从 sessions[] 消失 → 其 transcript 孤儿块被清除(防御:跨库一致性)", async () => {
+    const base = createInitialProductState();
+    const prev: ProductState = {
+      ...base,
+      sessions: [{ id: "sess-x" } as any, ...base.sessions]
+    };
+    const next: ProductState = { ...base, sessions: [...base.sessions] };
+    const repo = createInMemoryKnowledgeIndexRepository();
+    // 预置：sess-x 的两条 transcript 块(sourceId 形如 sessionId#turnId)
+    repo.put({ ...makeChunk("tc1"), sourceType: "transcript", sourceId: "sess-x#t1", text: "轮一" });
+    repo.put({ ...makeChunk("tc2"), sourceType: "transcript", sourceId: "sess-x#t2", text: "轮二" });
+
+    await reindexOnStateChange(prev, next, repo, undefined, createLlmBudget());
+
+    const orphan = repo.listAll().filter((c) => c.sourceType === "transcript" && c.sourceId.startsWith("sess-x#"));
+    expect(orphan).toHaveLength(0);
+  });
 });
 
 describe("PUT /api/state 触发增量重索引(经包装的 replaceState)", () => {

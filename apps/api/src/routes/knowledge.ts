@@ -92,6 +92,21 @@ export async function reindexOnStateChange(
       }
     }
 
+    // transcript 同理：逐字稿块属冷层、不在 diffIndexableSources 内。若某会话从 sessions[] 消失,
+    // 其 transcript 块(sourceId 形如 `${sessionId}#${turnId}`)必须一并清,避免指向已不存在会话的孤儿块仍被 chat 召回。
+    // 防御性:当前系统无"删除单会话"入口(/end 会重新加回会话),但保持与 material 删除对称的跨库一致性。
+    const nextSessionIds = new Set(next.sessions.map((s) => s.id));
+    const removedSessionIds = prev.sessions.filter((s) => !nextSessionIds.has(s.id)).map((s) => s.id);
+    if (removedSessionIds.length > 0) {
+      for (const chunk of knowledgeRepo.listAll()) {
+        if (chunk.sourceType !== "transcript") continue;
+        const sid = chunk.sourceId.split("#")[0];
+        if (removedSessionIds.includes(sid)) {
+          knowledgeRepo.deleteBySource("transcript", chunk.sourceId);
+        }
+      }
+    }
+
     if (diff.changed.length === 0) return;
 
     // 对 changed 的来源：从 next 全量切块，再过滤出这些来源的块。
