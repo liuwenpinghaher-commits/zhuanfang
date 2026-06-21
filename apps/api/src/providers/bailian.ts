@@ -1384,7 +1384,10 @@ export function createBailianEmbeddingClient(
           authorization: `Bearer ${options.apiKey}`,
           "content-type": "application/json"
         },
-        body: JSON.stringify({ model, input: texts })
+        body: JSON.stringify({ model, input: texts }),
+        // 超时兜底：嵌入 API 偶发慢/无响应时绝不能无限挂住调用方（如建会话的召回嵌入会卡死「一键开始」）。
+        // 超时即抛 → 上游 fail-safe 退化为关键词召回。
+        signal: AbortSignal.timeout(15000)
       });
 
       if (!response.ok) {

@@ -7,12 +7,17 @@ import type { BailianEmbeddingClient } from "../providers/bailian";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import { buildKnowledgeChunks, diffIndexableSources } from "../../../../src/domain/knowledge";
 
-const EMBED_BATCH = 32;
+// Bailian text-embedding 单次请求最多 10 条 input，超过会 400。批量大小必须 ≤ 10。
+const EMBED_BATCH = 10;
 
 /**
  * 批量给 chunks 补嵌入。无 client / 超预算 / 失败 → 留空(走关键词召回)，绝不抛。
  * 预算走共享 LlmBudget 的 "knowledge_index" 桶(任意字符串 capability，tryConsume 不限 union)。
  */
+// 嵌入 API 对空串/超长文本会 400，对单批文本数也有上限。送入前清洗：截断超长、剔空。
+const MAX_EMBED_CHARS = 2000;
+const MAX_EMBED_FAILURES = 3; // 连续失败上限：API 真挂了就尽快停，别 42 批逐个超时拖死。
+
 export async function embedChunks(
   chunks: KnowledgeChunk[],
   embeddingClient: BailianEmbeddingClient | undefined,
@@ -22,15 +27,21 @@ export async function embedChunks(
     return chunks;
   }
   const out = [...chunks];
-  for (let i = 0; i < out.length; i += EMBED_BATCH) {
-    const slice = out.slice(i, i + EMBED_BATCH);
+  // 只对有非空文本的块取嵌入；空文本块跳过(保留关键词召回)。记下原始下标以便回填。
+  const targets = out
+    .map((c, idx) => ({ idx, text: c.text.trim().slice(0, MAX_EMBED_CHARS) }))
+    .filter((t) => t.text.length > 0);
+  let consecutiveFailures = 0;
+  for (let i = 0; i < targets.length; i += EMBED_BATCH) {
+    const slice = targets.slice(i, i + EMBED_BATCH);
     try {
-      const vecs = await embeddingClient.embed(slice.map((c) => c.text));
-      slice.forEach((c, j) => {
-        if (vecs[j]) {
-          out[i + j] = { ...c, embedding: vecs[j] };
+      const vecs = await embeddingClient.embed(slice.map((t) => t.text));
+      slice.forEach((t, j) => {
+        if (Array.isArray(vecs[j]) && vecs[j].length > 0) {
+          out[t.idx] = { ...out[t.idx], embedding: vecs[j] };
         }
       });
+      consecutiveFailures = 0;
     } catch (err) {
       console.warn(
         JSON.stringify({
@@ -38,7 +49,11 @@ export async function embedChunks(
           error: err instanceof Error ? err.message : String(err)
         })
       );
-      break;
+      // 跳过这一批(其块留关键词召回)，继续后续批；连续失败过多则判定 API 不可用，提前停。
+      consecutiveFailures += 1;
+      if (consecutiveFailures >= MAX_EMBED_FAILURES) {
+        break;
+      }
     }
   }
   return out;
@@ -208,18 +223,33 @@ export async function registerKnowledgeRoutes(
       }
     }
 
-    const budget = options.llmBudget ?? createLlmBudget();
-    const chunks = await embedChunks(
-      buildKnowledgeChunks(state, rawTurns),
-      options.embeddingClient,
-      budget
-    );
+    const chunks = buildKnowledgeChunks(state, rawTurns);
 
-    // 全量重建：先清空旧索引，再逐条写入(单线程同步，无并发竞态)。
+    // 全量重建：先清空旧索引、立即写入(无嵌入也能关键词召回)并返回——避免 HTTP 请求
+    // 阻塞在数百次嵌入上(嵌入 API 慢时会拖到分钟级、卡死前端重建按钮)。
     knowledgeRepo.deleteAll();
     for (const chunk of chunks) {
       knowledgeRepo.put(chunk);
     }
+
+    // 嵌入在后台补：每补好一条就 upsert 覆盖(put 按 id 覆盖)，召回随之从关键词升级到向量。失败只 warn。
+    const budget = options.llmBudget ?? createLlmBudget();
+    void embedChunks(chunks, options.embeddingClient, budget)
+      .then((embedded) => {
+        for (const chunk of embedded) {
+          if (chunk.embedding && chunk.embedding.length > 0) {
+            knowledgeRepo.put(chunk);
+          }
+        }
+      })
+      .catch((err) => {
+        console.warn(
+          JSON.stringify({
+            event: "knowledge_background_embed_failed",
+            error: err instanceof Error ? err.message : String(err)
+          })
+        );
+      });
 
     return { chunkCount: chunks.length };
   });
