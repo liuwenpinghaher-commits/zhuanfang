@@ -1795,6 +1795,10 @@ export default function App() {
             workspace={buildTrackWorkspace(productState, selectedTrackId ?? "")}
             onBack={() => setView("home")}
             onContinue={() => launchInterview("long-term")}
+            state={productState}
+            onAddAnnotation={addInterviewAnnotation}
+            onRemoveAnnotation={removeInterviewAnnotation}
+            getRawMaterial={(sessionId) => productApiClient.getRawMaterial(sessionId)}
           />
         )}
         {view === "memory" && (

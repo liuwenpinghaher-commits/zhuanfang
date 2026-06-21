@@ -139,6 +139,12 @@ export async function registerInterviewSessionRoutes(
     if (!session) {
       return reply.code(404).send({ error: "Interview session not found." });
     }
+    // M6: a completed + raw-material-offloaded session has its transcript in cold storage
+    // and an empty hot layer. Appending here would re-grow the hot turns and split them from
+    // the cold copy, so refuse.
+    if (session.status === "completed" || session.rawMaterialOffloaded === true) {
+      return reply.code(409).send({ error: "会话已结束并归档，无法追加轮次。" });
+    }
 
     const payload = normalizeObject<TurnPayload>(request.body);
     const content = normalizeOptionalString(payload.content);
@@ -449,6 +455,10 @@ export async function registerInterviewSessionRoutes(
     const session = findSession(state, getSessionId(request.params));
     if (!session) {
       return reply.code(404).send({ error: "Interview session not found." });
+    }
+    // M6: mirror /turns — never append to a completed + offloaded session (cold/hot split).
+    if (session.status === "completed" || session.rawMaterialOffloaded === true) {
+      return reply.code(409).send({ error: "会话已结束并归档，无法追加轮次。" });
     }
     const body = normalizeObject<{ role?: unknown; content?: unknown }>(request.body);
     const content = normalizeOptionalString(body.content);

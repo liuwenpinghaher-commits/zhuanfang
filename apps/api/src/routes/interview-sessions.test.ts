@@ -88,6 +88,51 @@ describe("interview-sessions routes", () => {
     await server.close();
   });
 
+  // M6: once a session is completed + raw-material-offloaded (turns moved to cold storage,
+  // hot layer cleared), appending another turn would re-grow the hot layer and split it from
+  // the cold copy. /turns and /record-turn must guard against that with 409 — but an
+  // in-progress session must still accept turns (no regression).
+  it("/turns: appending to a completed + offloaded session is rejected 409 (no cold/hot split)", async () => {
+    const server = buildApiServer({ env: {} });
+    const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "decision" } })).json();
+    const id = created.session.id as string;
+    await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/turns`, payload: { content: "我现在带的是 12 个人，最难的是放权。" } });
+    // /end completes the session and offloads the transcript to cold storage.
+    const end = await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/end` });
+    expect(end.statusCode).toBe(200);
+    expect(end.json().session.rawMaterialOffloaded).toBe(true);
+
+    const res = await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/turns`, payload: { content: "再补一句。" } });
+    expect(res.statusCode).toBe(409);
+    await server.close();
+  });
+
+  it("/record-turn: appending to a completed + offloaded session is rejected 409", async () => {
+    const server = buildApiServer({ env: {} });
+    const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "decision" } })).json();
+    const id = created.session.id as string;
+    await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/turns`, payload: { content: "我现在带的是 12 个人，最难的是放权。" } });
+    const end = await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/end` });
+    expect(end.statusCode).toBe(200);
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/interview-sessions/${id}/record-turn`,
+      payload: { role: "user", content: "语音再补一句。" }
+    });
+    expect(res.statusCode).toBe(409);
+    await server.close();
+  });
+
+  it("/turns: an in-progress (not completed/offloaded) session still accepts turns 200 (no regression)", async () => {
+    const server = buildApiServer({ env: {} });
+    const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "decision" } })).json();
+    const id = created.session.id as string;
+    const res = await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/turns`, payload: { content: "继续聊。" } });
+    expect(res.statusCode).toBe(200);
+    await server.close();
+  });
+
   // /turns is a read-modify-write on the global state with an await window (embedding /
   // LLM). Two concurrent turns on the SAME session must NOT clobber each other: without
   // per-session serialization both read the same base snapshot and the second replaceState
