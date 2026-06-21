@@ -102,6 +102,26 @@ export interface UserProfile {
   explicitBoundaries: string[];
 }
 
+export interface EvidenceAnchor {
+  sessionId: string;
+  turnId: string;
+}
+
+export interface InterviewAnnotation {
+  id: string;
+  sessionId: string;
+  turnId: string;
+  text: string;
+  createdAt: string;
+}
+
+export interface InterviewRawMaterial {
+  sessionId: string;
+  turns: InterviewTurn[];
+  strategyTrace: InterviewStrategyDecision[];
+  createdAt: string;
+}
+
 export type ProfileSuggestionStatus = "pending" | "approved" | "rejected";
 /** Only the two profile fields that actually shape interviews and can plausibly evolve over time. */
 export type ProfileSuggestionField = "currentFocus" | "longTermGoal";
@@ -301,7 +321,9 @@ export interface AuditEvent {
     | "profile_suggestion_created"
     | "profile_suggestion_approved"
     | "profile_suggestion_rejected"
-    | "cascade_decision_logged";
+    | "cascade_decision_logged"
+    | "annotation_created"
+    | "annotation_removed";
   label: string;
   detail: string;
   severity: AuditEventSeverity;
@@ -548,6 +570,7 @@ export interface InterviewSession {
   interactionPreSignals?: InteractionPreSignals;
   /** v2 软标签：本会话软归属的主题线（可多归属、可为空）。 */
   relatedThemeIds?: string[];
+  rawMaterialOffloaded?: boolean;
 }
 
 export interface InterviewAgentContext {
@@ -604,6 +627,7 @@ export interface DualTrackNote {
   createdAt: string;
   feedback?: InterviewFeedback;
   relatedThemeIds?: string[];
+  keyQuoteAnchor?: EvidenceAnchor;
 }
 
 export type InterviewFeedbackTag =
@@ -643,6 +667,7 @@ export interface PointAsset {
   updatedAt: string;
   /** 产出该资产的专访会话 id */
   sourceSessionId?: string;
+  evidenceAnchors?: EvidenceAnchor[];
 }
 
 export interface QuestionAsset {
@@ -673,6 +698,7 @@ export interface DecisionAsset {
   relatedThemeIds?: string[];
   /** 产出该资产的专访会话 id */
   sourceSessionId?: string;
+  evidenceAnchors?: EvidenceAnchor[];
 }
 
 export interface KnowledgeDebt {
@@ -686,6 +712,7 @@ export interface KnowledgeDebt {
   relatedThemeIds?: string[];
   /** 产出该资产的专访会话 id */
   sourceSessionId?: string;
+  evidenceAnchors?: EvidenceAnchor[];
 }
 
 
@@ -789,6 +816,7 @@ export interface MemoryRecord {
   /** M3: 最近访问/确认时间，用于检索 recency 衰减。当前在确认(approve)时写入；
    *  按每次召回回写为后续增强（domain 纯函数不持时钟，回写需在路由层做）。 */
   lastAccessedAt?: string;
+  evidenceAnchors?: EvidenceAnchor[];
 }
 
 export interface MemoryCandidate {
@@ -814,6 +842,7 @@ export interface MemoryCandidate {
    * keeper), so approving the summary doesn't dilute显著性 back down to a reviewScore band.
    */
   importance?: number;
+  evidenceAnchors?: EvidenceAnchor[];
 }
 
 export interface MemoryEdge {
@@ -1207,6 +1236,7 @@ export interface SystemStatus {
 export interface ProductState {
   profile: UserProfile;
   profileSuggestions: ProfileSuggestion[];
+  interviewAnnotations: InterviewAnnotation[];
   sessions: InterviewSession[];
   notes: DualTrackNote[];
   points: PointAsset[];
