@@ -67,7 +67,40 @@ describe("audio routes", () => {
     });
     const res = await server.inject({ method: "GET", url: "/api/sessions/s1/audio/meta" });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ exists: true, mime: "audio/webm", byteSize: 3, durationMs: 500 });
+    expect(res.json()).toEqual({
+      exists: true,
+      mime: "audio/webm",
+      byteSize: 3,
+      durationMs: 500,
+      recordingStartedAt: null
+    });
+  });
+
+  it("POST 带 recordingStartedAt → meta 返回该值", async () => {
+    const audioRepository = createInMemoryAudioRepository();
+    const server = buildApiServer({ env: {}, audioRepository });
+    await server.inject({
+      method: "POST",
+      url: "/api/sessions/s1/audio",
+      payload: {
+        audioBase64: Buffer.from([1, 2, 3]).toString("base64"),
+        mime: "audio/webm",
+        durationMs: 500,
+        recordingStartedAt: "2026-06-21T10:00:00.000Z"
+      }
+    });
+    const stored = audioRepository.get("s1");
+    expect(stored!.recordingStartedAt).toBe("2026-06-21T10:00:00.000Z");
+
+    const res = await server.inject({ method: "GET", url: "/api/sessions/s1/audio/meta" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      exists: true,
+      mime: "audio/webm",
+      byteSize: 3,
+      durationMs: 500,
+      recordingStartedAt: "2026-06-21T10:00:00.000Z"
+    });
   });
 
   it("GET /api/sessions/missing/audio/meta → exists:false", async () => {

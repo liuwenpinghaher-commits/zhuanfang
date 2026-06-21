@@ -4,7 +4,7 @@ import type { AudioRepository } from "../audio-repository";
 export async function registerAudioRoutes(server: FastifyInstance, audioRepo: AudioRepository): Promise<void> {
   server.post("/api/sessions/:id/audio", async (request, reply) => {
     const id = (request.params as { id?: string }).id ?? "";
-    const body = request.body as { audioBase64?: unknown; mime?: unknown; durationMs?: unknown } | undefined;
+    const body = request.body as { audioBase64?: unknown; mime?: unknown; durationMs?: unknown; recordingStartedAt?: unknown } | undefined;
     if (typeof body?.audioBase64 !== "string" || typeof body?.mime !== "string") {
       return reply.code(422).send({ error: "audio requires audioBase64(string) + mime(string)." });
     }
@@ -15,6 +15,7 @@ export async function registerAudioRoutes(server: FastifyInstance, audioRepo: Au
       mime: body.mime,
       byteSize: audio.byteLength,
       ...(typeof body.durationMs === "number" ? { durationMs: body.durationMs } : {}),
+      ...(typeof body.recordingStartedAt === "string" ? { recordingStartedAt: body.recordingStartedAt } : {}),
       createdAt: new Date().toISOString()
     });
     return { ok: true, byteSize: audio.byteLength };
@@ -34,7 +35,13 @@ export async function registerAudioRoutes(server: FastifyInstance, audioRepo: Au
     const id = (request.params as { id?: string }).id ?? "";
     const a = audioRepo.get(id);
     return a
-      ? { exists: true, mime: a.mime, byteSize: a.byteSize, durationMs: a.durationMs ?? null }
+      ? {
+          exists: true,
+          mime: a.mime,
+          byteSize: a.byteSize,
+          durationMs: a.durationMs ?? null,
+          recordingStartedAt: a.recordingStartedAt ?? null
+        }
       : { exists: false };
   });
 }

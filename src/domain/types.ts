@@ -128,6 +128,8 @@ export interface InterviewAudio {
   mime: string;
   byteSize: number;
   durationMs?: number;
+  /** 录音起始的墙钟 ISO 时间，使前端能按 `turn.timestamp - recordingStartedAt` 算出每轮在整段录音里的偏移。 */
+  recordingStartedAt?: string;
   createdAt: string;
 }
 

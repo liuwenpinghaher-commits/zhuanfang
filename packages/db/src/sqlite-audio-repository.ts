@@ -14,6 +14,7 @@ interface AudioRow {
   mime: string;
   byte_size: number;
   duration_ms: number | null;
+  recording_started_at: string | null;
   created_at: string;
 }
 
@@ -27,23 +28,33 @@ export function createSqliteAudioRepository(
   const database = new DatabaseSync(options.dbPath);
   database.exec(`
     CREATE TABLE IF NOT EXISTS interview_audio (
-      session_id  TEXT PRIMARY KEY,
-      audio       BLOB NOT NULL,
-      mime        TEXT NOT NULL,
-      byte_size   INTEGER NOT NULL,
-      duration_ms INTEGER,
-      created_at  TEXT NOT NULL
+      session_id           TEXT PRIMARY KEY,
+      audio                BLOB NOT NULL,
+      mime                 TEXT NOT NULL,
+      byte_size            INTEGER NOT NULL,
+      duration_ms          INTEGER,
+      recording_started_at TEXT,
+      created_at           TEXT NOT NULL
     );
   `);
+  // Backward-compat: a pre-existing audio.sqlite may have been created before the
+  // recording_started_at column existed. ADD COLUMN throws on an already-present
+  // column (node:sqlite exec surfaces the SQLite error); swallow only that case.
+  try {
+    database.exec("ALTER TABLE interview_audio ADD COLUMN recording_started_at TEXT");
+  } catch {
+    /* column already exists — ignore */
+  }
 
   const upsert = database.prepare(
-    `INSERT INTO interview_audio (session_id, audio, mime, byte_size, duration_ms, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)
+    `INSERT INTO interview_audio (session_id, audio, mime, byte_size, duration_ms, recording_started_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(session_id) DO UPDATE SET
        audio = excluded.audio,
        mime = excluded.mime,
        byte_size = excluded.byte_size,
        duration_ms = excluded.duration_ms,
+       recording_started_at = excluded.recording_started_at,
        created_at = excluded.created_at`
   );
   const selectOne = database.prepare("SELECT * FROM interview_audio WHERE session_id = ?");
@@ -73,6 +84,9 @@ export function createSqliteAudioRepository(
       if (row.duration_ms !== null && row.duration_ms !== undefined) {
         result.durationMs = row.duration_ms;
       }
+      if (row.recording_started_at !== null && row.recording_started_at !== undefined) {
+        result.recordingStartedAt = row.recording_started_at;
+      }
       return result;
     },
     has(sessionId) {
@@ -85,6 +99,7 @@ export function createSqliteAudioRepository(
         a.mime,
         a.byteSize ?? a.audio.byteLength,
         a.durationMs ?? null,
+        a.recordingStartedAt ?? null,
         a.createdAt
       );
     },
