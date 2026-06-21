@@ -10,6 +10,7 @@ export type PrivacyInventoryCategoryId =
   | "external_knowledge"
   | "corpus_learning"
   | "generated_media"
+  | "chat"
   | "operations";
 
 export interface PrivacyInventoryItem {
@@ -98,15 +99,25 @@ export function buildPrivacyReport(state: ProductState, generatedAt = new Date()
       purged: true
     },
     {
+      id: "chat",
+      label: "资产对话",
+      count: state.chatSessions.length,
+      detail: "与认知资产的对话会话与消息历史(随导出走、随彻底清空清除)。",
+      exported: true,
+      purged: true
+    },
+    {
       id: "operations",
       label: "审计与运行记录",
-      // workflowRuns / operationalChecks are not yet produced by any code path, so they
-      // are excluded here rather than implying coverage the system doesn't have.
+      // 含 workflowRuns / operationalChecks:当前无代码产出它们(计数为 0),但 createPurgedProductState
+      // 会清空它们——纳入计数,避免将来一旦产出时"彻底清空删了却没计入"的口径背离。
       count:
         state.auditEvents.length +
         state.aiRunEvents.length +
-        state.configVersions.length,
-      detail: "审计事件、AI run event 和配置版本历史。",
+        state.configVersions.length +
+        state.workflowRuns.length +
+        state.operationalChecks.length,
+      detail: "审计事件、AI run event、配置版本历史、工作流运行与运维检查。",
       exported: true,
       purged: true
     }

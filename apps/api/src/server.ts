@@ -508,7 +508,10 @@ function registerProductionAuth(server: ReturnType<typeof Fastify>, env: Record<
       return;
     }
 
-    if (isAuthorized(env, { authHeader: request.headers.authorization })) {
+    // 同时接受 ?token= 查询:浏览器原生媒体请求(<audio src>/<img>)无法带 Authorization 头,
+    // 没有这条,生产环境下原生 src 形式的音频回放等 GET 会被 401。与 WS 升级路径口径一致。
+    const tokenQuery = new URLSearchParams(request.url.split("?")[1] ?? "").get("token") ?? undefined;
+    if (isAuthorized(env, { authHeader: request.headers.authorization, tokenQuery })) {
       return;
     }
 
