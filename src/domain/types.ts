@@ -122,8 +122,13 @@ export interface InterviewRawMaterial {
   createdAt: string;
 }
 
+/** 录音归属的说话方：受访者(默认) / 主持人。 */
+export type InterviewAudioRole = "interviewee" | "interviewer";
+
 export interface InterviewAudio {
   sessionId: string;
+  /** 录音归属说话方；缺省语义为 "interviewee"（向后兼容旧的隐含受访者单路存储）。 */
+  role: InterviewAudioRole;
   audio: Uint8Array;
   mime: string;
   byteSize: number;

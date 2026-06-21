@@ -316,6 +316,7 @@ describe("state routes", () => {
       const audioRepo = createInMemoryAudioRepository();
       audioRepo.put({
         sessionId: "a1",
+        role: "interviewee",
         audio: new Uint8Array([1]),
         mime: "audio/webm",
         byteSize: 1,
@@ -339,6 +340,7 @@ describe("state routes", () => {
       const audioRepo = createInMemoryAudioRepository();
       audioRepo.put({
         sessionId: "a1",
+        role: "interviewee",
         audio: new Uint8Array([1]),
         mime: "audio/webm",
         byteSize: 1,
@@ -360,6 +362,7 @@ describe("state routes", () => {
       const audioRepo = createInMemoryAudioRepository();
       audioRepo.put({
         sessionId: "a1",
+        role: "interviewee",
         audio: new Uint8Array([1, 2, 3]),
         mime: "audio/webm",
         byteSize: 3,
@@ -405,11 +408,54 @@ describe("state routes", () => {
       await server.close();
     });
 
+    it("两路 role 都被导出且经 import 恢复", async () => {
+      const audioRepo = createInMemoryAudioRepository();
+      audioRepo.put({
+        sessionId: "s1",
+        role: "interviewee",
+        audio: new Uint8Array([1, 1]),
+        mime: "audio/webm",
+        byteSize: 2,
+        createdAt: "2026-06-21T10:00:00.000Z"
+      });
+      audioRepo.put({
+        sessionId: "s1",
+        role: "interviewer",
+        audio: new Uint8Array([2, 2, 2]),
+        mime: "audio/webm",
+        byteSize: 3,
+        createdAt: "2026-06-21T10:00:01.000Z"
+      });
+
+      const server = buildApiServer({ audioRepository: audioRepo });
+      const body = (await server.inject({ method: "GET", url: "/api/state/export" })).json();
+      const roles = body.audios
+        .filter((a: { sessionId: string }) => a.sessionId === "s1")
+        .map((a: { role: string }) => a.role)
+        .sort();
+      expect(roles).toEqual(["interviewee", "interviewer"]);
+      // 同一 session 两路, audioSessions 去重为一条
+      expect(body.audioSessions.filter((s: string) => s === "s1").length).toBe(1);
+
+      const freshAudioRepo = createInMemoryAudioRepository();
+      const freshServer = buildApiServer({ audioRepository: freshAudioRepo });
+      await freshServer.inject({
+        method: "POST",
+        url: "/api/state/import",
+        payload: { confirm: "REPLACE_ALL_STATE", ...body }
+      });
+      expect(Array.from(freshAudioRepo.get("s1", "interviewee")!.audio)).toEqual([1, 1]);
+      expect(Array.from(freshAudioRepo.get("s1", "interviewer")!.audio)).toEqual([2, 2, 2]);
+      await freshServer.close();
+      await server.close();
+    });
+
     it("base64 往返字节精确(含 0/255 边界)", async () => {
       const audioRepo = createInMemoryAudioRepository();
       const bytes = new Uint8Array([0, 1, 127, 128, 254, 255]);
       audioRepo.put({
         sessionId: "edge",
+        role: "interviewee",
         audio: bytes,
         mime: "audio/webm",
         byteSize: bytes.byteLength,
@@ -437,6 +483,7 @@ describe("state routes", () => {
       const tenMB = 10 * 1024 * 1024;
       audioRepo.put({
         sessionId: "big-1",
+        role: "interviewee",
         audio: new Uint8Array(tenMB),
         mime: "audio/webm",
         byteSize: tenMB,
@@ -444,6 +491,7 @@ describe("state routes", () => {
       });
       audioRepo.put({
         sessionId: "big-2",
+        role: "interviewee",
         audio: new Uint8Array(tenMB),
         mime: "audio/webm",
         byteSize: tenMB,

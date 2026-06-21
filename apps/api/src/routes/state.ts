@@ -73,6 +73,7 @@ export async function registerStateRoutes(
     const AUDIO_EXPORT_BUDGET_BYTES = 18 * 1024 * 1024;
     const audios: Array<{
       sessionId: string;
+      role: InterviewAudio["role"];
       mime: string;
       durationMs?: number;
       recordingStartedAt?: string;
@@ -92,11 +93,12 @@ export async function registerStateRoutes(
       audioBudgetUsed += audioBase64.length;
       const entry: {
         sessionId: string;
+        role: InterviewAudio["role"];
         mime: string;
         durationMs?: number;
         recordingStartedAt?: string;
         audioBase64: string;
-      } = { sessionId: a.sessionId, mime: a.mime, audioBase64 };
+      } = { sessionId: a.sessionId, role: a.role, mime: a.mime, audioBase64 };
       if (a.durationMs !== undefined) {
         entry.durationMs = a.durationMs;
       }
@@ -163,6 +165,7 @@ export async function registerStateRoutes(
     if (audioRepository && Array.isArray(body?.audios)) {
       for (const entry of body.audios as Array<{
         sessionId?: unknown;
+        role?: unknown;
         audioBase64?: unknown;
         mime?: unknown;
         durationMs?: unknown;
@@ -175,8 +178,11 @@ export async function registerStateRoutes(
           typeof entry.mime === "string"
         ) {
           const audio = new Uint8Array(Buffer.from(entry.audioBase64, "base64"));
+          // role 缺省/非法 → interviewee（向后兼容旧的无 role 导出包）。
+          const role: InterviewAudio["role"] = entry.role === "interviewer" ? "interviewer" : "interviewee";
           const restored: InterviewAudio = {
             sessionId: entry.sessionId,
+            role,
             audio,
             mime: entry.mime,
             byteSize: audio.byteLength,
