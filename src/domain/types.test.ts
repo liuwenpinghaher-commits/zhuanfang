@@ -36,6 +36,7 @@ describe("domain types", () => {
     const state: import("./types").ProductState = {
       profile: { name: "", role: "", industry: "", currentFocus: "", longTermGoal: "", preferredStrength: "standard", explicitBoundaries: [] },
       profileSuggestions: [],
+      interviewAnnotations: [],
       sessions: [], notes: [], points: [], questions: [], decisions: [], debts: [], themes: [],
       memoryCorrections: [], searchBriefs: [], podcastEpisodes: [], corpusImports: [], corpusInsights: [], playbookPatches: [],
       memoryRecords: [], memoryCandidates: [], memoryEdges: [],

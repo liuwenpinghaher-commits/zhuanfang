@@ -11,6 +11,7 @@ export const initialProductState: ProductState = {
     explicitBoundaries: ["不要把短暂情绪直接写成长期人格结论"]
   },
   profileSuggestions: [],
+  interviewAnnotations: [],
   sessions: [],
   notes: [
     {

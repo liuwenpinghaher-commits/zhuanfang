@@ -495,6 +495,7 @@ export function createEmptyProductState(): ProductState {
     configVersions: [], auditEvents: [], aiRunEvents: [], workflowRuns: [], operationalChecks: [],
     profile: { ...base.profile },
     profileSuggestions: [],
+    interviewAnnotations: [],
     revision: 0
   };
 }

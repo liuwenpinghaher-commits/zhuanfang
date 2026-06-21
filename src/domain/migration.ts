@@ -118,7 +118,7 @@ function buildMigrationEntityCounts(state: ProductState): MigrationEntityCount[]
     {
       id: "interviews",
       label: "专访与笔记",
-      count: state.sessions.length + state.notes.length
+      count: state.sessions.length + state.notes.length + (state.interviewAnnotations ?? []).length
     },
     {
       id: "assets",

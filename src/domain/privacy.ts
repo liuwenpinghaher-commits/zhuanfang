@@ -188,7 +188,7 @@ export function createScopedPurge(
       next = { ...currentState, profile: { ...EMPTY_PROFILE }, profileSuggestions: [] };
       break;
     case "interviews":
-      next = { ...currentState, sessions: [], notes: [] };
+      next = { ...currentState, sessions: [], notes: [], interviewAnnotations: [] };
       break;
     case "assets":
       next = { ...currentState, points: [], questions: [], decisions: [], debts: [], themes: [] };
@@ -238,6 +238,7 @@ export function createPurgedProductState(currentState: ProductState, createdAt =
       explicitBoundaries: []
     },
     profileSuggestions: [],
+    interviewAnnotations: [],
     sessions: [],
     notes: [],
     points: [],
