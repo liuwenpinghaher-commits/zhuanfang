@@ -1805,6 +1805,9 @@ export default function App() {
             onDeprecate={deprecateRecord}
             onDeleteRecord={deleteRecord}
             onConsolidate={consolidateMemory}
+            onAddAnnotation={addInterviewAnnotation}
+            onRemoveAnnotation={removeInterviewAnnotation}
+            getRawMaterial={(sessionId) => productApiClient.getRawMaterial(sessionId)}
           />
         )}
         {view === "config" && (

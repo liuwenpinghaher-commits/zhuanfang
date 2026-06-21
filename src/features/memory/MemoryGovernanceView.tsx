@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, FileUp, GitMerge, Inbox, Lock, Pencil, ShieldAlert, Trash2, X } from "lucide-react";
+import { Check, ExternalLink, FileUp, GitMerge, Inbox, Lock, Pencil, ShieldAlert, Trash2, X } from "lucide-react";
 import { HeaderBlock } from "../../components/HeaderBlock";
-import type { ProductState } from "../../domain/types";
+import { RawMaterialViewer } from "../notes/RawMaterialViewer";
+import type { InterviewRawMaterial, ProductState } from "../../domain/types";
 
 interface MemoryGovernanceViewProps {
   state: ProductState;
@@ -13,6 +14,10 @@ interface MemoryGovernanceViewProps {
   onDeprecate: (recordId: string) => void;
   onDeleteRecord: (recordId: string) => void;
   onConsolidate: () => void | Promise<void>;
+  // 透传给 RawMaterialViewer 的原文出处能力（Task 12 跳转）。
+  onAddAnnotation: (sessionId: string, turnId: string, text: string) => void;
+  onRemoveAnnotation: (id: string) => void;
+  getRawMaterial: (sessionId: string) => Promise<InterviewRawMaterial | null>;
 }
 
 type ActionState = "idle" | "loading" | "done" | "error";
@@ -44,7 +49,10 @@ export function MemoryGovernanceView({
   onEditCandidate,
   onDeprecate,
   onDeleteRecord,
-  onConsolidate
+  onConsolidate,
+  onAddAnnotation,
+  onRemoveAnnotation,
+  getRawMaterial
 }: MemoryGovernanceViewProps) {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
@@ -60,6 +68,9 @@ export function MemoryGovernanceView({
 
   // per-candidate action states
   const [candidateOps, setCandidateOps] = useState<Record<string, CandidateOp>>({});
+
+  // Task 12: "查看原文出处" overlay — 渲染 RawMaterialViewer 并定位到锚点轮。
+  const [sourceOverlay, setSourceOverlay] = useState<{ sessionId: string; turnId: string } | null>(null);
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -439,6 +450,19 @@ export function MemoryGovernanceView({
                 )}
               </div>
               <div className="note-actions">
+                {record.evidenceAnchors && record.evidenceAnchors.length > 0 && (
+                  <button
+                    className="secondary-action"
+                    type="button"
+                    title="打开这条记忆所依据的原始对话"
+                    onClick={() => {
+                      const anchor = record.evidenceAnchors![0];
+                      setSourceOverlay({ sessionId: anchor.sessionId, turnId: anchor.turnId });
+                    }}
+                  >
+                    <ExternalLink size={16} />查看原文出处
+                  </button>
+                )}
                 <button className="secondary-action" type="button" onClick={() => onDeprecate(record.id)}>
                   撤销（停止引用）
                 </button>
@@ -450,6 +474,58 @@ export function MemoryGovernanceView({
           ))
         )}
       </div>
+
+      {/* Task 12: 原文出处弹层 */}
+      {sourceOverlay && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="原文出处"
+          onClick={() => setSourceOverlay(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 1000,
+            background: "rgba(0,0,0,0.55)",
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "center",
+            padding: "5vh 1rem",
+            overflowY: "auto"
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "min(820px, 100%)",
+              background: "var(--surface, #1b1d22)",
+              borderRadius: "0.75rem",
+              padding: "1rem 1.1rem 1.4rem",
+              boxShadow: "0 18px 48px rgba(0,0,0,0.5)"
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "0.75rem" }}>
+              <h2 style={{ margin: 0, fontSize: "1.05rem" }}>原文出处</h2>
+              <button
+                className="icon-button"
+                type="button"
+                aria-label="关闭原文出处"
+                onClick={() => setSourceOverlay(null)}
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <RawMaterialViewer
+              sessionId={sourceOverlay.sessionId}
+              focusTurnId={sourceOverlay.turnId}
+              state={state}
+              onAddAnnotation={onAddAnnotation}
+              onRemoveAnnotation={onRemoveAnnotation}
+              getRawMaterial={getRawMaterial}
+            />
+          </div>
+        </div>
+      )}
     </section>
   );
 }

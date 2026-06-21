@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Bot, MessageSquare, Trash2 } from "lucide-react";
 import type {
   EvidenceAnchor,
@@ -13,6 +13,8 @@ interface RawMaterialViewerProps {
   onAddAnnotation: (sessionId: string, turnId: string, text: string) => void;
   onRemoveAnnotation: (id: string) => void;
   getRawMaterial: (sessionId: string) => Promise<InterviewRawMaterial | null>;
+  /** 若提供，加载完成后滚动到该轮并临时高亮（用于"查看原文出处"跳转）。 */
+  focusTurnId?: string;
 }
 
 type LoadStatus = "loading" | "ready" | "empty" | "error";
@@ -31,12 +33,15 @@ export function RawMaterialViewer({
   state,
   onAddAnnotation,
   onRemoveAnnotation,
-  getRawMaterial
+  getRawMaterial,
+  focusTurnId
 }: RawMaterialViewerProps) {
   const [status, setStatus] = useState<LoadStatus>("loading");
   const [material, setMaterial] = useState<InterviewRawMaterial | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [highlightTurnId, setHighlightTurnId] = useState<string | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -66,6 +71,21 @@ export function RawMaterialViewer({
       cancelled = true;
     };
   }, [sessionId, getRawMaterial]);
+
+  // 加载完成后，若有 focusTurnId 则滚动到该轮并临时高亮。
+  useEffect(() => {
+    if (status !== "ready" || !focusTurnId || !containerRef.current) {
+      return;
+    }
+    const el = containerRef.current.querySelector<HTMLElement>(`[data-turn-id="${focusTurnId}"]`);
+    if (!el) {
+      return;
+    }
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    setHighlightTurnId(focusTurnId);
+    const timer = setTimeout(() => setHighlightTurnId(null), 3500);
+    return () => clearTimeout(timer);
+  }, [status, focusTurnId, material]);
 
   if (status === "loading") {
     return (
@@ -104,7 +124,7 @@ export function RawMaterialViewer({
   let assistantOrdinal = -1;
 
   return (
-    <div className="panel" style={{ marginTop: "0.75rem", display: "flex", flexDirection: "column", gap: "0.85rem" }}>
+    <div ref={containerRef} className="panel" style={{ marginTop: "0.75rem", display: "flex", flexDirection: "column", gap: "0.85rem" }}>
       {material.turns.map((turn, turnIndex) => {
         let trace: InterviewStrategyDecision | undefined;
         if (turn.role === "assistant") {
@@ -149,11 +169,21 @@ export function RawMaterialViewer({
         return (
           <article
             key={turn.id}
+            data-turn-id={turn.id}
             className="field-stack"
             style={{
               gap: "0.5rem",
               paddingBottom: "0.85rem",
-              borderBottom: "1px solid var(--border-subtle, rgba(255,255,255,0.06))"
+              borderBottom: "1px solid var(--border-subtle, rgba(255,255,255,0.06))",
+              ...(highlightTurnId === turn.id
+                ? {
+                    borderRadius: "0.5rem",
+                    padding: "0.6rem",
+                    background: "var(--surface-highlight, rgba(96,165,250,0.16))",
+                    boxShadow: "0 0 0 2px var(--accent, rgba(96,165,250,0.55))",
+                    transition: "background 0.3s ease, box-shadow 0.3s ease"
+                  }
+                : { transition: "background 0.3s ease, box-shadow 0.3s ease" })
             }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>

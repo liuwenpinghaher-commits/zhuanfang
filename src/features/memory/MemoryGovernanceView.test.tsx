@@ -100,6 +100,9 @@ describe("SSR render guard", () => {
           onDeprecate={noop}
           onDeleteRecord={noop}
           onConsolidate={noop}
+          onAddAnnotation={noop}
+          onRemoveAnnotation={noop}
+          getRawMaterial={async () => null}
         />
       )
     ).not.toThrow();
@@ -122,6 +125,9 @@ describe("SSR render guard", () => {
           onDeprecate={noop}
           onDeleteRecord={noop}
           onConsolidate={noop}
+          onAddAnnotation={noop}
+          onRemoveAnnotation={noop}
+          getRawMaterial={async () => null}
         />
       )
     ).not.toThrow();
@@ -143,6 +149,9 @@ describe("empty states", () => {
         onDeprecate={noop}
         onDeleteRecord={noop}
         onConsolidate={noop}
+        onAddAnnotation={noop}
+        onRemoveAnnotation={noop}
+        getRawMaterial={async () => null}
       />
     );
     const emptyStates = container.querySelectorAll(".empty-state");
@@ -162,6 +171,9 @@ describe("empty states", () => {
         onDeprecate={noop}
         onDeleteRecord={noop}
         onConsolidate={noop}
+        onAddAnnotation={noop}
+        onRemoveAnnotation={noop}
+        getRawMaterial={async () => null}
       />
     );
     expect(container.textContent).toContain("暂无待审候选");
@@ -180,6 +192,9 @@ describe("empty states", () => {
         onDeprecate={noop}
         onDeleteRecord={noop}
         onConsolidate={noop}
+        onAddAnnotation={noop}
+        onRemoveAnnotation={noop}
+        getRawMaterial={async () => null}
       />
     );
     expect(container.textContent).toContain("还没有确认的长期记忆");
@@ -203,6 +218,9 @@ describe("sensitive icon", () => {
         onDeprecate={noop}
         onDeleteRecord={noop}
         onConsolidate={noop}
+        onAddAnnotation={noop}
+        onRemoveAnnotation={noop}
+        getRawMaterial={async () => null}
       />
     );
     expect(html).not.toContain("🔒"); // 🔒 unicode
@@ -224,6 +242,9 @@ describe("sensitive icon", () => {
         onDeprecate={noop}
         onDeleteRecord={noop}
         onConsolidate={noop}
+        onAddAnnotation={noop}
+        onRemoveAnnotation={noop}
+        getRawMaterial={async () => null}
       />
     );
     expect(html).toContain("<svg");
@@ -244,6 +265,9 @@ describe("sensitive icon", () => {
         onDeprecate={noop}
         onDeleteRecord={noop}
         onConsolidate={noop}
+        onAddAnnotation={noop}
+        onRemoveAnnotation={noop}
+        getRawMaterial={async () => null}
       />
     );
     expect(html).toContain("敏感");
@@ -266,6 +290,9 @@ describe("sensitive icon", () => {
         onDeprecate={noop}
         onDeleteRecord={noop}
         onConsolidate={noop}
+        onAddAnnotation={noop}
+        onRemoveAnnotation={noop}
+        getRawMaterial={async () => null}
       />
     );
     expect(html).not.toContain("🔒");
@@ -289,6 +316,9 @@ describe("inline edit", () => {
         onDeprecate={noop}
         onDeleteRecord={noop}
         onConsolidate={noop}
+        onAddAnnotation={noop}
+        onRemoveAnnotation={noop}
+        getRawMaterial={async () => null}
       />
     );
 
@@ -326,6 +356,9 @@ describe("inline edit", () => {
         onDeprecate={noop}
         onDeleteRecord={noop}
         onConsolidate={noop}
+        onAddAnnotation={noop}
+        onRemoveAnnotation={noop}
+        getRawMaterial={async () => null}
       />
     );
 
@@ -374,6 +407,9 @@ describe("inline edit", () => {
         onDeprecate={noop}
         onDeleteRecord={noop}
         onConsolidate={noop}
+        onAddAnnotation={noop}
+        onRemoveAnnotation={noop}
+        getRawMaterial={async () => null}
       />
     );
 
@@ -427,6 +463,9 @@ describe("inline edit", () => {
         onDeprecate={noop}
         onDeleteRecord={noop}
         onConsolidate={noop}
+        onAddAnnotation={noop}
+        onRemoveAnnotation={noop}
+        getRawMaterial={async () => null}
       />
     );
 
@@ -467,6 +506,9 @@ describe("approval actions", () => {
         onDeprecate={noop}
         onDeleteRecord={noop}
         onConsolidate={noop}
+        onAddAnnotation={noop}
+        onRemoveAnnotation={noop}
+        getRawMaterial={async () => null}
       />
     );
 
@@ -496,6 +538,9 @@ describe("approval actions", () => {
         onDeprecate={noop}
         onDeleteRecord={noop}
         onConsolidate={noop}
+        onAddAnnotation={noop}
+        onRemoveAnnotation={noop}
+        getRawMaterial={async () => null}
       />
     );
 
@@ -529,6 +574,9 @@ describe("import content length guard", () => {
         onDeprecate={noop}
         onDeleteRecord={noop}
         onConsolidate={noop}
+        onAddAnnotation={noop}
+        onRemoveAnnotation={noop}
+        getRawMaterial={async () => null}
       />
     );
 
@@ -564,6 +612,9 @@ describe("import content length guard", () => {
         onDeprecate={noop}
         onDeleteRecord={noop}
         onConsolidate={noop}
+        onAddAnnotation={noop}
+        onRemoveAnnotation={noop}
+        getRawMaterial={async () => null}
       />
     );
 
@@ -587,6 +638,9 @@ describe("import content length guard", () => {
         onDeprecate={noop}
         onDeleteRecord={noop}
         onConsolidate={noop}
+        onAddAnnotation={noop}
+        onRemoveAnnotation={noop}
+        getRawMaterial={async () => null}
       />
     );
 
