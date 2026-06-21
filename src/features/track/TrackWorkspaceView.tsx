@@ -14,9 +14,9 @@ interface TrackWorkspaceViewProps {
   onAddAnnotation: (sessionId: string, turnId: string, text: string) => void;
   onRemoveAnnotation: (id: string) => void;
   getRawMaterial: (sessionId: string) => Promise<InterviewRawMaterial | null>;
-  getAudioMeta?: (sessionId: string) => Promise<SessionAudioMeta>;
+  getAudioMeta?: (sessionId: string, role?: "interviewee" | "interviewer") => Promise<SessionAudioMeta>;
   audioUrl?: (sessionId: string) => string;
-  getAudioBlob?: (sessionId: string) => Promise<Blob | null>;
+  getAudioBlob?: (sessionId: string, role?: "interviewee" | "interviewer") => Promise<Blob | null>;
 }
 
 const MATURITY_COLOR: Record<string, string> = {

@@ -60,9 +60,10 @@ import {
   type BailianRealtimeWebsocketConnection
 } from "./realtime/bailianWebsocket";
 import { createLivekitVoiceSession, type LivekitVoiceSession } from "./realtime/livekitVoice";
-import { connectCascadedPipeline, type CascadedPipeline } from "./realtime/cascadedPipeline";
+import { connectCascadedPipeline, type CascadedPipeline, type TtsSink } from "./realtime/cascadedPipeline";
 import { createBrowserAsrSource } from "./realtime/cascadedAsrSource";
 import { createBrowserTtsSink } from "./realtime/cascadedTtsSink";
+import { pcmS16leMonoToWav } from "./realtime/pcmWav";
 import { createSessionAudioRecorder, type SessionAudioRecorder } from "./realtime/sessionAudioRecorder";
 import {
   dedupeGeneratedArtifacts,
@@ -154,6 +155,10 @@ export default function App() {
   // null on the text path so we naturally skip recording. Recording is best-effort:
   // a failed start/stop/upload must never block ending the interview.
   const audioRecorderRef = useRef<SessionAudioRecorder | null>(null);
+  // Host (interviewer) TTS sink — held in a ref so finishInterview() can drain its
+  // side-channel PCM tap into a WAV and upload it as role=interviewer. Only set on
+  // the voice path; null on the text path (no TTS) → interviewer upload skipped.
+  const ttsSinkRef = useRef<TtsSink | null>(null);
   // P1-12: which assistant turn index has already absorbed a `final` transcript
   // segment. A realtime turn can emit MULTIPLE finals (omni: audio_transcript.done
   // + text.done; livekit: one TranscriptionSegment per sentence) — the first final
@@ -456,6 +461,10 @@ export default function App() {
       cascadePipelineRef.current.close();
       cascadePipelineRef.current = null;
     }
+    // Drop the host TTS sink ref. The pipeline.close() above already closed the
+    // sink (releasing its WS + AudioContext); we just clear the handle so a torn-
+    // down session can't leak a stale sink (and its recorded PCM) into the next.
+    ttsSinkRef.current = null;
     // Discard any orphan whole-session recorder (voice session torn down without a
     // proper /end upload — e.g. new interview / purge / reset). finishInterview()
     // already nulls the ref BEFORE calling us when it wants to upload, so reaching
@@ -1152,6 +1161,27 @@ export default function App() {
             setNotice(buildNotice("warning", "录音未保存", "本场语音录音上传失败，不影响笔记与资产。"))
           );
       }
+      // Host (interviewer) TTS audio: drain the sink's side-channel PCM tap, wrap
+      // as WAV, upload as role=interviewer. Best-effort and non-blocking — a
+      // failure only warns to console. No recordingStartedAt: the host audio is
+      // stitched-together AI speech with no continuous timeline, so per-turn seek
+      // doesn't apply (the viewer plays it as one continuous track). The sink ref
+      // is cleared by closeRealtimeVoiceSession() below; read it before that.
+      const ttsSink = ttsSinkRef.current;
+      if (ttsSink?.getRecordedPcm) {
+        const rec = ttsSink.getRecordedPcm();
+        if (rec && rec.pcm.length > 0) {
+          const wav = pcmS16leMonoToWav(rec.pcm, rec.sampleRate);
+          void productApiClient
+            .uploadSessionAudio(endedSessionId, wav, undefined, undefined, "interviewer")
+            .catch((err: unknown) => {
+              console.warn(JSON.stringify({
+                event: "interviewer_audio_upload_failed",
+                error: err instanceof Error ? err.message : String(err),
+              }));
+            });
+        }
+      }
       setSession(null);
       closeRealtimeVoiceSession();
       setNotice(buildNotice("success", "专访档案已生成", "双轨笔记和认知资产已更新。"));
@@ -1341,6 +1371,8 @@ export default function App() {
               }
             });
             const tts = createBrowserTtsSink(ttsWsUrl, productState.systemConfig.voice.defaultVoice);
+            // Hold the sink so finishInterview() can drain its host-audio PCM tap.
+            ttsSinkRef.current = tts;
 
             // sendUserTurn: POST to /api/interview-sessions/:id/turns, return assistantText
             const sendUserTurn = async (text: string, signal: AbortSignal) => {
@@ -1811,9 +1843,9 @@ export default function App() {
             onAddAnnotation={addInterviewAnnotation}
             onRemoveAnnotation={removeInterviewAnnotation}
             getRawMaterial={(sessionId) => productApiClient.getRawMaterial(sessionId)}
-            getAudioMeta={(sessionId) => productApiClient.getSessionAudioMeta(sessionId)}
+            getAudioMeta={(sessionId, role) => productApiClient.getSessionAudioMeta(sessionId, role)}
             audioUrl={(sessionId) => productApiClient.sessionAudioUrl(sessionId)}
-            getAudioBlob={(sessionId) => productApiClient.fetchSessionAudioBlob(sessionId)}
+            getAudioBlob={(sessionId, role) => productApiClient.fetchSessionAudioBlob(sessionId, role)}
           />
         )}
         {view === "my-assets" && (
@@ -1851,9 +1883,9 @@ export default function App() {
             onAddAnnotation={addInterviewAnnotation}
             onRemoveAnnotation={removeInterviewAnnotation}
             getRawMaterial={(sessionId) => productApiClient.getRawMaterial(sessionId)}
-            getAudioMeta={(sessionId) => productApiClient.getSessionAudioMeta(sessionId)}
+            getAudioMeta={(sessionId, role) => productApiClient.getSessionAudioMeta(sessionId, role)}
             audioUrl={(sessionId) => productApiClient.sessionAudioUrl(sessionId)}
-            getAudioBlob={(sessionId) => productApiClient.fetchSessionAudioBlob(sessionId)}
+            getAudioBlob={(sessionId, role) => productApiClient.fetchSessionAudioBlob(sessionId, role)}
           />
         )}
         {view === "memory" && (
@@ -1870,9 +1902,9 @@ export default function App() {
             onAddAnnotation={addInterviewAnnotation}
             onRemoveAnnotation={removeInterviewAnnotation}
             getRawMaterial={(sessionId) => productApiClient.getRawMaterial(sessionId)}
-            getAudioMeta={(sessionId) => productApiClient.getSessionAudioMeta(sessionId)}
+            getAudioMeta={(sessionId, role) => productApiClient.getSessionAudioMeta(sessionId, role)}
             audioUrl={(sessionId) => productApiClient.sessionAudioUrl(sessionId)}
-            getAudioBlob={(sessionId) => productApiClient.fetchSessionAudioBlob(sessionId)}
+            getAudioBlob={(sessionId, role) => productApiClient.fetchSessionAudioBlob(sessionId, role)}
           />
         )}
         {view === "config" && (

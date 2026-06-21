@@ -90,9 +90,15 @@ export interface ProductApiClient {
    * failure block ending the interview. recordingStartedAt (ISO wall-clock at the
    * moment recording began) lets the viewer align each turn to a seek offset.
    */
-  uploadSessionAudio(sessionId: string, blob: Blob, durationMs?: number, recordingStartedAt?: string): Promise<void>;
-  /** Metadata for a session's stored audio (exists:false when none). */
-  getSessionAudioMeta(sessionId: string): Promise<SessionAudioMeta>;
+  uploadSessionAudio(
+    sessionId: string,
+    blob: Blob,
+    durationMs?: number,
+    recordingStartedAt?: string,
+    role?: SessionAudioRole
+  ): Promise<void>;
+  /** Metadata for a session's stored audio (exists:false when none). role defaults to interviewee. */
+  getSessionAudioMeta(sessionId: string, role?: SessionAudioRole): Promise<SessionAudioMeta>;
   /** Absolute URL to stream the stored audio, for an <audio src>. */
   sessionAudioUrl(sessionId: string): string;
   /**
@@ -102,8 +108,12 @@ export interface ProductApiClient {
    * auth. Returns null when no audio exists yet (404); throws ApiError on other
    * non-2xx. Caller wraps the Blob in URL.createObjectURL for playback.
    */
-  fetchSessionAudioBlob(sessionId: string): Promise<Blob | null>;
+  fetchSessionAudioBlob(sessionId: string, role?: SessionAudioRole): Promise<Blob | null>;
 }
+
+/** Which speaker's audio track. interviewee (受访者麦克风录音) is the default;
+ *  interviewer (主持人 TTS 合成音) is the bypass-tapped host stream. */
+export type SessionAudioRole = "interviewee" | "interviewer";
 
 export interface SessionAudioMeta {
   exists: boolean;
@@ -406,6 +416,16 @@ function bytesToBase64(bytes: Uint8Array): string {
     binary += String.fromCharCode(...slice);
   }
   return btoa(binary);
+}
+
+/**
+ * Build the `?role=` query suffix for the session-audio endpoints. Returns "" for
+ * the default (interviewee) so existing callers keep hitting the bare URL — only
+ * an explicit role=interviewer appends the query. Keeps the interviewee contract
+ * (and its tests) byte-for-byte unchanged.
+ */
+function roleQuery(role?: SessionAudioRole): string {
+  return role === "interviewer" ? "?role=interviewer" : "";
 }
 
 export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchImpl: FetchLike = fetch): ProductApiClient {
@@ -796,7 +816,7 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         method: "DELETE"
       });
     },
-    async uploadSessionAudio(sessionId, blob, durationMs, recordingStartedAt) {
+    async uploadSessionAudio(sessionId, blob, durationMs, recordingStartedAt, role) {
       // Prefer Blob.arrayBuffer() (real browsers); fall back to Response(blob)
       // for environments (jsdom) whose Blob lacks arrayBuffer.
       const arrayBuffer = typeof blob.arrayBuffer === "function"
@@ -804,7 +824,7 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         : await new Response(blob).arrayBuffer();
       const buf = new Uint8Array(arrayBuffer);
       const audioBase64 = bytesToBase64(buf);
-      const response = await fetchImpl(`${normalizedBaseUrl}/api/sessions/${sessionId}/audio`, {
+      const response = await fetchImpl(`${normalizedBaseUrl}/api/sessions/${sessionId}/audio${roleQuery(role)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -818,13 +838,13 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         throw new ApiError(response.status, `/api/sessions/${sessionId}/audio`);
       }
     },
-    async getSessionAudioMeta(sessionId) {
-      return (await requestJson(`/api/sessions/${sessionId}/audio/meta`, { method: "GET" })) as SessionAudioMeta;
+    async getSessionAudioMeta(sessionId, role) {
+      return (await requestJson(`/api/sessions/${sessionId}/audio/meta${roleQuery(role)}`, { method: "GET" })) as SessionAudioMeta;
     },
-    async fetchSessionAudioBlob(sessionId) {
+    async fetchSessionAudioBlob(sessionId, role) {
       // Use fetch (carries client-configured headers) instead of <audio src>,
       // which cannot send Authorization and 401s under production bearer auth.
-      const response = await fetchImpl(`${normalizedBaseUrl}/api/sessions/${sessionId}/audio`, {
+      const response = await fetchImpl(`${normalizedBaseUrl}/api/sessions/${sessionId}/audio${roleQuery(role)}`, {
         method: "GET"
       });
       if (response.status === 404) {

@@ -45,6 +45,15 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
   let sampleRate = DEFAULT_SAMPLE_RATE;
   let leftoverByte: Uint8Array | null = null; // a half 16-bit sample split across chunks
 
+  // Side-channel recording of the host (interviewer) TTS audio. We accumulate a
+  // verbatim copy of every PCM chunk as it arrives so the assembled stream can be
+  // stored + replayed later. This is a pure tap: it never touches the playback
+  // path (decode/schedule), so it cannot change what the user hears. The recorded
+  // sample rate is the one the chunks were synthesized at (`sampleRate` below,
+  // sourced from the tts.start announcement / default 24000).
+  const recordedChunks: Uint8Array[] = [];
+  let recordedSampleRate = DEFAULT_SAMPLE_RATE;
+
   // Settles the in-flight speak() promise. stop()/cancel must call this so the
   // pipeline's `await tts.speak()` always resolves (else the echo guard never
   // releases the mic). Cleared whenever no speak() is in flight.
@@ -190,6 +199,16 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
           }
 
           if (event.data instanceof ArrayBuffer) {
+            // Side-channel tap (does NOT touch playback): keep a verbatim copy of
+            // the raw PCM bytes so the whole host stream can be stored + replayed.
+            // Copy into a fresh Uint8Array — the underlying ArrayBuffer may be
+            // reused/neutered after this handler returns.
+            try {
+              recordedChunks.push(new Uint8Array(event.data.slice(0)));
+              recordedSampleRate = sampleRate;
+            } catch {
+              /* best-effort recording — never let it affect playback */
+            }
             // Raw PCM chunk → decode + schedule (gapless).
             try {
               const buffer = decodePcmChunk(event.data);
@@ -269,6 +288,25 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
         audioCtx.close().catch(() => { /* best-effort */ });
       }
       audioCtx = null;
+    },
+
+    // Returns the whole host (interviewer) TTS audio captured so far as a single
+    // contiguous PCM buffer (s16le, mono) plus its sample rate, for storing as a
+    // WAV. Returns null when nothing was ever recorded (text path / no audio
+    // received) so the caller skips the upload. Pure read of the side-channel
+    // tap — does not affect playback.
+    getRecordedPcm(): { pcm: Uint8Array; sampleRate: number } | null {
+      if (recordedChunks.length === 0) return null;
+      let total = 0;
+      for (const chunk of recordedChunks) total += chunk.length;
+      if (total === 0) return null;
+      const pcm = new Uint8Array(total);
+      let offset = 0;
+      for (const chunk of recordedChunks) {
+        pcm.set(chunk, offset);
+        offset += chunk.length;
+      }
+      return { pcm, sampleRate: recordedSampleRate };
     }
   };
 }

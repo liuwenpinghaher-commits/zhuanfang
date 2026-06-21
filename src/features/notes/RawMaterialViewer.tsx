@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Bot, Headphones, MessageSquare, PenLine, Play, Trash2 } from "lucide-react";
+import { Bot, Headphones, MessageSquare, Mic, PenLine, Play, Trash2 } from "lucide-react";
 import type {
   EvidenceAnchor,
   InterviewRawMaterial,
@@ -24,17 +24,24 @@ interface RawMaterialViewerProps {
   getRawMaterial: (sessionId: string) => Promise<InterviewRawMaterial | null>;
   /** 若提供，加载完成后滚动到该轮并临时高亮（用于"查看原文出处"跳转）。 */
   focusTurnId?: string;
-  /** 若提供，拉取整场录音元数据；exists 时在顶部渲染录音播放器。失败静默。 */
-  getAudioMeta?: (sessionId: string) => Promise<SessionAudioMeta>;
-  /** 若提供，给 <audio src> 用的整场录音流 URL（fetch-blob 回退路径）。 */
+  /**
+   * 若提供，拉取整场录音元数据；exists 时渲染录音播放器。失败静默。
+   * role 区分受访者(默认/麦克风录音)与主持人(interviewer，TTS 合成音)两路；
+   * 不传 role 兼容旧调用(=受访者)。
+   */
+  getAudioMeta?: (sessionId: string, role?: AudioRole) => Promise<SessionAudioMeta>;
+  /** 若提供，给 <audio src> 用的整场录音流 URL（fetch-blob 回退路径，仅受访者路）。 */
   audioUrl?: (sessionId: string) => string;
   /**
    * 若提供，用 fetch 拉录音为 Blob（带上 client 配置的鉴权头），再用
    * URL.createObjectURL 回放——修复生产 bearer 鉴权下原生 <audio src> 取不到头会 401。
    * 优先于 audioUrl；返回 null（无录音）或失败时静默退回 audioUrl。
+   * role 同上，区分受访者/主持人两路。
    */
-  getAudioBlob?: (sessionId: string) => Promise<Blob | null>;
+  getAudioBlob?: (sessionId: string, role?: AudioRole) => Promise<Blob | null>;
 }
+
+type AudioRole = "interviewee" | "interviewer";
 
 type LoadStatus = "loading" | "ready" | "empty" | "error";
 
@@ -77,6 +84,9 @@ export function RawMaterialViewer({
   const [highlightTurnId, setHighlightTurnId] = useState<string | null>(null);
   const [audioMeta, setAudioMeta] = useState<SessionAudioMeta | null>(null);
   const [audioBlobUrl, setAudioBlobUrl] = useState<string | null>(null);
+  // 主持人(interviewer)录音独立一路：单独的 meta + blob URL。
+  const [hostAudioMeta, setHostAudioMeta] = useState<SessionAudioMeta | null>(null);
+  const [hostAudioBlobUrl, setHostAudioBlobUrl] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -161,6 +171,58 @@ export function RawMaterialViewer({
     };
   }, [sessionId, getAudioBlob, audioMeta?.exists]);
 
+  // 并行拉取主持人(interviewer)录音元数据。多数会话(文本路 / 语音但未截到流)没有这一路，
+  // exists:false 时不渲染。best-effort，失败静默。
+  useEffect(() => {
+    if (!getAudioMeta) {
+      return;
+    }
+    let cancelled = false;
+    setHostAudioMeta(null);
+    getAudioMeta(sessionId, "interviewer")
+      .then((meta) => {
+        if (!cancelled) {
+          setHostAudioMeta(meta);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setHostAudioMeta(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, getAudioMeta]);
+
+  // 主持人录音 fetch-blob 回放：存在且提供 getAudioBlob 时拉 Blob 转 object URL。
+  // 切换 session / 卸载时 revokeObjectURL 释放。失败静默(无回退 URL，主持人路无 audioUrl)。
+  useEffect(() => {
+    if (!getAudioBlob || !hostAudioMeta?.exists) {
+      return;
+    }
+    let cancelled = false;
+    let createdUrl: string | null = null;
+    getAudioBlob(sessionId, "interviewer")
+      .then((blob) => {
+        if (cancelled || !blob) {
+          return;
+        }
+        createdUrl = URL.createObjectURL(blob);
+        setHostAudioBlobUrl(createdUrl);
+      })
+      .catch(() => {
+        /* 静默：无主持人回放 */
+      });
+    return () => {
+      cancelled = true;
+      if (createdUrl) {
+        URL.revokeObjectURL(createdUrl);
+      }
+      setHostAudioBlobUrl(null);
+    };
+  }, [sessionId, getAudioBlob, hostAudioMeta?.exists]);
+
   // 加载完成后，若有 focusTurnId 则滚动到该轮并临时高亮。
   useEffect(() => {
     if (status !== "ready" || !focusTurnId || !containerRef.current) {
@@ -217,6 +279,11 @@ export function RawMaterialViewer({
   const showAudio = Boolean(audioMeta?.exists && playbackSrc);
   const audioCaption = audioMeta ? describeAudio(audioMeta) : null;
 
+  // 主持人(interviewer)录音回放：只走 fetch-blob(无 audioUrl 回退)。无逐轮 seek——
+  // 主持人音频是拼接的 AI 话、无连续时间线，整段播放即可。
+  const showHostAudio = Boolean(hostAudioMeta?.exists && hostAudioBlobUrl);
+  const hostAudioCaption = hostAudioMeta ? describeAudio(hostAudioMeta) : null;
+
   // 逐轮 seek 的起始墙钟：有它才算偏移、渲染"▶ 播这一段"。
   const recordingStartedAt = audioMeta?.recordingStartedAt ?? null;
   const recordingStartedMs = recordingStartedAt ? Date.parse(recordingStartedAt) : NaN;
@@ -267,11 +334,31 @@ export function RawMaterialViewer({
           <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
             <span className="field-label" style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
               <Headphones size={14} aria-hidden="true" />
-              整场录音
+              受访者录音
             </span>
             {audioCaption && <span className="field-help" style={{ fontVariantNumeric: "tabular-nums" }}>{audioCaption}</span>}
           </div>
           <audio ref={audioRef} controls preload="metadata" src={playbackSrc} style={{ width: "100%" }} />
+        </section>
+      )}
+      {showHostAudio && hostAudioBlobUrl && (
+        <section
+          className="field-stack"
+          style={{
+            gap: "0.5rem",
+            paddingBottom: "0.85rem",
+            borderBottom: "1px solid var(--border-subtle, rgba(255,255,255,0.06))"
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            <span className="field-label" style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
+              <Mic size={14} aria-hidden="true" />
+              主持人录音
+            </span>
+            {hostAudioCaption && <span className="field-help" style={{ fontVariantNumeric: "tabular-nums" }}>{hostAudioCaption}</span>}
+          </div>
+          {/* 主持人音频无逐轮 seek：整段连续播放即可。 */}
+          <audio controls preload="metadata" src={hostAudioBlobUrl} style={{ width: "100%" }} />
         </section>
       )}
       {material.turns.map((turn, turnIndex) => {

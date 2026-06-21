@@ -82,6 +82,14 @@ export interface TtsSink {
    * compatibility with test doubles that don't implement it.
    */
   close?(): void;
+  /**
+   * Return the host (interviewer) TTS audio captured so far as a single
+   * contiguous PCM buffer (s16le, mono) plus its sample rate, for persisting as
+   * a WAV (role=interviewer). null when nothing was recorded (text path / no
+   * audio). Optional — only the real browser sink taps the PCM stream; test
+   * doubles omit it. Read-only side channel; never affects playback.
+   */
+  getRecordedPcm?(): { pcm: Uint8Array; sampleRate: number } | null;
 }
 
 export type CascadePipelineState =
