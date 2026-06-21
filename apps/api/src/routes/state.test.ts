@@ -4,6 +4,7 @@ import { buildPrivacyReport } from "../../../../src/domain/privacy";
 import { buildBackupRestoreRehearsalReport } from "../../../../src/domain/backup";
 import { createInMemoryRawMaterialRepository } from "../raw-material-repository";
 import { createInMemoryAudioRepository } from "../audio-repository";
+import { createInMemoryKnowledgeIndexRepository } from "../knowledge-index-repository";
 import type { InterviewRawMaterial } from "../../../../src/domain/types";
 
 describe("state routes", () => {
@@ -353,6 +354,33 @@ describe("state routes", () => {
       const body = exportRes.json();
       expect(Array.isArray(body.audioSessions)).toBe(true);
       expect(body.audioSessions).toContain("a1");
+      await server.close();
+    });
+  });
+
+  describe("知识索引 in purge (Task 12 — 隐私闭环)", () => {
+    it("purge(all) 清空知识索引", async () => {
+      const knowledgeIndexRepository = createInMemoryKnowledgeIndexRepository();
+      knowledgeIndexRepository.put({
+        id: "k1",
+        sourceType: "transcript",
+        sourceId: "s1",
+        title: "片段标题",
+        text: "片段正文",
+        keywords: ["关键词"],
+        createdAt: "2026-06-21T00:00:00.000Z"
+      });
+      expect(knowledgeIndexRepository.listAll().length).toBe(1);
+
+      const server = buildApiServer({ knowledgeIndexRepository });
+      const purgeRes = await server.inject({
+        method: "POST",
+        url: "/api/state/purge",
+        payload: { confirm: "PURGE_PERSONAL_DATA" }
+      });
+      expect(purgeRes.statusCode).toBe(200);
+      // 知识索引随全量 purge 一并清空（它是派生、可重建的)
+      expect(knowledgeIndexRepository.listAll().length).toBe(0);
       await server.close();
     });
   });

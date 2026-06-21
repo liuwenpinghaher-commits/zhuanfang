@@ -178,7 +178,8 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     await registerStateRoutes(registeredServer, productStateRepository, {
       env: runtimeEnv,
       rawMaterialRepository,
-      audioRepository
+      audioRepository,
+      knowledgeIndexRepository
     });
   });
   void server.register(async (registeredServer) => {

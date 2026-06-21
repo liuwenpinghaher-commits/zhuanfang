@@ -7,6 +7,7 @@ import { purgeLocalObjectArtifactsForState } from "../local-object-artifacts";
 import type { ProductStateRepository } from "../product-state-repository";
 import type { RawMaterialRepository } from "../raw-material-repository";
 import type { AudioRepository } from "../audio-repository";
+import type { KnowledgeIndexRepository } from "../knowledge-index-repository";
 import type { InterviewAudio, InterviewRawMaterial } from "../../../../src/domain/types";
 
 interface StateRouteOptions {
@@ -25,6 +26,13 @@ interface StateRouteOptions {
    * repo keep working (export emits `[]`, purge skips the audio wipe).
    */
   audioRepository?: AudioRepository;
+  /**
+   * Derived knowledge index (search/recall chunks built from interviews + materials). It's
+   *派生、可重建 data, so a full/interviews purge wipes it too — otherwise indexed personal
+   * text survives the "complete" purge. Optional so call sites without a repo keep working
+   * (purge skips the index wipe). Same governance pattern as raw-material/audio (Task 12).
+   */
+  knowledgeIndexRepository?: KnowledgeIndexRepository;
 }
 
 export async function registerStateRoutes(
@@ -34,6 +42,7 @@ export async function registerStateRoutes(
 ) {
   const rawMaterialRepository = options.rawMaterialRepository;
   const audioRepository = options.audioRepository;
+  const knowledgeIndexRepository = options.knowledgeIndexRepository;
   server.get("/api/state", async () => repository.getState());
   server.put("/api/state", async (request, reply) => {
     const stored = repository.getState();
@@ -250,6 +259,10 @@ export async function registerStateRoutes(
       // Recorded audio is keyed by sessionId; a full wipe must clear it too, otherwise the
       // original voice survives the "complete" purge (Task 4).
       audioRepository?.deleteAll();
+      // The knowledge index is derived (search/recall chunks built from the above). It's
+      // rebuildable, so a full wipe clears it too — otherwise indexed personal text survives
+      // the "complete" purge (Task 12).
+      knowledgeIndexRepository?.deleteAll();
       return { ...nextState, artifactPurge, deletedScope: "all" as PurgeScope, deletedCount };
     }
 
@@ -261,6 +274,9 @@ export async function registerStateRoutes(
       rawMaterialRepository?.deleteAll();
       // Recorded audio is keyed by sessionId; clearing all sessions orphans it, so wipe it too.
       audioRepository?.deleteAll();
+      // The derived knowledge index is built from those sessions/materials; clearing all
+      // sessions orphans it, so wipe the whole rebuildable index too (Task 12).
+      knowledgeIndexRepository?.deleteAll();
     }
     return { ...nextState, deletedScope, deletedCount };
   });
