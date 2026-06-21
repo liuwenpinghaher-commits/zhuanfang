@@ -29,6 +29,22 @@ export function resolveEvidenceAnchors(
   return fuzzy ? [{ sessionId, turnId: fuzzy.id }] : [];
 }
 
+/** 在 finalize 时给一批带 evidenceQuote 的对象(记忆候选等)盖上证据锚点。
+ *  已有锚点的不动；匹配不到来源的保持原样(不加 evidenceAnchors)——绝不伪造来源。 */
+export function stampFinalizeAnchors<T extends { evidenceQuote?: string; evidenceAnchors?: EvidenceAnchor[] }>(
+  items: T[],
+  sessionId: string,
+  turns: InterviewTurn[]
+): T[] {
+  return items.map((item) => {
+    if (item.evidenceAnchors && item.evidenceAnchors.length > 0) {
+      return item;
+    }
+    const anchors = resolveEvidenceAnchors(item.evidenceQuote ?? "", sessionId, turns);
+    return anchors.length > 0 ? { ...item, evidenceAnchors: anchors } : item;
+  });
+}
+
 export function addAnnotation(
   state: ProductState,
   sessionId: string,

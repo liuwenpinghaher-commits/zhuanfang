@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveEvidenceAnchors, addAnnotation, removeAnnotation } from "./raw-material";
+import { resolveEvidenceAnchors, addAnnotation, removeAnnotation, stampFinalizeAnchors } from "./raw-material";
 import { createInitialProductState } from "./engine";
 import type { InterviewTurn } from "./types";
 
@@ -62,5 +62,18 @@ describe("interview annotations", () => {
     const s = createInitialProductState();
     addAnnotation(s, "sess-1", "turn-9", "x");
     expect(s.interviewAnnotations).toHaveLength(0);
+  });
+});
+
+describe("stampFinalizeAnchors", () => {
+  const turns = [turn("t2", "user", "其实是怕我自己不再被需要。")];
+  it("给带 evidenceQuote 的记忆候选盖上锚点", () => {
+    const candidates = [{ evidenceQuote: "其实是怕我自己不再被需要。" } as any];
+    const out = stampFinalizeAnchors(candidates, "s1", turns);
+    expect(out[0].evidenceAnchors).toEqual([{ sessionId: "s1", turnId: "t2" }]);
+  });
+  it("匹配不到则不加 evidenceAnchors(保持 undefined)", () => {
+    const out = stampFinalizeAnchors([{ evidenceQuote: "没有的话" } as any], "s1", turns);
+    expect(out[0].evidenceAnchors).toBeUndefined();
   });
 });

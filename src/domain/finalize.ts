@@ -17,6 +17,7 @@ import { withMemoryCandidateReview } from "./memoryReview";
 import { addProfileSuggestions, type ProfileSuggestionInput } from "./profile";
 import { buildInterviewQualityReport, planMemoryUpdate, tokenizeMemoryGraphText } from "./engine";
 import { uniqueStrings } from "./signals";
+import { stampFinalizeAnchors } from "./raw-material";
 
 /**
  * M2 (Task 6): tag each fresh candidate with an extract-then-update dedup hint
@@ -188,7 +189,8 @@ export function mergeFinalizedState(
   if (providedCandidates && providedCandidates.length > 0) {
     // Use externally provided candidates (e.g. from LLM extraction in Task 2+).
     const annotated = annotateCandidatesWithDedupHint(providedCandidates, nextState.memoryRecords);
-    nextState.memoryCandidates = [...annotated, ...(nextState.memoryCandidates ?? [])];
+    const anchored = stampFinalizeAnchors(annotated, session.id, session.turns);
+    nextState.memoryCandidates = [...anchored, ...(nextState.memoryCandidates ?? [])];
   } else if (note.keyQuote.trim()) {
     // Derive candidate from actual session content (deterministic fallback).
     const memoryCandidate = buildMemoryCandidateFromSession(session, finalNote, note.keyQuote, completedAt);
