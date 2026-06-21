@@ -34,7 +34,8 @@ describe("domain types", () => {
 
   it("ProductState includes memoryRecords and memoryCandidates", () => {
     const state: import("./types").ProductState = {
-      profile: { name: "", role: "", industry: "", currentFocus: "", longTermGoal: "", preferredStrength: "standard", explicitBoundaries: [], confirmedMemories: [], inferredMemories: [] },
+      profile: { name: "", role: "", industry: "", currentFocus: "", longTermGoal: "", preferredStrength: "standard", explicitBoundaries: [] },
+      profileSuggestions: [],
       sessions: [], notes: [], points: [], questions: [], decisions: [], debts: [], themes: [],
       memoryCorrections: [], searchBriefs: [], podcastEpisodes: [], corpusImports: [], corpusInsights: [], playbookPatches: [],
       memoryRecords: [], memoryCandidates: [], memoryEdges: [],

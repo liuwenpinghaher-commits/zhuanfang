@@ -267,7 +267,6 @@ describe("System journey A: config → research auto-run → interview → asset
     // 个人数据归零
     expect(purged.profile.name).toBe("");
     expect(purged.profile.explicitBoundaries).toHaveLength(0);
-    expect(purged.profile.confirmedMemories).toHaveLength(0);
     expect(purged.sessions).toHaveLength(0);
     expect(purged.notes).toHaveLength(0);
     expect(purged.points).toHaveLength(0);

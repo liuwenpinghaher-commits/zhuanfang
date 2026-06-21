@@ -44,10 +44,26 @@ export function buildCorrectionsBlock(corrections: MemoryCorrection[]): string {
   return `用户已纠正过的表述（别再当成已确认事实，必要时先核对）：${recent.join("；")}`;
 }
 
+/**
+ * Hard user-set boundaries (profile.explicitBoundaries). Unlike corrections (which soften how the
+ * AI phrases things), boundaries are lines the interviewer must NOT cross — rendered as a strong,
+ * non-negotiable directive so they actually constrain the prompt instead of being decorative.
+ */
+export function buildBoundariesBlock(boundaries: string[]): string {
+  const clean = boundaries.map((b) => (typeof b === "string" ? b.trim() : "")).filter(Boolean);
+  if (clean.length === 0) {
+    return "";
+  }
+  return `【用户硬性边界·绝不违反】这些是用户明确设定、不可逾越的边界，无论话题如何发展都必须遵守；若对话逼近，主动而温和地绕开，绝不追问或越界：\n${clean
+    .map((b) => `- ${b}`)
+    .join("\n")}`;
+}
+
 export function buildRealtimeVoiceInstructions(
   session: InterviewSession | null,
   fallbackCard?: InterviewCard,
-  corrections: MemoryCorrection[] = []
+  corrections: MemoryCorrection[] = [],
+  boundaries: string[] = []
 ) {
   const card = session?.card ?? fallbackCard;
   const guide = session?.guide;
@@ -83,6 +99,7 @@ export function buildRealtimeVoiceInstructions(
     (guide?.knowledgeFragments ?? []).length ? `调研要点（自然相关时引一条作事实/反方依据，务必回到用户自己的经历，别堆资料）：${guide!.knowledgeFragments.slice(0, 2).join("；")}` : "",
     guide?.recommendedPerspectives?.length ? `建议视角（以一个自然问题呈现，别讲理论课）：${guide.recommendedPerspectives.slice(0, 3).join("、")}` : "",
     buildAppliedPlaybookRulesBlock(appliedRules),
+    buildBoundariesBlock(boundaries),
     buildCorrectionsBlock(corrections)
   ].filter(Boolean).join("\n");
 }

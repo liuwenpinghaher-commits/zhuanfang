@@ -14,6 +14,7 @@ import type {
 
 import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent } from "./utils";
 import { withMemoryCandidateReview } from "./memoryReview";
+import { addProfileSuggestions, type ProfileSuggestionInput } from "./profile";
 import { buildInterviewQualityReport, planMemoryUpdate, tokenizeMemoryGraphText } from "./engine";
 import { uniqueStrings } from "./signals";
 
@@ -88,6 +89,8 @@ export interface FinalizeContent {
   decisions: DecisionAsset[];
   debts: KnowledgeDebt[];
   themes: FinalizeThemeUpsert[];
+  /** P0b: finalize-time proposals that currentFocus / longTermGoal has shifted (HITL). */
+  profileSuggestions?: ProfileSuggestionInput[];
 }
 
 export function finalizeSession(
@@ -198,9 +201,14 @@ export function mergeFinalizedState(
   nextState.debts = [...content.debts.map(db => ({ ...db, sourceSessionId: session.id })), ...nextState.debts];
   nextState.themes = upsertFinalizeThemes(nextState.themes, content.themes, completedAt);
 
+  // P0b: queue any proposed currentFocus/longTermGoal shift for HITL approval (no-ops dropped).
+  const withSuggestions = content.profileSuggestions?.length
+    ? addProfileSuggestions(nextState, content.profileSuggestions, session.id, completedAt)
+    : nextState;
+
   return {
     note: finalNote,
-    nextState: withInterviewFinalizedEvents(nextState, completedSession, finalNote, completedAt)
+    nextState: withInterviewFinalizedEvents(withSuggestions, completedSession, finalNote, completedAt)
   };
 }
 

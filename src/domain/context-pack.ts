@@ -288,8 +288,8 @@ export function buildInterviewContextPack(state: ProductState, options: Intervie
       record.status === "confirmed" &&
       (memoryPolicy.includeSensitiveMemoriesInContext || isModelSafeMemoryRecord(record))
   );
-  // M4: single source of truth — memoryRecords only; profile.confirmedMemories is a
-  // legacy parallel store that is no longer injected into context.
+  // M4: single source of truth for long-term memory is memoryRecords only (the legacy
+  // profile.confirmedMemories/inferredMemories parallel store has since been removed).
   const memoryRecords = [...activeRecords];
   // M3c: when the route supplied a queryEmbedding, rank confirmed memories by the
   // three-factor scorer (cosine relevance + recency + importance) so the context

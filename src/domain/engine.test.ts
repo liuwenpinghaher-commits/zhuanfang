@@ -337,8 +337,6 @@ describe("createEmptyProductState", () => {
     for (const k of ["notes", "points", "questions", "decisions", "debts", "themes", "sessions", "memoryRecords", "memoryCandidates", "searchBriefs"] as const) {
       expect(empty[k]).toEqual([]);
     }
-    expect(empty.profile.confirmedMemories).toEqual([]);
-    expect(empty.profile.inferredMemories).toEqual([]);
     expect(empty.systemConfig.models.interviewModel).toBe("qwen-plus-character"); // config survives
     expect(empty.revision).toBe(0);
     expect(JSON.stringify(empty)).not.toMatch(/救火|授权|控制感/); // no demo contamination

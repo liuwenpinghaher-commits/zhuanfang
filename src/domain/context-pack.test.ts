@@ -459,38 +459,19 @@ describe("tracked brief 自动选择（无显式 searchBriefId）", () => {
 // ─── M4: single source of truth = memoryRecords (drop profile parallel store) ──
 
 describe("M4: context memory source = memoryRecords only", () => {
-  it("profile.confirmedMemories 不注入 contextPack.memoryRecords（空 memoryRecords 时）", () => {
+  it("memoryRecords 为空时 contextPack 的记忆来源也为空（不被其它来源混入）", () => {
     const state = createInitialProductState();
-    // seed 带有 confirmedMemories；清空 memoryRecords 确认 profile 数组不被混入
     state.memoryRecords = [];
     state.memoryCandidates = [];
 
     const contextPack = buildInterviewContextPack(state, {});
 
     expect(contextPack.memoryRecords).toHaveLength(0);
-    // confirmedMemories（文本列表）也不应包含 profile 里的文本
     expect(contextPack.confirmedMemories).toHaveLength(0);
-  });
-
-  it("profile.confirmedMemories 有值、memoryRecords 为空时，contextPack 不含 profile 记忆文本", () => {
-    const state = createInitialProductState();
-    // 确保 profile 有内容
-    state.profile.confirmedMemories = ["来自 profile 的记忆文本，不应出现在 context 里"];
-    state.memoryRecords = [];
-    state.memoryCandidates = [];
-
-    const contextPack = buildInterviewContextPack(state, {});
-
-    const allTexts = [
-      ...contextPack.memoryRecords.map((r) => r.text),
-      ...contextPack.confirmedMemories
-    ].join(" ");
-    expect(allTexts).not.toContain("来自 profile 的记忆文本");
   });
 
   it("memoryRecords 有 confirmed 记录时正确进入 contextPack.memoryRecords", () => {
     const state = createInitialProductState();
-    state.profile.confirmedMemories = ["profile-only 文本（不应重复）"];
     const record: MemoryRecord = {
       id: "m-test-1",
       text: "来自 memoryRecords 的真实记忆",
@@ -507,6 +488,5 @@ describe("M4: context memory source = memoryRecords only", () => {
     const contextPack = buildInterviewContextPack(state, {});
 
     expect(contextPack.memoryRecords.some((r) => r.text === "来自 memoryRecords 的真实记忆")).toBe(true);
-    expect(contextPack.memoryRecords.some((r) => r.text === "profile-only 文本（不应重复）")).toBe(false);
   });
 });

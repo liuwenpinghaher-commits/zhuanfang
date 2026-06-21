@@ -100,8 +100,28 @@ export interface UserProfile {
   longTermGoal: string;
   preferredStrength: InterviewStrength;
   explicitBoundaries: string[];
-  confirmedMemories: string[];
-  inferredMemories: string[];
+}
+
+export type ProfileSuggestionStatus = "pending" | "approved" | "rejected";
+/** Only the two profile fields that actually shape interviews and can plausibly evolve over time. */
+export type ProfileSuggestionField = "currentFocus" | "longTermGoal";
+
+/**
+ * A finalize-time proposal that the user's currentFocus / longTermGoal has shifted, surfaced for
+ * human-in-the-loop approval (mirrors MemoryCandidate). Approving applies `suggestedValue` to the
+ * profile; the profile is never silently overwritten by inference.
+ */
+export interface ProfileSuggestion {
+  id: string;
+  field: ProfileSuggestionField;
+  currentValue: string;
+  suggestedValue: string;
+  reason: string;
+  evidenceQuote: string;
+  sourceSessionId: string;
+  status: ProfileSuggestionStatus;
+  createdAt: string;
+  reviewedAt?: string;
 }
 
 export interface InterviewCard {
@@ -277,6 +297,10 @@ export interface AuditEvent {
     | "decision_candidate_confirmed"
     | "privacy_data_purged"
     | "state_imported"
+    | "profile_updated"
+    | "profile_suggestion_created"
+    | "profile_suggestion_approved"
+    | "profile_suggestion_rejected"
     | "cascade_decision_logged";
   label: string;
   detail: string;
@@ -294,7 +318,8 @@ export interface AuditEvent {
     | "corpus_import"
     | "dual_track_note"
     | "decision"
-    | "privacy_operation";
+    | "privacy_operation"
+    | "user_profile";
   entityId: string;
   createdAt: string;
 }
@@ -1181,6 +1206,7 @@ export interface SystemStatus {
 
 export interface ProductState {
   profile: UserProfile;
+  profileSuggestions: ProfileSuggestion[];
   sessions: InterviewSession[];
   notes: DualTrackNote[];
   points: PointAsset[];

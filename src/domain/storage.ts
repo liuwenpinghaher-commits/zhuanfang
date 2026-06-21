@@ -33,6 +33,9 @@ export function normalizeProductState(value: unknown): ProductState {
       ...fallback.profile,
       ...candidate.profile
     },
+    profileSuggestions: Array.isArray(candidate.profileSuggestions)
+      ? candidate.profileSuggestions
+      : fallback.profileSuggestions,
     sessions: Array.isArray(candidate.sessions) ? migrateSessionStatuses(candidate.sessions) : fallback.sessions,
     notes: Array.isArray(candidate.notes) ? candidate.notes : fallback.notes,
     points: Array.isArray(candidate.points) ? backfillPointDefaults(candidate.points) : fallback.points,

@@ -570,7 +570,7 @@ describe("interview-sessions routes", () => {
         { id: "rec-near", text: NEAR_TEXT, evidenceQuote: NEAR_TEXT, embedding: [1, 0, 0], ...common },
         { id: "rec-far", text: FAR_TEXT, evidenceQuote: FAR_TEXT, embedding: [0, 1, 0], ...common }
       ],
-      profile: { ...base.profile, confirmedMemories: [] },
+      profile: { ...base.profile },
       NEAR_TEXT,
       FAR_TEXT
     };

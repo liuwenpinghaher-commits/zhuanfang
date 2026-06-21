@@ -178,7 +178,8 @@ export async function registerInterviewSessionRoutes(
       freshSession,
       content,
       allowLlm ? options.bailianInterviewClient : undefined,
-      state.memoryCorrections
+      state.memoryCorrections,
+      state.profile.explicitBoundaries
     );
     const { nextSession: rawNextSession, preSignals, degradedReason } = updatedSession;
     // The character model conveys manner via （…）stage-direction asides (e.g. 「（身体微倾，
@@ -485,7 +486,8 @@ export async function registerInterviewSessionRoutes(
     const instructions = buildRealtimeVoiceInstructions(
       refreshedSession,
       session.card,
-      state.memoryCorrections
+      state.memoryCorrections,
+      state.profile.explicitBoundaries
     );
     return { instructions };
   });
@@ -646,7 +648,8 @@ async function receiveTurn(
   session: InterviewSession,
   content: string,
   bailianInterviewClient: BailianCharacterInterviewClient | undefined,
-  corrections: MemoryCorrection[] = []
+  corrections: MemoryCorrection[] = [],
+  boundaries: string[] = []
 ): Promise<{
   nextSession: InterviewSession;
   preSignals?: import("../../../../src/domain/types").InteractionPreSignals;
@@ -661,7 +664,7 @@ async function receiveTurn(
   // badge / quality-report all have real data on the live path (not just offline).
   const strategyDecision = decideInterviewStrategy(session, content);
   try {
-    const assistant = await bailianInterviewClient.createAssistantTurn({ session, userText: content, corrections, strategyDecision });
+    const assistant = await bailianInterviewClient.createAssistantTurn({ session, userText: content, corrections, boundaries, strategyDecision });
     const nextSession = receiveUserTurnWithAssistant(session, content, {
       content: assistant.content,
       intent: assistant.intent,

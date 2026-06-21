@@ -335,7 +335,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       guide: refreshedGuide
     };
 
-    return buildInterviewAgentContext(effectiveSession, corrections);
+    return buildInterviewAgentContext(effectiveSession, corrections, state.profile.explicitBoundaries);
   });
 
   server.get("/api/realtime-voice/livekit-token", async (request, reply) => {

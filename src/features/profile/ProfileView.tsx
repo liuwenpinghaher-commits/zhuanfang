@@ -3,7 +3,8 @@ import { useState, type ChangeEvent } from "react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { PrivacyReport } from "../../domain/privacy";
 import type { BackupRestoreRehearsalReport } from "../../domain/backup";
-import type { ProductState } from "../../domain/types";
+import type { InterviewStrength, ProductState } from "../../domain/types";
+import { updateProfile, addExplicitBoundary, removeExplicitBoundary, approveProfileSuggestion, rejectProfileSuggestion } from "../../domain/profile";
 
 interface ProfileViewProps {
   state: ProductState;
@@ -32,6 +33,41 @@ export function ProfileView({
   onPurge,
   onSetProductState
 }: ProfileViewProps) {
+  const [form, setForm] = useState({
+    name: state.profile.name,
+    role: state.profile.role,
+    industry: state.profile.industry,
+    currentFocus: state.profile.currentFocus,
+    longTermGoal: state.profile.longTermGoal,
+    preferredStrength: state.profile.preferredStrength
+  });
+  const [profileSaved, setProfileSaved] = useState(false);
+  const [boundaryText, setBoundaryText] = useState("");
+
+  function handleSaveProfile() {
+    onSetProductState(updateProfile(state, form));
+    setProfileSaved(true);
+  }
+  function handleAddBoundary() {
+    const text = boundaryText.trim();
+    if (!text) {
+      return;
+    }
+    onSetProductState(addExplicitBoundary(state, text));
+    setBoundaryText("");
+  }
+  function handleRemoveBoundary(boundary: string) {
+    onSetProductState(removeExplicitBoundary(state, boundary));
+  }
+  function handleApproveSuggestion(id: string) {
+    onSetProductState(approveProfileSuggestion(state, id));
+  }
+  function handleRejectSuggestion(id: string) {
+    onSetProductState(rejectProfileSuggestion(state, id));
+  }
+  const FIELD_LABEL: Record<string, string> = { currentFocus: "当前关注", longTermGoal: "长期目标" };
+  const pendingSuggestions = state.profileSuggestions.filter((s) => s.status === "pending");
+
   const [loadingAction, setLoadingAction] = useState<GovernanceAction | null>(null);
   const [exportSuccess, setExportSuccess] = useState(false);
   const [purgeSuccess, setPurgeSuccess] = useState(false);
@@ -130,22 +166,109 @@ export function ProfileView({
       <div className="dashboard-grid">
         <section className="panel">
           <div className="panel-title"><Settings size={18} /><h2>显性档案</h2></div>
-          <dl className="detail-list">
-            <dt>当前关注</dt>
-            <dd>{state.profile.currentFocus}</dd>
-            <dt>长期目标</dt>
-            <dd>{state.profile.longTermGoal}</dd>
-            <dt>追问强度</dt>
-            <dd>{state.profile.preferredStrength}</dd>
-          </dl>
+          <p className="field-help" style={{ marginBottom: "1rem" }}>
+            当前关注 / 长期目标 / 追问强度会直接影响每次专访的选题与提问方式。
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.85rem" }}>
+            <label className="field-stack">
+              <span className="field-label">称呼</span>
+              <input value={form.name} maxLength={40} placeholder="你希望被怎么称呼"
+                onChange={(e) => { setForm({ ...form, name: e.target.value }); setProfileSaved(false); }} />
+            </label>
+            <div style={{ display: "flex", gap: "0.75rem" }}>
+              <label className="field-stack" style={{ flex: 1 }}>
+                <span className="field-label">身份</span>
+                <input value={form.role} maxLength={40} placeholder="如：产品负责人"
+                  onChange={(e) => { setForm({ ...form, role: e.target.value }); setProfileSaved(false); }} />
+              </label>
+              <label className="field-stack" style={{ flex: 1 }}>
+                <span className="field-label">行业</span>
+                <input value={form.industry} maxLength={40} placeholder="如：AI 产品 / 创业"
+                  onChange={(e) => { setForm({ ...form, industry: e.target.value }); setProfileSaved(false); }} />
+              </label>
+            </div>
+            <label className="field-stack">
+              <span className="field-label">当前关注</span>
+              <input value={form.currentFocus} maxLength={120} placeholder="这段时间你最想推进/想清楚的事"
+                onChange={(e) => { setForm({ ...form, currentFocus: e.target.value }); setProfileSaved(false); }} />
+            </label>
+            <label className="field-stack">
+              <span className="field-label">长期目标</span>
+              <input value={form.longTermGoal} maxLength={120} placeholder="你想长期追踪/抵达的方向"
+                onChange={(e) => { setForm({ ...form, longTermGoal: e.target.value }); setProfileSaved(false); }} />
+            </label>
+            <label className="field-stack">
+              <span className="field-label">追问强度</span>
+              <select value={form.preferredStrength}
+                onChange={(e) => { setForm({ ...form, preferredStrength: e.target.value as InterviewStrength }); setProfileSaved(false); }}>
+                <option value="gentle">温和（gentle）</option>
+                <option value="standard">标准（standard）</option>
+                <option value="sharp">犀利（sharp）</option>
+              </select>
+            </label>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+              <button className="primary-action" type="button" onClick={handleSaveProfile}>保存档案</button>
+              {profileSaved && <span style={{ color: "var(--color-success, #22c55e)", fontSize: "0.875rem" }}>已保存</span>}
+            </div>
+          </div>
         </section>
         <section className="panel">
           <div className="panel-title"><ShieldCheck size={18} /><h2>用户边界</h2></div>
+          <p className="field-help" style={{ marginBottom: "1rem" }}>
+            这里设定的边界是「绝不触碰」的硬约束，会写进每次专访的提问指令，主持人必须遵守。
+          </p>
+          <div className="correction-row" style={{ marginBottom: state.profile.explicitBoundaries.length ? "1rem" : 0 }}>
+            <label className="field-stack" style={{ flex: 1 }}>
+              <input value={boundaryText} maxLength={120}
+                placeholder="例：不要追问家庭关系"
+                onChange={(e) => setBoundaryText(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleAddBoundary(); } }} />
+            </label>
+            <button className="secondary-action" type="button" onClick={handleAddBoundary} disabled={!boundaryText.trim()}>添加边界</button>
+          </div>
           <ul className="clean-list">
-            {state.profile.explicitBoundaries.map((boundary, idx) => <li key={"boundary-" + idx}>{boundary}</li>)}
+            {state.profile.explicitBoundaries.map((boundary, idx) => (
+              <li key={"boundary-" + idx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.75rem" }}>
+                <span>{boundary}</span>
+                <button className="icon-button" type="button" aria-label={"删除边界：" + boundary}
+                  onClick={() => handleRemoveBoundary(boundary)} style={{ flexShrink: 0 }}>
+                  <Trash2 size={14} />
+                </button>
+              </li>
+            ))}
+            {state.profile.explicitBoundaries.length === 0 && (
+              <li className="empty-hint">还没有设定边界。AI 默认不会越界，但你可以在这里明确写下不希望被触碰的话题。</li>
+            )}
           </ul>
         </section>
       </div>
+
+      {pendingSuggestions.length > 0 && (
+        <section className="panel">
+          <div className="panel-title"><PenLine size={18} /><h2>档案更新建议（{pendingSuggestions.length}）</h2></div>
+          <p className="field-help" style={{ marginBottom: "1rem" }}>
+            最近的专访显示你的关注/目标可能变了。AI 不会自动改你的档案——确认后才会生效。
+          </p>
+          <ul className="clean-list">
+            {pendingSuggestions.map((s) => (
+              <li key={s.id} style={{ display: "flex", flexDirection: "column", gap: "0.5rem", paddingBottom: "0.85rem" }}>
+                <span className="field-label">{FIELD_LABEL[s.field] ?? s.field}</span>
+                <div style={{ fontSize: "0.9rem", lineHeight: 1.5 }}>
+                  {s.currentValue
+                    ? <><span style={{ color: "var(--text-secondary)", textDecoration: "line-through" }}>{s.currentValue}</span>{" → "}<strong>{s.suggestedValue}</strong></>
+                    : <><span style={{ color: "var(--text-secondary)" }}>（原为空）→ </span><strong>{s.suggestedValue}</strong></>}
+                </div>
+                {s.reason && <span className="field-help">理由：{s.reason}</span>}
+                {s.evidenceQuote && <span className="field-help" style={{ fontStyle: "italic" }}>原话：「{s.evidenceQuote}」</span>}
+                <div style={{ display: "flex", gap: "0.6rem", marginTop: "0.25rem" }}>
+                  <button className="primary-action" type="button" onClick={() => handleApproveSuggestion(s.id)}>采纳</button>
+                  <button className="secondary-action" type="button" onClick={() => handleRejectSuggestion(s.id)}>忽略</button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <section className="panel">
         <div className="panel-title"><Brain size={18} /><h2>系统记忆</h2></div>

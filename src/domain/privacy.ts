@@ -150,9 +150,7 @@ const EMPTY_PROFILE: ProductState["profile"] = {
   currentFocus: "",
   longTermGoal: "",
   preferredStrength: "standard",
-  explicitBoundaries: [],
-  confirmedMemories: [],
-  inferredMemories: []
+  explicitBoundaries: []
 };
 
 export interface ScopedPurgeResult {
@@ -187,7 +185,7 @@ export function createScopedPurge(
   let next: ProductState;
   switch (scope) {
     case "profile":
-      next = { ...currentState, profile: { ...EMPTY_PROFILE } };
+      next = { ...currentState, profile: { ...EMPTY_PROFILE }, profileSuggestions: [] };
       break;
     case "interviews":
       next = { ...currentState, sessions: [], notes: [] };
@@ -237,10 +235,9 @@ export function createPurgedProductState(currentState: ProductState, createdAt =
       currentFocus: "",
       longTermGoal: "",
       preferredStrength: "standard",
-      explicitBoundaries: [],
-      confirmedMemories: [],
-      inferredMemories: []
+      explicitBoundaries: []
     },
+    profileSuggestions: [],
     sessions: [],
     notes: [],
     points: [],
@@ -277,5 +274,5 @@ function countProfileRecords(state: ProductState) {
     identityFields.length > 0 ||
       profile.preferredStrength !== "standard"
   );
-  return (hasProfileFields ? 1 : 0) + profile.explicitBoundaries.length + profile.confirmedMemories.length + profile.inferredMemories.length;
+  return (hasProfileFields ? 1 : 0) + profile.explicitBoundaries.length;
 }

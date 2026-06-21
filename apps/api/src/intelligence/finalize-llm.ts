@@ -19,6 +19,7 @@ import type {
   MemoryCandidate,
   PointAsset,
   ProductState,
+  ProfileSuggestionField,
   QuestionAsset
 } from "../../../../src/domain/types";
 import type { BailianChatClient } from "../providers/bailian";
@@ -45,6 +46,7 @@ interface ParsedFinalize {
   decisions: Array<{ title: string; choice: string; tradeOff: string; riskHypothesis: string; reviewAt: string }>;
   debts: Array<{ concept: string; context: string; whyImportant: string; nextQuestion: string }>;
   themes: Array<{ name: string; summary: string; representativeQuote: string; nextQuestion: string; maturity: string }>;
+  profileSuggestions: Array<{ field: string; suggestedValue: string; reason: string; evidenceQuote: string }>;
 }
 
 export async function finalizeSessionWithLlm(
@@ -105,6 +107,7 @@ function buildFinalizePrompt(state: ProductState, session: InterviewSession): st
     existingThemes.length
       ? `· 已有长期主题线（仅当本次对话确实是在【延续】其中某一条——同一个反复出现的问题/张力——时，才【逐字沿用它的名称】让它累积成一条线、出现次数+1；如果本次只是话题相关、角度不同、或你拿不准，就按真实内容【另起一条新主题】，绝不要把新话题硬塞进某条既有主题）：\n${existingThemes.join("\n")}`
       : "",
+    `· 现有档案（用于对比，判断是否需要在 profileSuggestions 里提出更新；不需要就留空）：当前关注=「${state.profile.currentFocus || "（未设置）"}」；长期目标=「${state.profile.longTermGoal || "（未设置）"}」`,
     openDebts.length ? `· 既往未还知识债（仅当本次对话真的涉及时才引用）：${openDebts.join("、")}` : "",
     blindspots.length ? `· 盲区候选（仅参考）：${blindspots.join("、")}` : "",
     "",
@@ -119,7 +122,8 @@ function buildFinalizePrompt(state: ProductState, session: InterviewSession): st
   "questions": [{"question":"值得长期追的问题","whyImportant":"为什么重要","nextPrompt":"下次怎么问"}],
   "decisions": [{"title":"决策标题","choice":"用户倾向的选择","tradeOff":"取舍","riskHypothesis":"风险假设","reviewAt":"复盘日期YYYY-MM-DD，没有就留空"}],
   "debts": [{"concept":"概念","context":"在本次对话中如何出现","whyImportant":"为什么值得补","nextQuestion":"下次的引导问题"}],
-  "themes": [{"name":"主题名：必须是能在别的对话里再次认出的【可复现主题】——一个反复出现的问题/张力/取舍，不要用一次性金句、比喻或诗意短语当名字","summary":"这条主题在追踪什么，以及下次靠什么线索能认出它又出现了","representativeQuote":"代表性原话","nextQuestion":"下次追问","maturity":"按它真实出现过几次填：只出现一次就是萌芽，不要凭单次对话的深度就标成型/聚焦"}]
+  "themes": [{"name":"主题名：必须是能在别的对话里再次认出的【可复现主题】——一个反复出现的问题/张力/取舍，不要用一次性金句、比喻或诗意短语当名字","summary":"这条主题在追踪什么，以及下次靠什么线索能认出它又出现了","representativeQuote":"代表性原话","nextQuestion":"下次追问","maturity":"按它真实出现过几次填：只出现一次就是萌芽，不要凭单次对话的深度就标成型/聚焦"}],
+  "profileSuggestions": [{"field":"currentFocus 或 longTermGoal","suggestedValue":"用户【当前关注】或【长期目标】的新表述——仅当本次对话清楚显示它相比下面【现有档案】发生了实质变化、或第一次被明确说清时才填；只是顺带提到、与现状一致、或只是一次性感慨，就把整个数组留空[]","reason":"为什么这是一个真实、稳定的变化，而不是一次性发言","evidenceQuote":"支撑这个判断的用户原话"}]
 }`
   ]
     .filter(Boolean)
@@ -183,7 +187,13 @@ function parseFinalizeJson(raw: string, session: InterviewSession): ParsedFinali
       representativeQuote: asNonEmptyString(t.representativeQuote),
       nextQuestion: asNonEmptyString(t.nextQuestion),
       maturity: asNonEmptyString(t.maturity)
-    })).filter((t) => t.name)
+    })).filter((t) => t.name),
+    profileSuggestions: asObjectArray(json.profileSuggestions).map((p) => ({
+      field: asNonEmptyString(p.field),
+      suggestedValue: asNonEmptyString(p.suggestedValue),
+      reason: asNonEmptyString(p.reason),
+      evidenceQuote: asNonEmptyString(p.evidenceQuote)
+    })).filter((p) => (p.field === "currentFocus" || p.field === "longTermGoal") && p.suggestedValue)
   };
 }
 
@@ -282,7 +292,14 @@ function mapToFinalizeContent(
     note.learnedTrack.push("本次没有形成足够的 AI 追问，应标记为轻量记录。");
   }
 
-  return { note, points, questions, decisions, debts, themes };
+  const profileSuggestions = parsed.profileSuggestions.map((p) => ({
+    field: p.field as ProfileSuggestionField,
+    suggestedValue: p.suggestedValue,
+    reason: p.reason,
+    evidenceQuote: p.evidenceQuote || parsed.keyQuote
+  }));
+
+  return { note, points, questions, decisions, debts, themes, profileSuggestions };
 }
 
 // --- small, defensive coercion helpers ---

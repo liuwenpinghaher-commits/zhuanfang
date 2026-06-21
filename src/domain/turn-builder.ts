@@ -356,9 +356,10 @@ export function addTurn(session: InterviewSession, input: AddTurnInput): Intervi
 
 export function buildInterviewAgentContext(
   session: InterviewSession,
-  corrections: MemoryCorrection[] = []
+  corrections: MemoryCorrection[] = [],
+  boundaries: string[] = []
 ): InterviewAgentContext {
-  const instructions = buildRealtimeVoiceInstructions(session, undefined, corrections);
+  const instructions = buildRealtimeVoiceInstructions(session, undefined, corrections, boundaries);
   const history: Array<{ role: "user" | "assistant"; text: string }> = [];
   for (const turn of session.turns) {
     if (turn.role === "user" || turn.role === "assistant") {

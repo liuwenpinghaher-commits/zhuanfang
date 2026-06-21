@@ -1,7 +1,7 @@
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import type { InteractionPreSignals, InterviewControlAction, InterviewSession, InterviewStrategyDecision, MemoryCorrection, SearchBriefInput, SearchProviderId, SourceHighlight } from "../../../../src/domain/types";
 import { INTERVIEWER_CRAFT_RULES } from "../../../../src/domain/interviewer-craft";
-import { buildAppliedPlaybookRulesBlock, buildCorrectionsBlock } from "../../../../src/domain/voice-instructions";
+import { buildAppliedPlaybookRulesBlock, buildBoundariesBlock, buildCorrectionsBlock } from "../../../../src/domain/voice-instructions";
 import { sanitizeExternalMaterialList } from "../../../../src/domain/utils";
 
 export const BAILIAN_DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
@@ -91,6 +91,11 @@ export interface BailianCharacterInterviewRequest {
    * the same "别再当成已确认事实" guidance the LiveKit voice path already had.
    */
   corrections?: MemoryCorrection[];
+  /**
+   * Hard user-set boundaries (profile.explicitBoundaries). The route passes them so the
+   * interviewer prompt actually enforces the lines the user said not to cross.
+   */
+  boundaries?: string[];
   /**
    * Strategy decision for THIS turn (from decideInterviewStrategy). Injected into the
    * system prompt as a soft "recommended action" so the strategy engine actually steers
@@ -435,7 +440,7 @@ export function createBailianCharacterInterviewClient(
   return {
     async createAssistantTurn(input) {
       const rawContent = await chatClient.complete({
-        messages: buildCharacterMessages(input.session, input.userText, input.corrections ?? [], input.strategyDecision),
+        messages: buildCharacterMessages(input.session, input.userText, input.corrections ?? [], input.strategyDecision, input.boundaries ?? []),
         maxTokens: 800
       });
 
@@ -855,12 +860,13 @@ function buildCharacterMessages(
   session: InterviewSession,
   userText: string,
   corrections: MemoryCorrection[] = [],
-  strategyDecision?: InterviewStrategyDecision
+  strategyDecision?: InterviewStrategyDecision,
+  boundaries: string[] = []
 ): BailianChatMessage[] {
   return [
     {
       role: "system",
-      content: buildCharacterSystemPrompt(session, corrections, strategyDecision)
+      content: buildCharacterSystemPrompt(session, corrections, strategyDecision, boundaries)
     },
     {
       role: "assistant",
@@ -886,7 +892,8 @@ function buildCharacterMessages(
 export function buildCharacterSystemPrompt(
   session: InterviewSession,
   corrections: MemoryCorrection[] = [],
-  strategyDecision?: InterviewStrategyDecision
+  strategyDecision?: InterviewStrategyDecision,
+  boundaries: string[] = []
 ) {
   const guide = session.guide;
   const lines: string[] = [
@@ -1021,6 +1028,10 @@ export function buildCharacterSystemPrompt(
   const playbookBlock = buildAppliedPlaybookRulesBlock(session.enginePolicy?.appliedPlaybookRules ?? []);
   if (playbookBlock) {
     lines.push(playbookBlock);
+  }
+  const boundariesBlock = buildBoundariesBlock(boundaries);
+  if (boundariesBlock) {
+    lines.push(boundariesBlock);
   }
   const correctionsBlock = buildCorrectionsBlock(corrections);
   if (correctionsBlock) {

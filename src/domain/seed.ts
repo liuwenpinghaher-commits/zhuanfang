@@ -8,10 +8,9 @@ export const initialProductState: ProductState = {
     currentFocus: "把语音专访式日记从 demo 梳理成真正能长期使用的认知产品",
     longTermGoal: "建立一个能持续追踪个人判断、决策和学习变化的私人认知系统",
     preferredStrength: "standard",
-    explicitBoundaries: ["不要把短暂情绪直接写成长期人格结论"],
-    confirmedMemories: [],
-    inferredMemories: []
+    explicitBoundaries: ["不要把短暂情绪直接写成长期人格结论"]
   },
+  profileSuggestions: [],
   sessions: [],
   notes: [
     {

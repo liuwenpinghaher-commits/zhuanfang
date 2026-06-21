@@ -67,8 +67,6 @@ describe("sqlite product state repository", () => {
     expect(resetState.themes).toEqual([]);
     expect(resetState.points).toEqual([]);
     expect(resetState.notes).toEqual([]);
-    expect(resetState.profile.confirmedMemories).toEqual([]);
-    expect(resetState.profile.inferredMemories).toEqual([]);
   });
 });
 

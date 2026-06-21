@@ -1,6 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { buildRealtimeVoiceInstructions } from "./voice-instructions";
+import { buildRealtimeVoiceInstructions, buildBoundariesBlock } from "./voice-instructions";
 import { createInitialProductState, createSessionDraft, createEmptyProductState } from "./engine";
+
+describe("explicit boundaries reach the interviewer prompt (P1)", () => {
+  it("buildBoundariesBlock renders a hard, non-negotiable directive listing each boundary", () => {
+    expect(buildBoundariesBlock([])).toBe("");
+    expect(buildBoundariesBlock(["   "])).toBe(""); // blanks ignored
+    const block = buildBoundariesBlock(["不要追问家庭关系", "不要把情绪写成人格结论"]);
+    expect(block).toContain("绝不违反");
+    expect(block).toContain("不要追问家庭关系");
+    expect(block).toContain("不要把情绪写成人格结论");
+  });
+
+  it("buildRealtimeVoiceInstructions injects the user's boundaries so the voice path enforces them", () => {
+    const session = createSessionDraft(createInitialProductState(), "decision", "standard", {});
+    const out = buildRealtimeVoiceInstructions(session, session.card, [], ["不要追问家庭关系"]);
+    expect(out).toContain("不要追问家庭关系");
+    expect(out).toContain("绝不违反");
+  });
+});
 
 describe("voice instructions", () => {
   it("includes opening discipline, craft rules, and guide tracking-points", () => {

@@ -60,7 +60,7 @@ export function buildProductStateMigrationManifest(
         id: "normalized-state",
         label: "ProductState 规范化",
         status: "ready",
-        detail: "迁移前会通过 normalizeProductState 补齐字段、兼容旧导出并清理 legacy profile confirmedMemories。",
+        detail: "迁移前会通过 normalizeProductState 补齐字段、兼容旧导出并清理 legacy 字段。",
         recommendation: "迁移脚本应始终先执行 normalizeProductState，再写入目标库。"
       },
       {
@@ -113,7 +113,7 @@ function buildMigrationEntityCounts(state: ProductState): MigrationEntityCount[]
     {
       id: "profile",
       label: "显性档案",
-      count: 1 + state.profile.explicitBoundaries.length + state.profile.inferredMemories.length
+      count: 1 + state.profile.explicitBoundaries.length + (state.profileSuggestions ?? []).filter((s) => s.status === "pending").length
     },
     {
       id: "interviews",

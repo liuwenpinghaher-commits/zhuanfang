@@ -11,10 +11,9 @@ function makeMinimalState(overrides: Partial<ProductState> = {}): ProductState {
       currentFocus: "focus",
       longTermGoal: "goal",
       preferredStrength: "standard",
-      explicitBoundaries: [],
-      confirmedMemories: [],
-      inferredMemories: []
+      explicitBoundaries: []
     },
+    profileSuggestions: [],
     sessions: [],
     notes: [],
     points: [],
