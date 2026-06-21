@@ -64,6 +64,29 @@ export function createSqliteAudioRepository(
   const selectIds = database.prepare(
     "SELECT session_id FROM interview_audio ORDER BY created_at ASC"
   );
+  const selectAll = database.prepare(
+    "SELECT * FROM interview_audio ORDER BY created_at ASC"
+  );
+
+  // Shared row→object mapping for get/listAll. BLOB columns come back as Uint8Array;
+  // normalize defensively (a Buffer is a Uint8Array subclass, so wrapping keeps bytes exact).
+  const mapRow = (row: AudioRow): InterviewAudio => {
+    const audio = row.audio instanceof Uint8Array ? row.audio : new Uint8Array(row.audio);
+    const result: InterviewAudio = {
+      sessionId: row.session_id,
+      audio,
+      mime: row.mime,
+      byteSize: row.byte_size,
+      createdAt: row.created_at
+    };
+    if (row.duration_ms !== null && row.duration_ms !== undefined) {
+      result.durationMs = row.duration_ms;
+    }
+    if (row.recording_started_at !== null && row.recording_started_at !== undefined) {
+      result.recordingStartedAt = row.recording_started_at;
+    }
+    return result;
+  };
 
   return {
     get(sessionId) {
@@ -71,23 +94,7 @@ export function createSqliteAudioRepository(
       if (!row) {
         return undefined;
       }
-      // node:sqlite hands back BLOB columns as Uint8Array; normalize defensively
-      // (a Buffer is a Uint8Array subclass, so wrapping keeps bytes exact).
-      const audio = row.audio instanceof Uint8Array ? row.audio : new Uint8Array(row.audio);
-      const result: InterviewAudio = {
-        sessionId: row.session_id,
-        audio,
-        mime: row.mime,
-        byteSize: row.byte_size,
-        createdAt: row.created_at
-      };
-      if (row.duration_ms !== null && row.duration_ms !== undefined) {
-        result.durationMs = row.duration_ms;
-      }
-      if (row.recording_started_at !== null && row.recording_started_at !== undefined) {
-        result.recordingStartedAt = row.recording_started_at;
-      }
-      return result;
+      return mapRow(row);
     },
     has(sessionId) {
       return existsOne.get(sessionId) !== undefined;
@@ -112,6 +119,10 @@ export function createSqliteAudioRepository(
     listSessionIds() {
       const rows = selectIds.all() as Array<Pick<AudioRow, "session_id">>;
       return rows.map((row) => row.session_id);
+    },
+    listAll() {
+      const rows = selectAll.all() as unknown as AudioRow[];
+      return rows.map(mapRow);
     }
   };
 }

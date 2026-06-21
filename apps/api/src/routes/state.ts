@@ -7,7 +7,7 @@ import { purgeLocalObjectArtifactsForState } from "../local-object-artifacts";
 import type { ProductStateRepository } from "../product-state-repository";
 import type { RawMaterialRepository } from "../raw-material-repository";
 import type { AudioRepository } from "../audio-repository";
-import type { InterviewRawMaterial } from "../../../../src/domain/types";
+import type { InterviewAudio, InterviewRawMaterial } from "../../../../src/domain/types";
 
 interface StateRouteOptions {
   env?: Record<string, string | undefined>;
@@ -62,10 +62,50 @@ export async function registerStateRoutes(
     // hot-state rehearsal report doesn't see it. Bundle it here so a downloaded export is a
     // complete backup and the matching import below can restore the cold layer too.
     const rawMaterials: InterviewRawMaterial[] = rawMaterialRepository?.list() ?? [];
-    // Audio blobs are large; the export records *which* sessions have audio (not the bytes),
-    // so an operator can see the recorded-audio footprint and reconcile it with a purge.
+    // Audio blobs are large; `audioSessions` records *which* sessions have audio (the full
+    // set, by ID), so an operator can see the recorded-audio footprint and reconcile a purge.
     const audioSessions: string[] = audioRepository?.listSessionIds() ?? [];
-    return { ...report, rawMaterials, audioSessions };
+    // Bundle the actual bytes (base64) so the export is restorable — but cap the total to stay
+    // under the request body limit (28MB). We walk sessions in a stable order (createdAt asc,
+    // matching the repo's listAll ordering) and accumulate base64 length; once a session would
+    // push the running total over the budget it (and any later one) is omitted and recorded in
+    // `audioOmittedSessions` instead, so a complete restore is still possible via re-export/sync.
+    const AUDIO_EXPORT_BUDGET_BYTES = 18 * 1024 * 1024;
+    const audios: Array<{
+      sessionId: string;
+      mime: string;
+      durationMs?: number;
+      recordingStartedAt?: string;
+      audioBase64: string;
+    }> = [];
+    const audioOmittedSessions: string[] = [];
+    let audioBudgetUsed = 0;
+    const allAudio = (audioRepository?.listAll() ?? []).slice().sort((a, b) =>
+      a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0
+    );
+    for (const a of allAudio) {
+      const audioBase64 = Buffer.from(a.audio).toString("base64");
+      if (audioBudgetUsed + audioBase64.length > AUDIO_EXPORT_BUDGET_BYTES) {
+        audioOmittedSessions.push(a.sessionId);
+        continue;
+      }
+      audioBudgetUsed += audioBase64.length;
+      const entry: {
+        sessionId: string;
+        mime: string;
+        durationMs?: number;
+        recordingStartedAt?: string;
+        audioBase64: string;
+      } = { sessionId: a.sessionId, mime: a.mime, audioBase64 };
+      if (a.durationMs !== undefined) {
+        entry.durationMs = a.durationMs;
+      }
+      if (a.recordingStartedAt !== undefined) {
+        entry.recordingStartedAt = a.recordingStartedAt;
+      }
+      audios.push(entry);
+    }
+    return { ...report, rawMaterials, audioSessions, audios, audioOmittedSessions };
   });
 
   // P0-2b: Import — restore a previously exported package (or a raw ProductState).
@@ -73,7 +113,13 @@ export async function registerStateRoutes(
   // bare ProductState. Normalizes before replacing so schema/field drift is healed.
   server.post("/api/state/import", async (request, reply) => {
     const body = request.body as
-      | { state?: unknown; exportPackage?: { state?: unknown }; confirm?: unknown; rawMaterials?: unknown }
+      | {
+          state?: unknown;
+          exportPackage?: { state?: unknown };
+          confirm?: unknown;
+          rawMaterials?: unknown;
+          audios?: unknown;
+        }
       | undefined;
     // P0-B: import is a full-state overwrite — require an explicit confirm token so a stray /
     // CSRF POST can't silently replace all state. Accept the purge token or the import-specific
@@ -108,6 +154,41 @@ export async function registerStateRoutes(
       for (const material of body.rawMaterials as InterviewRawMaterial[]) {
         if (material && typeof material.sessionId === "string") {
           rawMaterialRepository.put(material);
+        }
+      }
+    }
+    // Restore recorded audio bytes (base64) from the export bundle. Same defensive style as
+    // rawMaterials: validate each entry, decode base64 to exact bytes, upsert by sessionId
+    // (idempotent re-import). A legacy package without `audios` simply skips this.
+    if (audioRepository && Array.isArray(body?.audios)) {
+      for (const entry of body.audios as Array<{
+        sessionId?: unknown;
+        audioBase64?: unknown;
+        mime?: unknown;
+        durationMs?: unknown;
+        recordingStartedAt?: unknown;
+      }>) {
+        if (
+          entry &&
+          typeof entry.sessionId === "string" &&
+          typeof entry.audioBase64 === "string" &&
+          typeof entry.mime === "string"
+        ) {
+          const audio = new Uint8Array(Buffer.from(entry.audioBase64, "base64"));
+          const restored: InterviewAudio = {
+            sessionId: entry.sessionId,
+            audio,
+            mime: entry.mime,
+            byteSize: audio.byteLength,
+            createdAt: new Date().toISOString()
+          };
+          if (typeof entry.durationMs === "number") {
+            restored.durationMs = entry.durationMs;
+          }
+          if (typeof entry.recordingStartedAt === "string") {
+            restored.recordingStartedAt = entry.recordingStartedAt;
+          }
+          audioRepository.put(restored);
         }
       }
     }

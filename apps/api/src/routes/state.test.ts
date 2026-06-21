@@ -354,4 +354,111 @@ describe("state routes", () => {
       await server.close();
     });
   });
+
+  describe("audio bytes in export/import (导出含音频可恢复)", () => {
+    it("export 打包音频且可经 import 恢复", async () => {
+      const audioRepo = createInMemoryAudioRepository();
+      audioRepo.put({
+        sessionId: "a1",
+        audio: new Uint8Array([1, 2, 3]),
+        mime: "audio/webm",
+        byteSize: 3,
+        durationMs: 500,
+        recordingStartedAt: "2026-06-21T10:00:00.000Z",
+        createdAt: "2026-06-21T10:00:01.000Z"
+      });
+
+      const server = buildApiServer({ audioRepository: audioRepo });
+      const exportRes = await server.inject({ method: "GET", url: "/api/state/export" });
+      expect(exportRes.statusCode).toBe(200);
+      const body = exportRes.json();
+
+      expect(Array.isArray(body.audios)).toBe(true);
+      const packed = body.audios.find((a: { sessionId: string }) => a.sessionId === "a1");
+      expect(packed).toBeDefined();
+      expect(packed.mime).toBe("audio/webm");
+      expect(packed.durationMs).toBe(500);
+      expect(packed.recordingStartedAt).toBe("2026-06-21T10:00:00.000Z");
+      // base64 round-trip is byte-exact
+      expect(Array.from(Buffer.from(packed.audioBase64, "base64"))).toEqual([1, 2, 3]);
+      // The full list of audio-bearing sessions is preserved alongside the packed subset
+      expect(body.audioSessions).toContain("a1");
+
+      // Import the whole export package into a fresh server's audio repo
+      const freshAudioRepo = createInMemoryAudioRepository();
+      const freshServer = buildApiServer({ audioRepository: freshAudioRepo });
+      const importRes = await freshServer.inject({
+        method: "POST",
+        url: "/api/state/import",
+        payload: { confirm: "REPLACE_ALL_STATE", ...body }
+      });
+      expect(importRes.statusCode).toBe(200);
+
+      const restored = freshAudioRepo.get("a1");
+      expect(restored).toBeDefined();
+      expect(Array.from(restored!.audio)).toEqual([1, 2, 3]);
+      expect(restored!.mime).toBe("audio/webm");
+      expect(restored!.byteSize).toBe(3);
+      expect(restored!.durationMs).toBe(500);
+      expect(restored!.recordingStartedAt).toBe("2026-06-21T10:00:00.000Z");
+      await freshServer.close();
+      await server.close();
+    });
+
+    it("base64 往返字节精确(含 0/255 边界)", async () => {
+      const audioRepo = createInMemoryAudioRepository();
+      const bytes = new Uint8Array([0, 1, 127, 128, 254, 255]);
+      audioRepo.put({
+        sessionId: "edge",
+        audio: bytes,
+        mime: "audio/webm",
+        byteSize: bytes.byteLength,
+        createdAt: "2026-06-21T10:00:00.000Z"
+      });
+
+      const server = buildApiServer({ audioRepository: audioRepo });
+      const body = (await server.inject({ method: "GET", url: "/api/state/export" })).json();
+      const freshAudioRepo = createInMemoryAudioRepository();
+      const freshServer = buildApiServer({ audioRepository: freshAudioRepo });
+      await freshServer.inject({
+        method: "POST",
+        url: "/api/state/import",
+        payload: { confirm: "REPLACE_ALL_STATE", ...body }
+      });
+      expect(Array.from(freshAudioRepo.get("edge")!.audio)).toEqual([0, 1, 127, 128, 254, 255]);
+      await freshServer.close();
+      await server.close();
+    });
+
+    it("超额音频被省略并记入 audioOmittedSessions", async () => {
+      const audioRepo = createInMemoryAudioRepository();
+      // Two ~10MB blobs. base64 inflates by 4/3, so the first (~13.3MB) fits under the
+      // 18MB budget but the second pushes the running total over it and is omitted.
+      const tenMB = 10 * 1024 * 1024;
+      audioRepo.put({
+        sessionId: "big-1",
+        audio: new Uint8Array(tenMB),
+        mime: "audio/webm",
+        byteSize: tenMB,
+        createdAt: "2026-06-21T10:00:00.000Z"
+      });
+      audioRepo.put({
+        sessionId: "big-2",
+        audio: new Uint8Array(tenMB),
+        mime: "audio/webm",
+        byteSize: tenMB,
+        createdAt: "2026-06-21T10:00:01.000Z"
+      });
+
+      const server = buildApiServer({ audioRepository: audioRepo });
+      const body = (await server.inject({ method: "GET", url: "/api/state/export" })).json();
+      const packedIds = body.audios.map((a: { sessionId: string }) => a.sessionId);
+      expect(packedIds).toContain("big-1");
+      expect(packedIds).not.toContain("big-2");
+      expect(body.audioOmittedSessions).toContain("big-2");
+      // audioSessions still lists every audio-bearing session
+      expect(body.audioSessions).toEqual(expect.arrayContaining(["big-1", "big-2"]));
+      await server.close();
+    });
+  });
 });
