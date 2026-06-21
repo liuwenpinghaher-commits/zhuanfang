@@ -1,11 +1,18 @@
 import { useEffect, useRef, useState } from "react";
-import { Bot, MessageSquare, PenLine, Trash2 } from "lucide-react";
+import { Bot, Headphones, MessageSquare, PenLine, Trash2 } from "lucide-react";
 import type {
   EvidenceAnchor,
   InterviewRawMaterial,
   InterviewStrategyDecision,
   ProductState
 } from "../../domain/types";
+
+interface SessionAudioMeta {
+  exists: boolean;
+  mime?: string;
+  byteSize?: number;
+  durationMs?: number | null;
+}
 
 interface RawMaterialViewerProps {
   sessionId: string;
@@ -15,6 +22,10 @@ interface RawMaterialViewerProps {
   getRawMaterial: (sessionId: string) => Promise<InterviewRawMaterial | null>;
   /** 若提供，加载完成后滚动到该轮并临时高亮（用于"查看原文出处"跳转）。 */
   focusTurnId?: string;
+  /** 若提供，拉取整场录音元数据；exists 时在顶部渲染录音播放器。失败静默。 */
+  getAudioMeta?: (sessionId: string) => Promise<SessionAudioMeta>;
+  /** 若提供，给 <audio src> 用的整场录音流 URL。 */
+  audioUrl?: (sessionId: string) => string;
 }
 
 type LoadStatus = "loading" | "ready" | "empty" | "error";
@@ -28,19 +39,34 @@ function shorten(text: string, max = 80): string {
   return clean.length > max ? clean.slice(0, max) + "…" : clean;
 }
 
+function describeAudio(meta: SessionAudioMeta): string | null {
+  const parts: string[] = [];
+  if (typeof meta.durationMs === "number" && meta.durationMs > 0) {
+    const minutes = meta.durationMs / 60000;
+    parts.push(minutes >= 1 ? `约 ${minutes.toFixed(1)} 分钟` : `约 ${Math.round(meta.durationMs / 1000)} 秒`);
+  }
+  if (typeof meta.byteSize === "number" && meta.byteSize > 0) {
+    parts.push(`${(meta.byteSize / (1024 * 1024)).toFixed(1)} MB`);
+  }
+  return parts.length > 0 ? parts.join(" / ") : null;
+}
+
 export function RawMaterialViewer({
   sessionId,
   state,
   onAddAnnotation,
   onRemoveAnnotation,
   getRawMaterial,
-  focusTurnId
+  focusTurnId,
+  getAudioMeta,
+  audioUrl
 }: RawMaterialViewerProps) {
   const [status, setStatus] = useState<LoadStatus>("loading");
   const [material, setMaterial] = useState<InterviewRawMaterial | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [highlightTurnId, setHighlightTurnId] = useState<string | null>(null);
+  const [audioMeta, setAudioMeta] = useState<SessionAudioMeta | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -71,6 +97,29 @@ export function RawMaterialViewer({
       cancelled = true;
     };
   }, [sessionId, getRawMaterial]);
+
+  // 并行拉取整场录音元数据（best-effort：很多会话走文本路无音频，失败一律静默）。
+  useEffect(() => {
+    if (!getAudioMeta) {
+      return;
+    }
+    let cancelled = false;
+    setAudioMeta(null);
+    getAudioMeta(sessionId)
+      .then((meta) => {
+        if (!cancelled) {
+          setAudioMeta(meta);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAudioMeta(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, getAudioMeta]);
 
   // 加载完成后，若有 focusTurnId 则滚动到该轮并临时高亮。
   useEffect(() => {
@@ -123,8 +172,30 @@ export function RawMaterialViewer({
   });
   let assistantOrdinal = -1;
 
+  const showAudio = Boolean(audioMeta?.exists && audioUrl);
+  const audioCaption = audioMeta ? describeAudio(audioMeta) : null;
+
   return (
     <div ref={containerRef} className="panel" style={{ marginTop: "0.75rem", display: "flex", flexDirection: "column", gap: "0.85rem" }}>
+      {showAudio && audioUrl && (
+        <section
+          className="field-stack"
+          style={{
+            gap: "0.5rem",
+            paddingBottom: "0.85rem",
+            borderBottom: "1px solid var(--border-subtle, rgba(255,255,255,0.06))"
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            <span className="field-label" style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
+              <Headphones size={14} aria-hidden="true" />
+              整场录音
+            </span>
+            {audioCaption && <span className="field-help" style={{ fontVariantNumeric: "tabular-nums" }}>{audioCaption}</span>}
+          </div>
+          <audio controls preload="metadata" src={audioUrl(sessionId)} style={{ width: "100%" }} />
+        </section>
+      )}
       {material.turns.map((turn, turnIndex) => {
         let trace: InterviewStrategyDecision | undefined;
         if (turn.role === "assistant") {

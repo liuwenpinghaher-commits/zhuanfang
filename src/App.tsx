@@ -1811,6 +1811,8 @@ export default function App() {
             onAddAnnotation={addInterviewAnnotation}
             onRemoveAnnotation={removeInterviewAnnotation}
             getRawMaterial={(sessionId) => productApiClient.getRawMaterial(sessionId)}
+            getAudioMeta={(sessionId) => productApiClient.getSessionAudioMeta(sessionId)}
+            audioUrl={(sessionId) => productApiClient.sessionAudioUrl(sessionId)}
           />
         )}
         {view === "my-assets" && (
@@ -1848,6 +1850,8 @@ export default function App() {
             onAddAnnotation={addInterviewAnnotation}
             onRemoveAnnotation={removeInterviewAnnotation}
             getRawMaterial={(sessionId) => productApiClient.getRawMaterial(sessionId)}
+            getAudioMeta={(sessionId) => productApiClient.getSessionAudioMeta(sessionId)}
+            audioUrl={(sessionId) => productApiClient.sessionAudioUrl(sessionId)}
           />
         )}
         {view === "memory" && (
@@ -1864,6 +1868,8 @@ export default function App() {
             onAddAnnotation={addInterviewAnnotation}
             onRemoveAnnotation={removeInterviewAnnotation}
             getRawMaterial={(sessionId) => productApiClient.getRawMaterial(sessionId)}
+            getAudioMeta={(sessionId) => productApiClient.getSessionAudioMeta(sessionId)}
+            audioUrl={(sessionId) => productApiClient.sessionAudioUrl(sessionId)}
           />
         )}
         {view === "config" && (

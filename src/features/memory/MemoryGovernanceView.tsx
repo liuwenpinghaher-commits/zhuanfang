@@ -3,6 +3,7 @@ import { Check, ExternalLink, FileUp, GitMerge, Inbox, Lock, Pencil, ShieldAlert
 import { HeaderBlock } from "../../components/HeaderBlock";
 import { RawMaterialViewer } from "../notes/RawMaterialViewer";
 import type { InterviewRawMaterial, ProductState } from "../../domain/types";
+import type { SessionAudioMeta } from "../../api/productApi";
 
 interface MemoryGovernanceViewProps {
   state: ProductState;
@@ -18,6 +19,8 @@ interface MemoryGovernanceViewProps {
   onAddAnnotation: (sessionId: string, turnId: string, text: string) => void;
   onRemoveAnnotation: (id: string) => void;
   getRawMaterial: (sessionId: string) => Promise<InterviewRawMaterial | null>;
+  getAudioMeta?: (sessionId: string) => Promise<SessionAudioMeta>;
+  audioUrl?: (sessionId: string) => string;
 }
 
 type ActionState = "idle" | "loading" | "done" | "error";
@@ -52,7 +55,9 @@ export function MemoryGovernanceView({
   onConsolidate,
   onAddAnnotation,
   onRemoveAnnotation,
-  getRawMaterial
+  getRawMaterial,
+  getAudioMeta,
+  audioUrl
 }: MemoryGovernanceViewProps) {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
@@ -522,6 +527,8 @@ export function MemoryGovernanceView({
               onAddAnnotation={onAddAnnotation}
               onRemoveAnnotation={onRemoveAnnotation}
               getRawMaterial={getRawMaterial}
+              getAudioMeta={getAudioMeta}
+              audioUrl={audioUrl}
             />
           </div>
         </div>

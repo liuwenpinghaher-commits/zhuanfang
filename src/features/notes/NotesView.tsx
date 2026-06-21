@@ -2,6 +2,7 @@ import { BookmarkCheck, FileText, FileSearch, Play } from "lucide-react";
 import { useState } from "react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { InterviewMode, InterviewRawMaterial, ProductState } from "../../domain/types";
+import type { SessionAudioMeta } from "../../api/productApi";
 import { RawMaterialViewer } from "./RawMaterialViewer";
 
 interface NotesViewProps {
@@ -11,6 +12,8 @@ interface NotesViewProps {
   onAddAnnotation: (sessionId: string, turnId: string, text: string) => void;
   onRemoveAnnotation: (id: string) => void;
   getRawMaterial: (sessionId: string) => Promise<InterviewRawMaterial | null>;
+  getAudioMeta?: (sessionId: string) => Promise<SessionAudioMeta>;
+  audioUrl?: (sessionId: string) => string;
 }
 
 export function NotesView({
@@ -19,7 +22,9 @@ export function NotesView({
   onSaveQuestion,
   onAddAnnotation,
   onRemoveAnnotation,
-  getRawMaterial
+  getRawMaterial,
+  getAudioMeta,
+  audioUrl
 }: NotesViewProps) {
   const [openSessionId, setOpenSessionId] = useState<string | null>(null);
   return (
@@ -78,6 +83,8 @@ export function NotesView({
                 onAddAnnotation={onAddAnnotation}
                 onRemoveAnnotation={onRemoveAnnotation}
                 getRawMaterial={getRawMaterial}
+                getAudioMeta={getAudioMeta}
+                audioUrl={audioUrl}
               />
             )}
           </article>

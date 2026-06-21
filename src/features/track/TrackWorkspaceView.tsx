@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ArrowLeft, BookOpen, ChevronRight, Clock, ExternalLink, FileQuestion, Lightbulb, Milestone, Play, Unlink, X } from "lucide-react";
 import type { TrackWorkspace } from "../../domain/timeline";
 import type { InterviewRawMaterial, ProductState } from "../../domain/types";
+import type { SessionAudioMeta } from "../../api/productApi";
 import { RawMaterialViewer } from "../notes/RawMaterialViewer";
 
 interface TrackWorkspaceViewProps {
@@ -13,6 +14,8 @@ interface TrackWorkspaceViewProps {
   onAddAnnotation: (sessionId: string, turnId: string, text: string) => void;
   onRemoveAnnotation: (id: string) => void;
   getRawMaterial: (sessionId: string) => Promise<InterviewRawMaterial | null>;
+  getAudioMeta?: (sessionId: string) => Promise<SessionAudioMeta>;
+  audioUrl?: (sessionId: string) => string;
 }
 
 const MATURITY_COLOR: Record<string, string> = {
@@ -31,7 +34,9 @@ export function TrackWorkspaceView({
   state,
   onAddAnnotation,
   onRemoveAnnotation,
-  getRawMaterial
+  getRawMaterial,
+  getAudioMeta,
+  audioUrl
 }: TrackWorkspaceViewProps) {
   // Task 12 扩展：代表性引文「查看原文出处」弹层 — 渲染 RawMaterialViewer 并定位到锚点轮。
   const [sourceOverlay, setSourceOverlay] = useState<{ sessionId: string; turnId: string } | null>(null);
@@ -293,6 +298,8 @@ export function TrackWorkspaceView({
               onAddAnnotation={onAddAnnotation}
               onRemoveAnnotation={onRemoveAnnotation}
               getRawMaterial={getRawMaterial}
+              getAudioMeta={getAudioMeta}
+              audioUrl={audioUrl}
             />
           </div>
         </div>
