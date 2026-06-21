@@ -85,6 +85,19 @@ export interface ProductApiClient {
   listVoices(): Promise<VoiceListResponse>;
   createVoice(input: CreateVoiceRequest): Promise<VoiceInfo>;
   deleteVoice(voiceId: string): Promise<void>;
+  /** Upload the whole-session voice recording. Best-effort: callers must not let a failure block ending the interview. */
+  uploadSessionAudio(sessionId: string, blob: Blob, durationMs?: number): Promise<void>;
+  /** Metadata for a session's stored audio (exists:false when none). */
+  getSessionAudioMeta(sessionId: string): Promise<SessionAudioMeta>;
+  /** Absolute URL to stream the stored audio, for an <audio src>. */
+  sessionAudioUrl(sessionId: string): string;
+}
+
+export interface SessionAudioMeta {
+  exists: boolean;
+  mime?: string;
+  byteSize?: number;
+  durationMs?: number | null;
 }
 
 export type SystemCapabilityStatus = "ready" | "degraded" | "needs-key" | "needs-endpoint" | "disabled";
@@ -364,6 +377,21 @@ export class ApiError extends Error {
 /** True when the error means the server was unreachable (fetch threw), not a 4xx/5xx. */
 export function isNetworkError(err: unknown): boolean {
   return !(err instanceof ApiError);
+}
+
+/**
+ * btoa over raw bytes. Building the binary string in chunks avoids the
+ * "Maximum call stack size exceeded" that String.fromCharCode(...wholeArray)
+ * hits on multi-MB recordings (spread explodes the arg list).
+ */
+function bytesToBase64(bytes: Uint8Array): string {
+  const CHUNK = 0x8000; // 32KB per fromCharCode call
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    const slice = bytes.subarray(i, i + CHUNK);
+    binary += String.fromCharCode(...slice);
+  }
+  return btoa(binary);
 }
 
 export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchImpl: FetchLike = fetch): ProductApiClient {
@@ -753,6 +781,33 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
       await fetchImpl(`${normalizedBaseUrl}/api/realtime-voice/voices/${encodeURIComponent(voiceId)}`, {
         method: "DELETE"
       });
+    },
+    async uploadSessionAudio(sessionId, blob, durationMs) {
+      // Prefer Blob.arrayBuffer() (real browsers); fall back to Response(blob)
+      // for environments (jsdom) whose Blob lacks arrayBuffer.
+      const arrayBuffer = typeof blob.arrayBuffer === "function"
+        ? await blob.arrayBuffer()
+        : await new Response(blob).arrayBuffer();
+      const buf = new Uint8Array(arrayBuffer);
+      const audioBase64 = bytesToBase64(buf);
+      const response = await fetchImpl(`${normalizedBaseUrl}/api/sessions/${sessionId}/audio`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          audioBase64,
+          mime: blob.type || "audio/webm",
+          ...(typeof durationMs === "number" ? { durationMs } : {})
+        })
+      });
+      if (!response.ok) {
+        throw new ApiError(response.status, `/api/sessions/${sessionId}/audio`);
+      }
+    },
+    async getSessionAudioMeta(sessionId) {
+      return (await requestJson(`/api/sessions/${sessionId}/audio/meta`, { method: "GET" })) as SessionAudioMeta;
+    },
+    sessionAudioUrl(sessionId) {
+      return `${normalizedBaseUrl}/api/sessions/${sessionId}/audio`;
     }
   };
 }

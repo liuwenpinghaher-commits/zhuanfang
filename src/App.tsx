@@ -63,6 +63,7 @@ import { createLivekitVoiceSession, type LivekitVoiceSession } from "./realtime/
 import { connectCascadedPipeline, type CascadedPipeline } from "./realtime/cascadedPipeline";
 import { createBrowserAsrSource } from "./realtime/cascadedAsrSource";
 import { createBrowserTtsSink } from "./realtime/cascadedTtsSink";
+import { createSessionAudioRecorder, type SessionAudioRecorder } from "./realtime/sessionAudioRecorder";
 import {
   dedupeGeneratedArtifacts,
   deleteCorpusInsightBundle,
@@ -148,6 +149,11 @@ export default function App() {
   const [livekitVoiceSession, setLivekitVoiceSession] = useState<LivekitVoiceSession | null>(null);
   // Cascade pipeline instance — held in a ref so closing it doesn't trigger re-render.
   const cascadePipelineRef = useRef<CascadedPipeline | null>(null);
+  // Whole-session voice recorder — held in a ref so its lifecycle is decoupled from
+  // render. Only set when the cascade ASR tees us a live mic stream (voice path);
+  // null on the text path so we naturally skip recording. Recording is best-effort:
+  // a failed start/stop/upload must never block ending the interview.
+  const audioRecorderRef = useRef<SessionAudioRecorder | null>(null);
   // P1-12: which assistant turn index has already absorbed a `final` transcript
   // segment. A realtime turn can emit MULTIPLE finals (omni: audio_transcript.done
   // + text.done; livekit: one TranscriptionSegment per sentence) — the first final
@@ -449,6 +455,16 @@ export default function App() {
     if (cascadePipelineRef.current) {
       cascadePipelineRef.current.close();
       cascadePipelineRef.current = null;
+    }
+    // Discard any orphan whole-session recorder (voice session torn down without a
+    // proper /end upload — e.g. new interview / purge / reset). finishInterview()
+    // already nulls the ref BEFORE calling us when it wants to upload, so reaching
+    // here with a recorder means the recording is intentionally dropped. Stop it to
+    // release the MediaRecorder; ignore the resulting blob.
+    if (audioRecorderRef.current) {
+      const orphan = audioRecorderRef.current;
+      audioRecorderRef.current = null;
+      void orphan.stop().catch(() => { /* discarded */ });
     }
     setRecording(false);
     setAudioLevel(0);
@@ -1113,12 +1129,29 @@ export default function App() {
     }
 
     try {
-      const apiRun = await productApiClient.endInterviewSession(session.id);
+      const endedSessionId = session.id;
+      const apiRun = await productApiClient.endInterviewSession(endedSessionId);
       // The /end response is already the authoritative LIGHT state (turns
       // offloaded to cold storage). Adopt it so the autosave effect doesn't PUT
       // the (now empty) turns back and re-inflate the just-offloaded session.
       adoptServerState(apiRun.state);
       setApiPersistenceEnabled(true);
+      // Whole-session voice recording: stop it BEFORE closeRealtimeVoiceSession()
+      // tears down the mic tracks (MediaRecorder needs the live stream to flush its
+      // final chunk), then upload. Best-effort — a failed upload only warns; it must
+      // not block ending the interview. On the text path the ref is null → skipped.
+      const recorder = audioRecorderRef.current;
+      audioRecorderRef.current = null;
+      if (recorder) {
+        void recorder
+          .stop()
+          .then(({ blob, durationMs }) =>
+            productApiClient.uploadSessionAudio(endedSessionId, blob, durationMs)
+          )
+          .catch(() =>
+            setNotice(buildNotice("warning", "录音未保存", "本场语音录音上传失败，不影响笔记与资产。"))
+          );
+      }
       setSession(null);
       closeRealtimeVoiceSession();
       setNotice(buildNotice("success", "专访档案已生成", "双轨笔记和认知资产已更新。"));
@@ -1289,7 +1322,23 @@ export default function App() {
 
             const asr = createBrowserAsrSource({
               asrWsUrl,
-              instructions: voiceSession.sessionUpdate.session.instructions
+              instructions: voiceSession.sessionUpdate.session.instructions,
+              // Tee the live mic into a whole-session recorder. Best-effort: guard
+              // construction so a recorder failure never breaks ASR start. The
+              // recording is uploaded at /end (see finishInterview).
+              onMicStream: (stream) => {
+                try {
+                  const recorder = createSessionAudioRecorder(stream);
+                  recorder.start();
+                  audioRecorderRef.current = recorder;
+                } catch (err) {
+                  audioRecorderRef.current = null;
+                  console.warn(JSON.stringify({
+                    event: "session_recorder_start_failed",
+                    error: err instanceof Error ? err.message : String(err),
+                  }));
+                }
+              }
             });
             const tts = createBrowserTtsSink(ttsWsUrl, productState.systemConfig.voice.defaultVoice);
 

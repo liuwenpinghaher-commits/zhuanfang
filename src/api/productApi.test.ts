@@ -551,4 +551,69 @@ describe("product api client", () => {
     });
     expect(result.profile.name).toBe("Mia");
   });
+
+  it("uploads session audio as base64 with mime + durationMs", async () => {
+    const fetchImpl = vi.fn(
+      async (_input: string, _init?: RequestInit) => new Response(JSON.stringify({ ok: true, byteSize: 5 }), { status: 200 })
+    );
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+
+    // jsdom's Blob byte round-trip is unreliable, so provide a Blob-like whose
+    // arrayBuffer() we control — this exercises OUR base64 encoding directly.
+    const bytes = new Uint8Array([104, 101, 108, 108, 111]); // "hello"
+    const blob = {
+      type: "audio/webm;codecs=opus",
+      arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+    } as unknown as Blob;
+    await client.uploadSessionAudio("sess-1", blob, 3000);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:8787/api/sessions/sess-1/audio");
+    expect(init?.method).toBe("POST");
+    const body = JSON.parse(init?.body as string);
+    expect(body.audioBase64).toBe(btoa("hello"));
+    expect(body.mime).toBe("audio/webm;codecs=opus");
+    expect(body.durationMs).toBe(3000);
+  });
+
+  it("falls back to audio/webm mime and omits durationMs when absent", async () => {
+    const fetchImpl = vi.fn(
+      async (_input: string, _init?: RequestInit) => new Response(JSON.stringify({ ok: true }), { status: 200 })
+    );
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+
+    const blob = new Blob([new Uint8Array([1, 2, 3])]); // no type
+    await client.uploadSessionAudio("sess-2", blob);
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1]?.body as string);
+    expect(body.mime).toBe("audio/webm");
+    expect("durationMs" in body).toBe(false);
+  });
+
+  it("throws ApiError when audio upload returns non-2xx", async () => {
+    const fetchImpl = vi.fn(async () => new Response("nope", { status: 422 }));
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+
+    const blob = new Blob([new Uint8Array([1])], { type: "audio/webm" });
+    await expect(client.uploadSessionAudio("sess-3", blob)).rejects.toMatchObject({ name: "ApiError", status: 422 });
+  });
+
+  it("reads session audio metadata", async () => {
+    const meta = { exists: true, mime: "audio/webm", byteSize: 1234, durationMs: 9000 };
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify(meta), { status: 200 }));
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+
+    const result = await client.getSessionAudioMeta("sess-4");
+
+    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:8787/api/sessions/sess-4/audio/meta", { method: "GET" });
+    expect(result.exists).toBe(true);
+    expect(result.byteSize).toBe(1234);
+    expect(result.durationMs).toBe(9000);
+  });
+
+  it("builds an absolute audio stream URL with the trailing slash stripped from base", () => {
+    const client = createProductApiClient("http://127.0.0.1:8787/", vi.fn());
+    expect(client.sessionAudioUrl("sess-5")).toBe("http://127.0.0.1:8787/api/sessions/sess-5/audio");
+  });
 });

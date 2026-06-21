@@ -46,6 +46,13 @@ export interface CreateBrowserAsrSourceOptions {
   asrWsUrl: string;
   /** Called to get the mic stream — defaults to navigator.mediaDevices.getUserMedia. */
   getMicStream?: () => Promise<MediaStream>;
+  /**
+   * Invoked with the live mic stream once it is acquired (before the ASR
+   * AudioContext graph is built). The caller can tee it into a whole-session
+   * MediaRecorder. Best-effort: throwing here must not break ASR, so it's called
+   * defensively. Does not alter any ASR behaviour.
+   */
+  onMicStream?: (stream: MediaStream) => void;
   /** Instructions forwarded to the model for the ASR-only session. */
   instructions?: string;
   /**
@@ -65,6 +72,7 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
   const {
     asrWsUrl,
     getMicStream,
+    onMicStream,
     instructions = "",
     maxReconnectAttempts = 2,
     baseReconnectDelayMs = 500,
@@ -162,6 +170,19 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
     );
 
     stream = await getStream();
+    // Tee the live mic stream to the caller (e.g. whole-session recorder) before
+    // building the ASR graph. Defensive: a throwing/failing recorder must never
+    // break ASR start.
+    if (onMicStream) {
+      try {
+        onMicStream(stream);
+      } catch (err) {
+        console.warn(JSON.stringify({
+          event: "asr_on_mic_stream_failed",
+          error: err instanceof Error ? err.message : String(err),
+        }));
+      }
+    }
     audioCtx = new AudioContext({ sampleRate: 16000 });
     sourceNode = audioCtx.createMediaStreamSource(stream);
     analyser = audioCtx.createAnalyser();

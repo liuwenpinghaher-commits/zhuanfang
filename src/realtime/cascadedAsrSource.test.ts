@@ -399,6 +399,79 @@ describe("createBrowserAsrSource — ASR delta schema validation", () => {
 });
 
 // ---------------------------------------------------------------------------
+// onMicStream: the live mic stream is teed to the caller before the ASR graph
+// is built (used to feed a whole-session recorder).
+// ---------------------------------------------------------------------------
+
+describe("createBrowserAsrSource — onMicStream tee", () => {
+  let harness: ReturnType<typeof buildHarness>;
+
+  beforeEach(() => {
+    harness = buildHarness();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    harness.teardown();
+    vi.restoreAllMocks();
+  });
+
+  it("calls onMicStream with the acquired stream after start()", async () => {
+    const fakeStream = {
+      getTracks: () => [{ kind: "audio", stop: vi.fn() }],
+    } as unknown as MediaStream;
+    const onMicStream = vi.fn();
+
+    const source = createBrowserAsrSource({
+      asrWsUrl: "ws://test/asr",
+      getMicStream: async () => fakeStream,
+      onMicStream,
+    });
+    source.register({
+      onTranscriptDelta: vi.fn(),
+      onSpeechStarted: vi.fn(),
+      onSpeechStopped: vi.fn(),
+    });
+
+    const startPromise = source.start();
+    await new Promise((r) => setTimeout(r, 10));
+    harness.fireWsOpen();
+    harness.pushMessage({ type: "proxy.connected" });
+    await startPromise;
+
+    expect(onMicStream).toHaveBeenCalledTimes(1);
+    expect(onMicStream).toHaveBeenCalledWith(fakeStream);
+  });
+
+  it("does not break ASR start when onMicStream throws", async () => {
+    const fakeStream = {
+      getTracks: () => [{ kind: "audio", stop: vi.fn() }],
+    } as unknown as MediaStream;
+
+    const source = createBrowserAsrSource({
+      asrWsUrl: "ws://test/asr",
+      getMicStream: async () => fakeStream,
+      onMicStream: () => {
+        throw new Error("recorder blew up");
+      },
+    });
+    source.register({
+      onTranscriptDelta: vi.fn(),
+      onSpeechStarted: vi.fn(),
+      onSpeechStopped: vi.fn(),
+    });
+
+    const startPromise = source.start();
+    await new Promise((r) => setTimeout(r, 10));
+    harness.fireWsOpen();
+    harness.pushMessage({ type: "proxy.connected" });
+
+    // start() still resolves despite the throwing callback.
+    await expect(startPromise).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // P0-7: ASR start failure → stopMic (mic leak) + finite reconnect
 // ---------------------------------------------------------------------------
 
