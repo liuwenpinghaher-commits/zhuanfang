@@ -1,0 +1,156 @@
+// End-to-end real-interview driver.
+// The INTERVIEWER is the real running system (POST /api/interview-sessions/:id/turns →
+// qwen-plus-character). The INTERVIEWEE is an LLM playing a rich persona (text simulation).
+// Drives a session until >= targetChars, then /end (finalize), and dumps everything for
+// quality analysis. Usage: node scripts/run-interview.mjs <personaFile> <outFile> [targetChars]
+import { readFileSync, writeFileSync } from "node:fs";
+
+function loadEnv(url) {
+  const env = {};
+  try {
+    for (const line of readFileSync(url, "utf8").split(/\r?\n/)) {
+      const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
+      if (m && !line.trim().startsWith("#")) env[m[1]] = m[2];
+    }
+  } catch {}
+  return env;
+}
+const env = loadEnv(new URL("../.env.local", import.meta.url));
+const KEY = env.DASHSCOPE_API_KEY;
+const CHAT_URL = (env.BAILIAN_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1") + "/chat/completions";
+const INTERVIEWEE_MODEL = env.INTERVIEWEE_MODEL || "qwen-plus";
+const API = env.PRODUCT_API_BASE || "http://127.0.0.1:3210";
+
+const personaFile = process.argv[2];
+const outFile = process.argv[3];
+const TARGET_CHARS = Number(process.argv[4] || 20000);
+const MAX_TURNS = 140;
+const persona = JSON.parse(readFileSync(personaFile, "utf8"));
+
+const log = (...a) => process.stdout.write(a.join(" ") + "\n");
+
+async function chat(messages, { temperature = 0.85, max_tokens = 900 } = {}) {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const res = await fetch(CHAT_URL, {
+        method: "POST",
+        headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" },
+        body: JSON.stringify({ model: INTERVIEWEE_MODEL, messages, temperature, max_tokens }),
+        signal: AbortSignal.timeout(60000)
+      });
+      if (!res.ok) throw new Error(`chat ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      const j = await res.json();
+      const content = j.choices?.[0]?.message?.content?.trim();
+      if (content) return content;
+      throw new Error("empty chat content");
+    } catch (e) {
+      if (attempt === 3) throw e;
+      await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+    }
+  }
+}
+
+async function api(path, body) {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const res = await fetch(`${API}${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        // /end runs the finalize LLM (up to ~3 min for a dense 20K transcript) — allow generous headroom.
+        signal: AbortSignal.timeout(300000)
+      });
+      if (!res.ok) throw new Error(`api ${path} ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      return await res.json();
+    } catch (e) {
+      if (attempt === 3) throw e;
+      await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+    }
+  }
+}
+
+function intervieweeSystem() {
+  return [
+    `你是「${persona.name}」，${persona.role}。正在接受一档高水准深度商业访谈（对标张小珺《商业访谈录》）。`,
+    `你的背景：${persona.bio}`,
+    `你的核心观点/经历（自然融入回答，不要罗列）：${persona.stances.join("；")}`,
+    `说话风格：${persona.style}`,
+    `【身份铁律】你自始至终都是${persona.name}，只能基于你这个身份的真实领域（${persona.domain}）作答。无论主持人把话题引向哪里，都要从你这个领域的真实经历回答；如果问题超出你的领域，就坦诚地把它拉回你熟悉的领域，绝不要凭空切换成别的职业/行业（比如医疗、客服、保险等与你无关的领域）。每一段回答都必须和「${persona.domain}」直接相关。`,
+    `回答要求：第一人称、口语化、具体。多讲具体的人、事、时间、数字、转折、内心活动和真实细节；遇到抽象问题要落到一个具体场景或时刻。每次回答 250-500 字，不要复述主持人的问题，不要用"作为一名…"开头，直接说内容。偶尔可以反问或主动延展一个新线索。`
+  ].join("\n");
+}
+
+async function intervieweeReply(history, question) {
+  const messages = [{ role: "system", content: intervieweeSystem() }];
+  // include recent dialogue as context (host=user asks, you=assistant answers)
+  for (const t of history.slice(-12)) {
+    messages.push({ role: t.role === "assistant" ? "user" : "assistant", content: t.content });
+  }
+  messages.push({ role: "user", content: `主持人问：${question}` });
+  return chat(messages);
+}
+
+(async () => {
+  const t0 = Date.now();
+  log(`\n=== 访谈开始：${persona.name}（${persona.role}）目标 ${TARGET_CHARS} 字 ===`);
+  // Clean, isolated state per interview: purge seed/demo + any prior interview so this
+  // session's guide, memory recall, and finalized assets come PURELY from this conversation.
+  if (process.env.SKIP_PURGE !== "1") {
+    await api("/api/state/purge", { confirm: "PURGE_PERSONAL_DATA", scope: "all" });
+    log("  state purged → clean slate");
+  }
+  const created = await api("/api/interview-sessions", { mode: "daily", topicHint: persona.topicHint });
+  const id = created.session.id;
+  log(`session: ${id}`);
+
+  const transcript = []; // {role, content}
+  let chars = 0;
+  let degraded = 0;
+  const degradedReasons = [];
+
+  // Seed: interviewee opens (the reference opens with the guest making a statement).
+  let nextQuestion = persona.opening || "请先做个自我介绍，并讲讲你最近在想的一件事。";
+  let firstUserSeed = persona.seed;
+
+  for (let turn = 0; turn < MAX_TURNS && chars < TARGET_CHARS; turn++) {
+    let reply;
+    if (turn === 0 && firstUserSeed) {
+      reply = firstUserSeed;
+    } else {
+      reply = await intervieweeReply(transcript, nextQuestion);
+    }
+    transcript.push({ role: "user", content: reply });
+    chars += reply.length;
+
+    const r = await api(`/api/interview-sessions/${id}/turns`, { content: reply });
+    const sess = r.session;
+    const lastAssistant = [...sess.turns].reverse().find((t) => t.role === "assistant");
+    nextQuestion = lastAssistant?.content || "能再具体说说吗？";
+    transcript.push({ role: "assistant", content: nextQuestion });
+    chars += nextQuestion.length;
+    if (r.degradedReason) { degraded++; degradedReasons.push(`#${turn}: ${r.degradedReason}`); }
+    if (turn % 5 === 0 || chars >= TARGET_CHARS) {
+      const mins = ((Date.now() - t0) / 60000).toFixed(1);
+      log(`  turn ${turn}: ${chars} 字 / ${mins} 分钟${r.degradedReason ? "  ⚠DEGRADED" : ""}`);
+    }
+  }
+
+  log(`  /end finalize…`);
+  const ended = await api(`/api/interview-sessions/${id}/end`, {});
+
+  const elapsedMin = (Date.now() - t0) / 60000;
+  const result = {
+    persona: { name: persona.name, role: persona.role },
+    sessionId: id,
+    chars,
+    turns: transcript.length,
+    elapsedMin: Number(elapsedMin.toFixed(1)),
+    degraded,
+    degradedReasons,
+    transcript,
+    ended
+  };
+  writeFileSync(outFile, JSON.stringify(result, null, 2));
+  log(`\n=== 完成：${chars} 字 / ${transcript.length} 轮 / ${elapsedMin.toFixed(1)} 分钟 / 降级 ${degraded} 次 ===`);
+  log(`输出：${outFile}`);
+})().catch((e) => { console.error("DRIVER ERROR:", e.message); process.exit(1); });

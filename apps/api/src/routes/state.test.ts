@@ -166,6 +166,56 @@ describe("state routes", () => {
       await server.close();
     });
 
+    it("POST /api/state/purge with scope=profile clears only the profile and reports deletedScope+deletedCount", async () => {
+      const server = buildApiServer();
+      const before = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      // seed guarantees a populated profile + assets to delete-around
+      expect(before.profile.name).not.toBe("");
+      const pointsBefore = before.points.length;
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/purge",
+        payload: { confirm: "PURGE_PERSONAL_DATA", scope: "profile" }
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.deletedScope).toBe("profile");
+      expect(typeof body.deletedCount).toBe("number");
+      const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      expect(after.profile.name).toBe(""); // profile wiped
+      expect(after.points.length).toBe(pointsBefore); // assets preserved (scoped, not全量)
+      await server.close();
+    });
+
+    it("POST /api/state/purge with an unknown scope returns 422 and does NOT mutate state", async () => {
+      const server = buildApiServer();
+      const before = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/purge",
+        payload: { confirm: "PURGE_PERSONAL_DATA", scope: "everything" }
+      });
+      expect(res.statusCode).toBe(422);
+      const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      expect(after.profile.name).toBe(before.profile.name);
+      await server.close();
+    });
+
+    it("POST /api/state/purge with scope omitted defaults to a full wipe (deletedScope=all)", async () => {
+      const server = buildApiServer();
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/purge",
+        payload: { confirm: "PURGE_PERSONAL_DATA" }
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.deletedScope).toBe("all");
+      expect(body.sessions.length).toBe(0);
+      expect(body.points.length).toBe(0);
+      await server.close();
+    });
+
     it("POST /api/state/import with confirm=REPLACE_ALL_STATE overwrites state (200)", async () => {
       const server = buildApiServer();
       const before = (await server.inject({ method: "GET", url: "/api/state" })).json();

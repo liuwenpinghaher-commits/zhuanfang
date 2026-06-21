@@ -35,6 +35,47 @@ describe("Product API", () => {
     ).toBe(true);
   });
 
+  it("serializes concurrent state-mutating requests so none are lost (P0-1)", async () => {
+    // Every write endpoint does getState → await(LLM/embedding) → replaceState with no
+    // optimistic lock. Two writes racing through the await window would both read the same
+    // base snapshot and the second replaceState would clobber the first. We force the window
+    // open with a slow embedding client (create-session embeds its recall topic), fire several
+    // creates concurrently, and assert ALL of them persisted — i.e. writes ran one-at-a-time.
+    const slowEmbeddingClient = {
+      embed: async (_texts: string[]) => {
+        await new Promise((r) => setTimeout(r, 20));
+        return [[0.1, 0.2, 0.3]];
+      }
+    };
+    const server = buildApiServer({ embeddingClient: slowEmbeddingClient as never });
+    const N = 4;
+    await Promise.all(
+      Array.from({ length: N }, (_v, i) =>
+        server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "daily", topicHint: `并发主题${i}` } })
+      )
+    );
+    const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
+    expect(state.sessions.length).toBe(N); // no lost-update: every concurrent create survived
+    await server.close();
+  });
+
+  it("returns a generic 500 without leaking internal error details when a handler throws (P1)", async () => {
+    // Inject a repository whose getState throws so GET /api/state hits an UNCAUGHT error.
+    // Fastify's default handler would echo the raw error message; the global error handler
+    // must replace it with a generic body so internals/secrets never reach the client.
+    const throwingRepo = {
+      getState: () => {
+        throw new Error("SECRET_INTERNAL_STACK_DETAIL");
+      }
+    } as never;
+    const server = buildApiServer({ productStateRepository: throwingRepo });
+    const res = await server.inject({ method: "GET", url: "/api/state" });
+    expect(res.statusCode).toBe(500);
+    expect(res.body).not.toContain("SECRET_INTERNAL_STACK_DETAIL");
+    expect(res.json().error).toBe("Internal Server Error");
+    await server.close();
+  });
+
   it("responds to health checks", async () => {
     const server = buildApiServer();
     const response = await server.inject({ method: "GET", url: "/api/health" });

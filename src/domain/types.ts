@@ -185,6 +185,12 @@ export interface InterviewTurn {
   depth?: InterviewDepth;
   truncated?: InterviewTurnTruncation;
   providerTurnId?: string;
+  /**
+   * Speaking manner distilled from the character model's （…）stage-direction asides. The asides
+   * are stripped out of `content` (so the transcript reads as clean words like a real interview)
+   * and kept here so the voice path can still deliver the question with the intended emotion.
+   */
+  prosody?: { rate: number; pitch: number; volume: number };
 }
 
 export interface InterviewTurnTruncation {

@@ -481,20 +481,31 @@ export default function App() {
     setNotice(buildNotice("warning", "音色已删除", `音色 "${voiceId}" 已移除。`));
   }
 
-  function interruptAssistant() {
+  async function interruptAssistant() {
     setGuidanceState(prev => ({ ...prev, countThisTurn: 0, active: false }));
     // Hit whichever transport is live. cascade (pipeline.interrupt) and omni
     // (connection.interruptAssistant) have real barge-in; livekit's interrupt is a
     // best-effort no-op (SDK-limited) but harmless. Previously only livekit was wired,
     // so the manual 打断 button did nothing in the default cascade / omni modes.
     let interrupted = false;
+    // Capture how much of the reply was actually spoken aloud so the server can truncate the
+    // persisted assistant turn to what the guest really heard (P0-2). Without this the session
+    // record keeps the full reply the AI never finished saying, and downstream memory/extraction
+    // treats unspoken text as spoken.
+    let spokenTextSoFar = "";
     if (cascadePipelineRef.current) {
-      cascadePipelineRef.current.interrupt();
+      const info = cascadePipelineRef.current.interrupt();
+      spokenTextSoFar = info?.spokenTextSoFar ?? "";
       interrupted = true;
     }
-    const conn = realtimeVoiceConnection as { interruptAssistant?: () => void } | null;
+    const conn = realtimeVoiceConnection as
+      | { interruptAssistant?: () => Promise<{ spokenTextSoFar?: string } | null> | void }
+      | null;
     if (conn?.interruptAssistant) {
-      conn.interruptAssistant();
+      const result = await conn.interruptAssistant();
+      if (result && typeof result.spokenTextSoFar === "string") {
+        spokenTextSoFar = result.spokenTextSoFar;
+      }
       interrupted = true;
     }
     if (livekitVoiceSession) {
@@ -502,6 +513,19 @@ export default function App() {
       interrupted = true;
     }
     if (interrupted) {
+      // Persist the interruption server-side so the assistant turn is truncated to the spoken
+      // portion. Best-effort: a failure here must not break the local barge-in UX.
+      const realtimeSessionId = realtimeVoiceSession?.sessionId;
+      if (realtimeSessionId) {
+        try {
+          await productApiClient.interruptRealtimeVoiceSession(realtimeSessionId, {
+            spokenTextSoFar,
+            reason: "user_interrupt"
+          });
+        } catch (error) {
+          console.warn(JSON.stringify({ event: "interrupt_persist_failed", error: error instanceof Error ? error.message : String(error) }));
+        }
+      }
       setVoiceStatus("interrupted");
       setTimeout(() => setVoiceStatus("listening"), 1500);
     }
@@ -687,7 +711,12 @@ export default function App() {
       setActiveSearchBriefId(response.brief.id);
       setNotice(buildNotice("success", "自动简报已生成", `已选中「${response.brief.topic}」，可以带入下一次专访。`));
       return;
-    } catch {
+    } catch (err) {
+      if (!isNetworkError(err)) {
+        // Server is up but rejected — don't pass off a local placeholder brief as success.
+        setNotice(buildNotice("warning", "自动简报失败", "服务返回错误，请稍后重试。"));
+        return;
+      }
       setApiPersistenceEnabled(false);
     }
 
@@ -780,7 +809,12 @@ export default function App() {
       setNotice(buildNotice("success", "播客脚本已生成", `使用声音配置：${apiRun.episode.voice}`));
       setView("podcast");
       return;
-    } catch {
+    } catch (err) {
+      if (!isNetworkError(err)) {
+        // Server is up but rejected — don't pass off a locally-generated script as success.
+        setNotice(buildNotice("warning", "播客脚本生成失败", "服务返回错误，请稍后重试。"));
+        return;
+      }
       setApiPersistenceEnabled(false);
     }
 
@@ -892,7 +926,12 @@ export default function App() {
       setNotice(buildNotice("success", "语料分析已完成", "已生成可确认的访谈策略补丁。"));
       setView("corpus");
       return;
-    } catch {
+    } catch (err) {
+      if (!isNetworkError(err)) {
+        // Server is up but rejected — don't pass off a local offline analysis as success.
+        setNotice(buildNotice("warning", "语料分析失败", "服务返回错误，请稍后重试。"));
+        return;
+      }
       setApiPersistenceEnabled(false);
     } finally {
       setCorpusAnalyzing(false);
@@ -1254,8 +1293,10 @@ export default function App() {
               setProductState(r.state);
               setApiPersistenceEnabled(true);
               if (r.preSignals) cascadePipelineRef.current?.updatePreSignals(r.preSignals);
-              const assistantText = r.session.turns.at(-1)?.content ?? "";
-              return { assistantText };
+              const lastTurn = r.session.turns.at(-1);
+              // The server already stripped （…）asides from content and distilled the manner into
+              // turn.prosody — forward it so the voice keeps its emotion.
+              return { assistantText: lastTurn?.content ?? "", prosody: lastTurn?.prosody };
             };
 
             const preSignals = session?.interactionPreSignals ?? null;

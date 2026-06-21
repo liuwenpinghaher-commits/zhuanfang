@@ -61,6 +61,9 @@ export interface BailianChatCompleteRequest {
   responseFormat?: "json" | "text";
   temperature?: number;
   maxTokens?: number;
+  /** Per-request timeout override (ms). Large structured generations (finalize) need more than
+   *  the client default. Falls back to the client's configured timeout when omitted. */
+  timeoutMs?: number;
 }
 
 /**
@@ -178,6 +181,16 @@ interface BailianPodcastAudioClientOptions {
   audioBaseUrl?: string;
   model?: string;
   voice?: string;
+  /** Default output container (mp3/wav/pcm). Overridable per-call via synthesize input.format. */
+  format?: string;
+  /** Output sample rate in Hz (CosyVoice default 24000). */
+  sampleRate?: number;
+  /** Speech rate multiplier (CosyVoice default 0.95). */
+  rate?: number;
+  /** Strip markdown before synthesis (default true). */
+  enableMarkdownFilter?: boolean;
+  /** Emit the AIGC content tag (default true). */
+  enableAigcTag?: boolean;
   fetchImpl?: FetchLike;
 }
 
@@ -376,8 +389,9 @@ export function createBailianChatClient(options: BailianChatClientOptions): Bail
               "content-type": "application/json"
             },
             body: JSON.stringify(body),
-            // Latency/cost guard: don't let a hung request stall a route forever.
-            signal: AbortSignal.timeout(timeoutMs)
+            // Latency/cost guard: don't let a hung request stall a route forever. A request may
+            // override the client default when it legitimately needs longer (e.g. finalize).
+            signal: AbortSignal.timeout(input.timeoutMs ?? timeoutMs)
           });
 
           if (!response.ok) {
@@ -531,12 +545,17 @@ export function createBailianPodcastAudioClient(options: BailianPodcastAudioClie
   const audioBaseUrl = (options.audioBaseUrl ?? BAILIAN_DEFAULT_AUDIO_BASE_URL).replace(/\/$/, "");
   const model = options.model ?? BAILIAN_PODCAST_TTS_MODEL;
   const defaultVoice = options.voice ?? BAILIAN_PODCAST_TTS_VOICE;
+  const defaultFormat = options.format ?? "mp3";
+  const sampleRate = options.sampleRate ?? 24000;
+  const rate = options.rate ?? 0.95;
+  const enableMarkdownFilter = options.enableMarkdownFilter ?? true;
+  const enableAigcTag = options.enableAigcTag ?? true;
   const fetchImpl = options.fetchImpl ?? fetch;
 
   return {
     async synthesize(input) {
       const voice = input.voice?.trim() || defaultVoice;
-      const format = input.format ?? "mp3";
+      const format = input.format ?? defaultFormat;
       const response = await fetchImpl(`${audioBaseUrl}/api/v1/services/audio/tts/SpeechSynthesizer`, {
         method: "POST",
         headers: {
@@ -549,10 +568,10 @@ export function createBailianPodcastAudioClient(options: BailianPodcastAudioClie
             text: input.text,
             voice,
             format,
-            sample_rate: 24000,
-            rate: 0.95,
-            enable_markdown_filter: true,
-            enable_aigc_tag: true
+            sample_rate: sampleRate,
+            rate,
+            enable_markdown_filter: enableMarkdownFilter,
+            enable_aigc_tag: enableAigcTag
           }
         }),
         signal: AbortSignal.timeout(60000)
@@ -774,7 +793,13 @@ export function createBailianPodcastAudioClientFromEnv(
     apiKey,
     audioBaseUrl: env.BAILIAN_AUDIO_BASE_URL,
     model: env.BAILIAN_TTS_MODEL ?? BAILIAN_PODCAST_TTS_MODEL,
-    voice: env.BAILIAN_TTS_VOICE ?? BAILIAN_PODCAST_TTS_VOICE
+    voice: env.BAILIAN_TTS_VOICE ?? BAILIAN_PODCAST_TTS_VOICE,
+    // Documented CosyVoice tuning knobs (README) — previously hardcoded, now honored.
+    format: env.BAILIAN_TTS_FORMAT,
+    sampleRate: normalizeEnvInteger(env.BAILIAN_TTS_SAMPLE_RATE, 24000),
+    rate: normalizeEnvFloat(env.BAILIAN_TTS_RATE, 0.95),
+    enableMarkdownFilter: normalizeEnvBoolean(env.BAILIAN_TTS_ENABLE_MARKDOWN_FILTER, true),
+    enableAigcTag: normalizeEnvBoolean(env.BAILIAN_TTS_ENABLE_AIGC_TAG, true)
   });
 }
 
@@ -1158,6 +1183,19 @@ function normalizeOptionalNumber(value: unknown) {
 function normalizeEnvInteger(value: string | undefined, fallback: number) {
   const parsedValue = Number(value);
   return Number.isInteger(parsedValue) && parsedValue >= 0 ? parsedValue : fallback;
+}
+
+function normalizeEnvFloat(value: string | undefined, fallback: number) {
+  const parsedValue = Number(value);
+  return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : fallback;
+}
+
+function normalizeEnvBoolean(value: string | undefined, fallback: boolean) {
+  if (value === undefined) return fallback;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true" || normalized === "1" || normalized === "yes") return true;
+  if (normalized === "false" || normalized === "0" || normalized === "no") return false;
+  return fallback;
 }
 
 function normalizeWebrtcSignalingUrl(endpoint: string) {

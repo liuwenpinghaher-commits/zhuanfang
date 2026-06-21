@@ -12,7 +12,7 @@ import type {
   SearchBrief,
 } from "./types";
 
-import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, extractAnchor } from "./utils";
+import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent } from "./utils";
 import { withMemoryCandidateReview } from "./memoryReview";
 import { buildInterviewQualityReport, planMemoryUpdate, tokenizeMemoryGraphText } from "./engine";
 import { uniqueStrings } from "./signals";
@@ -126,6 +126,10 @@ function buildDeterministicFinalizeContent(session: InterviewSession, completedA
     createdAt: completedAt
   };
 
+  // Deliberate design: when AI synthesis is unavailable we DO NOT fabricate or keyword-stuff
+  // assets/themes (the project rejected auto-seeded "硬塞" themes — see engine.test.ts
+  // "offline finalize produces an honest light record"). The honest light note is the
+  // contract; full assets require the LLM path. Empty arrays here are correct, not a gap.
   return { note, points: [], questions: [], decisions: [], debts: [], themes: [] };
 }
 

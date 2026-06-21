@@ -1,0 +1,168 @@
+# 真实性评测 spec —— 本仓库为单租户本地工具:全局唯一 ProductState + 一个共享生产 Bearer token,
+# 无 userId/ownerId/tenant 概念。因此鉴权(authZ)= 全局 token 守卫(缺/错→401),不存在 per-owner 403。
+# 每条数据写端点的「鉴权失败」分支均指该全局守卫;此设计在 REQ-AUTH-PROD-GUARD 统一定义。
+requirements:
+  - id: REQ-HEALTH-PROBE
+    why: "为了让部署编排(Docker/反向代理/监控)能判断 API 进程是否存活,本需求提供一个无需鉴权、恒定返回服务标识的健康端点;否则探活只能靠端口连通性,无法区分'端口开着但应用挂了'。"
+    acceptance: "Given API 服务已启动,When GET /api/health,Then 返回 200 且 body 含 ok:true 与 service:\"interview-product-api\";Given 生产鉴权已开启(NODE_ENV=production 且配置了 token),When 不带 Authorization 调用 GET /api/health,Then 仍返回 200(健康检查在鉴权豁免前缀内,不被 401 拦截);Given 服务进程未启动,When 探活,Then 连接失败(非 200),编排据此判定不健康。"
+    expected_locations: ["apps/api/src/routes/health.ts", "apps/api/src/server.ts"]
+
+  - id: REQ-AUTH-PROD-GUARD
+    why: "为了防止生产部署裸奔暴露用户访谈数据,本需求要求'生产 profile + 已配置 token'时对所有 /api/ 业务路径强制 Bearer 鉴权;否则任何人都能读写全局 ProductState。本端点是全仓唯一鉴权边界(单租户,无 per-owner 授权)。"
+    acceptance: "Given isAuthGuardActive(env) 为真,When 请求任一非豁免 /api/ 路径且 Authorization 缺失,Then onRequest 钩子在进入业务前返回 401 {error:\"Unauthorized\"};Given Authorization 存在但与配置 token 不相等,When 同请求,Then 同样 401(用时间安全比较,不因长度差异提前返回);Given 携带正确 Bearer token,When 同请求,Then 放行进入业务;Given 本地开发未配置 token(isAuthGuardActive 为假),When 调用任意 /api/ 路径,Then 不启用鉴权钩子直接放行;Given 路径属于豁免前缀(如 /api/health),When 无 token 调用,Then 放行。"
+    expected_locations: ["apps/api/src/server.ts", "apps/api/src/auth.ts"]
+
+  - id: REQ-STATE-OPTIMISTIC-LOCK
+    why: "为了保证多端/多标签并发编辑同一全局 ProductState 时不发生'后写覆盖先写'的丢失更新,本需求用 revision 做乐观锁;否则两个客户端基于旧快照各自保存会静默吞掉对方的改动。"
+    acceptance: "Given 当前存储状态 revision=N,When PUT /api/state 且 body.revision===N,Then 接受写入并返回 revision=N+1;Given body.revision<N 或 >N(含伪造未来值 N+5),When PUT /api/state,Then 返回 409 {error 含 \"stale\", current:<最新状态>} 且不写入;Given body 中 revision 字段缺失或非 number,When PUT /api/state,Then 返回 409(禁止零成本绕过乐观锁);Given 生产鉴权开启且 token 缺失,When PUT /api/state,Then 全局守卫先返回 401,不进入乐观锁判断。"
+    expected_locations: ["apps/api/src/routes/state.ts", "apps/api/src/product-state-repository.ts"]
+
+  - id: REQ-STATE-EXPORT-IMPORT-ROUNDTRIP
+    why: "为了让用户能备份/迁移自己的全部访谈数据(数据可携带性),本需求要求 export 产出的快照能被 import 无损还原,且 import 是破坏性全量覆盖,必须显式确认;否则导出的文件无法回灌,或一次误/CSRF POST 静默替换全部状态。"
+    acceptance: "Given 存在含会话/记忆/语料的状态,When GET /api/state/export,Then 返回含 package(完整 ProductState)的备份结构;Given 该导出包 + confirm=\"REPLACE_ALL_STATE\",When POST /api/state/import,Then 状态被替换并写入一条 state_imported 审计事件,后续 GET /api/state 读出导入内容;Given confirm 缺失或既非 REPLACE_ALL_STATE 也非 PURGE_PERSONAL_DATA,When POST /api/state/import,Then 返回 422 且原状态不变;Given confirm 正确但 payload 不含可识别 ProductState(非对象),When 导入,Then 返回 422 不产出半成品;Given 生产鉴权开启且 token 缺失,When 导入,Then 全局守卫先返回 401。"
+    expected_locations: ["apps/api/src/routes/state.ts", "src/domain/backup.ts", "src/domain/storage.ts"]
+
+  - id: REQ-STATE-PRIVACY-PURGE
+    why: "为了满足'用户可彻底且按需删除自己数据'的隐私承诺,本需求提供按范围不可恢复硬删的 purge;删除必须级联到派生副本(state 内引用)与本地音频原件,且范围越界要拒绝而非误删全量,否则用户无法精确行使删除权或会误删。"
+    acceptance: "Given confirm=\"PURGE_PERSONAL_DATA\" 且 scope∈{all,profile,interviews,assets},When POST /api/state/purge,Then 仅硬删该 scope 的个人数据并返回 200 {deletedScope, deletedCount},随后 GET /api/state 在该 scope 读到空(profile 重置为空标识、对应数组清零);Given scope 省略,When purge,Then 默认 scope=all 做全量清空(含删除已引用的本地音频文件)并返回 deletedScope:\"all\";Given scope 不在枚举内(如 \"everything\"),When purge,Then 返回 422 且不删除任何数据;Given confirm 缺失或错误,When purge,Then 返回 422 不删除;Given 目标 scope 本就无数据(重复提交),When purge,Then 返回 200 deletedCount=0 且幂等无副作用;Given 生产鉴权开启且 token 缺失,When purge,Then 全局守卫先返回 401(单租户:无 per-owner 403,删除作用于唯一全局状态)。"
+    expected_locations: ["apps/api/src/routes/state.ts", "src/domain/privacy.ts", "apps/api/src/local-object-artifacts.ts"]
+
+  - id: REQ-INTERVIEW-SESSION-CREATE
+    why: "为了让一次专访有可寻址的载体来累积回合/记忆/决策,本需求创建访谈会话并返回其 id;否则后续所有 turns/end/pre-signals 操作没有挂载点。"
+    acceptance: "Given 合法创建请求,When POST /api/interview-sessions,Then 返回 200 且 body.session 含唯一 id,并写入全局状态可被 GET /api/interview-sessions/:id 读回({session});Given 用一个不存在的 id 查询,When GET /api/interview-sessions/:id,Then 返回 404 {error:\"Interview session not found.\"};Given 生产鉴权开启且 token 缺失,When 创建,Then 全局守卫先返回 401。"
+    expected_locations: ["apps/api/src/routes/interview-sessions.ts", "src/domain/interviewSession.test.ts"]
+
+  - id: REQ-INTERVIEW-TURN-APPEND
+    why: "为了保证用户每句话都被无损记录为可回放的会话事实(是后续记忆抽取、质量报告、归档的数据源),本需求要求 /turns 在合法时把用户输入作为一条 role=user 回合追加;非法输入必须零追加,否则会写入空/脏回合污染下游。"
+    acceptance: "Given 存在的会话 id 与去空白后非空的 content,When POST /api/interview-sessions/:id/turns,Then 返回 200 且 session.turns 末尾新增一条 role=user 回合,其 content 等于输入;Given content 为空串/纯空白/缺失,When 同请求,Then 返回 422 {error:\"Turn content is required.\"} 且会话回合数不变;Given 会话 id 不存在,When 同请求,Then 返回 404;Given 同一会话的两个 /turns 请求并发(在嵌入/LLM 的 await 窗口内交错),When 同时提交,Then 两条用户回合都被持久化、互不覆盖(按会话串行的读-改-写,杜绝丢回合);Given 生产鉴权开启且 token 缺失,When 同请求,Then 全局守卫先返回 401。"
+    expected_locations: ["apps/api/src/routes/interview-sessions.ts", "src/domain/turn-builder.ts"]
+
+  - id: REQ-INTERVIEW-TURN-NEXT-QUESTION
+    why: "为了兑现产品核心价值——AI 主持人能针对用户上一句生成有针对性的下一问(而非千篇一律的固定提问),本需求要求生成的主持人回合可观测地回应了用户最新输入;若只追加固定问题,专访就退化成问卷,价值不成立。"
+    acceptance: "Given 用户回合已追加且 content 非退化(extractAnchor(content)≠\"这个问题\"),When 走确定性引擎生成下一回合,Then 返回的最末一条 role=assistant 回合 content 非空且包含从该用户输入提取的 anchor(可用 content.includes(anchor) 断言其针对性);Given content 退化为无实义(anchor 落到兜底\"这个问题\"),When 生成,Then 仍返回非空主持人回合(不崩溃),但不要求 anchor 命中;Given 同一会话已达配置的连续追问深度上限 maxFollowUpDepth,When 再生成,Then 走收束/降压技法而非继续深挖(reason 注明已达上限)。"
+    expected_locations: ["src/domain/turn-builder.ts", "src/domain/strategy.ts", "src/domain/utils.ts"]
+
+  - id: REQ-INTERVIEW-TURN-OFFLINE-FALLBACK
+    why: "为了保证'断网/LLM 故障/预算耗尽时专访仍能继续'的可用性承诺,本需求要求 LLM 不可用时回退到确定性策略引擎生成本回合,而不是报错中断;否则一次供应商抖动就会打断整场访谈。"
+    acceptance: "Given 未配置 bailianInterviewClient,When POST /api/interview-sessions/:id/turns,Then 仍返回 200 且由确定性引擎产出下一回合;Given 已配置 client 但该会话 LLM 预算已耗尽(budget.tryConsume 返回 false),When 同请求,Then 仍返回 200、回退确定性引擎,并写入一条 status:\"degraded\" 的 aiRunEvent 且输出 llm_budget_exceeded 告警日志(降级对质量报告可见);Given 已配置 client 但其 createAssistantTurn 抛错/超时,When 同请求,Then 捕获异常、回退确定性引擎、记录 degradedReason,仍返回 200 不丢失已接收的用户回合。"
+    expected_locations: ["apps/api/src/routes/interview-sessions.ts", "src/domain/strategy.ts"]
+
+  - id: REQ-LLM-BUDGET-PER-SESSION
+    why: "为了防止单个会话因 bug 或异常长对话无限调用 LLM 造成成本失控,本需求按会话维度精确限流调用次数;计数必须原子、可被显式置零(kill-switch),否则成本上限形同虚设。"
+    acceptance: "Given maxCallsPerSession=K(K≥1),When 同一 sessionId 第 N 次 tryConsume,Then N≤K 返回 true 并把该 key 计数自增 1、N>K 返回 false 且不自增;Given 不同 sessionId,When 各自 tryConsume,Then 计数互相独立(一个会话耗尽不影响另一个);Given K 显式配置为 0,When 任意 tryConsume,Then 恒返回 false(kill-switch 全拒,绝不回退到默认 200);Given 配置缺失/NaN/负数(无效),When 创建预算,Then 回退默认上限 200(而非 0);Given 从未见过的 sessionId,When 首次 tryConsume(K≥1),Then 从 0 计数返回 true;Given 同步连续调用(JS 单线程,tryConsume 内无 await),When 并发触发,Then 不存在读改写竞态导致的超发。"
+    expected_locations: ["apps/api/src/llm-budget.ts", "apps/api/src/llm-budget.test.ts"]
+
+  - id: REQ-LLM-BUDGET-RESET
+    why: "为了让会话级配额在会话真正结束后释放(下一场访谈重新获得完整额度),本需求要求 /end 成功后归零该会话计数;否则会话计数只增不减,长期运行下记忆膨胀且老会话永久占额。"
+    acceptance: "Given 一个已 tryConsume 至耗尽的 sessionId,When 对应会话 POST /api/interview-sessions/:id/end 成功触发 budget.reset(sessionId),Then 之后再 tryConsume 同一 sessionId 重新返回 true(计数归零);Given 对一个 reset 后的会话再次 reset,When 调用,Then 幂等无副作用(不抛错);Given /end 因前置校验失败未成功(见 REQ-INTERVIEW-SESSION-END-GUARD),When 调用,Then 不执行 reset(配额不应在无效结束时被释放)。"
+    expected_locations: ["apps/api/src/llm-budget.ts", "apps/api/src/routes/interview-sessions.ts"]
+
+  - id: REQ-LLM-BUDGET-SYSTEM
+    why: "为了让不绑定具体会话的后台 LLM 富集(共享 system 桶、research_auto_run)既受配额约束又不会一次撞顶后永久熄火,本需求给 system 桶以滑动时间窗恢复语义;否则这些 key 没有 /end 触发 reset,会累积到上限后永久阻断所有非会话 LLM 调用。"
+    acceptance: "Given system 桶在窗口内已达上限,When 继续 tryConsume(\"system\"),Then 返回 false;Given 距窗口起点已过 systemWindowMs,When 再 tryConsume(\"system\"),Then 计数滚动归零并返回 true(不永久熄火);Given 一个普通 per-session key,When 等待超过 systemWindowMs,Then 不自动滚动(仍 false)——会话 key 只能由显式 reset 释放,不享受时间窗;Given systemWindowMs 配置缺失/无效,When 创建预算,Then 回退默认 1 小时窗口。"
+    expected_locations: ["apps/api/src/llm-budget.ts", "apps/api/src/llm-budget.test.ts"]
+
+  - id: REQ-INTERVIEW-SESSION-END-GUARD
+    why: "为了保证'结束并产出成果'只发生在真正进行过的访谈上,本需求禁止在用户尚未发言时结束会话;否则会生成基于空内容的记忆候选与归档,污染下游数据。"
+    acceptance: "Given 会话已有至少一条用户回合,When POST /api/interview-sessions/:id/end,Then 返回 200 并归档、触发记忆候选抽取、释放该会话 LLM 预算;Given 会话尚无任何用户回合,When 同请求,Then 返回 422 {error:\"Interview session cannot be ended before the first user turn.\"} 且不归档、不 reset 预算;Given 会话 id 不存在,When 同请求,Then 返回 404;Given 生产鉴权开启且 token 缺失,When 同请求,Then 全局守卫先返回 401。"
+    expected_locations: ["apps/api/src/routes/interview-sessions.ts", "src/domain/session-archive.ts"]
+
+  - id: REQ-MEMORY-CANDIDATE-LIFECYCLE
+    why: "为了让'AI 抽取的记忆必须经人确认才生效'(HITL)的安全边界成立,本需求要求记忆候选只能在 pending 态被改写/批准/拒绝;否则可对已处理候选重复操作,产生重复或冲突的确认记忆。"
+    acceptance: "Given 候选处于 pending,When POST /api/memory-candidates/:id/approve,Then 返回 200 并生成一条 confirmed 记忆记录;Given 候选已非 pending(已批准/已拒绝),When 再次 approve 或 reject,Then 返回 409 {error:\"Memory candidate is not pending.\"} 且不重复生效;Given 候选 id 不存在,When 任意操作,Then 返回 404;Given PATCH 改写文本去空白后为空,When 改写,Then 返回 422;Given 文本超过 MEMORY_CANDIDATE_TEXT_MAX_CHARS,When 改写,Then 返回 422 指明超限;Given 生产鉴权开启且 token 缺失,When 任意写操作,Then 全局守卫先返回 401。"
+    expected_locations: ["apps/api/src/routes/memory-candidates.ts", "src/domain/memory.ts"]
+
+  - id: REQ-MEMORY-RECORD-EDIT-GUARD
+    why: "为了保护已确认记忆这一'真相源'不被随意篡改成无效数据,本需求对编辑/弃用施加状态与长度校验;否则可把记忆改空或对未确认记录执行弃用,破坏检索召回的可信度。"
+    acceptance: "Given 一条 confirmed 记忆,When PATCH /api/memory-records/:id 且文本去空白非空且不超长,Then 返回 200 并更新;Given 该记录非 confirmed,When PATCH 或 POST .../deprecate,Then 返回 409 {error:\"Memory record is not confirmed.\"};Given 文本为空,When PATCH,Then 返回 422;Given 文本超过 MEMORY_TEXT_MAX_CHARS,When PATCH,Then 返回 422 指明超限;Given 记录 id 不存在,When 任意操作,Then 返回 404;Given 生产鉴权开启且 token 缺失,When 任意写操作,Then 全局守卫先返回 401。"
+    expected_locations: ["apps/api/src/routes/memory-records.ts", "src/domain/memory.ts"]
+
+  - id: REQ-MEMORY-CONSOLIDATE-MERGE
+    why: "为了避免确认记忆随时间累积大量近义重复、稀释检索质量,本需求提供整理端点把重复记忆合并到保留项并报告合并关系;否则记忆库膨胀且召回噪声变大。"
+    acceptance: "Given 存在多条语义重复的 confirmed 记忆,When POST /api/memory/consolidate,Then 返回每个 keeper 及其被并入的 losers 列表,且 losers 不再作为独立 confirmed 记忆参与后续召回;Given 不存在任何重复,When 同请求,Then 返回空合并结果且不改动任何记忆(空集是合法结果,不得误并);Given confirmed 记忆为 0 条,When 同请求,Then 返回空结果不抛错;Given 生产鉴权开启且 token 缺失,When 同请求,Then 全局守卫先返回 401。"
+    expected_locations: ["apps/api/src/routes/memory-candidates.ts", "src/domain/memoryReview.ts"]
+
+  - id: REQ-SEARCH-BRIEF-CREATE
+    why: "为了支撑'带着真实外部情报做有准备的专访',本需求要求按主题生成的检索简报必须携带可溯源的外部条目(而非空壳),且 provider 失败时显式降级而非静默假成功;否则主持人引用的是凭空内容,违背真实性。"
+    acceptance: "Given 含非空主题的请求且 provider 可用并有结果,When POST /api/search/briefs,Then 返回 200 且 brief.sources 至少 1 条且每条带 url,brief.status=\"ready\";Given provider 调用失败或返回 0 结果,When 同请求,Then 不 502,而是降级为本地 demo 简报、返回 200 且 degraded:true、brief.status=\"needs-review\"(显式标注非真实联网,绝不把降级伪装成 ready);Given 主题为空白,When 同请求,Then 按降级/兜底路径处理而非产出无主题简报;Given 生产鉴权开启且 token 缺失,When 同请求,Then 全局守卫先返回 401。"
+    expected_locations: ["apps/api/src/routes/search.ts", "src/domain/search-brief.ts"]
+
+  - id: REQ-SEARCH-BRIEF-REFRESH
+    why: "为了让已建简报能随外部信息更新而保鲜(被持续追踪的主题需要重抓),本需求要求 refresh 在保留 id/tracked/appliedToSessionIds 的前提下重抓来源并刷新时间戳;否则简报一旦生成就僵死,新鲜度计算失真。"
+    acceptance: "Given 一个已存在的 brief id,When POST /api/search/briefs/:id/refresh,Then 返回 200 且 brief.lastRefreshedAt 被写入(晚于或等于原 createdAt)、sources 被重抓,id/tracked/appliedToSessionIds 保持不变;Given brief id 不存在,When 同请求,Then 返回 404 {error:\"Brief not found\"};Given 重抓时 provider 失败,When 同请求,Then 降级兜底并仍返回 200(标注降级)而非 5xx;Given 生产鉴权开启且 token 缺失,When 同请求,Then 全局守卫先返回 401。"
+    expected_locations: ["apps/api/src/routes/search.ts", "src/domain/search-brief.ts"]
+
+  - id: REQ-SEARCH-AUTO-BRIEFS
+    why: "为了从现有资产自动派生研究议题,本需求要求 auto-briefs 在能解析出主题时创建简报、解析不出主题时明确拒绝;否则会创建无主题的空记录污染简报库。"
+    acceptance: "Given 请求中可从资产/输入解析出至少一个主题,When POST /api/search/auto-briefs,Then 返回 200 并生成对应简报;Given 无法解析出任何主题,When 同请求,Then 返回 400 {error:\"No topic found\"} 且不创建任何简报记录;Given 生产鉴权开启且 token 缺失,When 同请求,Then 全局守卫先返回 401。"
+    expected_locations: ["apps/api/src/routes/search.ts", "src/domain/research-automation.ts"]
+
+  - id: REQ-PODCAST-EPISODE-CREATE
+    why: "为了把一次专访沉淀为可分享的播客成果(产品交付物闭环),本需求基于已有笔记生成剧集脚本;否则用户的访谈内容无法转化为对外可消费的产物。"
+    acceptance: "Given 存在可用 notes,When POST /api/podcast/episodes,Then 返回 200 并生成含脚本的剧集;Given 系统当前无任何 notes,When 同请求,Then 返回 422 {error:\"No notes are available for podcast generation.\"};Given 请求引用的 searchBriefId/themeId/knowledgeDebtId 不存在,When 同请求,Then 返回 422 指明缺失的实体而非静默忽略;Given 生产鉴权开启且 token 缺失,When 同请求,Then 全局守卫先返回 401。"
+    expected_locations: ["apps/api/src/routes/podcast.ts", "src/domain/podcast.ts"]
+
+  - id: REQ-PODCAST-SYNTHESIZE
+    why: "为了让播客剧集真正可听(而非只有文本脚本),本需求对已存在的剧集执行语音合成;否则'播客'仅停留在文字层,产品承诺的音频成果缺失。"
+    acceptance: "Given 存在的剧集 id,When POST /api/podcast/episodes/:id/synthesize,Then 返回 200 并产出/更新该剧集的音频产物引用;Given 剧集 id 不存在,When 同请求,Then 返回 404 {error:\"Episode not found.\"};Given TTS provider 未配置或合成失败,When 同请求,Then 返回非 2xx 错误并保留剧集脚本不变(不写入半截音频引用);Given 生产鉴权开启且 token 缺失,When 同请求,Then 全局守卫先返回 401。"
+    expected_locations: ["apps/api/src/routes/podcast.ts", "apps/api/src/providers/bailian-streaming-tts.ts"]
+
+  - id: REQ-VOICE-PRESET-WHITELIST
+    why: "为了避免选用在 cosyvoice-v3-plus 上根本无法合成的音色导致语音访谈静默失败,本需求把可选预设音色限定为经验证可用的白名单;否则前端会暴露不可用音色,用户选中后 TTS 直接哑火。"
+    acceptance: "Given 调用 GET /api/realtime-voice/voices,When 返回预设音色,Then 集合等于 COSYVOICE_PRESET_VOICES(当前为 longanyang、longanhuan 两项)且不含未验证音色;Given 自定义音色注册未配置(enrollment 不可用),When POST /api/realtime-voice/voices,Then 返回 503 {error:\"Voice enrollment is not configured.\"} 而非伪装成功;Given enrollment 已配置但 audioBase64 缺失,When 同请求,Then 返回 422 {error:\"audioBase64 is required.\"}。"
+    expected_locations: ["apps/api/src/voice-presets.ts", "apps/api/src/routes/realtime-voice.ts"]
+
+  - id: REQ-REALTIME-VOICE-SESSION-WEBRTC
+    why: "为了支撑实时语音专访的建链握手,本需求管理实时语音会话并在依赖未配置时明确拒绝而非假成功;否则前端会卡在一个永远不会回 answer 的握手上,用户无法感知是配置缺失。"
+    acceptance: "Given 已创建的实时语音会话且 Realtime WebRTC endpoint 已配置且提供合法 offer SDP,When POST /api/realtime-voice/sessions/:id/webrtc/answer,Then 返回 answer;Given 会话不存在,When 同请求,Then 返回 404;Given WebRTC endpoint 未配置,When 同请求,Then 返回 503 而非挂起;Given offer SDP 缺失,When 同请求,Then 返回 422 {error:\"Offer SDP is required.\"};Given 生产鉴权开启且 token 缺失,When 同请求,Then 全局守卫先返回 401。"
+    expected_locations: ["apps/api/src/routes/realtime-voice.ts"]
+
+  - id: REQ-LIVEKIT-TOKEN-GUARD
+    why: "为了让前端能加入 LiveKit 房间进行实时语音,本需求签发房间 token,并在凭据缺失时明确报 503;否则前端拿到无效 token 在客户端侧才失败,排障成本高。"
+    acceptance: "Given LiveKit 凭据已配置且 interviewSessionId 存在,When GET /api/realtime-voice/livekit-token,Then 返回可用 token;Given 指定的 interviewSessionId 不存在,When 同请求,Then 返回 404 {error:\"Interview session not found.\"};Given LiveKit 凭据未配置,When 同请求,Then 返回 503 {error:\"LiveKit credentials not configured.\"};Given 生产鉴权开启且 token 缺失,When 同请求,Then 全局守卫先返回 401。"
+    expected_locations: ["apps/api/src/routes/realtime-voice.ts", "src/realtime/livekitVoice.ts"]
+
+  - id: REQ-CASCADE-TURN-DECISION
+    why: "为了实现自然的语音轮转(知道何时该接话、何时该等、何时该附和),本需求用确定性规则对停顿+完整度+情绪状态裁决主持人动作;否则要么抢话打断用户,要么沉默冷场,语音体验崩坏。注:此为前端纯函数,不经 HTTP,无鉴权分支。"
+    acceptance: "Given silenceMs ≥ maxWait,When decideCascadeTurn,Then action=respond(安全兜底必须接话);Given silenceMs < minPause,When 同输入,Then action=wait(停顿过短不抢话);Given expressionState 为 emotional 或 circling,When 同输入,Then action=backchannel;Given turnCompleteness=ambiguous,When 同输入,Then action=uncertain(升级到 LLM endpoint);Given turnCompleteness=incomplete 且停顿处于 minPause~maxWait 之间,When 同输入,Then action=wait(句子悬空不抢答);Given turnCompleteness=complete 且停顿过阈,When 同输入,Then action=respond。"
+    expected_locations: ["src/realtime/cascadeTurnDecision.ts", "src/realtime/turnCompleteness.ts"]
+
+  - id: REQ-CORPUS-TRANSCRIBE-PROTOCOL
+    why: "为了既能转写远程音频又不被诱导去抓取任意内网/本地资源(SSRF/协议滥用),本需求把转写音频源限定为 http/https/oss 协议;否则一个 file:// 或 gopher:// URL 可能让服务读取非预期资源。"
+    acceptance: "Given 提供 http/https/oss 之一的音频 URL 或上传的音频文件,When POST /api/corpus/transcriptions,Then 进入转写流程;Given 既无音频 URL 又无上传文件,When 同请求,Then 返回 422 {error:\"Audio source URL or an uploaded audio file is required.\"};Given URL 协议不在 {http,https,oss} 内(如 file://),When 同请求,Then 返回 422 指明协议受限;Given 生产鉴权开启且 token 缺失,When 同请求,Then 全局守卫先返回 401。"
+    expected_locations: ["apps/api/src/routes/corpus.ts"]
+
+  - id: REQ-CORPUS-INSIGHTS
+    why: "为了从导入的专访语料中提炼可复用的主持改进维度,本需求要求 insights 端点对非空语料产出分析、对空语料拒绝;否则会对空输入产出无依据的'洞察'。"
+    acceptance: "Given 非空 corpus content,When POST /api/corpus/insights,Then 返回 200 并产出分析维度;Given content 为空/缺失,When 同请求,Then 返回 422 {error:\"Corpus content is required.\"};Given 生产鉴权开启且 token 缺失,When 同请求,Then 全局守卫先返回 401。"
+    expected_locations: ["apps/api/src/routes/corpus.ts"]
+
+  - id: REQ-IMPORT-DOCUMENT-LIMIT
+    why: "为了防止一次导入超大文档拖垮内存/嵌入流水线,本需求对导入正文做空值与长度上限校验;否则一个超长粘贴会触发不受控的切块与嵌入,放大成本并可能 OOM。"
+    acceptance: "Given 非空且长度 ≤ IMPORT_CONTENT_MAX_CHARS 的正文,When POST /api/import/documents,Then 切块并(在可嵌入时)生成向量后入库;Given 正文为空,When 同请求,Then 返回 422 {error:\"Document content is required.\"};Given 正文超过上限,When 同请求,Then 返回 422 指明超过字符上限且不入库;Given 切块数超过 MAX_EMBEDDED_CHUNKS,When 导入,Then 超出部分跳过嵌入并降级为关键词检索(记录跳过数)而非整体失败;Given 生产鉴权开启且 token 缺失,When 同请求,Then 全局守卫先返回 401。"
+    expected_locations: ["apps/api/src/routes/import.ts", "src/domain/import.ts"]
+
+  - id: REQ-RAG-QUERY-GROUNDED
+    why: "为了让'基于已导入资料问答'可信且可溯源,本需求要求 RAG 回答附带引用、并在无资料时给出明确指引而非编造;否则会出现没有依据的幻觉回答,违背真实性。"
+    acceptance: "Given question 非空且存在 ragChunks,When POST /api/rag/query,Then 返回 {answer, citations} 且 citations 来自检索到的 chunk;Given question 为空白,When 同请求,Then 返回 422 {error:\"question 字段不能为空。\"};Given 系统尚无任何 ragChunks,When 同请求,Then 返回固定提示 answer=\"暂无相关资料，请先导入参考文献后再提问。\" 且 citations 为空(不臆造答案);Given 嵌入客户端调用失败,When 同请求,Then 降级为关键词召回并仍返回带引用的答案(不 5xx);Given 生产鉴权开启且 token 缺失,When 同请求,Then 全局守卫先返回 401。"
+    expected_locations: ["apps/api/src/routes/rag.ts", "src/domain/vector.ts"]
+
+  - id: REQ-SYSTEM-CONFIG-PATCH-SAFE
+    why: "为了让用户能在线更新供应商密钥/参数又不至于误清空导致服务瘫痪,本需求允许部分更新但禁止把必填密钥清空;否则一次误操作会让整套 LLM/语音能力静默失效。"
+    acceptance: "Given 至少一项受支持的配置更新,When PATCH /api/system/config,Then 应用更新并返回新配置;Given 请求未包含任何受支持字段,When 同请求,Then 返回 422 {error:\"At least one supported config update is required.\"};Given 请求试图把必填密钥置空,When 同请求,Then 返回 422 指明'不能清空必填密钥：…'且保留原值;Given 生产鉴权开启且 token 缺失,When 同请求,Then 全局守卫先返回 401。"
+    expected_locations: ["apps/api/src/routes/system.ts"]
+
+  - id: REQ-PLAYBOOK-PATCH-APPLY-REVERT
+    why: "为了让'从语料学到的主持规则'能被人审后真正注入访谈引擎、且可回滚,本需求约束 PlaybookPatch 只能在正确状态机迁移(proposed→applied→reverted);否则会重复应用或回滚未应用的补丁,破坏引擎策略一致性。"
+    acceptance: "Given 一条 proposed 的 PlaybookPatch,When POST /api/playbook-patches/:id/apply,Then 变为 applied 并影响后续 buildInterviewEnginePolicy;Given 该补丁已非 proposed,When 再次 apply,Then 返回 409 {error:\"Only proposed PlaybookPatch records can be applied.\"};Given 对一条非 applied 的补丁调用 revert,When 执行,Then 返回 422 指明只能回滚已应用补丁;Given 补丁 id 不存在,When 任意操作,Then 返回 404;Given 生产鉴权开启且 token 缺失,When 任意写操作,Then 全局守卫先返回 401。"
+    expected_locations: ["apps/api/src/routes/playbook-patches.ts", "apps/api/src/routes/interview-sessions.ts"]
+
+  - id: REQ-ASSET-DECISION-CONFIRM
+    why: "为了让专访沉淀的决策资产从'草拟'安全晋级为'已确认'(供后续追踪/复盘引用),本需求要求确认是一次性的幂等晋级且失败时不留半成品;否则重复确认或写入失败会让决策状态不可信。"
+    acceptance: "Given 一条未确认的决策资产,When POST /api/assets/decisions/:id/confirm,Then 返回 200 且该资产状态变为已确认;Given 该资产已确认,When 再次 confirm,Then 返回 409 {error:\"Decision asset is already confirmed.\"};Given 资产 id 不存在,When 同请求,Then 返回 404 {error:\"Decision asset not found.\"};Given 确认写入未生效(持久化校验失败),When 同请求,Then 返回 500 {error:\"Decision asset was not confirmed.\"}而非谎报成功;Given 生产鉴权开启且 token 缺失,When 同请求,Then 全局守卫先返回 401。"
+    expected_locations: ["apps/api/src/routes/assets.ts", "src/domain/assets.ts"]
+
+  - id: REQ-REVIEWS-LIST
+    why: "为了让用户看到系统沉淀的复盘/评审条目(质量闭环的可见出口),本需求提供只读列表端点;否则复盘数据产生了却无处呈现。"
+    acceptance: "Given 系统存在复盘数据,When GET /api/reviews,Then 返回 200 且 body 为可枚举的 reviews 集合;Given 尚无任何复盘数据,When 同请求,Then 返回 200 且空集合(不 404、不报错);Given 生产鉴权开启且 token 缺失,When 同请求,Then 全局守卫先返回 401。"
+    expected_locations: ["apps/api/src/routes/reviews.ts", "src/domain/review.ts"]

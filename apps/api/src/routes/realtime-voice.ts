@@ -17,6 +17,7 @@ import {
   truncateAssistantTurn
 } from "../../../../src/domain/engine";
 import { collectAppliedPlaybookRules, collectAppliedPlaybookRuleTypes } from "../../../../src/domain/context-pack";
+import { stripSpokenAsides } from "../../../../src/domain/speech-text";
 import type {
   AiRunEvent,
   InterviewEnginePolicy,
@@ -487,7 +488,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
         let abortController = new AbortController();
 
         ws.on("message", (data: Buffer) => {
-          let msg: { type?: string; segments?: unknown; voice?: unknown };
+          let msg: { type?: string; segments?: unknown; voice?: unknown; prosody?: unknown };
           try {
             msg = JSON.parse(data.toString());
           } catch {
@@ -501,10 +502,16 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
           }
 
           if (msg.type === "speak") {
-            const segments = Array.isArray(msg.segments)
+            const segments = (Array.isArray(msg.segments)
               ? msg.segments.filter((s): s is string => typeof s === "string")
-              : [];
+              : [])
+              // Defense-in-depth: strip （…） manner/stage-direction asides server-side too, so
+              // they are never synthesized regardless of which client sent the text (the cascade
+              // client already strips, but any other caller is covered here). Drop emptied segments.
+              .map((segment) => stripSpokenAsides(segment))
+              .filter((segment) => segment.length > 0);
             const voice = normalizeCosyVoice(msg.voice);
+            const prosody = normalizeProsody(msg.prosody);
 
             // Abort any prior in-flight synthesis before starting a new one
             abortController.abort();
@@ -520,7 +527,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
 
             ttsClient
               .synthesizeStream(
-                { segments, voice },
+                { segments, voice, prosody },
                 {
                   onAudio: (chunk) => {
                     if (ws.readyState === WebSocket.OPEN) {
@@ -803,6 +810,20 @@ function normalizeCosyVoice(value: unknown): string | undefined {
   const v = value.trim();
   if (!v || TTS_SEMANTIC_ALIASES.has(v)) return undefined;
   return v;
+}
+
+// The prosody comes from the browser, so clamp it to a safe range before forwarding to
+// CosyVoice — a bad value must not produce cartoonish or rejected synthesis.
+function normalizeProsody(value: unknown): { rate: number; pitch: number; volume: number } | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const v = value as { rate?: unknown; pitch?: unknown; volume?: unknown };
+  const num = (x: unknown, lo: number, hi: number, fallback: number) =>
+    typeof x === "number" && Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : fallback;
+  return {
+    rate: num(v.rate, 0.5, 2, 1),
+    pitch: num(v.pitch, 0.5, 2, 1),
+    volume: num(v.volume, 1, 100, 50)
+  };
 }
 
 function getSessionId(params: unknown) {

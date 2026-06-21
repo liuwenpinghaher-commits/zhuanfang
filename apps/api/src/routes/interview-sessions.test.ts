@@ -4,9 +4,126 @@ import { registerInterviewSessionRoutes } from "./interview-sessions";
 import { createInMemoryProductStateRepository } from "../product-state-repository";
 import { createLlmBudget } from "../llm-budget";
 import { createInitialProductState } from "../../../../src/domain/engine";
+import { extractAnchor } from "../../../../src/domain/utils";
 import Fastify from "fastify";
 
 describe("interview-sessions routes", () => {
+  // The character model emits （神态/动作）stage-direction asides to convey manner. Those must
+  // NOT appear in the stored question text (the transcript / finalize / memory should read as
+  // clean words like a real 张小珺 interview); the manner is preserved as `prosody` on the turn
+  // so the voice path can still speak it expressively.
+  it("/turns: strips （…）asides from the stored assistant question and keeps the manner as prosody", async () => {
+    const mockInterviewClient = {
+      createAssistantTurn: vi.fn(async () => ({
+        providerId: "bailian-character" as const,
+        model: "test-model",
+        content: "你怎么看这件事？（身体微倾，表现出好奇）能展开说说吗？",
+        intent: "百炼角色扮演追问" as const
+      }))
+    };
+    const repo = createInMemoryProductStateRepository();
+    const server = Fastify({ logger: false });
+    await registerInterviewSessionRoutes(server, repo, { bailianInterviewClient: mockInterviewClient });
+    const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "daily" } })).json();
+    const id = created.session.id;
+    const res = await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/turns`, payload: { content: "我有点纠结。" } });
+    const sess = res.json().session;
+    const lastAssistant = [...sess.turns].reverse().find((t: { role: string }) => t.role === "assistant") as
+      | { role: string; content: string; prosody?: { rate: number; pitch: number; volume: number } }
+      | undefined;
+    expect(lastAssistant).toBeDefined();
+    // stored question is clean — no parenthetical stage directions
+    expect(lastAssistant!.content).not.toContain("（");
+    expect(lastAssistant!.content).toContain("你怎么看这件事？");
+    expect(lastAssistant!.content).toContain("能展开说说吗？");
+    // manner preserved as prosody (好奇 → faster + higher pitch)
+    expect(lastAssistant!.prosody).toBeDefined();
+    expect(lastAssistant!.prosody!.pitch).toBeGreaterThan(1);
+    await server.close();
+  });
+
+  // REQ-INTERVIEW-TURN-NEXT-QUESTION (REQ-B): the generated host turn must observably
+  // RESPOND to the user's latest utterance — not just return any 200. A status-only
+  // assertion would pass even if the engine emitted a fixed, input-independent question.
+  // The deterministic engine extracts an anchor from the user text and embeds it in the
+  // next question; we assert that anchor (a) is non-trivial (not the empty-input fallback)
+  // and (b) appears verbatim in the generated host turn.
+  it("/turns: deterministic next question references the user's latest input (not a fixed prompt)", async () => {
+    const server = buildApiServer({ env: {} }); // no key → deterministic offline engine
+    const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "daily" } })).json();
+    const id = created.session.id;
+    const content = "公司里那条审批链路每次都卡在中间这件事让我特别烦躁";
+    const anchor = extractAnchor(content);
+    expect(anchor).not.toBe("这个问题"); // the empty/degenerate-input fallback anchor
+
+    const res = await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/turns`, payload: { content } });
+    expect(res.statusCode).toBe(200);
+    const session = res.json().session;
+    const lastAssistant = [...session.turns].reverse().find((t: { role: string }) => t.role === "assistant") as
+      | { role: string; content: string }
+      | undefined;
+    expect(lastAssistant).toBeDefined();
+    expect(lastAssistant!.content.length).toBeGreaterThan(0);
+    // the host turn quotes the anchor lifted from THIS user's input → demonstrably responsive
+    expect(lastAssistant!.content).toContain(anchor);
+    await server.close();
+  });
+
+  it("/turns: empty content is rejected 422 and appends no turn", async () => {
+    const server = buildApiServer({ env: {} });
+    const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "daily" } })).json();
+    const id = created.session.id;
+    const before = created.session.turns.length;
+    const res = await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/turns`, payload: { content: "   " } });
+    expect(res.statusCode).toBe(422);
+    const after = (await server.inject({ method: "GET", url: `/api/interview-sessions/${id}` })).json().session;
+    expect(after.turns.length).toBe(before);
+    await server.close();
+  });
+
+  it("/turns: unknown session id returns 404", async () => {
+    const server = buildApiServer({ env: {} });
+    const res = await server.inject({ method: "POST", url: "/api/interview-sessions/does-not-exist/turns", payload: { content: "hi" } });
+    expect(res.statusCode).toBe(404);
+    await server.close();
+  });
+
+  // /turns is a read-modify-write on the global state with an await window (embedding /
+  // LLM). Two concurrent turns on the SAME session must NOT clobber each other: without
+  // per-session serialization both read the same base snapshot and the second replaceState
+  // overwrites the first → a silently dropped user turn. We force the interleave with an
+  // embedding client that awaits, then assert BOTH user turns survived.
+  it("/turns: two concurrent same-session turns both persist (no lost-update)", async () => {
+    const slowEmbeddingClient = {
+      embed: vi.fn(async (_texts: string[]) => {
+        await new Promise((r) => setTimeout(r, 25)); // hold the await window open for interleave
+        return [[0.1, 0.2, 0.3]];
+      })
+    };
+    const repo = createInMemoryProductStateRepository();
+    const server = Fastify({ logger: false });
+    await registerInterviewSessionRoutes(server, repo, { embeddingClient: slowEmbeddingClient as never });
+
+    const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "daily" } })).json();
+    const id = created.session.id;
+    const userTurnsBefore = created.session.turns.filter((t: { role: string }) => t.role === "user").length;
+
+    // fire both turns WITHOUT awaiting the first → they race through the embed await window
+    const [a, b] = await Promise.all([
+      server.inject({ method: "POST", url: `/api/interview-sessions/${id}/turns`, payload: { content: "并发回合甲：审批链路卡在中间" } }),
+      server.inject({ method: "POST", url: `/api/interview-sessions/${id}/turns`, payload: { content: "并发回合乙：交付节奏总是延期" } })
+    ]);
+    expect(a.statusCode).toBe(200);
+    expect(b.statusCode).toBe(200);
+
+    const after = (await server.inject({ method: "GET", url: `/api/interview-sessions/${id}` })).json().session;
+    const userContents = after.turns.filter((t: { role: string }) => t.role === "user").map((t: { content: string }) => t.content);
+    // both turns recorded — neither overwrote the other
+    expect(userContents.length).toBe(userTurnsBefore + 2);
+    expect(userContents).toContain("并发回合甲：审批链路卡在中间");
+    expect(userContents).toContain("并发回合乙：交付节奏总是延期");
+    await server.close();
+  });
   it("record-turn appends a turn to the server session without generating an assistant reply", async () => {
     const server = buildApiServer({ env: {} }); // no key -> no real LLM
     const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "decision" } })).json();

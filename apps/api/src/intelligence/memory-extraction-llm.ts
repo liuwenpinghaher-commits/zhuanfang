@@ -6,7 +6,7 @@ import { withMemoryCandidateReview } from "../../../../src/domain/memoryReview";
 import type { MemoryCandidate } from "../../../../src/domain/types";
 import { makeId } from "../../../../src/domain/utils";
 import type { BailianChatClient } from "../providers/bailian";
-import { asArray, asObject, asString, parseJsonObject } from "./llm-json";
+import { asArray, asObject, asString, parseJsonObjectLoose } from "./llm-json";
 
 const SYSTEM_PROMPT = [
   "你从用户导入的资料里抽取值得长期记住的【候选记忆】：稳定的事实、明确的观点、决策、未解的问题/知识债。",
@@ -38,10 +38,13 @@ export async function extractCandidateMemories(
     ],
     responseFormat: "json",
     temperature: 0.3,
-    maxTokens: 1500
+    maxTokens: 3000
   });
 
-  const parsed = parseJsonObject(raw);
+  const parsed = parseJsonObjectLoose(raw);
+  if (!parsed) {
+    throw new Error("memory extraction LLM returned unparseable JSON");
+  }
   return asArray(parsed.candidates)
     .map((item) => {
       const obj = asObject(item);

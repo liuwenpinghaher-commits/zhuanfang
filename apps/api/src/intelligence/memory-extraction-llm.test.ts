@@ -108,6 +108,6 @@ describe("extractCandidateMemories", () => {
   it("array top-level (not an object) → throws (parseJsonObject requires object)", async () => {
     await expect(
       extractCandidateMemories("测试", "内容", mockChat("[1,2,3]"))
-    ).rejects.toThrow("Expected a JSON object");
+    ).rejects.toThrow("unparseable JSON");
   });
 });

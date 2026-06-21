@@ -6,7 +6,7 @@
 import { analyzeImportedInterview, sanitizeExternalMaterialBlock, type CorpusLlmAnalysis } from "../../../../src/domain/engine";
 import type { CorpusImportInput, CorpusInsight, ProductState } from "../../../../src/domain/types";
 import type { BailianChatClient } from "../providers/bailian";
-import { asObject, asString, asStringArray, parseJsonObject } from "./llm-json";
+import { asObject, asString, asStringArray, parseJsonObjectLoose} from "./llm-json";
 
 const IMPACTS = new Set(["low", "medium", "high"]);
 
@@ -67,7 +67,10 @@ export async function analyzeCorpusWithLlm(
 }
 
 function parseCorpusAnalysis(raw: string): CorpusLlmAnalysis {
-  const json = parseJsonObject(raw);
+  const json = parseJsonObjectLoose(raw);
+  if (!json) {
+    throw new Error("LLM returned unparseable JSON");
+  }
 
   const dimensions = asArray(json.dimensions)
     .map((item) => {

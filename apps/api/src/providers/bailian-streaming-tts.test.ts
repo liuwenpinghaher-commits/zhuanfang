@@ -87,6 +87,36 @@ function parseSent(inst: MockWsInstance) {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 describe("createBailianStreamingTtsClient", () => {
+  it("threads prosody (rate/pitch/volume) into the run-task parameters when provided", async () => {
+    const { factory, instances } = buildMockWsFactory();
+    const client = createBailianStreamingTtsClient({ apiKey: "test-key", wsFactory: factory });
+    void client.synthesizeStream(
+      { segments: ["你认同这个顺序吗？"], prosody: { rate: 0.9, pitch: 0.96, volume: 46 } },
+      { onAudio: vi.fn(), onComplete: vi.fn() }
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    const [inst] = instances;
+    inst.handlers.onOpen!();
+    await new Promise((r) => setTimeout(r, 0));
+    const runTask = parseSent(inst).find((m) => m.header?.action === "run-task");
+    expect(runTask.payload.parameters.rate).toBe(0.9);
+    expect(runTask.payload.parameters.pitch).toBe(0.96);
+    expect(runTask.payload.parameters.volume).toBe(46);
+  });
+
+  it("omits prosody params entirely when none is provided (default delivery)", async () => {
+    const { factory, instances } = buildMockWsFactory();
+    const client = createBailianStreamingTtsClient({ apiKey: "test-key", wsFactory: factory });
+    void client.synthesizeStream({ segments: ["你好"] }, { onAudio: vi.fn(), onComplete: vi.fn() });
+    await new Promise((r) => setTimeout(r, 0));
+    const [inst] = instances;
+    inst.handlers.onOpen!();
+    await new Promise((r) => setTimeout(r, 0));
+    const runTask = parseSent(inst).find((m) => m.header?.action === "run-task");
+    expect(runTask.payload.parameters.rate).toBeUndefined();
+    expect(runTask.payload.parameters.pitch).toBeUndefined();
+  });
+
   it("sends run-task then continue-task per segment then finish-task, fires onAudio, calls onComplete on task-finished", async () => {
     const { factory, instances } = buildMockWsFactory();
     const client = createBailianStreamingTtsClient({

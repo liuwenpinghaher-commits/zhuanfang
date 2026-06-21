@@ -1,5 +1,6 @@
 import { createInitialProductState } from "./engine";
 import type { AuditEvent, ProductState } from "./types";
+import { withAuditEvent } from "./utils";
 
 export type PrivacyInventoryCategoryId =
   | "profile"
@@ -134,6 +135,84 @@ export function buildPrivacyReport(state: ProductState, generatedAt = new Date()
       "重置演示数据会恢复初始样例，不等同于隐私清空；生产删除应使用彻底清空。"
     ]
   };
+}
+
+// Selective deletion: a user can purge one data category at a time instead of only the
+// all-or-nothing wipe. Scope ids are a subset of the privacy-inventory category ids so the
+// deletedCount we return is exactly what buildPrivacyReport attributes to that category —
+// the count is verifiable against the same source of truth the UI shows.
+export type PurgeScope = "all" | "profile" | "interviews" | "assets";
+
+const EMPTY_PROFILE: ProductState["profile"] = {
+  name: "",
+  role: "未设置",
+  industry: "未设置",
+  currentFocus: "",
+  longTermGoal: "",
+  preferredStrength: "standard",
+  explicitBoundaries: [],
+  confirmedMemories: [],
+  inferredMemories: []
+};
+
+export interface ScopedPurgeResult {
+  nextState: ProductState;
+  deletedScope: PurgeScope;
+  deletedCount: number;
+}
+
+/**
+ * Hard-delete the personal data in a single scope (or everything for "all"). Returns the
+ * resulting state plus deletedCount — the number of personal records removed in that scope,
+ * counted from buildPrivacyReport before the wipe. Idempotent: purging an already-empty
+ * scope removes nothing and returns deletedCount 0 (never throws on empty input).
+ */
+export function createScopedPurge(
+  currentState: ProductState,
+  scope: PurgeScope,
+  createdAt = new Date().toISOString()
+): ScopedPurgeResult {
+  if (scope === "all") {
+    const report = buildPrivacyReport(currentState, createdAt);
+    const deletedCount = report.inventory
+      .filter((item) => item.id !== "operations")
+      .reduce((total, item) => total + item.count, 0);
+    return { nextState: createPurgedProductState(currentState, createdAt), deletedScope: "all", deletedCount };
+  }
+
+  const categoryId = scope; // "profile" | "interviews" | "assets" map 1:1 to inventory ids
+  const deletedCount =
+    buildPrivacyReport(currentState, createdAt).inventory.find((item) => item.id === categoryId)?.count ?? 0;
+
+  let next: ProductState;
+  switch (scope) {
+    case "profile":
+      next = { ...currentState, profile: { ...EMPTY_PROFILE } };
+      break;
+    case "interviews":
+      next = { ...currentState, sessions: [], notes: [] };
+      break;
+    case "assets":
+      next = { ...currentState, points: [], questions: [], decisions: [], debts: [], themes: [] };
+      break;
+  }
+
+  const labelByScope: Record<Exclude<PurgeScope, "all">, string> = {
+    profile: "显性档案",
+    interviews: "专访与双轨笔记",
+    assets: "观点/问题/决策/知识债/主题"
+  };
+  const audited = withAuditEvent(next, {
+    type: "privacy_data_purged",
+    label: `已按范围清空：${labelByScope[scope]}`,
+    detail: `用户执行范围清空 scope=${scope}，移除 ${deletedCount} 条个人记录；其余范围与 provider 配置保留。`,
+    severity: "warning",
+    entityType: "privacy_operation",
+    entityId: `local-product-state:${scope}`,
+    createdAt
+  });
+
+  return { nextState: audited, deletedScope: scope, deletedCount };
 }
 
 export function createPurgedProductState(currentState: ProductState, createdAt = new Date().toISOString()): ProductState {

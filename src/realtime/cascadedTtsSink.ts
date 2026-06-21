@@ -23,6 +23,7 @@
  *   between chunks the way onended-chaining produces.
  */
 import type { TtsSink } from "./cascadedPipeline";
+import type { SpeechProsody } from "../domain/speech-text";
 
 const DEFAULT_SAMPLE_RATE = 24000;
 // Pre-roll before the first chunk plays. Gives the audio thread headroom so the
@@ -141,7 +142,7 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
   }
 
   return {
-    async speak(segments: string[], speakVoice?: string): Promise<void> {
+    async speak(segments: string[], speakVoice?: string, prosody?: SpeechProsody): Promise<void> {
       // Fresh utterance: reset scheduling + decode state.
       stopped = false;
       nextStartTime = 0;
@@ -229,7 +230,8 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
           JSON.stringify({
             type: "speak",
             segments,
-            ...(speakVoice ?? voice ? { voice: speakVoice ?? voice } : {})
+            ...(speakVoice ?? voice ? { voice: speakVoice ?? voice } : {}),
+            ...(prosody ? { prosody } : {})
           })
         );
       });

@@ -158,7 +158,7 @@ PODCAST_AUTO_RENDER_ON_CREATE=auto
 
 `CORPUS_AUDIO_MAX_BYTES` 控制本地语料音频单文件上传上限，默认 50MB；超过上限时 Product API 返回 413，不会写入本地对象目录。
 
-`CORPUS_AUDIO_PUBLIC_BASE_URL` 是本地语料音频的公开访问前缀，例如 `https://api.example.com/api/corpus/audio-files`；配置后，上传得到的 `local-object://corpus-audio/...` 可以映射成公开 URL 交给百炼 SenseVoice 自动转写。未配置时仍保留可编辑手工转写稿。
+`CORPUS_AUDIO_PUBLIC_BASE_URL`（保留位，尚未启用）：本意是把上传得到的 `local-object://corpus-audio/...` 映射成公开 URL 交给百炼 SenseVoice 自动转写，但当前代码尚未读取该变量，也未提供 `/api/corpus/audio-files` 静态服务路由。**本地上传的音频目前一律走可编辑手工转写稿降级**；要自动转写，请在 `/api/corpus/transcriptions` 直接提供已可公网访问的 http/https/oss 音频 URL。
 
 `HOST` / `PORT` 控制 Product API 监听地址；`VITE_PRODUCT_API_BASE_URL` 控制浏览器前端连接哪个 Product API；`PRODUCT_API_HEALTH_URL` 和 `PRODUCT_WEB_URL` 用于 `npm run dev:full` 判断是否复用已有服务。
 
@@ -204,10 +204,12 @@ React UI
 
 ## 验证状态
 
-最近一次已通过（2026-06-13）：
+最近一次（2026-06-21）：
 
-- `npx tsc --noEmit`（零错误）
-- `npx vitest run`（33 文件 / 188 用例 全部通过）
-- `npx playwright test`（14 用例 全部通过）
-- `npm run build`（dist 产物生成）
-- `git diff --check`
+- `npm run typecheck`（`tsc -b` + API 工程，零错误）
+- `npx vitest run`（84 文件 / 797 用例通过，1 个需真实 API key 的 `*.real.test.ts` 跳过）
+
+未在本次验证中运行（按需自查）：
+
+- `npx playwright test`（端到端）
+- `npm run build`（dist 产物）

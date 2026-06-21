@@ -119,7 +119,7 @@ describe("synthesizeSearchInsights", () => {
   it("JSON array at top level → throws (parseJsonObject requires object)", async () => {
     await expect(
       synthesizeSearchInsights("主题", mockSources, mockChat("[1,2,3]"))
-    ).rejects.toThrow("Expected a JSON object");
+    ).rejects.toThrow("unparseable JSON");
   });
 
   it("facts is not an array → treated as empty → throws", async () => {

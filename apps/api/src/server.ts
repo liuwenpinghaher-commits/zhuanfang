@@ -95,6 +95,8 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   const runtimeEnv = options.env ?? process.env;
   registerCors(server, runtimeEnv);
   registerProductionAuth(server, runtimeEnv);
+  registerWriteSerialization(server);
+  registerErrorHandler(server);
   const productStateRepository = options.productStateRepository ?? createDefaultProductStateRepository(options.productStateDbPath);
   const providerClients: ProviderClients = {};
   const refreshProviderClients = () => refreshRuntimeProviderClients(providerClients, runtimeEnv, options);
@@ -268,6 +270,69 @@ function refreshRuntimeProviderClients(
   providerClients.streamingTtsClient =
     options.streamingTtsClient ??
     (ttsApiKey ? createBailianStreamingTtsClient({ apiKey: ttsApiKey }) : undefined);
+}
+
+// Global write serialization. Every mutating endpoint is a read-modify-write on the single
+// shared ProductState with an await window in the middle (LLM / embedding / provider round-
+// trips), and only PUT /api/state carries an optimistic-lock check. Without serialization two
+// concurrent writes both read the same base snapshot and the second replaceState clobbers the
+// first — a silently dropped session / memory candidate / audit event. This single chain makes
+// every mutating request run one-at-a-time end-to-end. For a single-user local tool the
+// throughput cost is negligible and it eliminates the lost-update class entirely (including the
+// background research scheduler racing a user action). Reads (GET/HEAD/OPTIONS) are not gated.
+const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+function registerWriteSerialization(server: ReturnType<typeof Fastify>) {
+  let writeQueue: Promise<void> = Promise.resolve();
+  const releases = new WeakMap<FastifyRequest, () => void>();
+
+  server.addHook("preHandler", async (request: FastifyRequest) => {
+    if (!MUTATING_METHODS.has(request.method)) {
+      return;
+    }
+    let release!: () => void;
+    const slot = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const prior = writeQueue;
+    writeQueue = writeQueue.then(() => slot); // enqueue our slot synchronously, in arrival order
+    releases.set(request, release);
+    await prior; // block here until every earlier write has released
+  });
+
+  const release = async (request: FastifyRequest) => {
+    const fn = releases.get(request);
+    if (fn) {
+      releases.delete(request);
+      fn();
+    }
+  };
+  server.addHook("onResponse", release);
+  server.addHook("onError", async (request: FastifyRequest, _reply: FastifyReply, _err: Error) => {
+    await release(request);
+  });
+}
+
+// Global error handler. Routes that validate return explicit 4xx via reply.code(...).send(...)
+// and never reach here; this catches UNCAUGHT throws. Client errors (statusCode 4xx, e.g. a
+// payload-too-large) keep their status + message, but server faults (5xx / no statusCode) are
+// logged in full server-side and replaced with a generic body so internal error text, stack
+// hints, or secrets never reach the client (CLAUDE.md: never leak internal errors).
+function registerErrorHandler(server: ReturnType<typeof Fastify>) {
+  server.setErrorHandler((error: Error & { statusCode?: number }, request: FastifyRequest, reply: FastifyReply) => {
+    const statusCode = typeof error.statusCode === "number" ? error.statusCode : 500;
+    if (statusCode >= 400 && statusCode < 500) {
+      return reply.code(statusCode).send({ error: error.message });
+    }
+    console.error(
+      JSON.stringify({
+        event: "unhandled_server_error",
+        method: request.method,
+        url: request.url,
+        error: error instanceof Error ? error.message : String(error)
+      })
+    );
+    return reply.code(500).send({ error: "Internal Server Error" });
+  });
 }
 
 function registerCors(server: ReturnType<typeof Fastify>, env: Record<string, string | undefined>) {

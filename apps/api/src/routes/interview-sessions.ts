@@ -22,6 +22,7 @@ import type {
   ProductState
 } from "../../../../src/domain/types";
 import { makeId, nowIso, withAiRunEvent, withAuditEvent } from "../../../../src/domain/utils";
+import { stripSpokenAsides, deriveSpeechProsody } from "../../../../src/domain/speech-text";
 import { buildRealtimeVoiceInstructions } from "../../../../src/domain/voice-instructions";
 import { finalizeSessionWithLlm } from "../intelligence/finalize-llm";
 import { extractCandidateMemories, toSessionMemoryCandidates } from "../intelligence/memory-extraction-llm";
@@ -71,6 +72,29 @@ export async function registerInterviewSessionRoutes(
 ) {
   const budget = options.llmBudget ?? createLlmBudget();
 
+  // Per-session write serialization. /turns is a read-modify-write on the global state with
+  // an await window (embedding + LLM round-trip) in the middle, so two concurrent turns on the
+  // SAME session would otherwise both read the same base snapshot and the second replaceState
+  // would clobber the first — silently dropping a user turn. Chaining each session's critical
+  // sections through a promise keyed by session id forces them to run one-at-a-time. The chain
+  // self-evicts when it drains, so the map stays bounded (no per-session leak).
+  const turnLocks = new Map<string, Promise<unknown>>();
+  function runExclusive<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const prev = turnLocks.get(key) ?? Promise.resolve();
+    const result = prev.then(task, task); // run after prev settles, success OR failure
+    const chain = result.then(
+      () => undefined,
+      () => undefined
+    );
+    turnLocks.set(key, chain);
+    void chain.then(() => {
+      if (turnLocks.get(key) === chain) {
+        turnLocks.delete(key);
+      }
+    });
+    return result;
+  }
+
   server.post("/api/interview-sessions", async (request) => {
     const state = repository.getState();
     const payload = normalizeObject<CreateSessionPayload>(request.body);
@@ -105,7 +129,8 @@ export async function registerInterviewSessionRoutes(
     return { session };
   });
 
-  server.post("/api/interview-sessions/:id/turns", async (request, reply) => {
+  server.post("/api/interview-sessions/:id/turns", (request, reply) =>
+    runExclusive(getSessionId(request.params) ?? "", async () => {
     const state = repository.getState();
     const session = findSession(state, getSessionId(request.params));
     if (!session) {
@@ -155,7 +180,12 @@ export async function registerInterviewSessionRoutes(
       allowLlm ? options.bailianInterviewClient : undefined,
       state.memoryCorrections
     );
-    const { nextSession, preSignals, degradedReason } = updatedSession;
+    const { nextSession: rawNextSession, preSignals, degradedReason } = updatedSession;
+    // The character model conveys manner via （…）stage-direction asides (e.g. 「（身体微倾，
+    // 表现出好奇）」). Strip them out of the stored question so the transcript / finalize / memory
+    // read as clean words like a real interview; distill the manner into `prosody` so the voice
+    // path can still deliver it expressively. Only the just-generated assistant turn is touched.
+    const nextSession = stripAsidesFromLatestAssistantTurn(rawNextSession);
     // P1-13: when the live turn LLM degraded to the deterministic engine, record an
     // aiRunEvent(degraded) alongside the existing console.warn so transparency/quality
     // reports can see it. Folded into the same state we persist below (no extra write).
@@ -192,7 +222,8 @@ export async function registerInterviewSessionRoutes(
 
     repository.replaceState(nextState);
     return { session: nextSession, state: nextState, ...(preSignals ? { preSignals } : {}) };
-  });
+    })
+  );
 
   server.post("/api/interview-sessions/:id/control", async (request, reply) => {
     const state = repository.getState();
@@ -543,6 +574,33 @@ async function finalizeInterview(
 // converted into session-sourced reviewable candidates. Budget-gated and fully
 // fail-safe: any miss (no client / budget exhausted / extraction error / empty
 // result) returns undefined so finalize falls back to the deterministic heuristic.
+// Strip （…）manner asides from the most recently generated assistant turn and keep the manner
+// as prosody. Touches only the last assistant turn (the one just produced); earlier turns and
+// all user turns are returned unchanged. A turn whose content has no asides is left as-is.
+function stripAsidesFromLatestAssistantTurn(session: InterviewSession): InterviewSession {
+  const turns = session.turns;
+  let lastAssistantIndex = -1;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    if (turns[i].role === "assistant") {
+      lastAssistantIndex = i;
+      break;
+    }
+  }
+  if (lastAssistantIndex === -1) {
+    return session;
+  }
+  const turn = turns[lastAssistantIndex];
+  const clean = stripSpokenAsides(turn.content);
+  if (clean === turn.content) {
+    return session; // no asides to strip
+  }
+  const prosody = deriveSpeechProsody(turn.content);
+  const nextTurns = turns.slice();
+  // Guard against an aside-only reply collapsing to empty — keep the original in that edge case.
+  nextTurns[lastAssistantIndex] = { ...turn, content: clean || turn.content, prosody };
+  return { ...session, turns: nextTurns };
+}
+
 async function extractSessionMemoryCandidates(
   session: InterviewSession,
   chatClient: BailianChatClient | undefined,

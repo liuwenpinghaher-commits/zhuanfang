@@ -6,7 +6,7 @@
 import { buildCognitiveRadar, buildMonthlyReview, buildYearlyReview } from "../../../../src/domain/engine";
 import type { CognitiveRadar, MonthlyReview, ProductState, YearlyReview } from "../../../../src/domain/types";
 import type { BailianChatClient } from "../providers/bailian";
-import { asObject, asString, asStringArray, parseJsonObject } from "./llm-json";
+import { asObject, asString, asStringArray, parseJsonObjectLoose} from "./llm-json";
 
 export interface ReviewsBundle {
   monthly: MonthlyReview;
@@ -44,7 +44,10 @@ export async function buildReviewsWithLlm(state: ProductState, chatClient: Baili
     temperature: 0.5
   });
 
-  const parsed = parseJsonObject(raw);
+  const parsed = parseJsonObjectLoose(raw);
+  if (!parsed) {
+    throw new Error("LLM returned unparseable JSON");
+  }
   const monthlyJson = asObject(parsed.monthly);
   const yearlyJson = asObject(parsed.yearly);
 

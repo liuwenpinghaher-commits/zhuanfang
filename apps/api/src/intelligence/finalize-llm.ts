@@ -7,6 +7,7 @@ import {
   type FinalizeContent,
   type FinalizeThemeUpsert
 } from "../../../../src/domain/engine";
+import { parseJsonObjectLoose } from "./llm-json";
 import { makeId, nowIso } from "../../../../src/domain/utils";
 import type {
   DecisionAsset,
@@ -59,7 +60,15 @@ export async function finalizeSessionWithLlm(
       { role: "user", content: buildFinalizePrompt(state, session) }
     ],
     responseFormat: "json",
-    temperature: 0.4
+    temperature: 0.4,
+    // A rich 20K-char interview produces a large finalize JSON (note + points + questions +
+    // decisions + debts + themes, each with quotes/evidence). The client default of 2048 tokens
+    // truncates it mid-object → invalid JSON → degrade to a no-asset light record. 5000 gives
+    // ample room (a full asset set is ~3000 tokens); the loose parser salvages the rest.
+    maxTokens: 5000,
+    // ...and generating that much over a dense 20K transcript takes well over the 60s default
+    // for technical guests — which timed out → aborted → degrade. Allow up to 3 min.
+    timeoutMs: 180000
   });
 
   const parsed = parseFinalizeJson(raw, session);
@@ -112,7 +121,13 @@ function buildFinalizePrompt(state: ProductState, session: InterviewSession): st
 }
 
 function parseFinalizeJson(raw: string, session: InterviewSession): ParsedFinalize {
-  const json = JSON.parse(stripCodeFences(raw)) as Record<string, unknown>;
+  // Tolerant parse: if the model truncated the JSON (despite the raised token cap), salvage
+  // the assets it DID emit instead of throwing and degrading the whole finalize to a no-asset
+  // light record.
+  const json = parseJsonObjectLoose(raw);
+  if (!json) {
+    throw new Error("finalize LLM returned unparseable JSON");
+  }
 
   const summary = asNonEmptyString(json.summary);
   const saidTrack = asStringArray(json.saidTrack);

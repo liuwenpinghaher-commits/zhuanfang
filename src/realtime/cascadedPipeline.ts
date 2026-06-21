@@ -12,6 +12,7 @@
  */
 
 import type { ExpressionState, InteractionPreSignals } from "../domain/types";
+import { stripSpokenAsides, deriveSpeechProsody, type SpeechProsody } from "../domain/speech-text";
 import { decideCascadeTurn } from "./cascadeTurnDecision";
 import { assessTurnCompleteness, type Completeness } from "./turnCompleteness";
 import { createBackchannelPicker } from "./backchannel";
@@ -68,7 +69,7 @@ export interface TtsSink {
    * Speak a list of sentence segments in order.
    * Resolves when all audio is done (or immediately for tests).
    */
-  speak(segments: string[], voice?: string): Promise<void>;
+  speak(segments: string[], voice?: string, prosody?: SpeechProsody): Promise<void>;
   /** Stop any in-progress playback immediately. */
   stop(): void;
   /**
@@ -114,7 +115,9 @@ export interface ConnectCascadedPipelineOptions {
   sendUserTurn: (
     text: string,
     signal: AbortSignal
-  ) => Promise<{ assistantText: string }>;
+    // prosody is the server-distilled manner for the assistant turn (the （…）asides are now
+    // stripped server-side, so the client can no longer derive it from assistantText).
+  ) => Promise<{ assistantText: string; prosody?: SpeechProsody }>;
   callbacks: CascadedPipelineCallbacks;
   preSignals?: InteractionPreSignals | null;
   decisionOpts?: { minPauseMs?: number; maxWaitMs?: number };
@@ -129,7 +132,7 @@ export interface ConnectCascadedPipelineOptions {
 export interface CascadedPipeline {
   startListening(openingText?: string): Promise<void>;
   updatePreSignals(next: InteractionPreSignals | null): void;
-  interrupt(): void;
+  interrupt(): { spokenTextSoFar: string };
   close(): void;
 }
 
@@ -168,6 +171,10 @@ export function connectCascadedPipeline(
   let partialTranscript = "";
   // AbortController for the active LLM call (null when not thinking)
   let activeAbort: AbortController | null = null;
+  // Text of the assistant reply actually spoken aloud so far this turn (completed sentences
+  // only). interrupt() returns it so the server can truncate the persisted assistant turn to
+  // what the guest really heard, instead of the full reply the AI never finished saying.
+  let spokenText = "";
   // Max-wait safety-net timer handle
   let maxWaitTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -346,9 +353,11 @@ export function connectCascadedPipeline(
     activeAbort = ctrl;
 
     let assistantText: string;
+    let providedProsody: SpeechProsody | undefined;
     try {
       const result = await sendUserTurn(fullTranscript, ctrl.signal);
       assistantText = result.assistantText;
+      providedProsody = result.prosody;
     } catch (err) {
       // Aborted by barge-in — normal, not an error
       if ((err as DOMException)?.name === "AbortError") {
@@ -371,7 +380,15 @@ export function connectCascadedPipeline(
     // ctrl.abort(), so ctrl.signal.aborted is the supersession signal.
     if (closed || ctrl.signal.aborted) return;
 
-    const sentences = splitSentences(assistantText);
+    // Strip （…）/(…) manner & stage-direction asides BEFORE TTS so they are never read aloud.
+    // The character model emits them to convey HOW it would speak (e.g. 「（轻笑）」), not as
+    // words to say. The transcript (onAssistantText) keeps the full text; only the spoken
+    // stream is cleaned.
+    const spokenSource = stripSpokenAsides(assistantText); // no-op if already stripped server-side
+    // Prefer the server-distilled prosody (it parsed the （…）asides before stripping them out of
+    // the stored question); fall back to deriving from the text for any path that didn't strip.
+    const prosody = providedProsody ?? deriveSpeechProsody(assistantText);
+    const sentences = splitSentences(spokenSource);
     if (sentences.length === 0) {
       // 卫生: empty reply (no terminal punctuation / pure whitespace). Previously
       // this silently dropped the whole turn — the user got no audio and no UI
@@ -398,8 +415,18 @@ export function connectCascadedPipeline(
 
     setState("speaking");
     suppressMic();
+    spokenText = ""; // set to the full spoken text ONLY if the utterance finishes uninterrupted
     try {
-      await tts.speak(sentences);
+      // ONE batch call: the TTS sink streams every sentence gaplessly off a single scheduling
+      // clock. Calling speak() per-sentence resets that clock and waits for each sentence to
+      // fully drain before requesting the next → a synthesis-latency gap between sentences
+      // (audible "断"). So we hand it all sentences at once and only track spoken text coarsely:
+      // a manual interrupt happens DURING playback, so spokenText stays "" (conservative — we
+      // never claim words we can't confirm were heard); a clean finish records the full text.
+      await tts.speak(sentences, undefined, prosody);
+      if (!closed && !ctrl.signal.aborted) {
+        spokenText = spokenSource;
+      }
     } catch {
       // TTS stopped (barge-in) — already handled; state will be "interrupted"/"listening"
     } finally {
@@ -476,6 +503,7 @@ export function connectCascadedPipeline(
       tts.stop();
       clearMaxWaitTimer();
       setState("interrupted");
+      return { spokenTextSoFar: spokenText };
     },
 
     close() {

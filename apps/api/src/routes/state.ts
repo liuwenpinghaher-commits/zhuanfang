@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { buildBackupRestoreRehearsalReport } from "../../../../src/domain/backup";
-import { buildPrivacyReport, createPurgedProductState } from "../../../../src/domain/privacy";
+import { buildPrivacyReport, createPurgedProductState, createScopedPurge, type PurgeScope } from "../../../../src/domain/privacy";
 import { normalizeProductState } from "../../../../src/domain/storage";
 import { withAuditEvent } from "../../../../src/domain/utils";
 import { purgeLocalObjectArtifactsForState } from "../local-object-artifacts";
@@ -82,27 +82,48 @@ export async function registerStateRoutes(
   server.post("/api/state/purge", async (request, reply) => {
     // P0-B: purge is irreversible (clears personal data + deletes local audio files). Require
     // the explicit confirm token from README:186 so a stray / CSRF POST can't wipe everything.
-    const body = request.body as { confirm?: unknown } | undefined;
+    const body = request.body as { confirm?: unknown; scope?: unknown } | undefined;
     if (body?.confirm !== "PURGE_PERSONAL_DATA") {
       return reply.code(422).send({
         error: "Purge requires explicit confirmation: send confirm=\"PURGE_PERSONAL_DATA\"."
       });
     }
-    const state = repository.getState();
-    const artifactPurge = purgeLocalObjectArtifactsForState(state, { env: options.env });
-    let purged = createPurgedProductState(state);
-    if (artifactPurge.referenceCount > 0) {
-      purged = withAuditEvent(purged, {
-        type: "privacy_data_purged",
-        label: "本地音频原件已删除",
-        detail: `artifactPurge：删除 ${artifactPurge.deleted}、缺失 ${artifactPurge.missing}、跳过 ${artifactPurge.skipped}（共 ${artifactPurge.uniqueFileCount} 个文件）。`,
-        severity: "warning",
-        entityType: "privacy_operation",
-        entityId: "local-object-artifacts",
-        createdAt: new Date().toISOString()
+    // Scope selects WHICH personal data to delete. Absent → "all" (the historical full wipe).
+    // An out-of-enum scope is a client error, not a silent full wipe — reject before deleting.
+    const VALID_SCOPES: PurgeScope[] = ["all", "profile", "interviews", "assets"];
+    const scope: PurgeScope = body?.scope === undefined ? "all" : (body.scope as PurgeScope);
+    if (!VALID_SCOPES.includes(scope)) {
+      return reply.code(422).send({
+        error: `Unsupported purge scope. Use one of: ${VALID_SCOPES.join(", ")}.`
       });
     }
-    const nextState = repository.replaceState(purged);
-    return { ...nextState, artifactPurge };
+
+    const state = repository.getState();
+
+    // Partial scopes don't touch on-disk audio (only interviews carry artifacts, and the
+    // historical artifact-deletion behavior is tied to the full wipe). Keep full-wipe behavior
+    // byte-for-byte (single audit event + artifact deletion) so existing restores/tests hold.
+    if (scope === "all") {
+      const { deletedCount } = createScopedPurge(state, "all");
+      const artifactPurge = purgeLocalObjectArtifactsForState(state, { env: options.env });
+      let purged = createPurgedProductState(state);
+      if (artifactPurge.referenceCount > 0) {
+        purged = withAuditEvent(purged, {
+          type: "privacy_data_purged",
+          label: "本地音频原件已删除",
+          detail: `artifactPurge：删除 ${artifactPurge.deleted}、缺失 ${artifactPurge.missing}、跳过 ${artifactPurge.skipped}（共 ${artifactPurge.uniqueFileCount} 个文件）。`,
+          severity: "warning",
+          entityType: "privacy_operation",
+          entityId: "local-object-artifacts",
+          createdAt: new Date().toISOString()
+        });
+      }
+      const nextState = repository.replaceState(purged);
+      return { ...nextState, artifactPurge, deletedScope: "all" as PurgeScope, deletedCount };
+    }
+
+    const { nextState: scopedState, deletedScope, deletedCount } = createScopedPurge(state, scope);
+    const nextState = repository.replaceState(scopedState);
+    return { ...nextState, deletedScope, deletedCount };
   });
 }

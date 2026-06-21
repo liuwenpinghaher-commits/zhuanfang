@@ -37,7 +37,7 @@ export const STREAMING_TTS_SAMPLE_RATE = 24000;
 export interface BailianStreamingTtsClient {
   /** Stream synthesis of one or more text segments; onAudio fires per binary chunk. */
   synthesizeStream(
-    input: { segments: string[]; voice?: string },
+    input: { segments: string[]; voice?: string; prosody?: { rate?: number; pitch?: number; volume?: number } },
     handlers: {
       onAudio: (chunk: ArrayBuffer | Buffer) => void;
       onComplete: () => void;
@@ -107,7 +107,7 @@ export function createBailianStreamingTtsClient(
 // ── Core implementation ───────────────────────────────────────────────────────
 
 interface SynthesizeStreamParams {
-  input: { segments: string[]; voice?: string };
+  input: { segments: string[]; voice?: string; prosody?: { rate?: number; pitch?: number; volume?: number } };
   handlers: {
     onAudio: (chunk: ArrayBuffer | Buffer) => void;
     onComplete: () => void;
@@ -125,7 +125,7 @@ interface SynthesizeStreamParams {
 
 function synthesizeStream(params: SynthesizeStreamParams): Promise<void> {
   const { input, handlers, signal, apiKey, model, defaultVoice, wsUrl, createWs, connectTimeoutMs, overallTimeoutMs } = params;
-  const { segments, voice = defaultVoice } = input;
+  const { segments, voice = defaultVoice, prosody } = input;
   const { onAudio, onComplete, onError } = handlers;
 
   return new Promise<void>((resolve, reject) => {
@@ -217,7 +217,13 @@ function synthesizeStream(params: SynthesizeStreamParams): Promise<void> {
             // frame boundaries, so per-chunk decodeAudioData drops many chunks → choppy
             // audio. Raw PCM concatenates seamlessly. (Spike: scripts/spike-tts-pcm.)
             format: "pcm",
-            sample_rate: STREAMING_TTS_SAMPLE_RATE
+            sample_rate: STREAMING_TTS_SAMPLE_RATE,
+            // Prosody control (语速/语调/音量). CosyVoice v3-plus + system voices honor these
+            // numeric params (verified: scripts/spike-tts-prosody). Driven by the reply's
+            // （…）manner asides via deriveSpeechProsody. Omitted entirely when absent.
+            ...(prosody?.rate !== undefined ? { rate: prosody.rate } : {}),
+            ...(prosody?.pitch !== undefined ? { pitch: prosody.pitch } : {}),
+            ...(prosody?.volume !== undefined ? { volume: prosody.volume } : {})
           },
           input: {}
         }

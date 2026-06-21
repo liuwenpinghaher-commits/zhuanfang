@@ -214,13 +214,11 @@ describe("connectCascadedPipeline", () => {
     asr.pushDelta("这件事情我想清楚了");
     asr.pushSpeechStopped(1000); // concluding + 1000ms → respond
 
-    // Flush the microtask queue so the async doRespond chain completes:
-    //   handleSpeechStopped (void) → doRespond → await sendUserTurn → tts.speak
-    // sendUserTurn is mocked to resolve immediately inside its Promise
-    // constructor, so two microtask ticks are enough.
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve(); // one extra for safety
+    // Flush all pending microtasks so the async doRespond chain completes:
+    //   handleSpeechStopped (void) → doRespond → await sendUserTurn → speak each sentence.
+    // The reply is now spoken sentence-by-sentence (one await per sentence) so a macrotask
+    // turn is the robust way to drain the whole chain.
+    await new Promise((r) => setTimeout(r, 0));
 
     expect(sendUserTurn.fn).toHaveBeenCalledOnce();
     expect(sendUserTurn.fn.mock.calls[0][0]).toBe("这件事情我想清楚了");
@@ -230,6 +228,58 @@ describe("connectCascadedPipeline", () => {
     expect(flat).toContain("我理解。");
     expect(flat).toContain("你继续说。");
 
+    pipeline.close();
+  });
+
+  // -------------------------------------------------------------------------
+  // 2a. interrupt() during playback reports NO spoken text. The reply is streamed to the
+  //     TTS sink as one gapless batch (per-sentence calls would gap the audio), so we can't
+  //     know how much was heard mid-utterance — we report "" rather than over-claim, and the
+  //     server truncates the persisted assistant turn conservatively.
+  // -------------------------------------------------------------------------
+  it("interrupt() during playback reports no spoken text (conservative, never over-claims)", async () => {
+    asr.setExpressionState("concluding");
+    const heldTts = {
+      segments: [] as string[][],
+      speak(segs: string[]) {
+        this.segments.push([...segs]);
+        return new Promise<void>(() => {}); // never resolves → utterance is "in progress"
+      },
+      stop() {},
+      close() {},
+    };
+    const pipeline = connectCascadedPipeline(makeOpts({ tts: heldTts as never }));
+    await pipeline.startListening();
+    asr.pushDelta("这件事情我想清楚了");
+    asr.pushSpeechStopped(1000);
+    await new Promise((r) => setTimeout(r, 0)); // now speaking (held)
+
+    const info = pipeline.interrupt();
+    expect(info.spokenTextSoFar).toBe(""); // interrupted mid-utterance → nothing confirmed heard
+    // the whole reply went to the sink in a SINGLE speak() call (gapless), not one-per-sentence
+    expect(heldTts.segments).toHaveLength(1);
+
+    pipeline.close();
+  });
+
+  // -------------------------------------------------------------------------
+  // 2c. parenthetical stage directions (（…）) must NOT be sent to TTS — they describe the
+  //     interviewer's manner, not words to speak.
+  // -------------------------------------------------------------------------
+  it("strips parenthetical stage directions before TTS (never read aloud)", async () => {
+    asr.setExpressionState("concluding");
+    const send = vi.fn(async () => ({ assistantText: "你认同这个顺序吗？（温和但明确地观察对方反应）能说说理由吗？" }));
+    const pipeline = connectCascadedPipeline(makeOpts({ sendUserTurn: send }));
+    await pipeline.startListening();
+    asr.pushDelta("嗯");
+    asr.pushSpeechStopped(1000);
+    await new Promise((r) => setTimeout(r, 0));
+
+    const spoken = tts.segments.flat().join("");
+    expect(spoken).not.toContain("温和但明确地观察对方反应");
+    expect(spoken).not.toContain("（");
+    expect(spoken).toContain("你认同这个顺序吗？");
+    expect(spoken).toContain("能说说理由吗？");
     pipeline.close();
   });
 

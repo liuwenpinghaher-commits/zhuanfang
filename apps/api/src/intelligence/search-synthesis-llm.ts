@@ -5,7 +5,7 @@
 import { sanitizeExternalSource } from "../../../../src/domain/engine";
 import type { SearchBriefInput, SourceHighlight } from "../../../../src/domain/types";
 import type { BailianChatClient } from "../providers/bailian";
-import { asObject, asString, asStringArray, parseJsonObject } from "./llm-json";
+import { asObject, asString, asStringArray, parseJsonObjectLoose} from "./llm-json";
 
 export interface SearchInsights {
   summary: string;
@@ -65,7 +65,10 @@ export async function synthesizeSearchInsights(
     temperature: 0.5
   });
 
-  const parsed = parseJsonObject(raw);
+  const parsed = parseJsonObjectLoose(raw);
+  if (!parsed) {
+    throw new Error("LLM returned unparseable JSON");
+  }
   const obj = asObject(parsed);
   const summary = asString(obj.summary);
   const facts = asStringArray(obj.facts);

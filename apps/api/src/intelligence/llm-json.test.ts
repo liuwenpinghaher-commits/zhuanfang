@@ -5,8 +5,43 @@ import {
   asString,
   asStringArray,
   parseJsonObject,
+  parseJsonObjectLoose,
   stripCodeFences
 } from "./llm-json";
+
+describe("parseJsonObjectLoose", () => {
+  it("parses valid JSON like the strict parser", () => {
+    expect(parseJsonObjectLoose('{"a":1,"b":["x"]}')).toEqual({ a: 1, b: ["x"] });
+  });
+
+  it("salvages JSON truncated inside a string value (keeps earlier fields)", () => {
+    const truncated = '{"summary":"ok","saidTrack":["第一条","第二条没说完';
+    const out = parseJsonObjectLoose(truncated);
+    expect(out).not.toBeNull();
+    expect(out!.summary).toBe("ok");
+    expect(Array.isArray(out!.saidTrack)).toBe(true);
+    expect((out!.saidTrack as string[])[0]).toBe("第一条");
+  });
+
+  it("salvages JSON truncated right after a comma (drops the dangling element)", () => {
+    const truncated = '{"summary":"ok","points":[{"title":"t1"}],';
+    const out = parseJsonObjectLoose(truncated);
+    expect(out).not.toBeNull();
+    expect(out!.summary).toBe("ok");
+    expect((out!.points as unknown[]).length).toBe(1);
+  });
+
+  it("salvages a truncated nested object (closes open braces)", () => {
+    const truncated = '{"summary":"ok","points":[{"title":"t1","content":"c1"';
+    const out = parseJsonObjectLoose(truncated);
+    expect(out).not.toBeNull();
+    expect(out!.summary).toBe("ok");
+  });
+
+  it("returns null on hopeless garbage", () => {
+    expect(parseJsonObjectLoose("not json at all <<<")).toBeNull();
+  });
+});
 
 describe("stripCodeFences", () => {
   it("strips ```json fences", () => {

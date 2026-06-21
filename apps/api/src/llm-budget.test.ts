@@ -35,4 +35,26 @@ describe("llm budget", () => {
     // session keys are bounded by an explicit reset at /end, NOT the time window
     expect(b.tryConsume("session-abc")).toBe(false);
   });
+
+  // An explicit cap of 0 means "block every LLM call" (a deliberate kill-switch), NOT
+  // "unset → use the default". Distinguishing explicit 0 from an absent/NaN config is the
+  // difference between a working kill-switch and silently allowing 200 calls per session.
+  it("rejects every call when maxCallsPerSession is explicitly 0", () => {
+    const b = createLlmBudget({ maxCallsPerSession: 0 });
+    expect(b.tryConsume("s1")).toBe(false);
+    expect(b.tryConsume("s1")).toBe(false);
+    expect(b.tryConsume("another-session")).toBe(false);
+    expect(b.tryConsume("system")).toBe(false);
+  });
+
+  it("falls back to the default cap when maxCallsPerSession is absent (NaN), not to reject-all", () => {
+    const b = createLlmBudget({}); // unset → default 200, NOT 0
+    expect(b.tryConsume("s1")).toBe(true);
+  });
+
+  it("counts an unknown sessionId from zero (first call allowed under a positive cap)", () => {
+    const b = createLlmBudget({ maxCallsPerSession: 1 });
+    expect(b.tryConsume("never-seen-before")).toBe(true);
+    expect(b.tryConsume("never-seen-before")).toBe(false);
+  });
 });

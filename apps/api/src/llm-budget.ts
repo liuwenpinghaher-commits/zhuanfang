@@ -19,7 +19,11 @@ const DEFAULT_SYSTEM_WINDOW_MS = 60 * 60 * 1000;
 
 export function createLlmBudget(opts?: { maxCallsPerSession?: number; systemWindowMs?: number }): LlmBudget {
   const raw = opts?.maxCallsPerSession ?? Number(process.env.LLM_MAX_CALLS_PER_SESSION);
-  const max = Number.isFinite(raw) && raw > 0 ? raw : 200;
+  // An explicit, finite cap >= 0 is honored verbatim — including 0, which is a deliberate
+  // kill-switch that blocks every call. Only an absent/NaN/negative (invalid) config falls
+  // back to the default 200. Collapsing 0 into "unset" would silently allow 200 calls when
+  // the operator asked for zero.
+  const max = Number.isFinite(raw) && raw >= 0 ? raw : 200;
 
   const rawWindow = opts?.systemWindowMs ?? Number(process.env.LLM_SYSTEM_WINDOW_MS);
   const systemWindowMs = Number.isFinite(rawWindow) && rawWindow > 0 ? rawWindow : DEFAULT_SYSTEM_WINDOW_MS;

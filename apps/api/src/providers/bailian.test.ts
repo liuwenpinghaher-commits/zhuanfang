@@ -159,6 +159,33 @@ describe("bailian provider client", () => {
     });
   });
 
+  it("threads the documented configurable TTS params into the synthesis request body", async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ output: { audio: { url: "https://x/a.wav", expires_at: 1 } }, request_id: "r" }),
+        { status: 200 }
+      )
+    );
+    const client = createBailianPodcastAudioClient({
+      apiKey: "test-key",
+      fetchImpl,
+      format: "wav",
+      sampleRate: 16000,
+      rate: 1.25,
+      enableMarkdownFilter: false,
+      enableAigcTag: false
+    });
+    await client.synthesize({ text: "测试可配置参数" });
+    const body = JSON.parse(getLastFetchCall(fetchImpl as FetchMock)[1]?.body as string);
+    expect(body.input).toMatchObject({
+      format: "wav",
+      sample_rate: 16000,
+      rate: 1.25,
+      enable_markdown_filter: false,
+      enable_aigc_tag: false
+    });
+  });
+
   it("stops polling when total elapsed time exceeds maxPollTotalMs even if pollAttempts allows more", async () => {
     // 用 fake 时钟注入：模拟每次调用 nowFn 时时间快进
     // 让 nowFn 第一次返回 0，之后每次返回 500ms 递增，超过 maxPollTotalMs=200ms 后轮询应终止
