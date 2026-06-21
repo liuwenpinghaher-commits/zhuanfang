@@ -807,6 +807,9 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
       return (await requestJson(`/api/sessions/${sessionId}/audio/meta`, { method: "GET" })) as SessionAudioMeta;
     },
     sessionAudioUrl(sessionId) {
+      // 用于 <audio src>。注意：原生 audio 元素无法附带 Authorization 头，因此若启用
+      // production bearer 鉴权（DEPLOYMENT_PROFILE=production），此回放会 401。本地/dev
+      // (fail-open) 正常。启用生产前需改为 ?token= 查询鉴权，或前端用 fetch+blob URL 回放。
       return `${normalizedBaseUrl}/api/sessions/${sessionId}/audio`;
     }
   };
