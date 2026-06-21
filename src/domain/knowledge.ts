@@ -1,6 +1,11 @@
-import type { InterviewTurn, KnowledgeChunk, KnowledgeSourceType, ProductState } from "./types";
-import { makeId, nowIso } from "./utils";
+import type { ChatCitation, ChatMessage, ChatSession, InterviewTurn, KnowledgeChunk, KnowledgeSourceType, ProductState } from "./types";
+import { cloneState, makeId, nowIso, withAuditEvent } from "./utils";
 import { tokenizeMemoryGraphText } from "./context-pack";
+
+/** chat 会话总数上限：每个 ProductState 最多保留的会话数，超出按 updatedAt 升序淘汰最旧。 */
+const MAX_CHAT_SESSIONS = 50;
+/** 单会话消息上限：单个会话最多保留的消息条数，超出截断最旧。 */
+const MAX_CHAT_MESSAGES = 200;
 
 /** 标题截断的字符上限：足以辨识来源，又不至于把整段正文塞进标题。 */
 const TITLE_LIMIT = 60;
@@ -167,4 +172,102 @@ export function diffIndexableSources(prev: ProductState, next: ProductState): In
   }
 
   return { changed, removed };
+}
+
+/**
+ * 新建一个空 chat 会话，unshift 进 chatSessions（最新在前）并记审计。
+ * 超 MAX_CHAT_SESSIONS 时按 updatedAt 升序淘汰最旧，保留最新 50 个。
+ * 纯函数、不可变；返回 { state, sessionId }。
+ */
+export function createChatSession(state: ProductState, title?: string): { state: ProductState; sessionId: string } {
+  const now = nowIso();
+  const sessionId = makeId("chat");
+  const session: ChatSession = {
+    id: sessionId,
+    title: title?.trim() || "新对话",
+    messages: [],
+    createdAt: now,
+    updatedAt: now
+  };
+
+  const next = cloneState(state);
+  next.chatSessions = [session, ...next.chatSessions];
+  if (next.chatSessions.length > MAX_CHAT_SESSIONS) {
+    // 按 updatedAt 升序排出最旧的，保留最新 MAX_CHAT_SESSIONS 个（保持原相对顺序）。
+    const evictIds = new Set(
+      [...next.chatSessions]
+        .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
+        .slice(0, next.chatSessions.length - MAX_CHAT_SESSIONS)
+        .map((item) => item.id)
+    );
+    next.chatSessions = next.chatSessions.filter((item) => !evictIds.has(item.id));
+  }
+
+  return {
+    state: withAuditEvent(next, {
+      type: "chat_session_created",
+      label: "对话会话已创建",
+      detail: session.title,
+      severity: "info",
+      entityType: "chat_session",
+      entityId: sessionId,
+      createdAt: now
+    }),
+    sessionId
+  };
+}
+
+/**
+ * 给指定会话追加一条消息（user / assistant），更新 updatedAt。
+ * content 去首尾空白；单会话消息超 MAX_CHAT_MESSAGES 截断最旧（保留最新 200）。
+ * 会话不存在则原样返回（引用相等）。纯函数、不可变。
+ */
+export function appendChatMessage(
+  state: ProductState,
+  sessionId: string,
+  role: "user" | "assistant",
+  content: string,
+  citations?: ChatCitation[]
+): ProductState {
+  if (!state.chatSessions.some((item) => item.id === sessionId)) {
+    return state;
+  }
+
+  const now = nowIso();
+  const message: ChatMessage = {
+    id: makeId("msg"),
+    role,
+    content: content.trim(),
+    ...(citations && citations.length ? { citations } : {}),
+    createdAt: now
+  };
+
+  const next = cloneState(state);
+  next.chatSessions = next.chatSessions.map((item) => {
+    if (item.id !== sessionId) return item;
+    const messages = [...item.messages, message];
+    return {
+      ...item,
+      messages: messages.length > MAX_CHAT_MESSAGES ? messages.slice(-MAX_CHAT_MESSAGES) : messages,
+      updatedAt: now
+    };
+  });
+
+  return next;
+}
+
+/** 改会话标题（去首尾空白）。会话不存在则该项不变。纯函数、不可变。 */
+export function renameChatSession(state: ProductState, sessionId: string, title: string): ProductState {
+  const next = cloneState(state);
+  next.chatSessions = next.chatSessions.map((item) =>
+    item.id === sessionId ? { ...item, title: title.trim(), updatedAt: nowIso() } : item
+  );
+  return next;
+}
+
+/** 删除指定会话。纯函数、不可变。 */
+export function deleteChatSession(state: ProductState, sessionId: string): ProductState {
+  const next = cloneState(state);
+  next.chatSessions = next.chatSessions.filter((item) => item.id !== sessionId);
+  return next;
 }

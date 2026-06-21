@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildKnowledgeChunks, diffIndexableSources } from "./knowledge";
+import { buildKnowledgeChunks, diffIndexableSources, createChatSession, appendChatMessage, renameChatSession, deleteChatSession } from "./knowledge";
 import { createInitialProductState } from "./engine";
 import type { InterviewTurn, MemoryRecord, ProductState } from "./types";
 
@@ -105,5 +105,37 @@ describe("diffIndexableSources", () => {
     const diff = diffIndexableSources(prev, next);
     expect(diff.changed.some((r) => (r.sourceType as string) === "material")).toBe(false);
     expect(diff.changed.some((r) => (r.sourceType as string) === "transcript")).toBe(false);
+  });
+});
+
+describe("chat 会话域函数", () => {
+  it("createChatSession 建空会话 + 审计", () => {
+    const s = createInitialProductState();
+    const { state, sessionId } = createChatSession(s, "聊聊");
+    expect(state.chatSessions).toHaveLength(1);
+    expect(state.chatSessions[0].id).toBe(sessionId);
+    expect(state.chatSessions[0].messages).toHaveLength(0);
+    expect(state.auditEvents.some((e) => e.type === "chat_session_created")).toBe(true);
+  });
+  it("appendChatMessage 追加并更新 updatedAt;会话不存在原样返回", () => {
+    const { state, sessionId } = createChatSession(createInitialProductState());
+    const next = appendChatMessage(state, sessionId, "user", "  我担心什么?  ");
+    expect(next.chatSessions[0].messages).toHaveLength(1);
+    expect(next.chatSessions[0].messages[0].role).toBe("user");
+    expect(next.chatSessions[0].messages[0].content).toBe("我担心什么?"); // trim
+    expect(appendChatMessage(state, "nope", "user", "x")).toBe(state);
+  });
+  it("rename / delete", () => {
+    const { state, sessionId } = createChatSession(createInitialProductState());
+    expect(renameChatSession(state, sessionId, "新标题").chatSessions[0].title).toBe("新标题");
+    expect(deleteChatSession(state, sessionId).chatSessions).toHaveLength(0);
+  });
+  it("超 50 会话淘汰最旧;不可变", () => {
+    let s = createInitialProductState();
+    for (let i = 0; i < 52; i++) s = createChatSession(s, `c${i}`).state;
+    expect(s.chatSessions.length).toBeLessThanOrEqual(50);
+    const before = createInitialProductState();
+    createChatSession(before);
+    expect(before.chatSessions).toHaveLength(0); // 输入不变
   });
 });
