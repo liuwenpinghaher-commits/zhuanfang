@@ -50,6 +50,9 @@ export function createSqliteAudioRepository(
   const existsOne = database.prepare("SELECT 1 FROM interview_audio WHERE session_id = ?");
   const deleteOne = database.prepare("DELETE FROM interview_audio WHERE session_id = ?");
   const deleteAllStmt = database.prepare("DELETE FROM interview_audio");
+  const selectIds = database.prepare(
+    "SELECT session_id FROM interview_audio ORDER BY created_at ASC"
+  );
 
   return {
     get(sessionId) {
@@ -90,6 +93,10 @@ export function createSqliteAudioRepository(
     },
     deleteAll() {
       deleteAllStmt.run();
+    },
+    listSessionIds() {
+      const rows = selectIds.all() as Array<Pick<AudioRow, "session_id">>;
+      return rows.map((row) => row.session_id);
     }
   };
 }

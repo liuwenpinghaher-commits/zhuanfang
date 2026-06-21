@@ -6,6 +6,7 @@ import { withAuditEvent } from "../../../../src/domain/utils";
 import { purgeLocalObjectArtifactsForState } from "../local-object-artifacts";
 import type { ProductStateRepository } from "../product-state-repository";
 import type { RawMaterialRepository } from "../raw-material-repository";
+import type { AudioRepository } from "../audio-repository";
 import type { InterviewRawMaterial } from "../../../../src/domain/types";
 
 interface StateRouteOptions {
@@ -17,6 +18,13 @@ interface StateRouteOptions {
    * working (export simply omits `rawMaterials`, purge skips the cold wipe).
    */
   rawMaterialRepository?: RawMaterialRepository;
+  /**
+   * Hot-layer audio store (recorded interview blobs). Export records which sessions have
+   * audio (`audioSessions`), and a full/interviews purge wipes it — so the privacy loop
+   * also covers recorded audio, not just transcripts. Optional so call sites without a
+   * repo keep working (export emits `[]`, purge skips the audio wipe).
+   */
+  audioRepository?: AudioRepository;
 }
 
 export async function registerStateRoutes(
@@ -25,6 +33,7 @@ export async function registerStateRoutes(
   options: StateRouteOptions = {}
 ) {
   const rawMaterialRepository = options.rawMaterialRepository;
+  const audioRepository = options.audioRepository;
   server.get("/api/state", async () => repository.getState());
   server.put("/api/state", async (request, reply) => {
     const stored = repository.getState();
@@ -53,7 +62,10 @@ export async function registerStateRoutes(
     // hot-state rehearsal report doesn't see it. Bundle it here so a downloaded export is a
     // complete backup and the matching import below can restore the cold layer too.
     const rawMaterials: InterviewRawMaterial[] = rawMaterialRepository?.list() ?? [];
-    return { ...report, rawMaterials };
+    // Audio blobs are large; the export records *which* sessions have audio (not the bytes),
+    // so an operator can see the recorded-audio footprint and reconcile it with a purge.
+    const audioSessions: string[] = audioRepository?.listSessionIds() ?? [];
+    return { ...report, rawMaterials, audioSessions };
   });
 
   // P0-2b: Import — restore a previously exported package (or a raw ProductState).
@@ -148,6 +160,9 @@ export async function registerStateRoutes(
       // Cold layer (raw-material store) holds the verbatim interview transcripts. A full wipe
       // must clear it too, otherwise the original Q&A survives the "complete" purge (Task 13).
       rawMaterialRepository?.deleteAll();
+      // Recorded audio is keyed by sessionId; a full wipe must clear it too, otherwise the
+      // original voice survives the "complete" purge (Task 4).
+      audioRepository?.deleteAll();
       return { ...nextState, artifactPurge, deletedScope: "all" as PurgeScope, deletedCount };
     }
 
@@ -157,6 +172,8 @@ export async function registerStateRoutes(
     // are keyed by sessionId and would otherwise be orphaned, so wipe the cold layer too.
     if (scope === "interviews") {
       rawMaterialRepository?.deleteAll();
+      // Recorded audio is keyed by sessionId; clearing all sessions orphans it, so wipe it too.
+      audioRepository?.deleteAll();
     }
     return { ...nextState, deletedScope, deletedCount };
   });

@@ -3,6 +3,7 @@ import { buildApiServer } from "../server";
 import { buildPrivacyReport } from "../../../../src/domain/privacy";
 import { buildBackupRestoreRehearsalReport } from "../../../../src/domain/backup";
 import { createInMemoryRawMaterialRepository } from "../raw-material-repository";
+import { createInMemoryAudioRepository } from "../audio-repository";
 import type { InterviewRawMaterial } from "../../../../src/domain/types";
 
 describe("state routes", () => {
@@ -306,6 +307,50 @@ describe("state routes", () => {
       expect(freshRepo.get("cold-session-A")).toBeDefined();
       expect(freshRepo.get("cold-session-A")?.turns.length).toBe(2);
       await freshServer.close();
+      await server.close();
+    });
+  });
+
+  describe("audio in export/purge (Task 4 — 隐私闭环)", () => {
+    it("purge(all) 清空音频", async () => {
+      const audioRepo = createInMemoryAudioRepository();
+      audioRepo.put({
+        sessionId: "a1",
+        audio: new Uint8Array([1]),
+        mime: "audio/webm",
+        byteSize: 1,
+        createdAt: "2026-06-20T00:00:00.000Z"
+      });
+      expect(audioRepo.has("a1")).toBe(true);
+
+      const server = buildApiServer({ audioRepository: audioRepo });
+      const purgeRes = await server.inject({
+        method: "POST",
+        url: "/api/state/purge",
+        payload: { confirm: "PURGE_PERSONAL_DATA" }
+      });
+      expect(purgeRes.statusCode).toBe(200);
+      // Audio wiped along with the full purge
+      expect(audioRepo.has("a1")).toBe(false);
+      await server.close();
+    });
+
+    it("export 记录有音频会话", async () => {
+      const audioRepo = createInMemoryAudioRepository();
+      audioRepo.put({
+        sessionId: "a1",
+        audio: new Uint8Array([1]),
+        mime: "audio/webm",
+        byteSize: 1,
+        createdAt: "2026-06-20T00:00:00.000Z"
+      });
+
+      const server = buildApiServer({ audioRepository: audioRepo });
+      const exportRes = await server.inject({ method: "GET", url: "/api/state/export" });
+      expect(exportRes.statusCode).toBe(200);
+      const body = exportRes.json();
+      expect(Array.isArray(body.audioSessions)).toBe(true);
+      expect(body.audioSessions).toContain("a1");
       await server.close();
     });
   });

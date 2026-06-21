@@ -6,6 +6,7 @@ export interface AudioRepository {
   put(audio: InterviewAudio): void;
   delete(sessionId: string): void;
   deleteAll(): void;
+  listSessionIds(): string[];
 }
 
 export function createInMemoryAudioRepository(): AudioRepository {
@@ -15,6 +16,7 @@ export function createInMemoryAudioRepository(): AudioRepository {
     has: (id) => store.has(id),
     put: (a) => { store.set(a.sessionId, a); },
     delete: (id) => { store.delete(id); },
-    deleteAll: () => { store.clear(); }
+    deleteAll: () => { store.clear(); },
+    listSessionIds: () => [...store.keys()]
   };
 }
