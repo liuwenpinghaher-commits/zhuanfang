@@ -5,6 +5,7 @@ import {
   Compass,
   Headphones,
   Library,
+  MessagesSquare,
   Mic,
   Play,
   Search,
@@ -76,6 +77,7 @@ import {
 import { loadProductState, productStateContentSignature, resetProductState, saveProductState } from "./domain/storage";
 import type {
   AssetStatus,
+  ChatCitation,
   CorpusImportInput,
   InterviewControlAction,
   InterviewMode,
@@ -99,6 +101,8 @@ import { ThemesView } from "./features/themes/ThemesView";
 import { TrackWorkspaceView } from "./features/track/TrackWorkspaceView";
 import { MemoryGovernanceView } from "./features/memory/MemoryGovernanceView";
 import { MaterialLibraryView } from "./features/material/MaterialLibraryView";
+import { AssetChatView } from "./features/chat/AssetChatView";
+import { deleteChatSession } from "./domain/knowledge";
 import { buildTrackWorkspace } from "./domain/timeline";
 import {
   buildNotice,
@@ -118,6 +122,7 @@ const navIconByView: Record<View, typeof Compass> = {
   podcast: Headphones,
   notes: BookOpen,
   material: Library,
+  "asset-chat": MessagesSquare,
   "my-assets": Archive,
   themes: Brain,
   memory: Brain,
@@ -205,6 +210,7 @@ export default function App() {
     "主持人：你刚才说增长很难，能不能讲一个具体时刻？\n被访者：真正困难是团队不敢暴露坏消息。\n主持人：如果反过来看，是不是机制奖励了报喜不报忧？"
   );
   const [corpusFocus, setCorpusFocus] = useState("");
+  const [chatSessionId, setChatSessionId] = useState<string | null>(null);
 
   useEffect(() => {
     saveProductState(productState);
@@ -370,6 +376,24 @@ export default function App() {
   function adoptServerState(next: ProductState) {
     lastSavedContentRef.current = productStateContentSignature(next);
     setProductState(next);
+  }
+
+  // 引用跳源（最小实现）：切到该来源类型对应的视图，并用通知给出定位提示。
+  // 不强求精确滚动高亮——把用户带到正确的视图，提示来源标题即可。
+  function handleCitationClick(citation: ChatCitation) {
+    const targetByType: Partial<Record<ChatCitation["sourceType"], View>> = {
+      note: "notes",
+      transcript: "notes",
+      memory: "memory",
+      material: "material",
+      theme: "themes",
+      point: "my-assets",
+      decision: "my-assets",
+      debt: "my-assets"
+    };
+    const target = targetByType[citation.sourceType] ?? "my-assets";
+    setView(target);
+    setNotice(buildNotice("info", "已定位来源", `${citation.title}（${citation.sourceType}）`));
   }
 
   async function importMemoryDocument(title: string, content: string) {
@@ -1858,6 +1882,27 @@ export default function App() {
             onImport={importMemoryDocument}
             onRebuildIndex={() => productApiClient.rebuildKnowledgeIndex()}
             onDeleteSource={(id) => setProductState(deleteImportSource(productState, id))}
+          />
+        )}
+        {view === "asset-chat" && (
+          <AssetChatView
+            state={productState}
+            selectedSessionId={chatSessionId}
+            onSelectChat={setChatSessionId}
+            onNewChat={() => setChatSessionId(null)}
+            onSend={async (sid, msg) => {
+              const result = await productApiClient.sendChatMessage(sid, msg);
+              adoptServerState(result.state);
+              setApiPersistenceEnabled(true);
+              setChatSessionId(result.sessionId);
+            }}
+            onDeleteChat={(id) => {
+              setProductState(deleteChatSession(productState, id));
+              if (chatSessionId === id) {
+                setChatSessionId(null);
+              }
+            }}
+            onCitationClick={handleCitationClick}
           />
         )}
         {view === "my-assets" && (

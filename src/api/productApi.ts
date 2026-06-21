@@ -5,6 +5,7 @@ import type { CapabilityTask } from "../capabilities/task";
 import type {
   AudioTranscription,
   AudioTranscriptionInput,
+  ChatCitation,
   CognitiveRadar,
   CorpusImportInput,
   CorpusInsight,
@@ -40,6 +41,16 @@ export interface ProductApiClient {
   importDocument(input: ImportDocumentRequest): Promise<ImportDocumentResponse>;
   /** Full rebuild of the server-side knowledge index. Returns how many chunks were indexed. */
   rebuildKnowledgeIndex(): Promise<{ chunkCount: number }>;
+  /**
+   * Ask the asset-grounded chat assistant. sessionId=null starts a new session;
+   * the server appends both the user message and the grounded answer, then returns
+   * the full replaced state plus the (new or existing) sessionId, the answer text
+   * and its citations. The caller adopts the returned state and selects sessionId.
+   */
+  sendChatMessage(
+    sessionId: string | null,
+    message: string
+  ): Promise<{ state: ProductState; sessionId: string; answer: string; citations: ChatCitation[] }>;
   confirmDecision(id: string): Promise<ProductState>;
   approveMemoryCandidate(id: string): Promise<ProductState>;
   rejectMemoryCandidate(id: string, reviewNote?: string): Promise<ProductState>;
@@ -517,6 +528,14 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
     },
     async rebuildKnowledgeIndex() {
       return (await requestJson("/api/knowledge/rebuild", { method: "POST" })) as { chunkCount: number };
+    },
+    async sendChatMessage(sessionId, message) {
+      const response = (await requestJson("/api/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...(sessionId ? { sessionId } : {}), message })
+      })) as { state: ProductState; sessionId: string; answer: string; citations: ChatCitation[] };
+      return { ...response, state: normalizeProductState(response.state) };
     },
     async confirmDecision(id) {
       const response = (await requestJson(`/api/assets/decisions/${id}/confirm`, { method: "POST" })) as { state: ProductState };

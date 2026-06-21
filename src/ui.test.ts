@@ -20,6 +20,7 @@ describe("ui helpers", () => {
       "themes",
       "notes",
       "material",
+      "asset-chat",
       "my-assets",
       "search",
       "memory",

@@ -9,6 +9,7 @@ export type View =
   | "podcast"
   | "notes"
   | "material"
+  | "asset-chat"
   | "my-assets"
   | "themes"
   | "memory"
@@ -85,6 +86,7 @@ export const groupedNavigation: NavigationGroup[] = [
     items: [
       { id: "notes", label: "双轨笔记" },
       { id: "material", label: "素材库" },
+      { id: "asset-chat", label: "资产对话" },
       { id: "my-assets", label: "我的资产" },
       { id: "search", label: "外部调研" },
       { id: "memory", label: "记忆" }
