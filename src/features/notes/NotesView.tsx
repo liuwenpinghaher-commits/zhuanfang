@@ -79,16 +79,19 @@ export function NotesView({
               </button>
             </div>
             {openSessionId === note.sessionId && (
-              <RawMaterialViewer
-                sessionId={note.sessionId}
-                state={state}
-                onAddAnnotation={onAddAnnotation}
-                onRemoveAnnotation={onRemoveAnnotation}
-                getRawMaterial={getRawMaterial}
-                getAudioMeta={getAudioMeta}
-                audioUrl={audioUrl}
-                getAudioBlob={getAudioBlob}
-              />
+              // record-row 是两列网格；让原始材料查看器横跨两列用满宽度，否则会被挤在左列、右侧留大片空白。
+              <div style={{ gridColumn: "1 / -1" }}>
+                <RawMaterialViewer
+                  sessionId={note.sessionId}
+                  state={state}
+                  onAddAnnotation={onAddAnnotation}
+                  onRemoveAnnotation={onRemoveAnnotation}
+                  getRawMaterial={getRawMaterial}
+                  getAudioMeta={getAudioMeta}
+                  audioUrl={audioUrl}
+                  getAudioBlob={getAudioBlob}
+                />
+              </div>
             )}
           </article>
         ))}

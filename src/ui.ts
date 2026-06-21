@@ -76,13 +76,13 @@ export const groupedNavigation: NavigationGroup[] = [
     items: [
       { id: "home", label: "今日访谈台" },
       { id: "interview", label: "实时专访" },
-      { id: "themes", label: "主题线" },
-      { id: "notes", label: "双轨笔记" }
+      { id: "themes", label: "主题线" }
     ]
   },
   {
     label: "认知资产",
     items: [
+      { id: "notes", label: "双轨笔记" },
       { id: "my-assets", label: "我的资产" },
       { id: "search", label: "外部调研" },
       { id: "memory", label: "记忆" }
