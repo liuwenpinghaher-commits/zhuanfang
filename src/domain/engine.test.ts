@@ -150,7 +150,11 @@ describe("interview business engine", () => {
 
     expect(updated.questions.length).toBe(state.questions.length + 1);
     expect(updated.questions[0].question).toBe(note.nextQuestions[0]);
-    expect(updated.questions[0].status).toBe("开放");
+    // 会后保存的回访问题必须能驱动下一次专访聚焦:findNextInterviewFocusQuestion 要求
+    // status="正在聚焦" + important + whyImportant 含"会后反馈"。否则会后反馈→续问的闭环断裂。
+    expect(updated.questions[0].status).toBe("正在聚焦");
+    expect(updated.questions[0].important).toBe(true);
+    expect(updated.questions[0].whyImportant).toContain("会后反馈");
   });
 
   it("builds cognitive radar and yearly review from product assets", () => {

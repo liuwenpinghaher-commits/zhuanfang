@@ -20,8 +20,10 @@ export function createQuestionFromNote(state: ProductState, noteId: string, next
       {
         id: makeId("question-from-note"),
         question,
-        whyImportant: `来自访谈《${note.title}》的下次回访问题。`,
-        status: "开放",
+        // "会后反馈"标记 + "正在聚焦"状态:让 findNextInterviewFocusQuestion 能选中它,
+        // 把"会后保存的回访问题"真正接进下一次专访的聚焦点(否则该续问闭环永不触发)。
+        whyImportant: `会后反馈:来自访谈《${note.title}》的下次回访问题。`,
+        status: "正在聚焦",
         appearances: 1,
         // ponytail: inherit the source note's themes instead of hardcoding the
         // seed "control" theme; empty when the note has none, theme-tagging fills later.

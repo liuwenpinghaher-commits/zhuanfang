@@ -221,8 +221,10 @@ function mapToFinalizeContent(
   // blanket-linking every asset to every theme of the session. Falls back to all themeIds
   // when nothing matches, so an asset is never orphaned (and Track stays populated).
   const attributeThemeIds = (text: string): string[] => {
+    // 阈值提到 3:两字主题名(如"控制""成长")作为子串极易在无关文本里命中,造成假阳性归属。
+    // ≥3 字才做子串归属;更短的名靠 fallback 兜底,不冒险误挂。
     const matched = themes
-      .filter((theme) => theme.name.trim().length >= 2 && text.includes(theme.name.trim()))
+      .filter((theme) => theme.name.trim().length >= 3 && text.includes(theme.name.trim()))
       .map((theme) => theme.id as string);
     return matched.length ? matched : themeIds;
   };

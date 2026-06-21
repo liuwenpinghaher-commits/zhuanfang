@@ -773,11 +773,13 @@ function collectRelevantMemories(
     .sort((a, b) => b.score - a.score)
     .map((item) => item.text);
 
-  // 2) 其余资产（笔记/观点/问题/主题）无 MemoryRecord 元数据，沿用子串排序。
+  // 2) 其余资产（笔记/观点/问题/决策/主题）无 MemoryRecord 元数据，沿用子串排序。
   const otherCandidates = [
     ...state.notes.map((note) => `${note.title}：${note.summary}`),
     ...state.points.map((point) => `${point.title}：${point.content}`),
     ...state.questions.map((question) => `${question.question}：${question.whyImportant}`),
+    // 决策是 finalize 抽出的一等资产,此前漏入语义召回 → 跨专访追问里永远看不见已沉淀的决策。
+    ...state.decisions.map((decision) => `${decision.title}：${decision.choice}`),
     ...state.themes.map((theme) => `${theme.name}：${theme.summary}`)
   ];
   const rankedOthers = rankMemoryTexts(otherCandidates, topicHint);
