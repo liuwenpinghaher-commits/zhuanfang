@@ -1,0 +1,120 @@
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import type { KnowledgeChunk } from "../../../src/domain/types";
+import type { KnowledgeIndexRepository } from "../../../apps/api/src/knowledge-index-repository";
+
+export interface SqliteKnowledgeIndexRepositoryOptions {
+  dbPath: string;
+}
+
+interface KnowledgeChunkRow {
+  id: string;
+  source_type: string;
+  source_id: string;
+  title: string | null;
+  text: string;
+  keywords_json: string | null;
+  embedding_json: string | null;
+  created_at: string;
+}
+
+function mapRow(row: KnowledgeChunkRow): KnowledgeChunk {
+  const chunk: KnowledgeChunk = {
+    id: row.id,
+    sourceType: row.source_type as KnowledgeChunk["sourceType"],
+    sourceId: row.source_id,
+    title: row.title ?? "",
+    text: row.text,
+    keywords: JSON.parse(row.keywords_json ?? "[]"),
+    createdAt: row.created_at
+  };
+  // 仅在持久化了 embedding 时挂字段，保持类型上的可选语义。
+  if (row.embedding_json !== null) {
+    chunk.embedding = JSON.parse(row.embedding_json);
+  }
+  return chunk;
+}
+
+export function createSqliteKnowledgeIndexRepository(
+  options: SqliteKnowledgeIndexRepositoryOptions
+): KnowledgeIndexRepository {
+  // ":memory:" has no directory to create; only mkdir for real file paths.
+  if (options.dbPath !== ":memory:") {
+    mkdirSync(dirname(options.dbPath), { recursive: true });
+  }
+  const database = new DatabaseSync(options.dbPath);
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS knowledge_chunks (
+      id            TEXT PRIMARY KEY,
+      source_type   TEXT NOT NULL,
+      source_id     TEXT NOT NULL,
+      title         TEXT,
+      text          TEXT NOT NULL,
+      keywords_json TEXT,
+      embedding_json TEXT,
+      created_at    TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_kc_source ON knowledge_chunks(source_type, source_id);
+  `);
+
+  const upsert = database.prepare(
+    `INSERT INTO knowledge_chunks
+       (id, source_type, source_id, title, text, keywords_json, embedding_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       source_type = excluded.source_type,
+       source_id = excluded.source_id,
+       title = excluded.title,
+       text = excluded.text,
+       keywords_json = excluded.keywords_json,
+       embedding_json = excluded.embedding_json,
+       created_at = excluded.created_at`
+  );
+  const deleteBySourceStmt = database.prepare(
+    "DELETE FROM knowledge_chunks WHERE source_type = ? AND source_id = ?"
+  );
+  const deleteAllStmt = database.prepare("DELETE FROM knowledge_chunks");
+  const selectAll = database.prepare("SELECT * FROM knowledge_chunks ORDER BY created_at ASC");
+
+  const put = (c: KnowledgeChunk): void => {
+    upsert.run(
+      c.id,
+      c.sourceType,
+      c.sourceId,
+      c.title,
+      c.text,
+      JSON.stringify(c.keywords),
+      c.embedding ? JSON.stringify(c.embedding) : null,
+      c.createdAt
+    );
+  };
+
+  return {
+    put,
+    replaceSource(sourceType, sourceId, chunks) {
+      // 单线程同步执行：DELETE 后逐条 put，事务保证原子替换。
+      database.exec("BEGIN");
+      try {
+        deleteBySourceStmt.run(sourceType, sourceId);
+        for (const c of chunks) {
+          put(c);
+        }
+        database.exec("COMMIT");
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    },
+    deleteBySource(sourceType, sourceId) {
+      deleteBySourceStmt.run(sourceType, sourceId);
+    },
+    deleteAll() {
+      deleteAllStmt.run();
+    },
+    listAll() {
+      const rows = selectAll.all() as unknown as KnowledgeChunkRow[];
+      return rows.map(mapRow);
+    }
+  };
+}
