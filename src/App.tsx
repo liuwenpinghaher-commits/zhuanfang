@@ -47,6 +47,7 @@ import {
   updatePointStatus,
   updateQuestionStatus
 } from "./domain/engine";
+import { addAnnotation, removeAnnotation } from "./domain/raw-material";
 import { executeSearchProvider } from "./capabilities/search";
 import { createIdleCapabilityTask, failCapabilityTask, startCapabilityTask } from "./capabilities/task";
 import { productApiClient, getProductApiBaseUrl, isNetworkError, type ReviewsResponse } from "./api/productApi";
@@ -1184,6 +1185,15 @@ export default function App() {
     setProductState(markMemoryCorrection(productState, correctionText.trim()));
     setNotice(buildNotice("success", "记忆修正已保存", "后续访谈会参考这条边界。"));
     setCorrectionText("");
+  }
+
+  // 专访旁注:沿 addCorrection 模式(域函数 + setProductState → 走现有 autosave)。
+  // Task 11 会把这两个 handler 传给 RawMaterialViewer。
+  function addInterviewAnnotation(sessionId: string, turnId: string, text: string) {
+    setProductState(addAnnotation(productState, sessionId, turnId, text));
+  }
+  function removeInterviewAnnotation(id: string) {
+    setProductState(removeAnnotation(productState, id));
   }
 
   async function exportData() {

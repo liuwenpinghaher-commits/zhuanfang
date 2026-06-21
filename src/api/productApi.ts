@@ -12,6 +12,7 @@ import type {
   InteractionPreSignals,
   InterviewControlAction,
   InterviewMode,
+  InterviewRawMaterial,
   InterviewSession,
   InterviewStrength,
   MonthlyReview,
@@ -59,6 +60,12 @@ export interface ProductApiClient {
   applyInterviewControl(sessionId: string, input: ApplyInterviewControlRequest): Promise<InterviewSessionResponse>;
   endInterviewSession(sessionId: string): Promise<EndInterviewSessionResponse>;
   generateInterviewPreSignals(sessionId: string): Promise<GeneratePreSignalsResponse>;
+  /**
+   * Fetch the assembled raw-material record (evidence chain) for a session.
+   * Returns null when the backend has none yet (404) — the caller renders an
+   * empty state instead of treating it as an error.
+   */
+  getRawMaterial(sessionId: string): Promise<InterviewRawMaterial | null>;
   /**
    * 🔴-1: recompute the realtime (omni) voice model's instructions against the
    * freshest user utterance so its memory recall tracks the conversation. The client
@@ -644,6 +651,20 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
       return (await requestJson(`/api/interview-sessions/${sessionId}/pre-signals`, {
         method: "POST"
       })) as GeneratePreSignalsResponse;
+    },
+    async getRawMaterial(sessionId) {
+      // 404 is a valid "not assembled yet" answer, not an error — handle it via
+      // fetchImpl directly since requestJson would throw ApiError on any non-2xx.
+      const response = await fetchImpl(`${normalizedBaseUrl}/api/sessions/${sessionId}/raw-material`, {
+        method: "GET"
+      });
+      if (response.status === 404) {
+        return null;
+      }
+      if (!response.ok) {
+        throw new ApiError(response.status, `/api/sessions/${sessionId}/raw-material`);
+      }
+      return (await response.json()) as InterviewRawMaterial;
     },
     async refreshVoiceInstructions(interviewSessionId, latestUserText) {
       return (await requestJson(`/api/interview-sessions/${interviewSessionId}/voice-instructions`, {
