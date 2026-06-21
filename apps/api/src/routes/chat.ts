@@ -112,7 +112,15 @@ export async function registerChatRoutes(
             { role: "user", content: user }
           ]
         });
-        citations = retrieved.map((c) => ({
+        // 只把模型实际引用的 [n] 对应块作为 citation,避免展示模型根本没用到的资料。
+        // 解析不到任何有效编号时,回退为全部检索块(保留可溯源性)。
+        const citedIdx = new Set<number>();
+        for (const m of answer.matchAll(/\[(\d+)\]/g)) {
+          const i = Number(m[1]) - 1;
+          if (i >= 0 && i < retrieved.length) citedIdx.add(i);
+        }
+        const citedChunks = citedIdx.size > 0 ? retrieved.filter((_, i) => citedIdx.has(i)) : retrieved;
+        citations = citedChunks.map((c) => ({
           sourceType: c.sourceType,
           sourceId: c.sourceId,
           title: c.title,
