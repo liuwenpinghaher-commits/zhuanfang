@@ -29,8 +29,10 @@ import { extractCandidateMemories, toSessionMemoryCandidates } from "../intellig
 import { generatePreSignals } from "../intelligence/pre-signals-llm";
 import { classifyTurnComplete } from "../intelligence/turn-endpoint-llm";
 import type { ProductStateRepository } from "../product-state-repository";
+import type { RawMaterialRepository } from "../raw-material-repository";
 import type { BailianChatClient, BailianCharacterInterviewClient, BailianEmbeddingClient } from "../providers/bailian";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
+import { offloadCompletedSession } from "./raw-material";
 
 interface CreateSessionPayload {
   mode?: unknown;
@@ -51,6 +53,7 @@ interface InterviewSessionRouteOptions {
   bailianInterviewClient?: BailianCharacterInterviewClient;
   bailianChatClient?: BailianChatClient;
   embeddingClient?: BailianEmbeddingClient;
+  rawMaterialRepository?: RawMaterialRepository;
   llmBudget?: LlmBudget;
 }
 
@@ -286,7 +289,22 @@ export async function registerInterviewSessionRoutes(
       : result.nextState;
     const completedSession = finalizedState.sessions.find((item) => item.id === session.id) ?? session;
 
-    repository.replaceState(finalizedState);
+    // Cold-storage offload: move this just-completed session's heavy evidence
+    // (turns + strategyTrace) into the raw-material repository and persist only
+    // the lightweight hot state. The response still returns the full finalized
+    // state/session so the client sees the conversation right after ending; a
+    // later getState() yields the offloaded (light) session, with the raw
+    // material served lazily via GET /api/sessions/:id/raw-material.
+    let stateToPersist = finalizedState;
+    if (options.rawMaterialRepository) {
+      const { hotState, material } = offloadCompletedSession(finalizedState, session.id);
+      if (material) {
+        options.rawMaterialRepository.put(material);
+        stateToPersist = hotState;
+      }
+    }
+
+    repository.replaceState(stateToPersist);
     budget.reset(session.id);
     return { session: completedSession, note: result.note, state: finalizedState };
   });

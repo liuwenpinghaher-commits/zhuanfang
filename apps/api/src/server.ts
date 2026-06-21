@@ -3,11 +3,13 @@ import "./telemetry";
 
 import Fastify, { type FastifyRequest, type FastifyReply } from "fastify";
 import fastifyStatic from "@fastify/static";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createSqliteProductStateRepository } from "../../../packages/db/src/sqlite-product-state-repository";
+import { createSqliteRawMaterialRepository } from "../../../packages/db/src/sqlite-raw-material-repository";
 import { loadLocalEnvFile } from "./env";
 import { createInMemoryProductStateRepository, type ProductStateRepository } from "./product-state-repository";
+import { createInMemoryRawMaterialRepository, type RawMaterialRepository } from "./raw-material-repository";
 import { createAnySearchClientFromEnv, type AnySearchClient } from "./providers/anysearch";
 import {
   createBailianAudioTranscriptionClientFromEnv,
@@ -38,6 +40,7 @@ import { registerCorpusRoutes } from "./routes/corpus";
 import { registerHealthRoutes } from "./routes/health";
 import { registerImportRoutes } from "./routes/import";
 import { registerInterviewSessionRoutes } from "./routes/interview-sessions";
+import { registerRawMaterialRoutes } from "./routes/raw-material";
 import { registerMemoryRecordRoutes } from "./routes/memory-records";
 import { registerMemoryCandidateRoutes } from "./routes/memory-candidates";
 import { registerPlaybookPatchRoutes } from "./routes/playbook-patches";
@@ -53,6 +56,7 @@ import { registerSystemRoutes } from "./routes/system";
 interface BuildApiServerOptions {
   productStateRepository?: ProductStateRepository;
   productStateDbPath?: string;
+  rawMaterialRepository?: RawMaterialRepository;
   bailianSearchClient?: BailianSearchClient;
   anySearchClient?: AnySearchClient;
   bailianPodcastAudioClient?: BailianPodcastAudioClient;
@@ -104,6 +108,11 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   const effectiveDbPath = options.productStateDbPath ?? runtimeEnv.PRODUCT_STATE_DB_PATH;
   const stateStore: "memory" | "sqlite" =
     effectiveDbPath && !isInMemoryDbPath(effectiveDbPath) ? "sqlite" : "memory";
+  // Raw-material cold storage lives next to the product-state db (raw-material.sqlite
+  // in the same directory). Tests / in-memory deployments stay in-memory so they
+  // never touch disk. An explicitly injected repo (tests) always wins.
+  const rawMaterialRepository =
+    options.rawMaterialRepository ?? createDefaultRawMaterialRepository(effectiveDbPath);
   const envFilePath = options.envFilePath ?? join(process.cwd(), ".env.local");
 
   // Single shared budget instance — covers all LLM entry points (interview turns,
@@ -144,8 +153,12 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   void server.register(async (registeredServer) => {
     await registerInterviewSessionRoutes(registeredServer, productStateRepository, {
       ...providerClients,
+      rawMaterialRepository,
       llmBudget: sharedBudget
     });
+  });
+  void server.register(async (registeredServer) => {
+    await registerRawMaterialRoutes(registeredServer, rawMaterialRepository);
   });
   void server.register(async (registeredServer) => {
     await registerSearchRoutes(registeredServer, productStateRepository, {
@@ -422,6 +435,15 @@ function createDefaultProductStateRepository(dbPath = process.env.PRODUCT_STATE_
     return createSqliteProductStateRepository({ dbPath });
   }
   return createInMemoryProductStateRepository();
+}
+
+function createDefaultRawMaterialRepository(productStateDbPath?: string) {
+  if (productStateDbPath && !isInMemoryDbPath(productStateDbPath)) {
+    return createSqliteRawMaterialRepository({
+      dbPath: join(dirname(productStateDbPath), "raw-material.sqlite")
+    });
+  }
+  return createInMemoryRawMaterialRepository();
 }
 
 function isInMemoryDbPath(dbPath: string) {
