@@ -16,7 +16,7 @@ describe("applySchema", () => {
   it("在空库上应用全部 migrations(返回已应用文件名)", async () => {
     const d = await freshDb();
     const applied = await applySchema(d);
-    expect(applied).toEqual(["001_nodes.surql", "002_relations.surql", "003_index.surql"]);
+    expect(applied).toEqual(["001_nodes.surql", "002_relations.surql", "003_index.surql", "004_p1a_rest_meta.surql"]);
   });
 
   it("二次 apply 幂等:不报错、不重复、INFO 不变", async () => {
@@ -26,7 +26,7 @@ describe("applySchema", () => {
     expect(second).toEqual([]); // 全部已应用
     const [ledger] = await d.query<[{ name: string }[]]>("SELECT name FROM _migration;");
     const names = (ledger ?? []).map((r) => r.name).sort();
-    expect(names).toEqual(["001_nodes.surql", "002_relations.surql", "003_index.surql"]);
+    expect(names).toEqual(["001_nodes.surql", "002_relations.surql", "003_index.surql", "004_p1a_rest_meta.surql"]);
   });
 
   it("INFO FOR DB:13 节点表 + entity_kind + 8 边表齐全", async () => {
