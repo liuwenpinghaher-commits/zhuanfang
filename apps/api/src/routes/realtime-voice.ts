@@ -322,7 +322,12 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       return { recentMemories: [], activeThemes: [] };
     }
     const state = stateRepo.getState();
-    const recentMemories = (state.memoryRecords || []).slice(-5);
+    // 审查修复(安全):与 context-pack / 原生召回的 A3+A4 门控一致 —— 只返回 confirmed 且非 sensitive
+    // (策略开启时才含 sensitive)的记忆,杜绝 deprecated/deleted/敏感记忆经此端点泄漏给语音客户端。
+    const memoryPolicy = state.systemConfig.memory;
+    const recentMemories = (state.memoryRecords || [])
+      .filter((r) => r.status === "confirmed" && (memoryPolicy.includeSensitiveMemoriesInContext || (r.sensitivity ?? "normal") !== "sensitive"))
+      .slice(-5);
     const activeThemes = (state.themes || []).filter((t) => t.maturity !== "关闭");
     return { recentMemories, activeThemes };
   });
