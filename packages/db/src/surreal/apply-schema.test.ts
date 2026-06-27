@@ -109,8 +109,9 @@ describe("applySchema", () => {
     );
     expect((out?.[0]?.themes ?? []).length).toBe(1);
     // 入边:theme ← (point + decision) 一次拿全
-    const [pts] = await d.query<[unknown[]]>("SELECT VALUE <-belongs_to_theme<-point FROM theme:`放权`;");
-    const [decs] = await d.query<[unknown[]]>("SELECT VALUE <-belongs_to_theme<-decision FROM theme:`放权`;");
+    // SELECT VALUE 每个 FROM 记录返回一项,项本身是数组 → 结果是 unknown[][]
+    const [pts] = await d.query<[unknown[][]]>("SELECT VALUE <-belongs_to_theme<-point FROM theme:`放权`;");
+    const [decs] = await d.query<[unknown[][]]>("SELECT VALUE <-belongs_to_theme<-decision FROM theme:`放权`;");
     expect((pts?.[0] ?? []).length).toBe(1);
     expect((decs?.[0] ?? []).length).toBe(1);
   });
