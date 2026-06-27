@@ -68,4 +68,35 @@ describe("dual-write repository", () => {
     const s1 = repo.replaceState(s0);
     expect(s1.revision).toBe((s0.revision ?? 0) + 1);
   });
+
+  it("注入的回调自身抛错也绝不破坏主写(加固不变量)", () => {
+    const auth = createInMemoryProductStateRepository();
+    const shadow = {
+      ...createInMemoryProductStateRepository(),
+      replaceState: () => { throw new Error("shadow boom"); }
+    };
+    // onShadowError 自身再抛 —— 不得冒泡出 replaceState。
+    const repo = createDualWriteRepository({
+      authoritative: auth, shadow,
+      onShadowError: () => { throw new Error("callback boom"); }
+    });
+    const result = repo.replaceState(pointState("pt_1", "标题"));
+    expect(result.points[0]?.id).toBe("pt_1");          // 主写仍成功、未抛
+    expect(auth.getState().points[0]?.id).toBe("pt_1");
+  });
+
+  it("注入的 onDivergence 自身抛错也不破坏主写", () => {
+    const auth = createInMemoryProductStateRepository();
+    const shadowInner = createInMemoryProductStateRepository();
+    const shadow = {
+      ...shadowInner,
+      replaceState: (s: ReturnType<typeof createInitialProductState>) => shadowInner.replaceState({ ...s, points: [] })
+    };
+    const repo = createDualWriteRepository({
+      authoritative: auth, shadow,
+      onDivergence: () => { throw new Error("divergence callback boom"); }
+    });
+    expect(() => repo.replaceState(pointState("pt_1", "标题"))).not.toThrow();
+    expect(auth.getState().points[0]?.id).toBe("pt_1");
+  });
 });

@@ -13,33 +13,36 @@ export interface DualWriteOptions {
   onShadowError?: (err: unknown, op: string) => void;
 }
 
-const DIFF_KEYS: Array<keyof ProductState> = [
-  "points","decisions","debts","questions","themes","notes","memoryRecords",
-  "memoryCandidates","importSources","ragChunks","searchBriefs","sessions",
-  "memoryEdges","chatSessions","profile","systemConfig","profileSuggestions"
-];
+/** 内容比对忽略的存储层元字段(非业务内容)。 */
+const IGNORED_DIGEST_KEYS = new Set<string>(["revision", "schemaVersion"]);
 
 /**
  * 内容等价签名:排序键 + 忽略存储层元字段。
  * - revision:两库各自 bump,不代表内容差异。
- * - schemaVersion:surreal schema migration 标记(surreal getState 注入,in-memory/sqlite 无此字段)。
- *   两者均是存储层元信息,不反映业务内容是否一致。
+ * - schemaVersion:两个持久库(sqlite+surreal)均由 normalizeProductState 无条件注入=2、恒等;
+ *   in-memory 不注入。均属存储层元信息,非业务内容,zero 掉以免干扰内容比对。
  */
 function contentDigest(state: ProductState): string {
   return buildStableDigest({ ...state, revision: 0, schemaVersion: 0 });
 }
 
+/** 首个不等的顶层键(诊断用)。从两边 state 的键全集并集派生,忽略元字段——
+ *  避免手维子集漏 key(如 auditEvents/aiRunEvents 等高频数组)导致发散却报 firstDiffKey:undefined 误导排查。 */
 function firstDivergentKey(a: ProductState, b: ProductState): string | undefined {
-  for (const k of DIFF_KEYS) {
-    if (buildStableDigest(a[k]) !== buildStableDigest(b[k])) return String(k);
+  const ra = a as unknown as Record<string, unknown>;
+  const rb = b as unknown as Record<string, unknown>;
+  for (const k of new Set([...Object.keys(ra), ...Object.keys(rb)])) {
+    if (IGNORED_DIGEST_KEYS.has(k)) continue;
+    if (buildStableDigest(ra[k]) !== buildStableDigest(rb[k])) return k;
   }
   return undefined;
 }
 
+// 发散/影子写失败级别为 error:dual-surreal 模式下影子是回退路径(sqlite 冷备),失败不应被淹没。
 const defaultOnDivergence: NonNullable<DualWriteOptions["onDivergence"]> = (info) =>
-  console.warn(JSON.stringify({ event: "dual_write_divergence", ...info }));
+  console.error(JSON.stringify({ event: "dual_write_divergence", ...info }));
 const defaultOnShadowError: NonNullable<DualWriteOptions["onShadowError"]> = (err, op) =>
-  console.warn(JSON.stringify({ event: "dual_write_shadow_error", op, error: String(err) }));
+  console.error(JSON.stringify({ event: "dual_write_shadow_error", op, error: String(err) }));
 
 /** 双写仓库:读走 authoritative,写双落 + 影子读等价比对。shadow 的错误/发散绝不破坏主写。 */
 export function createDualWriteRepository(opts: DualWriteOptions): ProductStateRepository {
@@ -47,20 +50,28 @@ export function createDualWriteRepository(opts: DualWriteOptions): ProductStateR
   const onDivergence = opts.onDivergence ?? defaultOnDivergence;
   const onShadowError = opts.onShadowError ?? defaultOnShadowError;
 
-  function mirrorAndCompare(op: string, next: ProductState) {
+  // 回调再包一层 try/catch:即便调用方注入的回调自身抛错,也绝不冒泡破坏主写(权威写已落定)。
+  const reportDivergence = (info: Parameters<NonNullable<DualWriteOptions["onDivergence"]>>[0]) => {
+    try { onDivergence(info); } catch { /* 注入回调抛错也不破坏主写 */ }
+  };
+  const reportShadowError = (err: unknown, op: string) => {
+    try { onShadowError(err, op); } catch { /* 同上 */ }
+  };
+
+  function mirrorAndCompare(op: "reset" | "replace", next: ProductState) {
     // 影子写不带 expectedRevision(只镜像内容,不参与乐观锁);错误吞掉只告警。
     try {
       if (op === "reset") shadow.resetState();
       else shadow.replaceState(next);
     } catch (err) {
-      onShadowError(err, op);
+      reportShadowError(err, op);
       return;
     }
     try {
       const authState = authoritative.getState();
       const shadowState = shadow.getState();
       if (contentDigest(authState) !== contentDigest(shadowState)) {
-        onDivergence({
+        reportDivergence({
           op,
           authDigest: contentDigest(authState),
           shadowDigest: contentDigest(shadowState),
@@ -68,7 +79,7 @@ export function createDualWriteRepository(opts: DualWriteOptions): ProductStateR
         });
       }
     } catch (err) {
-      onShadowError(err, `${op}:compare`);
+      reportShadowError(err, `${op}:compare`);
     }
   }
 
