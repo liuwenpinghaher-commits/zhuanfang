@@ -11,6 +11,9 @@ import {
   type BailianStreamingTtsClient
 } from "../providers/bailian-streaming-tts";
 import type { ProductStateRepository } from "../product-state-repository";
+import { asNativeRecall } from "../recall/native-recall-capability";
+import { prefetchRecall } from "../recall/prefetch-recall";
+import { resolveInterviewTopicHint } from "../../../../src/domain/context-pack";
 import {
   appendRealtimeSignalTrace,
   buildInterviewEnginePolicy,
@@ -344,12 +347,21 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     // no text / embed error → keyword recall (current behaviour), never throws.
     const { latestUserText } = request.query as { latestUserText?: string };
     const queryEmbedding = await embedRecallQuery(latestUserText, options.embeddingClient);
+    // P2b:surreal 权威时预召回原生图遍历/HNSW/溯源,刷新 guide(主题资产/记忆/证据原话);
+    // 非原生 repo 或无 queryEmbedding → recall undefined,buildInterviewGuide 走域层回落。
+    const nativeRecall = asNativeRecall(stateRepo);
+    const recall = nativeRecall && queryEmbedding
+      ? await prefetchRecall(nativeRecall, state, session.guide.topicHint || resolveInterviewTopicHint(state, {}), queryEmbedding, {
+          includeSensitive: state.systemConfig.memory.includeSensitiveMemoriesInContext,
+          topN: state.systemConfig.search.maxSources
+        })
+      : undefined;
     const refreshedGuide = queryEmbedding
       ? buildInterviewGuide(state, {
           topicHint: session.guide.topicHint || undefined,
           ...(session.card.searchBriefId ? { searchBriefId: session.card.searchBriefId } : {}),
           queryEmbedding
-        })
+        }, recall)
       : session.guide;
     // Re-stamp enginePolicy from latest state so a mid-session PlaybookPatch reaches the
     // LiveKit agent's instructions (not frozen at the opening snapshot) — same as /turns.
