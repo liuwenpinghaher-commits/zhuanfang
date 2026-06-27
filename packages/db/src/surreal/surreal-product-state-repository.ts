@@ -101,20 +101,30 @@ function recordIdToDomainId(id: unknown): string {
   return anyId?.id !== undefined ? String(anyId.id) : String(id);
 }
 
-/** 全量覆盖落库:事务内,每张本体表 delete-all + 重建;state_meta upsert(revision + 运维尾巴)。
- *  P1a 取最简正确(每写全表重写);diff-upsert 是 P1c。单用户小规模可接受。
+/** 全量覆盖落库:两阶段写入(3.x 校正)。
+ *  SurrealDB 3.x 不允许在同一事务内 DELETE 再 CREATE 同一 id 的记录(已验证);
+ *  故拆为两个独立事务:TXN1 先清所有受管表,TXN2 再建节点 + turn + 边 + state_meta。
+ *  两事务之间的窗口极短(内存/单用户),与 P1a 的全量覆盖风险等级相同;diff-upsert 是 P1c。
  *  P1b 追加:turn 表正规化 + 四张受管边表全量覆盖(RELATE)。 */
 async function persist(db: Surreal, snapshot: ProductState): Promise<void> {
   const meta: Record<string, unknown> = {};
   for (const k of META_KEYS) meta[k] = (snapshot as unknown as Record<string, unknown>)[k];
 
+  // ── TXN1: 清空所有受管表(节点表 + turn + 四张边表)────────────────────────────
+  let delSurql = "BEGIN TRANSACTION;\n";
+  for (const m of NODE_MAPPINGS) delSurql += `DELETE ${m.table};\n`;
+  delSurql += "DELETE turn;\n";
+  for (const et of MANAGED_EDGE_TABLES) delSurql += `DELETE ${et};\n`;
+  delSurql += "COMMIT TRANSACTION;";
+  await db.query(delSurql);
+
+  // ── TXN2: 建节点 + turn + RELATE 边 + state_meta ─────────────────────────────
   let surql = "BEGIN TRANSACTION;\n";
   const vars: Record<string, unknown> = {};
   let i = 0;
 
-  // 1) 节点表全量覆盖(P1a)
+  // 1) 节点表重建(P1a)
   for (const m of NODE_MAPPINGS) {
-    surql += `DELETE ${m.table};\n`;
     const arr = ((snapshot as unknown as Record<string, unknown>)[m.stateKey] as Array<{ id: string }>) ?? [];
     for (const entity of arr) {
       const recVar = `r${i++}`;
@@ -124,8 +134,8 @@ async function persist(db: Surreal, snapshot: ProductState): Promise<void> {
     }
   }
 
-  // 2) turn 表正规化(P1b):全量覆盖。turns 同时仍在 session.rest(P1a,无损读),此处冗余写入供边引用 + P2 图查询。
-  surql += `DELETE turn;\n`;
+  // 2) turn 表正规化(P1b):turns 同时仍在 session.rest(P1a 无损读),此处供边引用 + P2 图查询。
+  //    3.x 校正:turn.timestamp DEFINE 为 datetime,turnRecordsOf 已转换为 Date 对象。
   for (const t of turnRecordsOf(snapshot)) {
     const tv = `t${i++}`;
     vars[tv] = t;
@@ -133,18 +143,14 @@ async function persist(db: Surreal, snapshot: ProductState): Promise<void> {
     surql += `CREATE type::record('turn', $${tv}_id) CONTENT $${tv};\n`;
   }
 
-  // 3) 边全量覆盖(P1b):先清四张受管边表,再按 collectEdges RELATE。
-  //    (删节点不自动清边,A5 是 P3;此处全量重建保不留悬挂边。)
-  //    3.x 校正:type::record 不被 RELATE 端点接受 → fallback 用 RecordId JS 对象作参数
-  //    ($from/$to 形如 $e0_f/$e0_t),边字段用 SET 替 CONTENT(derived_from.provenance)。
-  for (const et of MANAGED_EDGE_TABLES) surql += `DELETE ${et};\n`;
+  // 3) RELATE 边(P1b):3.x 校正:RELATE 端点用 RecordId JS 对象($from/$to 参数);
+  //    边字段用 SET 替 CONTENT(derived_from.provenance);origin='llm_extracted' 合 002 ASSERT。
   for (const e of collectEdges(snapshot)) {
     const ev = `e${i++}`;
     vars[`${ev}_f`] = new RecordId(e.fromTable, e.fromId);
     vars[`${ev}_t`] = new RecordId(e.toTable, e.toId);
     let rel = `RELATE $${ev}_f->${e.edge}->$${ev}_t`;
     if (e.data) {
-      // derived_from carries { provenance: {...} }; 3.x RELATE uses SET, not CONTENT
       vars[`${ev}_d`] = e.data;
       rel += ` SET provenance = $${ev}_d.provenance`;
     }
