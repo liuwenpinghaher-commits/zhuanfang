@@ -117,6 +117,24 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   const effectiveDbPath = options.productStateDbPath ?? runtimeEnv.PRODUCT_STATE_DB_PATH;
   const stateStore: "memory" | "sqlite" =
     effectiveDbPath && !isInMemoryDbPath(effectiveDbPath) ? "sqlite" : "memory";
+
+  const isProductionProfile = (runtimeEnv.DEPLOYMENT_PROFILE ?? "").trim().toLowerCase() === "production";
+  // Fail-LOUD 而非 fail-open-silent:startServer() 在生产缺 token 时硬抛拒绝启动(生产硬闸);但直接用
+  // buildApiServer 的嵌入/脚本路径若在生产 profile 缺 token,鉴权守卫静默关闭、全 /api/* 裸奔。这里至少
+  // 响亮告警,不再静默。(嵌入方可自带鉴权层,故告警而非抛错,避免破坏合法用法。)
+  if (isProductionProfile && !runtimeEnv.PRODUCT_API_TOKEN) {
+    console.warn(JSON.stringify({
+      event: "auth_guard_inactive_in_production",
+      detail: "DEPLOYMENT_PROFILE=production 但未设 PRODUCT_API_TOKEN —— 鉴权守卫未启用,所有 /api/* 无凭据即可访问。"
+    }));
+  }
+  // 生产 profile 却回落内存存储(通常是漏设 PRODUCT_STATE_DB_PATH) → 进程重启全部数据丢失。响亮告警。
+  if (isProductionProfile && stateStore === "memory") {
+    console.warn(JSON.stringify({
+      event: "state_store_in_memory_in_production",
+      detail: "生产 profile 使用内存状态存储(未设 PRODUCT_STATE_DB_PATH 或为 :memory:) —— 进程重启将丢失全部数据。"
+    }));
+  }
   // Raw-material cold storage lives next to the product-state db (raw-material.sqlite
   // in the same directory). Tests / in-memory deployments stay in-memory so they
   // never touch disk. An explicitly injected repo (tests) always wins.

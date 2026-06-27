@@ -263,6 +263,12 @@ export async function registerInterviewSessionRoutes(
     if (!session) {
       return reply.code(404).send({ error: "Interview session not found." });
     }
+    // 幂等守卫:已结束的会话不得二次 finalize。否则在无 rawMaterialRepository 的配置下(turns 不被降冷清空),
+    // 双击"结束"或网络重试会重新 finalize,重复插入 note/资产/记忆候选。靠 status 显式拦截,
+    // 不依赖"turns 被副作用清空"这一隐式护栏。
+    if (session.status === "completed") {
+      return reply.code(409).send({ error: "Interview session has already been ended." });
+    }
     if (session.turns.filter((turn) => turn.role === "user").length === 0) {
       return reply.code(422).send({ error: "Interview session cannot be ended before the first user turn." });
     }
@@ -412,6 +418,12 @@ export async function registerInterviewSessionRoutes(
     }
     if (!options.bailianChatClient) {
       return { done: true, reason: "no chat client → default respond" };
+    }
+    // turn-complete 是语音路最高频的 LLM 调用，此前唯一漏过 per-session 成本闸控 → 可无界烧钱。
+    // 纳入预算；耗尽时回退到确定性"判定轮次完成、默认应答"，既封顶成本又不卡死对话。
+    if (!budget.tryConsume(session.id)) {
+      console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "turn_complete", sessionId: session.id }));
+      return { done: true, reason: "budget exhausted → default respond" };
     }
     const result = await classifyTurnComplete(session, transcript, options.bailianChatClient);
     console.info(JSON.stringify({

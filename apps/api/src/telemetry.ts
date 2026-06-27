@@ -10,6 +10,33 @@ import {
 
 const otlpEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://localhost:4318";
 
+// 媒体回放 <audio src> 与 WS 升级用 ?token=<PRODUCT_API_TOKEN> 携带凭据（浏览器无法设请求头）。
+// instrumentation-http 默认把含 query 的完整 URL 写进 span 属性并经 OTLP 导出 → 生产 bearer token 外泄。
+// 在 span 落地前对敏感 query 参数做脱敏。
+const SENSITIVE_QUERY_KEYS = new Set(["token", "access_token", "api_key", "apikey", "key", "password", "secret"]);
+
+function redactQueryString(query: string): string {
+  return query
+    .split("&")
+    .map((pair) => {
+      const eq = pair.indexOf("=");
+      const rawKey = eq === -1 ? pair : pair.slice(0, eq);
+      const key = decodeURIComponent(rawKey).toLowerCase();
+      if (SENSITIVE_QUERY_KEYS.has(key)) return `${rawKey}=REDACTED`;
+      return pair;
+    })
+    .join("&");
+}
+
+// 对 http.url / http.target / url.full（含 "?") 与 url.query（裸 query）两类属性统一脱敏。
+function redactUrlAttribute(attrKey: string, value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  if (attrKey === "url.query") return redactQueryString(value);
+  const queryIndex = value.indexOf("?");
+  if (queryIndex === -1) return value;
+  return `${value.slice(0, queryIndex)}?${redactQueryString(value.slice(queryIndex + 1))}`;
+}
+
 const sdk = new NodeSDK({
   resource: resourceFromAttributes({
     [ATTR_SERVICE_NAME]: process.env.OTEL_SERVICE_NAME || "interview-api",
@@ -23,6 +50,15 @@ const sdk = new NodeSDK({
       "@opentelemetry/instrumentation-http": {
         ignoreIncomingRequestHook: (req) =>
           req.url === "/health" || req.url === "/api/health",
+        // 脱敏 span 上的 URL 属性，避免 ?token= 等敏感 query 经 OTLP 导出到 trace 后端。
+        applyCustomAttributesOnSpan: (span) => {
+          const attrs = (span as unknown as { attributes?: Record<string, unknown> }).attributes;
+          if (!attrs) return;
+          for (const attrKey of ["http.url", "http.target", "url.full", "url.query"] as const) {
+            const redacted = redactUrlAttribute(attrKey, attrs[attrKey]);
+            if (redacted !== undefined) span.setAttribute(attrKey, redacted);
+          }
+        },
       },
       "@opentelemetry/instrumentation-fs": { enabled: false },
     }),

@@ -15,8 +15,8 @@ interface NotesViewProps {
   getAudioMeta?: (sessionId: string, role?: "interviewee" | "interviewer") => Promise<SessionAudioMeta>;
   audioUrl?: (sessionId: string) => string;
   getAudioBlob?: (sessionId: string, role?: "interviewee" | "interviewer") => Promise<Blob | null>;
-  // 引用跳源:外部(如资产对话的逐字稿引用)指定要展开的会话与高亮的轮次。
-  focus?: { sessionId: string; turnId?: string } | null;
+  // 引用跳源:外部(如资产对话的逐字稿引用)指定要展开的会话与高亮的轮次。nonce 每次点击自增,用于连点重触发。
+  focus?: { sessionId: string; turnId?: string; nonce?: number } | null;
 }
 
 export function NotesView({
@@ -34,11 +34,20 @@ export function NotesView({
   const [openSessionId, setOpenSessionId] = useState<string | null>(null);
 
   // 收到跳源 focus → 自动展开对应会话的原始材料(RawMaterialViewer 再按 focusTurnId 滚动高亮该轮)。
+  // 依赖含 nonce:连点同一引用(sessionId/turnId 不变)时也重新触发,避免"第二次点击无反应"。
   useEffect(() => {
     if (focus?.sessionId) {
       setOpenSessionId(focus.sessionId);
     }
-  }, [focus?.sessionId, focus?.turnId]);
+  }, [focus?.sessionId, focus?.turnId, focus?.nonce]);
+
+  // 跳源目标会话可能没有对应的双轨笔记(transcript 引用指向无 note 的会话)。此时上面的 notes.map
+  // 不会渲染任何 RawMaterialViewer → 跳源静默失败。这里为"无 note 的 focus 会话"补一个独立查看器,
+  // 使任意会话的逐字稿引用都能真正展开定位。
+  const focusSessionHasNote = focus?.sessionId
+    ? state.notes.some((note) => note.sessionId === focus.sessionId)
+    : true;
+  const orphanFocusSessionId = !focusSessionHasNote && focus?.sessionId ? focus.sessionId : null;
   return (
     <section className="view-stack">
       <HeaderBlock
@@ -106,6 +115,29 @@ export function NotesView({
             )}
           </article>
         ))}
+        {orphanFocusSessionId && (
+          // 无对应双轨笔记的跳源会话:独立渲染原始材料查看器,保证逐字稿引用不静默失败。
+          <article className="record-row" key={`orphan-focus-${orphanFocusSessionId}`}>
+            <div className="record-main">
+              <span className="label">引用定位</span>
+              <h2>原始材料</h2>
+              <p>该会话尚无双轨笔记，以下为被引用的原始逐字稿。</p>
+            </div>
+            <div style={{ gridColumn: "1 / -1" }}>
+              <RawMaterialViewer
+                sessionId={orphanFocusSessionId}
+                state={state}
+                focusTurnId={focus?.turnId}
+                onAddAnnotation={onAddAnnotation}
+                onRemoveAnnotation={onRemoveAnnotation}
+                getRawMaterial={getRawMaterial}
+                getAudioMeta={getAudioMeta}
+                audioUrl={audioUrl}
+                getAudioBlob={getAudioBlob}
+              />
+            </div>
+          </article>
+        )}
       </div>
     </section>
   );

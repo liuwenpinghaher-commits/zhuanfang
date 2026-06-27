@@ -118,6 +118,26 @@ async function embedRecallQuery(
 
 export async function registerRealtimeVoiceRoutes(server: FastifyInstance, options: RealtimeVoiceRouteOptions = {}) {
   const sessions = new Map<string, RealtimeVoiceSessionRecord>();
+
+  // 过期会话清理:记录带 expiresAt(10 分钟)但此前无人读取/无清理 → Map 单调增长且过期会话仍可被
+  // WS 升级命中(expiresAt 形同虚设)。lazy 校验 + 创建时清扫,界定内存并让过期凭据失效。
+  function pruneExpiredSessions(): void {
+    const now = Date.now();
+    for (const [id, rec] of sessions) {
+      if (Date.parse(rec.expiresAt) <= now) sessions.delete(id);
+    }
+  }
+  function liveSession(id: string | undefined): RealtimeVoiceSessionRecord | undefined {
+    if (!id) return undefined;
+    const rec = sessions.get(id);
+    if (!rec) return undefined;
+    if (Date.parse(rec.expiresAt) <= Date.now()) {
+      sessions.delete(id);
+      return undefined;
+    }
+    return rec;
+  }
+
   server.addContentTypeParser("application/sdp", { parseAs: "string" }, (_request, body, done) => {
     done(null, body);
   });
@@ -159,7 +179,9 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       });
       return voice;
     } catch (err) {
-      return reply.code(500).send({ error: err instanceof Error ? err.message : "Voice creation failed." });
+      // 不把上游 provider 原始错误(可能含内部 endpoint/模型名/配额提示)回传客户端。
+      console.warn(JSON.stringify({ event: "voice_create_failed", error: err instanceof Error ? err.message : String(err) }));
+      return reply.code(500).send({ error: "Voice creation failed." });
     }
   });
 
@@ -175,19 +197,21 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       await options.voiceEnrollmentClient.deleteVoice(voiceId);
       return { deleted: true };
     } catch (err) {
-      return reply.code(500).send({ error: err instanceof Error ? err.message : "Voice deletion failed." });
+      console.warn(JSON.stringify({ event: "voice_delete_failed", error: err instanceof Error ? err.message : String(err) }));
+      return reply.code(500).send({ error: "Voice deletion failed." });
     }
   });
 
   server.get("/api/realtime-voice/config", async () => buildRealtimeVoiceConfig());
   server.post("/api/realtime-voice/sessions", async (request) => {
+    pruneExpiredSessions();
     const record = createRealtimeVoiceSession(normalizeObject<RealtimeVoiceSessionPayload>(request.body), options.bailianRealtimeVoiceClient, options.stateRepo);
     sessions.set(record.sessionId, record);
     return record;
   });
   server.post("/api/realtime-voice/sessions/:id/webrtc/answer", async (request, reply) => {
     const sessionId = getSessionId(request.params);
-    const record = sessionId ? sessions.get(sessionId) : undefined;
+    const record = sessionId ? liveSession(sessionId) : undefined;
     if (!record) {
       return reply.code(404).send({ error: "Realtime voice session not found." });
     }
@@ -211,7 +235,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     if (!sessionId) {
       return reply.code(400).send({ error: "sessionId is required." });
     }
-    const record = sessions.get(sessionId);
+    const record = liveSession(sessionId);
     const body = normalizeObject<InterruptPayload>(request.body);
     const spokenTextSoFar = typeof body.spokenTextSoFar === "string" ? body.spokenTextSoFar : "";
     const interruptedAtMs =
@@ -465,7 +489,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     const ttsMatch = url.pathname.match(/^\/api\/realtime-voice\/ws\/tts\/(.+)$/);
     if (ttsMatch) {
       const sessionId = ttsMatch[1];
-      const record = sessions.get(sessionId);
+      const record = liveSession(sessionId);
       if (!record) {
         socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
         socket.destroy();
@@ -570,7 +594,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     if (!match) return;
 
     const sessionId = match[1];
-    const record = sessions.get(sessionId);
+    const record = liveSession(sessionId);
     if (!record) {
       socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
       socket.destroy();

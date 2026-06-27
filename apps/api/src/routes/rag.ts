@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { buildSemanticRagContext } from "../../../../src/domain/context-pack";
+import { sanitizeExternalMaterialText } from "../../../../src/domain/engine";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import type { BailianChatClient, BailianEmbeddingClient } from "../providers/bailian";
 import type { ProductStateRepository } from "../product-state-repository";
@@ -85,8 +86,13 @@ export async function registerRagRoutes(
     } else if (allowLlm) {
       // LLM path: build context from ALL top-k chunks and generate answer
       answeredChunks = chunks;
+      // 导入资料属外部不可信文本，拼进 prompt 前必须清洗，防注入（与 /api/chat 的 buildChatPrompt 对齐）。
       const contextText = chunks
-        .map((c, i) => `[${i + 1}] 《${c.title}》：${c.text}`)
+        .map((c, i) => {
+          const safeTitle = sanitizeExternalMaterialText(c.title, "资料");
+          const safeText = sanitizeExternalMaterialText(c.text, "(内容已清洗)");
+          return `[${i + 1}] 《${safeTitle}》：${safeText}`;
+        })
         .join("\n\n");
 
       const systemPrompt =

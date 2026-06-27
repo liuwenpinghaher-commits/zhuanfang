@@ -19,7 +19,9 @@ describe("buildKnowledgeChunks", () => {
       ...(base.memoryRecords[0] as MemoryRecord),
       id: "mem-sensitive",
       text: "这是一段敏感隐私记忆",
-      sensitivity: "sensitive"
+      sensitivity: "sensitive",
+      // 该用例隔离的是 sensitivity 门控:用 confirmed 记录,避免被新的 status 过滤(仅 confirmed 可索引)干扰。
+      status: "confirmed"
     };
     const state: ProductState = {
       ...base,
@@ -182,12 +184,14 @@ function makeKChunk(overrides: Partial<KnowledgeChunk> & { id: string }): Knowle
 }
 
 describe("rankKnowledgeChunks", () => {
-  it("有 queryEmbedding 且块有 embedding → 余弦排序,近的排前", () => {
+  it("有 queryEmbedding 且块有 embedding → 余弦排序,近的排前;正交(cosine=0)块作为不相关被过滤", () => {
     const near = makeKChunk({ id: "near", embedding: [1, 0, 0] });
-    const far = makeKChunk({ id: "far", embedding: [0, 1, 0] });
-    const out = rankKnowledgeChunks([far, near], "query", [1, 0, 0], 8);
+    const mid = makeKChunk({ id: "mid", embedding: [1, 1, 0] }); // cosine>0,相关
+    const far = makeKChunk({ id: "far", embedding: [0, 1, 0] }); // cosine=0,正交→应被相关性闸门过滤
+    const out = rankKnowledgeChunks([far, mid, near], "query", [1, 0, 0], 8);
     expect(out[0].id).toBe("near"); // cosine=1 排第一
-    expect(out[1].id).toBe("far");
+    expect(out.map((c) => c.id)).toContain("mid");
+    expect(out.map((c) => c.id)).not.toContain("far"); // 正交不相关块被排除,避免幻觉引用
   });
 
   it("无 queryEmbedding → 关键词重叠排序", () => {

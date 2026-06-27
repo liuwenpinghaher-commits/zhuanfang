@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 
 type Env = Record<string, string | undefined>;
 
@@ -9,11 +9,14 @@ export function isAuthGuardActive(env: Env): boolean {
 }
 
 function bearerMatches(actual: string, apiToken: string): boolean {
-  // Timing-safe, length-padded comparison (prevents timing-oracle attacks).
+  // Hash both sides to a fixed 32-byte SHA-256 digest BEFORE comparing. This makes the
+  // timingSafeEqual run on equal-length buffers in constant time regardless of the input,
+  // eliminating the length-equality short-circuit (`actual.length === expected.length &&`)
+  // that previously leaked a length oracle.
   const expected = `Bearer ${apiToken}`;
-  const expectedBuf = Buffer.from(expected);
-  const actualBuf = Buffer.from(actual.padEnd(expected.length, "\0").slice(0, expected.length));
-  return actual.length === expected.length && timingSafeEqual(expectedBuf, actualBuf);
+  const expectedDigest = createHash("sha256").update(expected).digest();
+  const actualDigest = createHash("sha256").update(actual).digest();
+  return timingSafeEqual(expectedDigest, actualDigest);
 }
 
 /**

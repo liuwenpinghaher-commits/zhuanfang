@@ -218,15 +218,18 @@ function mapToFinalizeContent(
   });
   const themeIds = themes.map((theme) => theme.id as string);
   // Attribute an asset to the theme(s) whose name actually appears in its text, instead of
-  // blanket-linking every asset to every theme of the session. Falls back to all themeIds
-  // when nothing matches, so an asset is never orphaned (and Track stays populated).
+  // blanket-linking every asset to every theme of the session.
   const attributeThemeIds = (text: string): string[] => {
     // 阈值提到 3:两字主题名(如"控制""成长")作为子串极易在无关文本里命中,造成假阳性归属。
     // ≥3 字才做子串归属;更短的名靠 fallback 兜底,不冒险误挂。
     const matched = themes
       .filter((theme) => theme.name.trim().length >= 3 && text.includes(theme.name.trim()))
       .map((theme) => theme.id as string);
-    return matched.length ? matched : themeIds;
+    if (matched.length) return matched;
+    // 无任何主题名命中时,只挂到本次会话的"主导主题"(themes[0],LLM 输出顺序通常反映显著性),
+    // 而非挂到全部主题——后者会把弱相关资产塞进每条主题线,系统性污染 Track 聚合(假阳性)。
+    // 单主题会话下二者等价;多主题会话下避免交叉污染,同时仍保证资产不被孤儿化。
+    return themeIds.length ? [themeIds[0]] : [];
   };
 
   const note: DualTrackNote = {

@@ -11,7 +11,10 @@ export interface LlmBudget {
 // NOTE: this is still a CALL COUNTER, not a token meter. The window bounds calls-per-window
 // for system buckets; it does not measure token spend. Per-session keys keep the simple
 // monotonic counter (reset explicitly when the session ends).
-const SYSTEM_BUDGET_KEYS = new Set(["system", "research_auto_run"]);
+// chat / rag_query 是用户主动发起的能力，没有 session reset。若用裸单调计数器，达到 cap 后会在
+// 整个进程生命周期内永久拒绝该能力的 LLM 调用（长跑进程自我拒服，聊天/问答永久退化为离线文案）。
+// 纳入滑窗，使其按窗口恢复，与 system 桶一致。
+const SYSTEM_BUDGET_KEYS = new Set(["system", "research_auto_run", "chat", "rag_query"]);
 
 // Default sliding window for system buckets (1 hour). Override via LLM_SYSTEM_WINDOW_MS or
 // the opts param (tests). The cap (maxCallsPerSession) is reused as the per-window cap.

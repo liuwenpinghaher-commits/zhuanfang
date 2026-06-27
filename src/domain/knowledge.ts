@@ -57,6 +57,10 @@ export function buildKnowledgeChunks(
 
   // memory → record.text
   for (const record of state.memoryRecords) {
+    // 与 context-pack 召回口径一致：仅 confirmed 记忆可进 chat/RAG 索引。
+    // 否则用户 deprecate/删除的记忆虽不再进访谈上下文，却仍能被 chat 资产对话召回引用（删除未生效）。
+    // status 变更会被 diffIndexableSources 识别为 changed → reindex 时本函数返回 0 块 → 该来源被移除。
+    if (record.status !== "confirmed") continue;
     if (!includeSensitive && (record.sensitivity ?? "normal") === "sensitive") continue;
     const text = record.text;
     chunks.push(makeChunk("memory", record.id, truncate(text, TITLE_LIMIT), text, createdAt));
@@ -301,6 +305,8 @@ export function rankKnowledgeChunks(
   if (queryEmbedding && queryEmbedding.length > 0) {
     // 混合打分:带 embedding 的块用余弦(0..1);无 embedding 的块用关键词重叠占比(0..1)兜底,
     // 二者同尺度可比,统一排序取 topK——避免"只要有任一向量块,关键词强命中的无嵌入块就永远召不回"的盲区。
+    // 相关性闸门:余弦≤0(正交/负相关)或关键词零重叠的块视为"与问题无关",不得作为"用户资料"喂入 prompt,
+    // 否则问无关问题时会塞入一堆零相关块→LLM 牵强附会 + 指向无关来源的幻觉引用。
     const scored = chunks
       .map((c) => {
         if (Array.isArray(c.embedding) && c.embedding.length > 0) {
@@ -313,6 +319,7 @@ export function rankKnowledgeChunks(
         }
         return { chunk: c, score: queryTokens.size > 0 ? overlap / queryTokens.size : 0 };
       })
+      .filter((s) => s.score > 0)
       .sort((a, b) => b.score - a.score);
     if (scored.length > 0) {
       return scored.slice(0, topK).map((s) => s.chunk);
@@ -328,6 +335,8 @@ export function rankKnowledgeChunks(
       }
       return { chunk: c, score: overlap };
     })
+    // 零重叠=与问题无任何共享词,排除,避免离线/无嵌入时把无关块当资料引用。
+    .filter((s) => s.score > 0)
     .sort((a, b) => b.score - a.score);
   return scored.slice(0, topK).map((s) => s.chunk);
 }

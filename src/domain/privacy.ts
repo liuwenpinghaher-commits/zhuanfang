@@ -53,8 +53,10 @@ export function buildPrivacyReport(state: ProductState, generatedAt = new Date()
     {
       id: "interviews",
       label: "专访与双轨笔记",
-      count: state.sessions.length + state.notes.length,
-      detail: "会话、轮次、控制动作、实时信号、会后双轨笔记和关键引用。",
+      // interviewAnnotations 随 interviews 范围清空一并删除(createScopedPurge case "interviews"),
+      // 故必须计入,否则"清空删了却没计入"——report 与 purge 口径背离(与 migration 对齐)。
+      count: state.sessions.length + state.notes.length + (state.interviewAnnotations ?? []).length,
+      detail: "会话、轮次、控制动作、实时信号、会后双轨笔记、批注和关键引用。",
       exported: true,
       purged: true
     },
@@ -287,5 +289,7 @@ function countProfileRecords(state: ProductState) {
     identityFields.length > 0 ||
       profile.preferredStrength !== "standard"
   );
-  return (hasProfileFields ? 1 : 0) + profile.explicitBoundaries.length;
+  // profileSuggestions 随 profile 范围清空一并删除(createScopedPurge case "profile"),故计入,
+  // 否则 report 与 purge 口径背离(与 migration 的 profile 计数对齐)。
+  return (hasProfileFields ? 1 : 0) + profile.explicitBoundaries.length + (state.profileSuggestions ?? []).length;
 }

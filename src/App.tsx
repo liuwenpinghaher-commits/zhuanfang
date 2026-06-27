@@ -131,6 +131,16 @@ const navIconByView: Record<View, typeof Compass> = {
   track: Brain
 };
 
+// 实时语音 WS 基址：HTTPS 页面必须用 wss(否则浏览器以 mixed-content 拦截 ws://,生产语音不可用),
+// 且生产经 API 同源托管(fastifyStatic),WS 走同源 host;dev 下前端在 vite 端口、API 在 3210,需显式指向。
+function realtimeApiWsBaseUrl(): string {
+  if (typeof location !== "undefined" && location.protocol === "https:") {
+    return `wss://${location.host}`;
+  }
+  const hostname = typeof location !== "undefined" ? location.hostname : "127.0.0.1";
+  return `ws://${hostname}:3210`;
+}
+
 export default function App() {
   const [productState, setProductState] = useState<ProductState>(() => loadProductState());
   const [apiPersistenceEnabled, setApiPersistenceEnabled] = useState(false);
@@ -212,7 +222,8 @@ export default function App() {
   const [corpusFocus, setCorpusFocus] = useState("");
   const [chatSessionId, setChatSessionId] = useState<string | null>(null);
   // 引用跳源:逐字稿引用点击后,要在双轨笔记里展开的会话 + 高亮的轮次。
-  const [notesFocus, setNotesFocus] = useState<{ sessionId: string; turnId?: string } | null>(null);
+  // nonce 每次点击自增,使 NotesView 的 effect 即便 sessionId/turnId 未变(连点同一引用)也重新触发滚动高亮。
+  const [notesFocus, setNotesFocus] = useState<{ sessionId: string; turnId?: string; nonce: number } | null>(null);
 
   useEffect(() => {
     saveProductState(productState);
@@ -398,7 +409,7 @@ export default function App() {
     if (citation.sourceType === "transcript") {
       const [sessionId, turnId] = citation.sourceId.split("#");
       if (sessionId) {
-        setNotesFocus({ sessionId, ...(turnId ? { turnId } : {}) });
+        setNotesFocus((prev) => ({ sessionId, ...(turnId ? { turnId } : {}), nonce: (prev?.nonce ?? 0) + 1 }));
       }
     }
     setView(target);
@@ -436,10 +447,20 @@ export default function App() {
   const approveCandidate = (id: string) => withMemoryAction(() => productApiClient.approveMemoryCandidate(id));
   const rejectCandidate = (id: string) => withMemoryAction(() => productApiClient.rejectMemoryCandidate(id));
   const editCandidate = (id: string, text: string) => withMemoryAction(() => productApiClient.updateMemoryCandidate(id, text));
-  const deprecateRecord = (id: string) => withMemoryAction(() => productApiClient.deprecateMemoryRecord(id));
-  const deleteRecord = (id: string) => withMemoryAction(() => productApiClient.deleteMemoryRecord(id));
-  const consolidateMemory = () =>
-    productApiClient
+  const deprecateRecord = (id: string) => {
+    // 撤销会让记忆退出访谈与对话召回——状态突变需显式确认，与全站破坏性操作约定一致。
+    if (!window.confirm("确定撤销这条长期记忆吗？撤销后它将不再进入访谈与资产对话的召回。")) return;
+    return withMemoryAction(() => productApiClient.deprecateMemoryRecord(id));
+  };
+  const deleteRecord = (id: string) => {
+    // 删除一条已确认长期记忆不可撤销，必须二次确认，避免误点单击即永久丢失。
+    if (!window.confirm("确定永久删除这条长期记忆吗？此操作不可撤销。")) return;
+    return withMemoryAction(() => productApiClient.deleteMemoryRecord(id));
+  };
+  const consolidateMemory = () => {
+    // 整理会自动合并并删除被判定为近重复的记忆条目，不可撤销，需显式确认。
+    if (!window.confirm("整理记忆会自动合并并删除被判定为近重复的记忆条目，且不可撤销。是否继续？")) return;
+    return productApiClient
       .consolidateMemory()
       .then((res) => {
         adoptServerState(res.state);
@@ -452,6 +473,7 @@ export default function App() {
         );
       })
       .catch(() => setNotice(buildNotice("warning", "操作失败", "整理记忆需要后端在线。")));
+  };
 
   const assetResults = useMemo(() => searchProductAssets(productState, assetQuery), [productState, assetQuery]);
   const systemStatus = useMemo(() => buildSystemStatus(productState), [productState]);
@@ -539,6 +561,8 @@ export default function App() {
   }
 
   async function deleteVoice(voiceId: string) {
+    // 删除复刻音色不可恢复（需重新上传录音复刻），二次确认避免误删。
+    if (!window.confirm(`确定删除音色「${voiceId}」吗？删除后需重新上传录音复刻，无法恢复。`)) return;
     await productApiClient.deleteVoice(voiceId);
     setVoices((prev) => prev.filter((v) => v.voice !== voiceId));
     setNotice(buildNotice("warning", "音色已删除", `音色 "${voiceId}" 已移除。`));
@@ -1382,7 +1406,7 @@ export default function App() {
           // Cascade pipeline: real ASR (text-only omni WS) → LLM HTTP → CosyVoice TTS WS
           try {
             setVoiceStatus("connecting");
-            const baseWsUrl = `ws://${location.hostname}:3210`;
+            const baseWsUrl = realtimeApiWsBaseUrl();
             const asrWsUrl = `${baseWsUrl}/api/realtime-voice/ws/${voiceSession.sessionId}`;
             const ttsWsUrl = `${baseWsUrl}/api/realtime-voice/ws/tts/${voiceSession.sessionId}`;
             const interviewId = session?.id ?? "";
@@ -1592,7 +1616,7 @@ export default function App() {
             setNotice(buildNotice("info", "已改用 WebSocket 实时语音", "WebRTC 通道尚未完整支持，已自动切换。"));
           }
           const connection = await connectBailianRealtimeWebsocket(sessionWithOpening, {
-                productApiBaseUrl: `ws://${location.hostname}:3210`,
+                productApiBaseUrl: realtimeApiWsBaseUrl(),
                 preSignals: session?.interactionPreSignals,
                 onAudioLevel: (level) => setAudioLevel(level),
                 onSpeechStart: () => setVoiceStatus("listening"),
