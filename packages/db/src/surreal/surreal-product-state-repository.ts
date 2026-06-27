@@ -66,6 +66,12 @@ export interface SurrealRepoHandle extends ProductStateRepository {
   close(): Promise<void>;
   /** 仅测试/诊断用:直查底层 db(读边等)。生产路径不应依赖。 */
   query<T extends unknown[]>(surql: string, vars?: Record<string, unknown>): Promise<T>;
+  /** 主题聚合:指向该 theme 的所有资产 id(图入边,含曾漏 decisions)。仅 surreal。 */
+  recallThemeAssets(themeId: string): Promise<{ points: string[]; decisions: string[]; questions: string[]; memories: string[] }>;
+  /** 溯源:沿 derived_from 取某资产的证据 turn。 */
+  recallProvenanceTurns(table: string, id: string): Promise<Array<{ id: string; content: string; sessionId: string; role: string }>>;
+  /** 记忆向量召回(HNSW KNN + 余弦)。A4 门控:默认仅 confirmed+normal;includeSensitive 含 sensitive。 */
+  recallMemoriesByVector(embedding: number[], k: number, opts?: { includeSensitive?: boolean }): Promise<Array<{ id: string; text: string }>>;
 }
 
 export type SurrealRepoOptions = SurrealConnectionOptions;
@@ -113,7 +119,49 @@ export async function createSurrealProductStateRepository(opts: SurrealRepoOptio
     },
     async flush() { await persistQueue; },
     async close() { await persistQueue; await db.close(); },
-    query<T extends unknown[]>(surql: string, vars?: Record<string, unknown>) { return db.query<T>(surql, vars) as Promise<T>; }
+    query<T extends unknown[]>(surql: string, vars?: Record<string, unknown>) { return db.query<T>(surql, vars) as Promise<T>; },
+    async recallThemeAssets(themeId: string) {
+      const t = new RecordId("theme", themeId);
+      const pick = async (sql: string): Promise<string[]> => {
+        const [rows] = await db.query<[unknown[]]>(sql, { t });
+        const arr = (rows?.[0] as Array<unknown> | undefined) ?? [];
+        return arr.map((r) => recordIdToDomainId((r as { id?: unknown })?.id ?? r));
+      };
+      const [points, decisions, questions, memories] = await Promise.all([
+        pick("SELECT VALUE <-belongs_to_theme<-point FROM $t;"),
+        pick("SELECT VALUE <-belongs_to_theme<-decision FROM $t;"),
+        pick("SELECT VALUE <-belongs_to_theme<-question FROM $t;"),
+        pick("SELECT VALUE <-about_theme<-memory FROM $t;")
+      ]);
+      return { points, decisions, questions, memories };
+    },
+    async recallProvenanceTurns(table: string, id: string) {
+      const from = new RecordId(table, id);
+      const [rows] = await db.query<[Array<Record<string, unknown>>]>(
+        "SELECT VALUE ->derived_from->turn.* FROM $from;", { from }
+      );
+      const turns = (rows?.[0] as unknown as Array<Record<string, unknown>> | undefined) ?? [];
+      return turns.map((t) => ({
+        id: recordIdToDomainId(t.id), content: String(t.content ?? ""),
+        sessionId: String(t.sessionId ?? ""), role: String(t.role ?? "")
+      }));
+    },
+    async recallMemoriesByVector(embedding: number[], k: number, recallOpts?: { includeSensitive?: boolean }) {
+      const includeSensitive = recallOpts?.includeSensitive ?? false;
+      // A4:status='confirmed' 必须;sensitivity 默认仅 normal。
+      // 3.x:KNN 算子 <|k,ef|> 已按余弦相似度近似排序;ORDER BY 不能用函数表达式
+      //      (报 "Missing order idiom vector"),故去掉 ORDER BY,靠 KNN 本身的近邻序。
+      const ef = Math.max(k * 4, 40);
+      const [rows] = await db.query<[Array<Record<string, unknown>>]>(
+        `SELECT id, text FROM memory
+           WHERE status = 'confirmed'
+             AND (sensitivity = 'normal' OR $includeSensitive)
+             AND embedding <|${k},${ef}|> $q;`,
+        { q: embedding, includeSensitive }
+      );
+      const hits = (rows ?? []) as Array<{ id: unknown; text: unknown }>;
+      return hits.map((h) => ({ id: recordIdToDomainId(h.id), text: String(h.text ?? "") }));
+    },
   };
 }
 
