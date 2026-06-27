@@ -920,3 +920,23 @@ P0 完成的判据（全部满足才算过门）：
 **2. Inline Execution** — 本会话内按批执行，带 checkpoint review（REQUIRED SUB-SKILL: superpowers:executing-plans）。
 
 **Which approach?**
+
+---
+
+## 5. 执行结果（2026-06-27，subagent-driven 已完成）
+
+在隔离 worktree（`worktree-surreal-s0-p0`，基于本地 HEAD）执行，S0/P0 全部通过、两阶段 review 通过。
+
+- **S0 spike 全绿**：`@surrealdb/node` 在 **Node 25.7** 加载成功（头号风险解除）；mem://、surrealkv:// 持久化、HNSW KNN、中文 BM25、`DEFINE EVENT` 级联**在嵌入式引擎均可用**。装得 `surrealdb@2.0.4` + `@surrealdb/node@3.0.3`。
+- **关键实测纠偏**：`@surrealdb/node@3.0.3` 内嵌 **SurrealDB 3.0.2 Rust 核心**（即便 JS SDK 是 2.0.4）→ SurrealQL 走 **3.x 语法**，与本计划原 2.x 写法的偏差已在代码中修正：
+  - 全文：`SEARCH ANALYZER` → **`FULLTEXT ANALYZER`**；中文需 `FILTERS ngram(2,2), lowercase`。
+  - 边对象字段：`FLEXIBLE TYPE object` → **`TYPE object FLEXIBLE`**。
+  - record id 含中文需反引号转义：`theme:` + 反引号 `放权` 反引号。
+  - `search::rrf` 签名变为 `search::rrf([$a,$b], limit)`（P2 混合检索再调，P0 不依赖）。
+- **P0 结果**：7 个新文件（`packages/db/src/surreal/`），`npx vitest run packages/db/src/surreal/` **8 passed**；全量 **962 passed | 6 skipped**（baseline 954+6，净增 8、零回归）；域层/既有测试/`server.ts` 未动。
+
+## 6. P1 前置（P0 代码质量 review 发现，开 P1 前必做）
+
+1. **`packages/db` 不在 `npm run typecheck` 覆盖内**（`tsconfig.json`/`apps/api/tsconfig.json` 均 `include:["src"]`）——本阶段 surreal 文件只被 esbuild 类型剥离，从未真正类型检查（sqlite 兄弟文件同样盲区）。用临时 tsconfig 单独 tsc 已确认 surreal 代码类型干净（并据此修了一处测试泛型 `[unknown[]]`→`[unknown[][]]`，commit fb4cdf2d）。**P1 接线前**应把 `packages/db` 纳入受检 tsconfig / project reference。
+2. **`@surrealdb/node` 的类型在 `moduleResolution:"Node"` 下解析不到**（报 TS2307，提示需 `node16`/`nodenext`/`bundler`；`surrealdb` 主包不受影响）。一旦 `packages/db`（或 P1 的 `apps/api` 接入处）进入 typecheck，**必须把相应 tsconfig 的 `moduleResolution` 升到 `bundler`（或 `node16`）**，否则 typecheck 红。这是 repo 级配置改动，需评估对 `src`/`apps/api` 既有文件的影响，故留作 P1 第一步。
+3. 次要（非阻断）：surreal 文件用 `.js` 相对导入扩展名（本项目 `Node` 解析下可用、已验证），与 sqlite 兄弟文件的无扩展名风格不一致；`connect.ts` 多 spread 了 `createRemoteEngines()`（嵌入式用不到，无害）。P1 统一风格时一并处理即可。
