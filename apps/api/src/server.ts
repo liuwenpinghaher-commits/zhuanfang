@@ -592,20 +592,39 @@ export async function startServer() {
   const productStateDbPath = process.env.PRODUCT_STATE_DB_PATH ?? join(process.cwd(), ".data", "product-state.db");
 
   const productStore = (process.env.PRODUCT_STORE ?? "sqlite").trim().toLowerCase();
-  let repository: ProductStateRepository;
-  if (productStore === "surreal") {
-    // 嵌入式 SurrealDB（绞杀者 P1a：opt-in，默认仍 sqlite）。异步构造在此 await，buildApiServer 保持同步。
-    // dynamic import via Function to prevent apps/api tsconfig (moduleResolution:Node) from
-    // type-checking packages/db surreal files that require @surrealdb/node (bundler resolution).
-    // packages/db/tsconfig.json covers those files with moduleResolution:bundler.
+
+  // P1a/P1d:动态 import surreal 工厂(避开 apps/api tsconfig moduleResolution:Node 对 @surrealdb/node 的类型检查)。
+  // packages/db/tsconfig.json 用 moduleResolution:bundler 覆盖这些文件。
+  const loadSurreal = async () => {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    const surrealMod = await (Function("p", "return import(p)") as (p: string) => Promise<{
+    const mod = await (Function("p", "return import(p)") as (p: string) => Promise<{
       createSurrealProductStateRepository: (opts: { url: string }) => Promise<ProductStateRepository>;
     }>)(new URL("../../../packages/db/src/surreal/surreal-product-state-repository.ts", import.meta.url).pathname);
     const dataDir = join(dirname(productStateDbPath), "surreal");
-    repository = await surrealMod.createSurrealProductStateRepository({ url: `surrealkv://${dataDir}/surreal` });
-    console.warn(JSON.stringify({ event: "product_store_surreal", detail: `嵌入式 SurrealDB @ ${dataDir}（P1a opt-in）` }));
+    return mod.createSurrealProductStateRepository({ url: `surrealkv://${dataDir}/surreal` });
+  };
+
+  let repository: ProductStateRepository;
+  if (productStore === "surreal") {
+    // P1a:纯 SurrealDB,opt-in。
+    repository = await loadSurreal();
+    console.warn(JSON.stringify({ event: "product_store", mode: "surreal" }));
+  } else if (productStore === "dual") {
+    // P1d:sqlite 权威 + surreal 影子。观察等价,sqlite 仍是真相、零风险。
+    const sqlite = createSqliteProductStateRepository({ dbPath: productStateDbPath });
+    const surreal = await loadSurreal();
+    const { createDualWriteRepository } = await import("./dual-write-repository");
+    repository = createDualWriteRepository({ authoritative: sqlite, shadow: surreal });
+    console.warn(JSON.stringify({ event: "product_store", mode: "dual", detail: "sqlite 权威 / surreal 影子" }));
+  } else if (productStore === "dual-surreal") {
+    // P1d:surreal 权威 + sqlite 冷备。切读 surreal,sqlite 仍写以便回退。
+    const sqlite = createSqliteProductStateRepository({ dbPath: productStateDbPath });
+    const surreal = await loadSurreal();
+    const { createDualWriteRepository } = await import("./dual-write-repository");
+    repository = createDualWriteRepository({ authoritative: surreal, shadow: sqlite });
+    console.warn(JSON.stringify({ event: "product_store", mode: "dual-surreal", detail: "surreal 权威 / sqlite 冷备" }));
   } else {
+    // 默认:sqlite(不变,任何未知值也落此分支)。
     repository = createSqliteProductStateRepository({ dbPath: productStateDbPath });
   }
   // enableResearchScheduler: only the persistent process runs the background scheduler.
