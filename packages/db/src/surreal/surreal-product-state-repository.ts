@@ -1,3 +1,4 @@
+import { RecordId } from "surrealdb";
 import type { Surreal } from "surrealdb";
 import type { ProductStateRepository, ReplaceStateOptions } from "../../../../apps/api/src/product-state-repository";
 import { StateRevisionConflictError } from "../../../../apps/api/src/product-state-repository";
@@ -85,10 +86,12 @@ async function loadState(db: Surreal): Promise<ProductState> {
   return normalizeProductState(assembled);
 }
 
-/** SurrealDB 记录 id(形如 `point:pt_1` 或 {tb,id}) → 领域 id 字符串。 */
+/** SurrealDB 记录 id → 领域 id 字符串。
+ *  3.x SDK 实际返回 RecordId 对象(instanceof RecordId);其 .id 段是领域 id。
+ *  fallback:string 形如 `point:pt_1` 取冒号后段;其他 toString()。 */
 function recordIdToDomainId(id: unknown): string {
+  if (id instanceof RecordId) return String(id.id);
   if (typeof id === "string") return id.includes(":") ? id.slice(id.indexOf(":") + 1) : id;
-  // SDK 可能返回 RecordId 对象 {tb, id};取其 id 段。
   const anyId = id as { id?: unknown } | undefined;
   return anyId?.id !== undefined ? String(anyId.id) : String(id);
 }
@@ -111,7 +114,7 @@ async function persist(db: Surreal, snapshot: ProductState): Promise<void> {
       const recVar = `r${i++}`;
       vars[recVar] = toRecord(entity as Record<string, unknown>, m);
       // 用 type::thing 构造记录 id,安全处理任意 id 字符串。
-      surql += `CREATE type::thing('${m.table}', $${recVar}_id) CONTENT $${recVar};\n`;
+      surql += `CREATE type::record('${m.table}', $${recVar}_id) CONTENT $${recVar};\n`;
       vars[`${recVar}_id`] = entity.id;
     }
   }

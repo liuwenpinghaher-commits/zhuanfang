@@ -21,8 +21,14 @@ export function runProductStateRepositoryContract(
   it("replaceState 写入的资产可被 getState 读回", async () => {
     const repo = await makeRepo();
     const base = repo.getState();
+    // theme 必须存在,否则 pruneDanglingThemeRefs 会清掉 relatedThemeIds。
     const next = {
       ...base,
+      themes: [
+        ...base.themes,
+        { id: "th_1", name: "主题一", summary: "摘要", maturity: "聚焦" as const,
+          representativeQuote: "", appearances: 1, nextQuestion: "", updatedAt: "2026-06-27T00:00:00.000Z" }
+      ],
       points: [
         ...base.points,
         { id: "pt_contract_1", title: "标题", content: "内容", status: "稳定观点" as const,
@@ -69,11 +75,20 @@ export function runProductStateRepositoryContract(
   return { runReloadDurability(reopenRepo: () => Promise<ProductStateRepository>) {
     it("落库后重开仓库,状态无损重建", async () => {
       const repo = await makeRepo();
-      const next = { ...repo.getState(), points: [
-        { id: "pt_reload", title: "持久化", content: "c", status: "已修正" as const,
-          confidence: "用户确认" as const, evidence: [], relatedThemeIds: ["th_r"], important: true,
-          updatedAt: "2026-06-27T00:00:00.000Z" }
-      ] };
+      const base = repo.getState();
+      // theme 必须存在,否则 pruneDanglingThemeRefs 会清掉 relatedThemeIds。
+      const next = { ...base,
+        themes: [
+          ...base.themes,
+          { id: "th_r", name: "重载主题", summary: "摘要", maturity: "聚焦" as const,
+            representativeQuote: "", appearances: 1, nextQuestion: "", updatedAt: "2026-06-27T00:00:00.000Z" }
+        ],
+        points: [
+          { id: "pt_reload", title: "持久化", content: "c", status: "已修正" as const,
+            confidence: "用户确认" as const, evidence: [], relatedThemeIds: ["th_r"], important: true,
+            updatedAt: "2026-06-27T00:00:00.000Z" }
+        ]
+      };
       repo.replaceState(next);
       if (flush) await flush(repo);
       const reopened = await reopenRepo();
