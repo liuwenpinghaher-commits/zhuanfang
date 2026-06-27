@@ -3,7 +3,7 @@
 
 -- derived_from: CognitiveEntity → turn(PROV-O wasDerivedFrom),边上挂溯源
 DEFINE TABLE IF NOT EXISTS derived_from SCHEMAFULL TYPE RELATION;
-DEFINE FIELD IF NOT EXISTS provenance        ON derived_from FLEXIBLE TYPE object;
+DEFINE FIELD IF NOT EXISTS provenance        ON derived_from TYPE object FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS provenance.origin ON derived_from TYPE string
   ASSERT $value IN ['llm_extracted','user_confirmed','heuristic','imported','seed'];
 
