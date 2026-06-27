@@ -94,6 +94,7 @@ async function main() {
   section(`结论`);
   if (hardFail) { console.error("SPIKE FAILED — 见上方 ❌;回 spec 00 §6 评估降级。"); process.exit(1); }
   console.log("SPIKE PASSED — 嵌入式 SurrealDB 在本机可用,P0 可落 schema。");
+  process.exit(0); // 强制退出:@surrealdb/node native thread 不会自动释放 event loop
 }
 
 // ---------- S2: 向量 HNSW ----------
