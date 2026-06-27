@@ -16,12 +16,17 @@ export interface DualWriteOptions {
 const DIFF_KEYS: Array<keyof ProductState> = [
   "points","decisions","debts","questions","themes","notes","memoryRecords",
   "memoryCandidates","importSources","ragChunks","searchBriefs","sessions",
-  "memoryEdges","chatSessions","profile","systemConfig"
+  "memoryEdges","chatSessions","profile","systemConfig","profileSuggestions"
 ];
 
-/** 内容等价签名:排序键 + 忽略 revision(两库 revision 各自 bump)。 */
+/**
+ * 内容等价签名:排序键 + 忽略存储层元字段。
+ * - revision:两库各自 bump,不代表内容差异。
+ * - schemaVersion:surreal schema migration 标记(surreal getState 注入,in-memory/sqlite 无此字段)。
+ *   两者均是存储层元信息,不反映业务内容是否一致。
+ */
 function contentDigest(state: ProductState): string {
-  return buildStableDigest({ ...state, revision: 0 });
+  return buildStableDigest({ ...state, revision: 0, schemaVersion: 0 });
 }
 
 function firstDivergentKey(a: ProductState, b: ProductState): string | undefined {
