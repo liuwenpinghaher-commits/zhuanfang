@@ -1,7 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { NODE_MAPPINGS, toRecord, fromRecord, mappingFor } from "./node-mapper";
-import { META_KEYS } from "./surreal-product-state-repository";
+import { META_KEYS, DATETIME_DEFAULT_COLS } from "./surreal-product-state-repository";
 import { createInitialProductState } from "../../../../src/domain/engine";
+import { readFileSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 describe("node-mapper", () => {
   it("point 往返:核心字段 + rest 无损", () => {
@@ -37,5 +40,22 @@ describe("node-mapper", () => {
     const stateKeys = Object.keys(createInitialProductState());
     const uncovered = stateKeys.filter((k) => !covered.has(k));
     expect(uncovered, `未被 NODE_MAPPINGS/META_KEYS 覆盖的键会在落库时丢失: ${uncovered.join(", ")}`).toEqual([]);
+  });
+
+  // 防漂移守卫:每个 migration 里 `TYPE datetime ... DEFAULT` 的列都必须在 DATETIME_DEFAULT_COLS 里。
+  // 否则 persist 的 UPSERT CONTENT 覆盖该表已存在记录时,该列变 NONE → SCHEMAFULL coerce 静默失败。
+  // 把"新增 DEFAULT datetime 列忘了同步映射"从静默数据分歧变成响亮的测试失败。
+  it("DATETIME_DEFAULT_COLS 覆盖所有 migration 里的 DEFAULT datetime 列(防 UPSERT 覆盖静默失败)", () => {
+    const migDir = join(dirname(fileURLToPath(import.meta.url)), "migrations");
+    const re = /DEFINE FIELD (?:IF NOT EXISTS\s+)?(\w+)\s+ON\s+(\w+)\s+TYPE datetime\b[^\n;]*DEFAULT/g;
+    const missing: string[] = [];
+    for (const f of readdirSync(migDir).filter((x) => x.endsWith(".surql"))) {
+      const sql = readFileSync(join(migDir, f), "utf8");
+      for (const m of sql.matchAll(re)) {
+        const [, col, tbl] = m;
+        if (!(DATETIME_DEFAULT_COLS[tbl] ?? []).includes(col)) missing.push(`${tbl}.${col} (${f})`);
+      }
+    }
+    expect(missing, `这些 DEFAULT datetime 列未登记进 DATETIME_DEFAULT_COLS,UPSERT 覆盖会静默失败: ${missing.join(", ")}`).toEqual([]);
   });
 });

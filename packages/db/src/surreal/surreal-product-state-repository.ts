@@ -18,7 +18,7 @@ const META_ID = "state_meta:main";
  *  (从实体 rest 里的同名 ISO 取,转 Date;无则 now)。注:这些列的真值仍在 rest 内无损,
  *  typed 列只为满足 schema;loadState/fromRecord 行为不变(见该函数注释)。
  *  ⚠️ 新增带 DEFAULT 的 datetime 列时,务必同步此表,否则 UPSERT 覆盖会静默 coerce 失败。 */
-const DATETIME_DEFAULT_COLS: Record<string, readonly string[]> = {
+export const DATETIME_DEFAULT_COLS: Record<string, readonly string[]> = {
   session: ["startedAt"],
   turn: ["timestamp"],
   note: ["createdAt"],
