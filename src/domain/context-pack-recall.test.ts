@@ -96,3 +96,17 @@ describe("card / createSessionDraft 透传 recall + 溯源", () => {
     expect(typeof card.title).toBe("string");
   });
 });
+
+describe("P2b 审查修复", () => {
+  it("C-3:confirmedMemories 并入 themeAssets.memories(与 collectRelevantMemories 口径一致)", () => {
+    const recall: RecallResult = { memoryHits: [{ id: "me_b", text: "记忆B" }], themeAssets: { points: [], decisions: [], questions: [], memories: ["me_a"] } };
+    const pack = buildInterviewContextPack(linkedRecallState(), { topicHint: "放权" }, recall);
+    expect(pack.confirmedMemories).toContain("记忆A"); // themeAssets.memories 并入
+    expect(pack.confirmedMemories).toContain("记忆B"); // memoryHits
+  });
+  it("B-3:buildInterviewContextPack 不传 topicHint 时用最高频主题(与 guide/prefetch 口径一致,非 themes[0])", () => {
+    const base = createInitialProductState();
+    const s: ProductState = { ...base, searchBriefs: [], themes: [theme("th_low", "低频主题", 1), theme("th_high", "高频主题", 9)] };
+    expect(buildInterviewContextPack(s, {}).topicHint).toBe("高频主题");
+  });
+});

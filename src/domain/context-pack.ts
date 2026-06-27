@@ -270,7 +270,7 @@ export interface CreateSessionOptions {
 }
 
 export function buildInterviewContextPack(state: ProductState, options: InterviewGuideOptions = {}, recall?: RecallResult): InterviewContextPack {
-  const topicHint = options.topicHint?.trim() || state.themes[0]?.name || state.profile.currentFocus;
+  const topicHint = resolveInterviewTopicHint(state, options);
   const memoryPolicy = state.systemConfig.memory;
   const contextSourceLimit = Math.max(1, state.systemConfig.search.maxSources);
   const sourceHighlightLimit = Math.max(0, state.systemConfig.search.maxSources);
@@ -305,7 +305,8 @@ export function buildInterviewContextPack(state: ProductState, options: Intervie
   // P2b:有 recall.memoryHits(向量 HNSW 召回)→ 候选 record 三因子精排;否则现状(queryEmbedding 走语义,无则子串)。
   const confirmedMemories = recall?.memoryHits
     ? rankMemoryRecordsBySemantics(
-        (() => { const ids = new Set(recall.memoryHits.map((h) => h.id)); return memoryRecords.filter((record) => ids.has(record.id)); })(),
+        // P2b:与 collectRelevantMemories 的记忆池口径统一 —— memoryHits ∪ themeAssets.memories(图主题记忆)。
+        (() => { const ids = new Set([...recall.memoryHits.map((h) => h.id), ...(recall.themeAssets?.memories ?? [])]); return memoryRecords.filter((record) => ids.has(record.id)); })(),
         topicHint,
         options.queryEmbedding ?? []
       )
@@ -413,7 +414,7 @@ export function buildInterviewGuide(state: ProductState, options: InterviewGuide
     topicHint,
     ...(options.searchBriefId ? { searchBriefId: options.searchBriefId } : {}),
     ...(options.queryEmbedding ? { queryEmbedding: options.queryEmbedding } : {})
-  });
+  }, recall);
   const perspectiveCoverage = buildPerspectiveCoverage(state);
   const missingPerspectives = defaultPerspectiveOrder.filter((perspective) => perspectiveCoverage[perspective] === 0);
   const recommendedPerspectives = chooseRecommendedPerspectives(topicHint, searchBrief, perspectiveCoverage, missingPerspectives);
@@ -834,8 +835,14 @@ function collectRelevantMemories(
         ...state.decisions.map((decision) => `${decision.title}：${decision.choice}`),
         ...state.themes.map((theme) => `${theme.name}：${theme.summary}`)
       ];
-  // themeAssets 已精确归属(图序),不再子串重排;回落分支沿用 rankMemoryTexts。
-  const rankedOthers = recall?.themeAssets ? otherCandidates : rankMemoryTexts(otherCandidates, topicHint);
+  // P2b:themeAssets 已精确按主题归属;组内按 topicHint 相关性**稳定排序但不过滤**(保全部归属资产,
+  // 避免 SurrealDB 图序不稳定 + slice(0,5) 截掉更相关项);回落分支沿用 rankMemoryTexts(含子串过滤)。
+  const rankedOthers = recall?.themeAssets
+    ? [...otherCandidates]
+        .map((text, i) => ({ text, i, score: topicTokens.reduce((s, tok) => s + (text.includes(tok) ? 1 : 0), 0) }))
+        .sort((a, b) => b.score - a.score || a.i - b.i)
+        .map((x) => x.text)
+    : rankMemoryTexts(otherCandidates, topicHint);
 
   // 记忆优先于其余资产，去重后取前 5。
   const seen = new Set<string>();
