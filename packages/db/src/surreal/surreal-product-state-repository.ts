@@ -10,8 +10,9 @@ import { applySchema } from "./apply-schema";
 import { NODE_MAPPINGS, toRecord, fromRecord } from "./node-mapper";
 
 const META_ID = "state_meta:main";
-/** 运维尾巴:不进节点表、整体存 state_meta.rest 的 ProductState 键。 */
-const META_KEYS = [
+/** 运维尾巴:不进节点表、整体存 state_meta.rest 的 ProductState 键。
+ *  导出供分区完整性守卫测试用(防将来新增 ProductState 数组未映射被静默丢弃)。 */
+export const META_KEYS = [
   "profile","profileSuggestions","interviewAnnotations","chatSessions","memoryCorrections",
   "memoryEdges","podcastEpisodes","corpusImports","corpusInsights","playbookPatches",
   "configVersions","auditEvents","aiRunEvents","workflowRuns","operationalChecks",
@@ -113,7 +114,7 @@ async function persist(db: Surreal, snapshot: ProductState): Promise<void> {
     for (const entity of arr) {
       const recVar = `r${i++}`;
       vars[recVar] = toRecord(entity as Record<string, unknown>, m);
-      // 用 type::thing 构造记录 id,安全处理任意 id 字符串。
+      // 用 type::record 构造记录 id,安全处理任意 id 字符串(3.x:type::thing 已更名 type::record)。
       surql += `CREATE type::record('${m.table}', $${recVar}_id) CONTENT $${recVar};\n`;
       vars[`${recVar}_id`] = entity.id;
     }

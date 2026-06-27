@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { NODE_MAPPINGS, toRecord, fromRecord, mappingFor } from "./node-mapper";
+import { META_KEYS } from "./surreal-product-state-repository";
+import { createInitialProductState } from "../../../../src/domain/engine";
 
 describe("node-mapper", () => {
   it("point 往返:核心字段 + rest 无损", () => {
@@ -22,5 +24,18 @@ describe("node-mapper", () => {
     expect(NODE_MAPPINGS.map((x) => x.stateKey).sort()).toEqual(
       ["debts","decisions","importSources","memoryCandidates","memoryRecords","notes","points","questions","ragChunks","searchBriefs","sessions","themes"].sort()
     );
+  });
+
+  // 分区完整性守卫:ProductState 每个键必须落在 节点表(NODE_MAPPINGS) 或 运维尾巴(META_KEYS) 或 revision。
+  // 否则将来新增数组会在 SurrealStore 落库时被静默丢弃(真数据丢失)。
+  it("ProductState 全键被持久化分区覆盖(防新增数组静默丢弃)", () => {
+    const covered = new Set<string>([
+      ...NODE_MAPPINGS.map((m) => m.stateKey as string),
+      ...META_KEYS,
+      "revision"
+    ]);
+    const stateKeys = Object.keys(createInitialProductState());
+    const uncovered = stateKeys.filter((k) => !covered.has(k));
+    expect(uncovered, `未被 NODE_MAPPINGS/META_KEYS 覆盖的键会在落库时丢失: ${uncovered.join(", ")}`).toEqual([]);
   });
 });
