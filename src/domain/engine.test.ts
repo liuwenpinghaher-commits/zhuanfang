@@ -155,6 +155,8 @@ describe("interview business engine", () => {
     expect(updated.questions[0].status).toBe("正在聚焦");
     expect(updated.questions[0].important).toBe(true);
     expect(updated.questions[0].whyImportant).toContain("会后反馈");
+    // 审查修复:回访问题必须继承来源会话 id,否则在按会话归档/时间线里孤立。
+    expect(updated.questions[0].sourceSessionId).toBe(note.sessionId);
   });
 
   it("builds cognitive radar and yearly review from product assets", () => {

@@ -28,6 +28,9 @@ export function createQuestionFromNote(state: ProductState, noteId: string, next
         // ponytail: inherit the source note's themes instead of hardcoding the
         // seed "control" theme; empty when the note has none, theme-tagging fills later.
         relatedThemeIds: note.relatedThemeIds ?? [],
+        // 审查修复:补 sourceSessionId(note.sessionId 在手边),否则会后回访问题在
+        // 按会话归档/时间线(session-archive 按 sourceSessionId 过滤)里永久孤立。
+        sourceSessionId: note.sessionId,
         nextPrompt: question,
         important: true,
         updatedAt: nowIso()

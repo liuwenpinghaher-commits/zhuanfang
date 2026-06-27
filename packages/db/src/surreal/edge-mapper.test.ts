@@ -38,6 +38,14 @@ describe("edge-mapper", () => {
     expect(at).toContainEqual(expect.objectContaining({ edge: "about_theme", fromTable: "memory", fromId: "me_1", toTable: "theme", toId: "th_1" }));
   });
 
+  it("审查修复:about_theme 过滤 from 端 —— memory 不存在时不产悬挂边", () => {
+    const st = baseState();
+    const withGhost = { ...st, memoryEdges: [...st.memoryEdges, { fromMemoryRecordId: "me_gone", themeId: "th_1" }] };
+    const at = collectEdges(withGhost).filter((e) => e.edge === "about_theme");
+    expect(at.map((e) => e.fromId)).toContain("me_1"); // 存在的 memory 仍产边
+    expect(at.map((e) => e.fromId)).not.toContain("me_gone"); // 不存在的 memory 被过滤,不悬挂
+  });
+
   it("session.turns → part_of + turn 记录", () => {
     const st = baseState();
     expect(collectEdges(st)).toContainEqual(expect.objectContaining({ edge: "part_of", fromTable: "turn", fromId: "tu_1", toTable: "session", toId: "se_1" }));
