@@ -591,7 +591,23 @@ export async function startServer() {
   // Tests call buildApiServer() directly (no dbPath) and stay in-memory/isolated.
   const productStateDbPath = process.env.PRODUCT_STATE_DB_PATH ?? join(process.cwd(), ".data", "product-state.db");
 
-  const repository = createSqliteProductStateRepository({ dbPath: productStateDbPath });
+  const productStore = (process.env.PRODUCT_STORE ?? "sqlite").trim().toLowerCase();
+  let repository: ProductStateRepository;
+  if (productStore === "surreal") {
+    // 嵌入式 SurrealDB（绞杀者 P1a：opt-in，默认仍 sqlite）。异步构造在此 await，buildApiServer 保持同步。
+    // dynamic import via Function to prevent apps/api tsconfig (moduleResolution:Node) from
+    // type-checking packages/db surreal files that require @surrealdb/node (bundler resolution).
+    // packages/db/tsconfig.json covers those files with moduleResolution:bundler.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const surrealMod = await (Function("p", "return import(p)") as (p: string) => Promise<{
+      createSurrealProductStateRepository: (opts: { url: string }) => Promise<ProductStateRepository>;
+    }>)(new URL("../../../packages/db/src/surreal/surreal-product-state-repository.ts", import.meta.url).pathname);
+    const dataDir = join(dirname(productStateDbPath), "surreal");
+    repository = await surrealMod.createSurrealProductStateRepository({ url: `surrealkv://${dataDir}/surreal` });
+    console.warn(JSON.stringify({ event: "product_store_surreal", detail: `嵌入式 SurrealDB @ ${dataDir}（P1a opt-in）` }));
+  } else {
+    repository = createSqliteProductStateRepository({ dbPath: productStateDbPath });
+  }
   // enableResearchScheduler: only the persistent process runs the background scheduler.
   // It self-gates per tick on systemConfig.research.autoScheduleEnabled (default off),
   // so users can toggle it on at runtime without a restart.
