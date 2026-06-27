@@ -8,6 +8,7 @@ import type { ProductState } from "../../../../src/domain/types";
 import { createSurrealConnection, type SurrealConnectionOptions } from "./connect";
 import { applySchema } from "./apply-schema";
 import { NODE_MAPPINGS, toRecord, fromRecord } from "./node-mapper";
+import { collectEdges, turnRecordsOf, MANAGED_EDGE_TABLES } from "./edge-mapper";
 
 const META_ID = "state_meta:main";
 /** 运维尾巴:不进节点表、整体存 state_meta.rest 的 ProductState 键。
@@ -24,6 +25,8 @@ export interface SurrealRepoHandle extends ProductStateRepository {
   flush(): Promise<void>;
   /** 关闭底层连接(测试/关闭用)。 */
   close(): Promise<void>;
+  /** 仅测试/诊断用:直查底层 db(读边等)。生产路径不应依赖。 */
+  query<T extends unknown[]>(surql: string, vars?: Record<string, unknown>): Promise<T>;
 }
 
 export type SurrealRepoOptions = SurrealConnectionOptions;
@@ -64,7 +67,8 @@ export async function createSurrealProductStateRepository(opts: SurrealRepoOptio
       return state.sessions.find((s) => s.id === id) ?? null;
     },
     async flush() { await persistQueue; },
-    async close() { await persistQueue; await db.close(); }
+    async close() { await persistQueue; await db.close(); },
+    query<T extends unknown[]>(surql: string, vars?: Record<string, unknown>) { return db.query<T>(surql, vars) as Promise<T>; }
   };
 }
 
@@ -98,27 +102,56 @@ function recordIdToDomainId(id: unknown): string {
 }
 
 /** 全量覆盖落库:事务内,每张本体表 delete-all + 重建;state_meta upsert(revision + 运维尾巴)。
- *  P1a 取最简正确(每写全表重写);diff-upsert 是 P1c。单用户小规模可接受。 */
+ *  P1a 取最简正确(每写全表重写);diff-upsert 是 P1c。单用户小规模可接受。
+ *  P1b 追加:turn 表正规化 + 四张受管边表全量覆盖(RELATE)。 */
 async function persist(db: Surreal, snapshot: ProductState): Promise<void> {
   const meta: Record<string, unknown> = {};
   for (const k of META_KEYS) meta[k] = (snapshot as unknown as Record<string, unknown>)[k];
 
-  // 组装事务:BEGIN → 各表 DELETE + CREATE → state_meta UPSERT → COMMIT。
-  // 用参数化 query 传记录内容(避免手拼 SurrealQL 注入/转义问题)。
   let surql = "BEGIN TRANSACTION;\n";
   const vars: Record<string, unknown> = {};
   let i = 0;
+
+  // 1) 节点表全量覆盖(P1a)
   for (const m of NODE_MAPPINGS) {
     surql += `DELETE ${m.table};\n`;
     const arr = ((snapshot as unknown as Record<string, unknown>)[m.stateKey] as Array<{ id: string }>) ?? [];
     for (const entity of arr) {
       const recVar = `r${i++}`;
       vars[recVar] = toRecord(entity as Record<string, unknown>, m);
-      // 用 type::record 构造记录 id,安全处理任意 id 字符串(3.x:type::thing 已更名 type::record)。
-      surql += `CREATE type::record('${m.table}', $${recVar}_id) CONTENT $${recVar};\n`;
       vars[`${recVar}_id`] = entity.id;
+      surql += `CREATE type::record('${m.table}', $${recVar}_id) CONTENT $${recVar};\n`;
     }
   }
+
+  // 2) turn 表正规化(P1b):全量覆盖。turns 同时仍在 session.rest(P1a,无损读),此处冗余写入供边引用 + P2 图查询。
+  surql += `DELETE turn;\n`;
+  for (const t of turnRecordsOf(snapshot)) {
+    const tv = `t${i++}`;
+    vars[tv] = t;
+    vars[`${tv}_id`] = t.id;
+    surql += `CREATE type::record('turn', $${tv}_id) CONTENT $${tv};\n`;
+  }
+
+  // 3) 边全量覆盖(P1b):先清四张受管边表,再按 collectEdges RELATE。
+  //    (删节点不自动清边,A5 是 P3;此处全量重建保不留悬挂边。)
+  //    3.x 校正:type::record 不被 RELATE 端点接受 → fallback 用 RecordId JS 对象作参数
+  //    ($from/$to 形如 $e0_f/$e0_t),边字段用 SET 替 CONTENT(derived_from.provenance)。
+  for (const et of MANAGED_EDGE_TABLES) surql += `DELETE ${et};\n`;
+  for (const e of collectEdges(snapshot)) {
+    const ev = `e${i++}`;
+    vars[`${ev}_f`] = new RecordId(e.fromTable, e.fromId);
+    vars[`${ev}_t`] = new RecordId(e.toTable, e.toId);
+    let rel = `RELATE $${ev}_f->${e.edge}->$${ev}_t`;
+    if (e.data) {
+      // derived_from carries { provenance: {...} }; 3.x RELATE uses SET, not CONTENT
+      vars[`${ev}_d`] = e.data;
+      rel += ` SET provenance = $${ev}_d.provenance`;
+    }
+    surql += rel + ";\n";
+  }
+
+  // 4) state_meta(P1a)
   vars.meta = meta;
   vars.rev = snapshot.revision ?? 0;
   surql += `UPSERT ${META_ID} SET revision = $rev, rest = $meta;\n`;

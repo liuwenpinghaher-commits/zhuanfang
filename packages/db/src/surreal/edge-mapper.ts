@@ -9,12 +9,14 @@ export interface EdgeSpec {
   data?: Record<string, unknown>;
 }
 
-/** turn 记录(写 turn 表用):从各 session.turns 摊平,带 sessionId 外键。 */
+/** turn 记录(写 turn 表用):从各 session.turns 摊平,带 sessionId 外键。
+ *  3.x 校正:turn.timestamp DEFINE 为 datetime,必须传 Date 对象(字符串被拒)。 */
 export function turnRecordsOf(state: ProductState): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = [];
   for (const s of state.sessions) {
     for (const t of s.turns ?? []) {
-      out.push({ id: t.id, sessionId: s.id, role: t.role, content: t.content, intent: t.intent, timestamp: t.timestamp });
+      const ts = t.timestamp ? new Date(t.timestamp) : new Date();
+      out.push({ id: t.id, sessionId: s.id, role: t.role, content: t.content, intent: t.intent, timestamp: ts });
     }
   }
   return out;
