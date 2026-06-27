@@ -155,4 +155,63 @@ describe("surreal graph edges (mem://)", () => {
     const [bt] = await repo.query<[unknown[]]>("SELECT * FROM belongs_to_theme;");
     expect((bt ?? []).length).toBe(0);   // 全量覆盖:旧边已清
   });
+
+  it("连续两次 replaceState(diff 增量)后内存与 flush 后一致,无漏写", async () => {
+    const repo = await makeMem();
+    const base = repo.getState();
+    repo.replaceState({ ...base, points: [{ id:"pt_1", title:"一", content:"c", status:"稳定观点" as const, confidence:"用户确认" as const, evidence:[], relatedThemeIds:[], important:false, updatedAt:"2026-06-27T00:00:00.000Z" }] });
+    repo.replaceState({ ...repo.getState(), points: [...repo.getState().points, { id:"pt_2", title:"二", content:"c", status:"稳定观点" as const, confidence:"用户确认" as const, evidence:[], relatedThemeIds:[], important:false, updatedAt:"2026-06-27T00:00:00.000Z" }] });
+    await repo.flush();
+    // 直查底层:两条都在(第二次 diff 基线=第一次成功后,增量只含 pt_2,但 pt_1 仍在)
+    const [rows] = await repo.query<[Array<{ id: unknown }>]>("SELECT id FROM point;");
+    expect((rows ?? []).length).toBe(2);
+  });
+});
+
+describe("surreal diff-upsert (surrealkv://)", () => {
+  it("多步增量写(增/改/删 节点+边)后跨进程 reload,DB 态与最终 state 等价", () => {
+    const dir = mkdtempSync(join(tmpdir(), "surreal-p1c-"));
+    try {
+      const url = `surrealkv://${dir}/surreal`;
+      const repoSrc = JSON.stringify(join(process.cwd(), "packages/db/src/surreal/surreal-product-state-repository.ts"));
+      // 写进程:连续多次 replaceState(增 theme+point+边 → 改 point → 删 point),每次 flush。
+      const w = runScript(`
+import { createSurrealProductStateRepository } from ${repoSrc};
+const repo = await createSurrealProductStateRepository({ url: ${JSON.stringify(url)} });
+const base = repo.getState();
+const theme = { id:'th_1', name:'放权', summary:'', maturity:'聚焦', representativeQuote:'', appearances:1, nextQuestion:'', updatedAt:'2026-06-27T00:00:00.000Z' };
+repo.replaceState({ ...base, themes:[theme],
+  points:[{ id:'pt_1', title:'A', content:'c', status:'稳定观点', confidence:'用户确认', evidence:[], relatedThemeIds:['th_1'], important:false, updatedAt:'2026-06-27T00:00:00.000Z' },
+           { id:'pt_2', title:'B', content:'c', status:'稳定观点', confidence:'用户确认', evidence:[], relatedThemeIds:['th_1'], important:false, updatedAt:'2026-06-27T00:00:00.000Z' }] });
+await repo.flush();
+let s = repo.getState();
+repo.replaceState({ ...s, points: s.points.map(p => p.id==='pt_1' ? { ...p, title:'A改' } : p) });
+await repo.flush();
+s = repo.getState();
+repo.replaceState({ ...s, points: s.points.filter(p => p.id!=='pt_2') });
+await repo.flush();
+await repo.close();
+console.log('ok'); process.exit(0);
+`, join(dir, "w.mts"));
+      if (w.status !== 0) throw new Error("写进程失败:\n" + w.stderr);
+      // 读进程:reload,断言最终态(pt_1 改名、pt_2 没了、pt_2 的边没了、pt_1 的边在)。
+      const r = runScript(`
+import { createSurrealProductStateRepository } from ${repoSrc};
+const repo = await createSurrealProductStateRepository({ url: ${JSON.stringify(url)} });
+const s = repo.getState();
+const [bt] = await repo.query("SELECT VALUE <-belongs_to_theme<-point FROM theme:th_1;");
+console.log(JSON.stringify({
+  pt1: s.points.find(p=>p.id==='pt_1')?.title,
+  pt2: s.points.find(p=>p.id==='pt_2') ? 'present' : 'gone',
+  btCount: (bt?.[0] ?? []).length
+}));
+await repo.close(); process.exit(0);
+`, join(dir, "r.mts"));
+      if (r.status !== 0) throw new Error("读进程失败:\n" + r.stderr);
+      const out = JSON.parse(r.stdout.trim().split("\n").filter(l=>l.startsWith("{")).at(-1) ?? "{}") as { pt1?: string; pt2?: string; btCount?: number };
+      expect(out.pt1).toBe("A改");        // 改生效
+      expect(out.pt2).toBe("gone");        // 删生效
+      expect(out.btCount).toBe(1);          // 仅 pt_1 的边在(pt_2 删除连带其边被 diffEdges 移除)
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 60000);
 });
