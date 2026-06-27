@@ -8,7 +8,8 @@ import type { ProductState } from "../../../../src/domain/types";
 import { createSurrealConnection, type SurrealConnectionOptions } from "./connect";
 import { applySchema } from "./apply-schema";
 import { NODE_MAPPINGS, toRecord, fromRecord } from "./node-mapper";
-import { collectEdges, turnRecordsOf, MANAGED_EDGE_TABLES } from "./edge-mapper";
+import { collectEdges, turnRecordsOf } from "./edge-mapper";
+import { diffById, diffEdges } from "./diff";
 
 const META_ID = "state_meta:main";
 
@@ -75,14 +76,20 @@ export async function createSurrealProductStateRepository(opts: SurrealRepoOptio
 
   // 内存工作副本:同步接口的真相源。
   let state: ProductState = await loadState(db);
-  // 串行化落库队列(防并发 replaceState 的全量覆盖写交错);flush 等待它。
+  // diff 基线:上次成功落库的状态(非内存 state)。失败不更新 → 下次 diff 自动补回漏掉的增量(自愈)。
+  let lastPersisted: ProductState = state;
   let persistQueue: Promise<void> = Promise.resolve();
 
   function enqueuePersist(snapshot: ProductState) {
-    persistQueue = persistQueue.then(() => persist(db, snapshot)).catch((err) => {
-      // fail-loud:落库失败不静默(内存已前进,DB 落后——记录以便排查/告警)。
-      console.error(JSON.stringify({ event: "surreal_persist_failed", error: String(err) }));
-    });
+    persistQueue = persistQueue
+      .then(async () => {
+        await persist(db, lastPersisted, snapshot);
+        lastPersisted = snapshot;                 // 仅成功后推进基线
+      })
+      .catch((err) => {
+        // fail-loud:基线不动,下次 persist 以旧基线 diff、补回本次漏写(自愈)。
+        console.error(JSON.stringify({ event: "surreal_persist_failed", error: String(err) }));
+      });
   }
 
   return {
@@ -139,72 +146,74 @@ function recordIdToDomainId(id: unknown): string {
   return anyId?.id !== undefined ? String(anyId.id) : String(id);
 }
 
-/** 全量覆盖落库:单事务、原子无窗口(3.x 校正)。
- *  SurrealDB 3.x 不允许在同一事务内 DELETE 再 CREATE 同一 id 的记录(已验证),
- *  故节点/turn 用 `UPSERT ... CONTENT`(幂等、可覆盖同 id),删除多余记录用
- *  `DELETE <tbl> WHERE id NOT IN $keep`(keep = 本次该表所有记录的 RecordId 数组;空则整表删)。
- *  边没有稳定领域 id、RELATE 每次生成新 id,无同 id 冲突,故仍 `DELETE <edge>;` 再 RELATE。
- *  全部在一个 BEGIN/COMMIT 内提交 —— 替代旧的 TXN1(删)/TXN2(建)拆分,消除两事务间的非原子窗口。
- *  P1a 取最简正确(每写全表覆盖);diff-upsert 是 P1c。单用户小规模可接受。
- *  P1b 追加:turn 表正规化 + 四张受管边表全量覆盖(RELATE)。
- *  ⚠️ UPSERT CONTENT 不重跑列 DEFAULT,故节点/turn 记录先过 fillUpsertDefaults 补 rest + datetime 列。 */
-async function persist(db: Surreal, snapshot: ProductState): Promise<void> {
-  const meta: Record<string, unknown> = {};
-  for (const k of META_KEYS) meta[k] = (snapshot as unknown as Record<string, unknown>)[k];
-
+/** diff-upsert 落库:只写 prev→next 的增量(节点/turn 按 id diff,边按身份集差),单事务。
+ *  prev = lastPersisted(上次成功落库态);最终 DB 态与全量覆盖等价,但写放大降到 O(变更)。
+ *  ⚠️ UPSERT CONTENT 不重跑列 DEFAULT,故 upsert 记录先过 fillUpsertDefaults(同 P1b)。 */
+async function persist(db: Surreal, prev: ProductState, next: ProductState): Promise<void> {
   let surql = "BEGIN TRANSACTION;\n";
   const vars: Record<string, unknown> = {};
   let i = 0;
 
-  // 1) 节点表全量覆盖(P1a):UPSERT 每条 + DELETE WHERE id NOT IN keep。
+  // 1) 节点表:diffById → UPSERT 变更 + DELETE 移除
   for (const m of NODE_MAPPINGS) {
-    const arr = ((snapshot as unknown as Record<string, unknown>)[m.stateKey] as Array<{ id: string }>) ?? [];
-    const keep: RecordId[] = [];
-    for (const entity of arr) {
-      const recVar = `r${i++}`;
-      vars[recVar] = fillUpsertDefaults(m.table, toRecord(entity as Record<string, unknown>, m));
-      vars[`${recVar}_id`] = entity.id;
-      surql += `UPSERT type::record('${m.table}', $${recVar}_id) CONTENT $${recVar};\n`;
-      keep.push(new RecordId(m.table, entity.id));
+    const prevArr = ((prev as unknown as Record<string, unknown>)[m.stateKey] as Array<{ id: string }>) ?? [];
+    const nextArr = ((next as unknown as Record<string, unknown>)[m.stateKey] as Array<{ id: string }>) ?? [];
+    const { upsert, removeIds } = diffById(prevArr, nextArr);
+    for (const entity of upsert) {
+      const rv = `r${i++}`;
+      vars[rv] = fillUpsertDefaults(m.table, toRecord(entity as Record<string, unknown>, m));
+      vars[`${rv}_id`] = entity.id;
+      surql += `UPSERT type::record('${m.table}', $${rv}_id) CONTENT $${rv};\n`;
     }
-    const keepVar = `keep_${m.table}`;
-    vars[keepVar] = keep;
-    surql += keep.length ? `DELETE ${m.table} WHERE id NOT IN $${keepVar};\n` : `DELETE ${m.table};\n`;
-  }
-
-  // 2) turn 表正规化(P1b):turns 同时仍在 session.rest(P1a 无损读),此处供边引用 + P2 图查询。
-  //    3.x 校正:turn.timestamp/rest 均带 DEFAULT,UPSERT CONTENT 不重跑 → fillUpsertDefaults 补齐。
-  const keepTurns: RecordId[] = [];
-  for (const t of turnRecordsOf(snapshot)) {
-    const tv = `t${i++}`;
-    vars[tv] = fillUpsertDefaults("turn", { ...t });
-    vars[`${tv}_id`] = t.id;
-    surql += `UPSERT type::record('turn', $${tv}_id) CONTENT $${tv};\n`;
-    keepTurns.push(new RecordId("turn", t.id as string));
-  }
-  vars.keepTurns = keepTurns;
-  surql += keepTurns.length ? `DELETE turn WHERE id NOT IN $keepTurns;\n` : `DELETE turn;\n`;
-
-  // 3) 边全量覆盖(P1b):边无稳定领域 id,先清四张受管边表再 RELATE(同事务无同 id 冲突)。
-  //    (删节点不自动清边,A5 是 P3;此处全量重建保不留悬挂边。)
-  //    3.x 校正:RELATE 端点用 RecordId JS 对象($from/$to 参数);
-  //    边字段用 SET 替 CONTENT(derived_from.provenance);origin='llm_extracted' 合 002 ASSERT。
-  for (const et of MANAGED_EDGE_TABLES) surql += `DELETE ${et};\n`;
-  for (const e of collectEdges(snapshot)) {
-    const ev = `e${i++}`;
-    vars[`${ev}_f`] = new RecordId(e.fromTable, e.fromId);
-    vars[`${ev}_t`] = new RecordId(e.toTable, e.toId);
-    let rel = `RELATE $${ev}_f->${e.edge}->$${ev}_t`;
-    if (e.data) {
-      vars[`${ev}_d`] = e.data;
-      rel += ` SET provenance = $${ev}_d.provenance`;
+    if (removeIds.length) {
+      const dv = `del_${m.table}`;
+      vars[dv] = removeIds.map((id) => new RecordId(m.table, id));
+      surql += `DELETE ${m.table} WHERE id IN $${dv};\n`;
     }
-    surql += rel + ";\n";
   }
 
-  // 4) state_meta(P1a)
+  // 2) turn 表:同样 diffById(turnRecordsOf)
+  {
+    const { upsert, removeIds } = diffById(
+      turnRecordsOf(prev) as Array<Record<string, unknown> & { id: string }>,
+      turnRecordsOf(next) as Array<Record<string, unknown> & { id: string }>,
+    );
+    for (const t of upsert) {
+      const tv = `t${i++}`;
+      vars[tv] = fillUpsertDefaults("turn", { ...t });
+      vars[`${tv}_id`] = t.id;
+      surql += `UPSERT type::record('turn', $${tv}_id) CONTENT $${tv};\n`;
+    }
+    if (removeIds.length) {
+      vars.del_turn = removeIds.map((id) => new RecordId("turn", id));
+      surql += `DELETE turn WHERE id IN $del_turn;\n`;
+    }
+  }
+
+  // 3) 边:diffEdges → DELETE 移除(WHERE in/out)+ RELATE 新增
+  {
+    const { added, removed } = diffEdges(collectEdges(prev), collectEdges(next));
+    for (const e of removed) {
+      const xv = `x${i++}`;
+      vars[`${xv}_f`] = new RecordId(e.fromTable, e.fromId);
+      vars[`${xv}_t`] = new RecordId(e.toTable, e.toId);
+      surql += `DELETE ${e.edge} WHERE in = $${xv}_f AND out = $${xv}_t;\n`;
+    }
+    for (const e of added) {
+      const ev = `e${i++}`;
+      vars[`${ev}_f`] = new RecordId(e.fromTable, e.fromId);
+      vars[`${ev}_t`] = new RecordId(e.toTable, e.toId);
+      let rel = `RELATE $${ev}_f->${e.edge}->$${ev}_t`;
+      if (e.data) { vars[`${ev}_d`] = e.data; rel += ` SET provenance = $${ev}_d.provenance`; }
+      surql += rel + ";\n";
+    }
+  }
+
+  // 4) state_meta:revision 每写必变,总是 UPSERT
+  const meta: Record<string, unknown> = {};
+  for (const k of META_KEYS) meta[k] = (next as unknown as Record<string, unknown>)[k];
   vars.meta = meta;
-  vars.rev = snapshot.revision ?? 0;
+  vars.rev = next.revision ?? 0;
   surql += `UPSERT ${META_ID} SET revision = $rev, rest = $meta;\n`;
   surql += "COMMIT TRANSACTION;";
 
