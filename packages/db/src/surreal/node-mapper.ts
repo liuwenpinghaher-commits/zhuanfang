@@ -1,4 +1,4 @@
-import type { ProductState } from "../../../src/domain/types";
+import type { ProductState } from "../../../../src/domain/types";
 
 /** state 数组键 ↔ 节点表 + 核心字段(落 typed 列,与 001/004 DEFINE FIELD 对齐;日期不入核心)。
  *  非核心字段(含日期/可选/嵌套/session.turns)整体进 rest,无损。 */
