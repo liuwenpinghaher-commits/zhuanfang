@@ -523,9 +523,15 @@ export function updateMemoryRecordText(state: ProductState, recordId: string, te
     memoryRecords: state.memoryRecords.map((item) => (item.id === record.id ? updatedRecord : item)),
     memoryEdges: (state.memoryEdges ?? []).filter((edge) => edge.fromMemoryRecordId !== record.id)
   };
+  // 审查修复:重算边为空时(新文本与任一主题 token 重叠 <2)保留该记忆原有的有效主题归属,
+  // 避免"编辑记忆文本意外清空全部主题关联"的数据丢失;重算非空则以重算为准(文本变了归属可变)。
+  const themeIds = new Set(state.themes.map((t) => t.id));
+  const rebuiltEdges = buildMemoryEdgesForRecord(baseState, updatedRecord, updatedAt);
+  const priorEdges = (state.memoryEdges ?? []).filter((edge) => edge.fromMemoryRecordId === record.id && themeIds.has(edge.themeId));
+  const recordEdges = rebuiltEdges.length > 0 ? rebuiltEdges : priorEdges;
   const nextState: ProductState = {
     ...baseState,
-    memoryEdges: [...buildMemoryEdgesForRecord(baseState, updatedRecord, updatedAt), ...baseState.memoryEdges]
+    memoryEdges: [...recordEdges, ...baseState.memoryEdges]
   };
 
   return withAuditEvent(nextState, {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { dedupeMemoryRecords, planMemoryUpdate, approveMemoryCandidate } from "./memory";
+import { dedupeMemoryRecords, planMemoryUpdate, approveMemoryCandidate, updateMemoryRecordText } from "./memory";
 import { createInitialProductState } from "./engine";
 import type { MemoryRecord, MemoryCandidate } from "./types";
 
@@ -11,6 +11,21 @@ function pendingCandidate(id: string, text: string): MemoryCandidate {
     createdAt: "2026-06-20T00:00:00.000Z", reviewScore: 80, reviewSignals: []
   } as MemoryCandidate;
 }
+
+describe("updateMemoryRecordText 边保留(审查修复)", () => {
+  it("重算边为空时保留原主题归属(防编辑文本意外清空)", () => {
+    const base = createInitialProductState();
+    const rec: MemoryRecord = { id: "me_1", text: "原文本内容", status: "confirmed", sourceType: "profile", sourceId: "p", evidenceQuote: "", sensitivity: "normal", createdAt: "2026-06-27T00:00:00.000Z", updatedAt: "2026-06-27T00:00:00.000Z" };
+    const state = { ...base,
+      themes: [{ id: "th_1", name: "X主题", summary: "", maturity: "聚焦" as const, representativeQuote: "", appearances: 1, nextQuestion: "", updatedAt: "2026-06-27T00:00:00.000Z" }],
+      memoryRecords: [rec],
+      memoryEdges: [{ fromMemoryRecordId: "me_1", themeId: "th_1" }]
+    };
+    // "z" 单字符必被 token 过滤 → buildMemoryEdgesForRecord 重算为空 → 应保留原 me_1→th_1 归属
+    const updated = updateMemoryRecordText(state, "me_1", "z");
+    expect(updated.memoryEdges.filter((e) => e.fromMemoryRecordId === "me_1").length).toBeGreaterThan(0);
+  });
+});
 
 describe("approveMemoryCandidate dedup-merge (#3)", () => {
   it("merges into an existing near-duplicate confirmed record instead of adding a new one", () => {

@@ -666,34 +666,8 @@ export interface DualTrackNote {
   learnedTrack: string[];
   nextQuestions: string[];
   createdAt: string;
-  feedback?: InterviewFeedback;
   relatedThemeIds?: string[];
   keyQuoteAnchor?: EvidenceAnchor;
-}
-
-export type InterviewFeedbackTag =
-  | "went-deep"
-  | "off-track"
-  | "too-gentle"
-  | "too-strong"
-  | "memory-wrong"
-  | "summary-accurate"
-  | "continue-next";
-
-export interface InterviewFeedbackInput {
-  tags: InterviewFeedbackTag[];
-  mostValuableQuestion?: string;
-  inaccurateSummary?: string;
-  uncomfortableButImportant?: string;
-  newUnderstanding?: string;
-  continuePrompt?: string;
-}
-
-export interface InterviewFeedback extends InterviewFeedbackInput {
-  id: string;
-  noteId: string;
-  sessionId: string;
-  createdAt: string;
 }
 
 export interface PointAsset {
