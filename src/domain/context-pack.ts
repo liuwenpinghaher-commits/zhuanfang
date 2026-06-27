@@ -368,6 +368,17 @@ export function buildInterviewContextPack(state: ProductState, options: Intervie
     ]
   };
 }
+/**
+ * P2b:解析驱动召回的当前主题。抽出 buildInterviewGuide 原 topicHint 表达式,使 server 预召回
+ * 与域内召回用同一主题(DRY + 一致)。纯函数,无副作用。
+ */
+export function resolveInterviewTopicHint(state: ProductState, options: InterviewGuideOptions = {}): string {
+  const explicitTopicHint = options.topicHint?.trim();
+  const searchBrief = resolveInterviewContextSearchBrief(state, options);
+  const topTheme = [...state.themes].sort((a, b) => b.appearances - a.appearances)[0];
+  const focusQuestion = searchBrief || explicitTopicHint ? undefined : findNextInterviewFocusQuestion(state);
+  return explicitTopicHint || searchBrief?.topic || focusQuestion?.question || topTheme?.name || state.profile.currentFocus;
+}
 export function buildInterviewGuide(state: ProductState, options: InterviewGuideOptions = {}): InterviewGuide {
   const explicitTopicHint = options.topicHint?.trim();
   const searchBrief = resolveInterviewContextSearchBrief(state, options);
@@ -382,7 +393,7 @@ export function buildInterviewGuide(state: ProductState, options: InterviewGuide
       nextQuestion: debt.nextQuestion
     }));
   const debtToAddress = openDebts[0]?.concept;
-  const topicHint = explicitTopicHint || searchBrief?.topic || focusQuestion?.question || topTheme?.name || state.profile.currentFocus;
+  const topicHint = resolveInterviewTopicHint(state, options);
   const contextPack = buildInterviewContextPack(state, {
     topicHint,
     ...(options.searchBriefId ? { searchBriefId: options.searchBriefId } : {}),

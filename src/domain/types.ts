@@ -1,3 +1,5 @@
+import type { RecallProvenanceEntry } from "./recall";
+
 export type InterviewMode =
   | "daily"
   | "decision"
@@ -919,6 +921,8 @@ export interface InterviewContextPack {
   corrections: MemoryCorrection[];
   memoryEdges: MemoryEdge[];
   graphReferences: MemoryGraphReference[];
+  /** P2b:surreal 权威时召回出的资产沿 derived_from 取到的证据 turn;回落时 undefined。 */
+  provenanceTurns?: RecallProvenanceEntry[];
   searchBriefs: SearchBrief[];
   sourceHighlights: SourceHighlight[];
   ragChunks: RagChunk[];
