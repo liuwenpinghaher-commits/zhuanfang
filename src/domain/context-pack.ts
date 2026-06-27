@@ -19,6 +19,7 @@ import type {
   SourceHighlight,
   SystemConfig,
 } from "./types";
+import type { RecallResult } from "./recall";
 
 import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, formatSearchTraceSourceLabel, getReferenceMaterialPublisher, daysBetween, modeLabels, removedExternalInstruction } from "./utils";
 
@@ -379,7 +380,7 @@ export function resolveInterviewTopicHint(state: ProductState, options: Intervie
   const focusQuestion = searchBrief || explicitTopicHint ? undefined : findNextInterviewFocusQuestion(state);
   return explicitTopicHint || searchBrief?.topic || focusQuestion?.question || topTheme?.name || state.profile.currentFocus;
 }
-export function buildInterviewGuide(state: ProductState, options: InterviewGuideOptions = {}): InterviewGuide {
+export function buildInterviewGuide(state: ProductState, options: InterviewGuideOptions = {}, recall?: RecallResult): InterviewGuide {
   const explicitTopicHint = options.topicHint?.trim();
   const searchBrief = resolveInterviewContextSearchBrief(state, options);
   const topTheme = [...state.themes].sort((a, b) => b.appearances - a.appearances)[0];
@@ -410,7 +411,8 @@ export function buildInterviewGuide(state: ProductState, options: InterviewGuide
     topicHint,
     contextPack,
     options.queryEmbedding,
-    nowIso()
+    nowIso(),
+    recall
   );
   const statedPositions = state.points.slice(0, 4).map((point) => `${point.title}：${point.content}`);
   const openingQuestion = searchBrief
@@ -765,18 +767,37 @@ function collectConfirmedMemoryTexts(state: ProductState) {
     )
   );
 }
+/** P2b:按 recall.themeAssets 的 id 从内存 state 取资产文本(格式与现状 otherCandidates 一致)。 */
+function collectThemeAssetTexts(state: ProductState, assets: NonNullable<RecallResult["themeAssets"]>): string[] {
+  const pointById = new Map(state.points.map((p) => [p.id, p]));
+  const decisionById = new Map(state.decisions.map((d) => [d.id, d]));
+  const questionById = new Map(state.questions.map((q) => [q.id, q]));
+  const texts: string[] = [];
+  for (const id of assets.points) { const p = pointById.get(id); if (p) texts.push(`${p.title}：${p.content}`); }
+  for (const id of assets.decisions) { const d = decisionById.get(id); if (d) texts.push(`${d.title}：${d.choice}`); }
+  for (const id of assets.questions) { const q = questionById.get(id); if (q) texts.push(`${q.question}：${q.whyImportant}`); }
+  return texts;
+}
 function collectRelevantMemories(
   state: ProductState,
   topicHint: string,
   contextPack: InterviewContextPack,
   queryEmbedding?: number[],
-  now: string = nowIso()
+  now: string = nowIso(),
+  recall?: RecallResult
 ) {
   const topicTokens = splitTopicTokens(topicHint);
 
-  // 1) confirmed 长期记忆：用三因子评分（relevance + recency + importance）排序。
-  //    无 embedding 时 relevance 退回子串命中率，行为与旧子串逻辑一致。
-  const rankedMemoryTexts = [...contextPack.memoryRecords]
+  // 1) confirmed 长期记忆：三因子评分（relevance + recency + importance）精排。
+  //    P2b:有 memoryHits(向量 HNSW 召回)时,记忆池 = memoryHits ∪ themeAssets.memories(图主题记忆)对应 record;
+  //    无向量召回(如 voice 无 embedding)→ 全量回落,不降级。三因子精排不变。
+  const memoryPool = recall?.memoryHits
+    ? (() => {
+        const ids = new Set<string>([...recall.memoryHits.map((h) => h.id), ...(recall.themeAssets?.memories ?? [])]);
+        return contextPack.memoryRecords.filter((record) => ids.has(record.id));
+      })()
+    : contextPack.memoryRecords;
+  const rankedMemoryTexts = [...memoryPool]
     .map((record) => ({
       text: record.text,
       score: scoreMemoryForRetrieval(record, { topicTokens, ...(queryEmbedding ? { queryEmbedding } : {}), now })
@@ -784,16 +805,23 @@ function collectRelevantMemories(
     .sort((a, b) => b.score - a.score)
     .map((item) => item.text);
 
-  // 2) 其余资产（笔记/观点/问题/决策/主题）无 MemoryRecord 元数据，沿用子串排序。
-  const otherCandidates = [
-    ...state.notes.map((note) => `${note.title}：${note.summary}`),
-    ...state.points.map((point) => `${point.title}：${point.content}`),
-    ...state.questions.map((question) => `${question.question}：${question.whyImportant}`),
-    // 决策是 finalize 抽出的一等资产,此前漏入语义召回 → 跨专访追问里永远看不见已沉淀的决策。
-    ...state.decisions.map((decision) => `${decision.title}：${decision.choice}`),
-    ...state.themes.map((theme) => `${theme.name}：${theme.summary}`)
-  ];
-  const rankedOthers = rankMemoryTexts(otherCandidates, topicHint);
+  // 2) 其余资产。P2b:有 themeAssets → 精确按主题归属(point/decision/question,图序)+ 无图边的 notes/themes 现状;
+  //    否则现状全量(笔记/观点/问题/决策/主题)子串排序。决策此前曾漏入语义召回,图遍历下天然覆盖。
+  const otherCandidates = recall?.themeAssets
+    ? [
+        ...collectThemeAssetTexts(state, recall.themeAssets),
+        ...state.notes.map((note) => `${note.title}：${note.summary}`),
+        ...state.themes.map((theme) => `${theme.name}：${theme.summary}`)
+      ]
+    : [
+        ...state.notes.map((note) => `${note.title}：${note.summary}`),
+        ...state.points.map((point) => `${point.title}：${point.content}`),
+        ...state.questions.map((question) => `${question.question}：${question.whyImportant}`),
+        ...state.decisions.map((decision) => `${decision.title}：${decision.choice}`),
+        ...state.themes.map((theme) => `${theme.name}：${theme.summary}`)
+      ];
+  // themeAssets 已精确归属(图序),不再子串重排;回落分支沿用 rankMemoryTexts。
+  const rankedOthers = recall?.themeAssets ? otherCandidates : rankMemoryTexts(otherCandidates, topicHint);
 
   // 记忆优先于其余资产，去重后取前 5。
   const seen = new Set<string>();
