@@ -184,7 +184,7 @@ function buildContextSecurityInterceptions(
 
   return interceptions;
 }
-export function buildInterviewCard(state: ProductState, searchBriefId?: string, topicHint?: string, queryEmbedding?: number[]): InterviewCard {
+export function buildInterviewCard(state: ProductState, searchBriefId?: string, topicHint?: string, queryEmbedding?: number[], recall?: RecallResult): InterviewCard {
   const topTheme = [...state.themes].sort((a, b) => b.appearances - a.appearances)[0];
   const themeName = topTheme?.name ?? "当前问题";
   const openDebt = state.debts.find((debt) => debt.status === "待了解") ?? state.debts[0];
@@ -197,7 +197,7 @@ export function buildInterviewCard(state: ProductState, searchBriefId?: string, 
     ...(queryEmbedding ? { queryEmbedding } : {})
   };
   const searchBrief = resolveInterviewContextSearchBrief(state, contextOptions);
-  const contextPack = buildInterviewContextPack(state, contextOptions);
+  const contextPack = buildInterviewContextPack(state, contextOptions, recall);
   const contextSourceHighlights = contextPack.sourceHighlights.slice(0, 3);
   const focusQuestion = searchBrief || explicitTopicHint ? undefined : findNextInterviewFocusQuestion(state);
   const title = explicitTopicHint
@@ -216,7 +216,11 @@ export function buildInterviewCard(state: ProductState, searchBriefId?: string, 
         .slice(0, 2)
         .map((chunk) => `导入资料（来源：${formatRagChunkSourceLabel(state, chunk)}）：${chunk.text}`);
   const hasContextSources = contextSourceHighlights.length > 0;
-  const guide = buildInterviewGuide(state, contextOptions);
+  const guide = buildInterviewGuide(state, contextOptions, recall);
+  // P2b:溯源原话(surreal 权威召回带回时)纳入历史参照,让 LLM 能引用受访者原话佐证观点。
+  const evidenceQuotes = (contextPack.provenanceTurns ?? [])
+    .flatMap((entry) => entry.turns.map((t) => `证据原话（${entry.assetTable}）：${t.content}`))
+    .slice(0, 2);
   const agendaContext = searchBrief?.agendaTrace ? formatSearchAgendaTraceForInterview(searchBrief.agendaTrace) : undefined;
   const neutralTension = topTheme?.nextQuestion ?? "（暂无明显张力，先自由展开。）";
 
@@ -242,7 +246,7 @@ export function buildInterviewCard(state: ProductState, searchBriefId?: string, 
       : explicitTopicHint && hasContextSources
         ? `我们先拿这条导入资料做参照：${ensureSentenceEnd(explicitTopicHint)}它和你最近的真实场景有什么关系？`
         : guide.suggestedOpening,
-    historyReferences: Array.from(new Set([...(agendaContext ? [agendaContext] : []), ...sourceReferences, reference, ...confirmedMemoryTexts])).slice(0, 4),
+    historyReferences: Array.from(new Set([...(agendaContext ? [agendaContext] : []), ...sourceReferences, reference, ...evidenceQuotes, ...confirmedMemoryTexts])).slice(0, 4),
     potentialTension: searchBrief?.sourceAngles[0] ?? contextPack.ragChunks[0]?.text ?? neutralTension,
     suggestedPerspectives: guide.recommendedPerspectives,
     likelyOutputs: [
@@ -261,6 +265,8 @@ export interface CreateSessionOptions {
   topicHint?: string;
   /** M3c: route-computed query vector for semantic memory recall at session creation. */
   queryEmbedding?: number[];
+  /** P2b:server 预召回数据;前端/sqlite 不传,走域层回落。 */
+  recall?: RecallResult;
 }
 
 export function buildInterviewContextPack(state: ProductState, options: InterviewGuideOptions = {}, recall?: RecallResult): InterviewContextPack {
@@ -855,8 +861,8 @@ export function createSessionDraft(
     ...(options.searchBriefId ? { searchBriefId: options.searchBriefId } : {}),
     ...(options.topicHint ? { topicHint: options.topicHint } : {}),
     ...(options.queryEmbedding ? { queryEmbedding: options.queryEmbedding } : {})
-  });
-  const card = buildInterviewCard(state, options.searchBriefId, options.topicHint, options.queryEmbedding);
+  }, options.recall);
+  const card = buildInterviewCard(state, options.searchBriefId, options.topicHint, options.queryEmbedding, options.recall);
   return {
     id: makeId("session"),
     mode,

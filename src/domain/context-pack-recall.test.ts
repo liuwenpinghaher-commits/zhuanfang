@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { createInitialProductState } from "./engine";
-import { resolveInterviewTopicHint, buildInterviewGuide, buildInterviewContextPack } from "./context-pack";
+import { resolveInterviewTopicHint, buildInterviewGuide, buildInterviewContextPack, buildInterviewCard, createSessionDraft } from "./context-pack";
 import type { ProductState } from "./types";
 import type { RecallResult } from "./recall";
 
@@ -77,5 +77,22 @@ describe("buildInterviewContextPack: recall 消费", () => {
     const pack = buildInterviewContextPack(linkedRecallState(), { topicHint: "放权" }, { provenance: prov });
     expect(pack.provenanceTurns?.[0]?.turns[0]?.content).toBe("原话");
     expect(buildInterviewContextPack(linkedRecallState(), { topicHint: "放权" }).provenanceTurns).toBeUndefined();
+  });
+});
+
+describe("card / createSessionDraft 透传 recall + 溯源", () => {
+  it("buildInterviewCard:provenance 原话进入 historyReferences", () => {
+    const recall: RecallResult = { provenance: [{ assetTable: "point", assetId: "pt_1", turns: [{ id: "tu_1", content: "受访者原话XYZ", sessionId: "se_1", role: "user" }] }] };
+    const card = buildInterviewCard(linkedRecallState(), undefined, "放权", undefined, recall);
+    expect(card.historyReferences.some((h) => h.includes("受访者原话XYZ"))).toBe(true);
+  });
+  it("createSessionDraft:recall 透传到 guide(themeAssets 决策可见)", () => {
+    const recall: RecallResult = { themeAssets: { points: ["pt_1"], decisions: ["de_1"], questions: [], memories: [] } };
+    const session = createSessionDraft(linkedRecallState(), "daily", "standard", { topicHint: "放权", recall });
+    expect(session.guide.relevantMemories.join(" | ")).toContain("挂主题决策");
+  });
+  it("不传 recall:card 同步可用(行为不变)", () => {
+    const card = buildInterviewCard(linkedRecallState(), undefined, "放权");
+    expect(typeof card.title).toBe("string");
   });
 });
