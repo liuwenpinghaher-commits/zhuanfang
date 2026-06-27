@@ -162,7 +162,9 @@ describe("surreal graph edges (mem://)", () => {
     repo.replaceState({ ...base, points: [{ id:"pt_1", title:"一", content:"c", status:"稳定观点" as const, confidence:"用户确认" as const, evidence:[], relatedThemeIds:[], important:false, updatedAt:"2026-06-27T00:00:00.000Z" }] });
     repo.replaceState({ ...repo.getState(), points: [...repo.getState().points, { id:"pt_2", title:"二", content:"c", status:"稳定观点" as const, confidence:"用户确认" as const, evidence:[], relatedThemeIds:[], important:false, updatedAt:"2026-06-27T00:00:00.000Z" }] });
     await repo.flush();
-    // 直查底层:两条都在(第二次 diff 基线=第一次成功后,增量只含 pt_2,但 pt_1 仍在)
+    // 直查底层:两次 diff 增量写后两条都在(无丢行)。
+    // 注:本用例只证"无丢行";基线确实推进(diff 相对上次成功态而非空)由下面多步 reload 用例的
+    //     "删 pt_2 后 reload 应 gone"覆盖——基线不推进则 removeIds 算不出 pt_2、删不掉,该断言会红。
     const [rows] = await repo.query<[Array<{ id: unknown }>]>("SELECT id FROM point;");
     expect((rows ?? []).length).toBe(2);
   });

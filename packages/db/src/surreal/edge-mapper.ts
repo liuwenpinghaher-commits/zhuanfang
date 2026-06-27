@@ -69,6 +69,3 @@ export function collectEdges(state: ProductState): EdgeSpec[] {
 
   return edges;
 }
-
-/** persist 管理(全量覆盖前 DELETE)的边表。 */
-export const MANAGED_EDGE_TABLES = ["belongs_to_theme", "derived_from", "about_theme", "part_of"] as const;

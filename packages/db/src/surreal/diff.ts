@@ -18,7 +18,10 @@ export function diffById<T extends { id: string }>(prev: readonly T[], next: rea
   return { upsert, removeIds };
 }
 
-/** 边身份(无稳定 id):from 表:id | 边类型 | to 表:id。 */
+/** 边身份(无稳定 id):from 表:id | 边类型 | to 表:id。
+ *  注:key 不含 provenance。本投影下同 (from,edge,to) 的 provenance 恒等
+ *  (derived_from 的 turnId 全局唯一→sessionId 唯一→origin 固定 'llm_extracted'),
+ *  故按 key 去重无损。若将来给某种边加“同端点但可变”的字段,需把它并入 key,否则会被静默吞。 */
 export function edgeKey(e: EdgeSpec): string {
   return `${e.fromTable}:${e.fromId}|${e.edge}|${e.toTable}:${e.toId}`;
 }
