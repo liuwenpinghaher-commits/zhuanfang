@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { createInitialProductState } from "./engine";
-import { resolveInterviewTopicHint, buildInterviewGuide } from "./context-pack";
+import { resolveInterviewTopicHint, buildInterviewGuide, buildInterviewContextPack } from "./context-pack";
 import type { ProductState } from "./types";
 import type { RecallResult } from "./recall";
 
@@ -63,5 +63,19 @@ describe("collectRelevantMemories: recall 消费(经 guide)", () => {
     const joined = guide.relevantMemories.join(" | ");
     expect(joined).toContain("记忆A");
     expect(joined).toContain("记忆B");
+  });
+});
+
+describe("buildInterviewContextPack: recall 消费", () => {
+  it("有 memoryHits:confirmedMemories 仅含候选并精排", () => {
+    const pack = buildInterviewContextPack(linkedRecallState(), { topicHint: "放权" }, { memoryHits: [{ id: "me_b", text: "记忆B" }] });
+    expect(pack.confirmedMemories).toContain("记忆B");
+    expect(pack.confirmedMemories).not.toContain("记忆A");
+  });
+  it("有 provenance:provenanceTurns 透出;无则 undefined", () => {
+    const prov = [{ assetTable: "point", assetId: "pt_1", turns: [{ id: "tu_1", content: "原话", sessionId: "se_1", role: "user" }] }];
+    const pack = buildInterviewContextPack(linkedRecallState(), { topicHint: "放权" }, { provenance: prov });
+    expect(pack.provenanceTurns?.[0]?.turns[0]?.content).toBe("原话");
+    expect(buildInterviewContextPack(linkedRecallState(), { topicHint: "放权" }).provenanceTurns).toBeUndefined();
   });
 });

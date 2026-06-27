@@ -263,7 +263,7 @@ export interface CreateSessionOptions {
   queryEmbedding?: number[];
 }
 
-export function buildInterviewContextPack(state: ProductState, options: InterviewGuideOptions = {}): InterviewContextPack {
+export function buildInterviewContextPack(state: ProductState, options: InterviewGuideOptions = {}, recall?: RecallResult): InterviewContextPack {
   const topicHint = options.topicHint?.trim() || state.themes[0]?.name || state.profile.currentFocus;
   const memoryPolicy = state.systemConfig.memory;
   const contextSourceLimit = Math.max(1, state.systemConfig.search.maxSources);
@@ -296,9 +296,16 @@ export function buildInterviewContextPack(state: ProductState, options: Intervie
   // three-factor scorer (cosine relevance + recency + importance) so the context
   // pack mirrors the same semantic recall as guide.relevantMemories. Without it,
   // fall back to the substring ranking (unchanged behaviour).
-  const confirmedMemories = options.queryEmbedding
-    ? rankMemoryRecordsBySemantics(memoryRecords, topicHint, options.queryEmbedding)
-    : rankMemoryTexts(memoryRecords.map((record) => record.text), topicHint);
+  // P2b:有 recall.memoryHits(向量 HNSW 召回)→ 候选 record 三因子精排;否则现状(queryEmbedding 走语义,无则子串)。
+  const confirmedMemories = recall?.memoryHits
+    ? rankMemoryRecordsBySemantics(
+        (() => { const ids = new Set(recall.memoryHits.map((h) => h.id)); return memoryRecords.filter((record) => ids.has(record.id)); })(),
+        topicHint,
+        options.queryEmbedding ?? []
+      )
+    : options.queryEmbedding
+      ? rankMemoryRecordsBySemantics(memoryRecords, topicHint, options.queryEmbedding)
+      : rankMemoryTexts(memoryRecords.map((record) => record.text), topicHint);
   const memoryEdges = buildContextPackMemoryEdges(state, memoryRecords, topicHint);
   const graphReferences = buildMemoryGraphReferences(memoryEdges, state);
   const pendingCandidates = memoryPolicy.includePendingCandidatesInContext
@@ -324,6 +331,7 @@ export function buildInterviewContextPack(state: ProductState, options: Intervie
       .slice(0, MAX_CONTEXT_CORRECTIONS),
     memoryEdges,
     graphReferences,
+    ...(recall?.provenance ? { provenanceTurns: recall.provenance } : {}),
     searchBriefs: searchBrief ? [searchBrief] : [],
     sourceHighlights,
     ragChunks,
