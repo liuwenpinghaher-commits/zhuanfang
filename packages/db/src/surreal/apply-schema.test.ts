@@ -62,4 +62,56 @@ describe("applySchema", () => {
     const def = String(memInfo?.indexes?.memory_emb ?? "");
     expect(def).toContain(`DIMENSION ${EMBEDDING_DIMENSION}`);
   });
+
+  it("ASSERT 拒非法 status,放行合法值", async () => {
+    const d = await freshDb();
+    await applySchema(d);
+    // 非法 point.status 被拒
+    await expect(
+      d.query("CREATE point:bad SET title='x', content='y', status='不存在的状态', confidence='待验证';")
+    ).rejects.toThrow();
+    // 合法值放行
+    const [rows] = await d.query<[{ id: unknown }[]]>(
+      "CREATE point:good SET title='x', content='y', status='稳定观点', confidence='用户确认';"
+    );
+    expect((rows ?? []).length).toBe(1);
+  });
+
+  it("derived_from.provenance.origin ASSERT 生效", async () => {
+    const d = await freshDb();
+    await applySchema(d);
+    await d.query("CREATE point:p1 SET title='t', content='c', status='临时想法', confidence='待验证';");
+    await d.query("CREATE turn:t1 SET sessionId='s1', role='user', content='原话';");
+    // 非法 origin 被拒
+    await expect(
+      d.query("RELATE point:p1->derived_from->turn:t1 SET provenance = { origin: 'bogus' };")
+    ).rejects.toThrow();
+    // 合法 origin:边建成且可读回 provenance
+    await d.query("RELATE point:p1->derived_from->turn:t1 SET provenance = { origin: 'llm_extracted', turnId: 't1', confidence: 0.9 };");
+    const [prov] = await d.query<[{ provenance: { origin: string } }[]]>(
+      "SELECT provenance FROM derived_from;"
+    );
+    expect(prov?.[0]?.provenance?.origin).toBe("llm_extracted");
+  });
+
+  it("belongs_to_theme 双向图遍历(根治召回漏类的图模型基础)", async () => {
+    const d = await freshDb();
+    await applySchema(d);
+    // SurrealDB 3.x 不允许 Chinese 字符作 bare record id;使用反引号转义
+    await d.query("CREATE theme:`放权` SET name='放权', maturity='聚焦';");
+    await d.query("CREATE point:p2 SET title='t', content='c', status='稳定观点', confidence='用户确认';");
+    await d.query("CREATE decision:d1 SET title='t', decisionKind='用户决策', confirmationStatus='用户确认', choice='c', status='待复盘';");
+    await d.query("RELATE point:p2->belongs_to_theme->theme:`放权`;");
+    await d.query("RELATE decision:d1->belongs_to_theme->theme:`放权`;");
+    // 出边:point → theme
+    const [out] = await d.query<[{ themes: unknown[] }[]]>(
+      "SELECT ->belongs_to_theme->theme AS themes FROM point:p2;"
+    );
+    expect((out?.[0]?.themes ?? []).length).toBe(1);
+    // 入边:theme ← (point + decision) 一次拿全
+    const [pts] = await d.query<[unknown[]]>("SELECT VALUE <-belongs_to_theme<-point FROM theme:`放权`;");
+    const [decs] = await d.query<[unknown[]]>("SELECT VALUE <-belongs_to_theme<-decision FROM theme:`放权`;");
+    expect((pts?.[0] ?? []).length).toBe(1);
+    expect((decs?.[0] ?? []).length).toBe(1);
+  });
 });
