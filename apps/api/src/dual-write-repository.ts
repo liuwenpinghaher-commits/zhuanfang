@@ -45,7 +45,7 @@ const defaultOnShadowError: NonNullable<DualWriteOptions["onShadowError"]> = (er
   console.error(JSON.stringify({ event: "dual_write_shadow_error", op, error: String(err) }));
 
 /** 双写仓库:读走 authoritative,写双落 + 影子读等价比对。shadow 的错误/发散绝不破坏主写。 */
-export function createDualWriteRepository(opts: DualWriteOptions): ProductStateRepository {
+export function createDualWriteRepository(opts: DualWriteOptions): ProductStateRepository & { getAuthoritative(): ProductStateRepository } {
   const { authoritative, shadow } = opts;
   const onDivergence = opts.onDivergence ?? defaultOnDivergence;
   const onShadowError = opts.onShadowError ?? defaultOnShadowError;
@@ -85,6 +85,8 @@ export function createDualWriteRepository(opts: DualWriteOptions): ProductStateR
 
   return {
     getState: () => authoritative.getState(),
+    /** P2b:暴露权威库供原生召回能力探测(asNativeRecall);只读,不影响双写语义。 */
+    getAuthoritative: () => authoritative,
     getInterviewSession: (id) => authoritative.getInterviewSession(id),
     resetState() {
       const result = authoritative.resetState();
