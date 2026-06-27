@@ -9,7 +9,7 @@
 
 | 阶段 | 内容 | 风险 | 可回退 | 门 |
 |---|---|---|---|---|
-| **S0 spike** | [05 §3] 嵌入式 + 向量 + 全文 + 级联 跑通 | 低 | n/a | 5 个 spike 全过 |
+| **S0 spike** ✅ | [05 §3] 嵌入式 + 向量 + 全文 + 级联 跑通 | 低 | n/a | 5 个 spike 全过 |
 | **P0 schema** | [01] DDL migrations + 自测 | 0(纯建库) | 删库重来 | INFO 断言齐全 |
 | **P1a 双写** | [02 §4] SQLite+Surreal 双写,读 SQLite,影子读比对 | 低 | env 切回 sqlite | 影子读等价 |
 | **P1b 切读** | 读切 Surreal,仍双写 | 低 | 秒切回 sqlite | 全测试绿 + e2e 绿 |
@@ -67,3 +67,59 @@ node scripts/migrate-sqlite-to-surreal.mjs --src .data/product-state.db --dst .d
 - 旧 SQLite 路径保留为可切回的冷备(直到稳定后再决定移除)。
 
 > 这套 spec 群是设计蓝图;真正实施是长跑。绞杀者保证每一步都可叫停、可回退、系统常绿。先做 S0 spike 与 P0 schema(零~低风险),再逐阶段推进。
+
+---
+
+## 6. S0 Spike 实测结论(2026-06-27 已完成)
+
+**环境:** Node v25.7.0 · darwin/arm64 · surrealdb@2.0.4 · @surrealdb/node@3.0.3
+
+**关键发现:嵌入式核心版本为 SurrealDB 3.0.2**(JS SDK 是 2.0.4,但 `db.version()` 返回 `surrealdb-3.0.2`)。3.x 在以下语法上与 2.x 文档不同——**P0 必须用 3.x 语法**。
+
+| 检查 | 结果 | 备注 |
+|---|---|---|
+| **S1 addon 加载 (N-API)** | ✅ PASS | `createNodeEngines()` 在 Node 25.7 正常加载,无兼容问题 |
+| **S1 mem:// 连接 + 基本读写** | ✅ PASS | DEFINE/CREATE/SELECT 往返正确 |
+| **S1 surrealkv:// 持久化** | ✅ PASS | 重开后数据仍在;**坑:close() 后需 ~150ms 再重开同路径**(否则 connect() 挂起) |
+| **S2 HNSW + KNN** | ✅ PASS | `DEFINE INDEX … FIELDS e HNSW DIMENSION n DIST COSINE` 语法不变;`<|k,ef|>` KNN 正确 |
+| **S3 BM25 中文全文** | ✅ PASS | **语法改为 `FULLTEXT ANALYZER`**(2.x 是 `SEARCH ANALYZER`);中文需加 `FILTERS ngram(2,2)` |
+| **S3 search::rrf()** | ✅(语法存在,签名变) | 旧 `search::rrf($a,$b)` 报错;新签名 `search::rrf([$a,$b], limit)`;P2 改用应用层 RRF |
+| **S4 DEFINE EVENT 级联** | ✅ PASS | `on DELETE → DELETE child WHERE …` 语法不变;**坑:SCHEMAFULL 表必须先 DEFINE FIELD 所有写入字段** |
+| **S5 嵌入维度** | ⚠️ 跳过(无 API key) | 沿用默认 1024 |
+
+**P0 schema 关键语法锁定:**
+
+```surql
+-- 全文索引(3.x 语法)
+DEFINE ANALYZER IF NOT EXISTS zh TOKENIZERS class FILTERS ngram(2,2), lowercase;
+DEFINE INDEX IF NOT EXISTS memory_ft ON memory FIELDS text FULLTEXT ANALYZER zh BM25;
+
+-- 向量索引(3.x 不变)
+DEFINE INDEX IF NOT EXISTS memory_emb ON memory FIELDS embedding HNSW DIMENSION 1024 DIST COSINE;
+```
+
+**db.query() 返回形状(P0 applySchema.ts 照抄):**
+
+```ts
+// 单条语句 → 每个语句一项
+const [rows] = await db.query("SELECT n FROM probe:a;");
+// rows 是 T[] (行数组);DDL/DEFINE 返回 null;CREATE 返回创建的对象数组
+// 泛型写法: await db.query<[T[]]>("SELECT ...;")
+```
+
+**INFO FOR DB 返回键名(P0.6 测试断言照抄):**
+
+```
+{ accesses, analyzers, apis, buckets, configs, functions, models, modules, params, sequences, tables, users }
+// tables 键: "TABLE_NAME": "DEFINE TABLE ..."  (string定义)
+```
+
+**INFO FOR TABLE x 返回键名(P0.6 测试断言照抄):**
+
+```
+{ events, fields, indexes, lives, tables }
+// fields 键: "FIELD_NAME": "DEFINE FIELD ..."  (string定义)
+// indexes 键: "INDEX_NAME": "DEFINE INDEX ..."  (string定义)
+```
+
+**结论: DONE — P0 可按计划进行,003_index.surql 用 FULLTEXT 语法,analyzer 加 ngram(2,2)。**
