@@ -6,17 +6,22 @@ export interface EdgeSpec {
   fromId: string;
   toTable: string;
   toId: string;
-  data?: Record<string, unknown>;
+  /** 仅 derived_from 携带,形如 {provenance:{...}};persist 用 `SET provenance=$d.provenance` 落库。
+   *  收窄到具体形状(而非 Record<string,unknown>),防将来往 data 加字段被该 SET 静默丢弃。 */
+  data?: { provenance: { origin: string; sessionId: string; turnId: string } };
 }
 
 /** turn 记录(写 turn 表用):从各 session.turns 摊平,带 sessionId 外键。
- *  3.x 校正:turn.timestamp DEFINE 为 datetime,必须传 Date 对象(字符串被拒)。 */
+ *  3.x 校正:turn.timestamp DEFINE 为 datetime,有值才转 Date 写入;缺失则不写该字段,
+ *  交给 schema 的 `DEFAULT time::now()`(persist 的 fillUpsertDefaults 在覆盖写时同样补 now),
+ *  不伪造 `new Date()` 这种非确定性值。 */
 export function turnRecordsOf(state: ProductState): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = [];
   for (const s of state.sessions) {
     for (const t of s.turns ?? []) {
-      const ts = t.timestamp ? new Date(t.timestamp) : new Date();
-      out.push({ id: t.id, sessionId: s.id, role: t.role, content: t.content, intent: t.intent, timestamp: ts });
+      const rec: Record<string, unknown> = { id: t.id, sessionId: s.id, role: t.role, content: t.content, intent: t.intent };
+      if (t.timestamp) rec.timestamp = new Date(t.timestamp);
+      out.push(rec);
     }
   }
   return out;
