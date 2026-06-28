@@ -386,6 +386,11 @@ export default function App() {
   // Adopt an authoritative state returned by a fine-grained route. Records it as
   // "already saved" so the debounce effect doesn't echo the whole state back in a
   // redundant full-state PUT (the route already persisted it server-side).
+  // 采纳服务端返回的权威 state(turn / control / createBrief / endSession 等已在服务端持久化)。
+  // 接收 server state 必须用这个而非裸 setProductState:它把内容签名记进 lastSavedContentRef,让
+  // 自动保存 effect 认出"已是最新"从而跳过 PUT。否则每次接收 server state 都会触发一次冗余 PUT 把
+  // 它原样写回去,而这个 PUT 携带的 revision 会被下一轮 turn 在服务端抢先 bump → 持续 409(stale
+  // revision)。语音访谈每轮高频出 turn 时尤其致命,也会让"结束并生成档案"与残留 PUT 互相 race。
   function adoptServerState(next: ProductState) {
     lastSavedContentRef.current = productStateContentSignature(next);
     setProductState(next);
@@ -652,7 +657,7 @@ export default function App() {
         ...(searchBriefId ? { searchBriefId } : {})
       });
       setSession(apiRun.session);
-      setProductState(apiRun.state);
+      adoptServerState(apiRun.state);
       closeRealtimeVoiceSession();
       setApiPersistenceEnabled(true);
       setView("interview");
@@ -689,7 +694,7 @@ export default function App() {
     try {
       const apiRun = await productApiClient.createSearchBrief(searchRequest);
       setSearchTask(apiRun.task);
-      setProductState(apiRun.state);
+      adoptServerState(apiRun.state);
       setApiPersistenceEnabled(true);
       setActiveSearchBriefId(apiRun.brief.id);
       setSearchTopic(apiRun.brief.topic);
@@ -793,7 +798,7 @@ export default function App() {
 
     try {
       const response = await productApiClient.createAutoBrief({ themeId, debtId });
-      setProductState(response.state);
+      adoptServerState(response.state);
       setApiPersistenceEnabled(true);
       setActiveSearchBriefId(response.brief.id);
       setNotice(buildNotice("success", "自动简报已生成", `已选中「${response.brief.topic}」，可以带入下一次专访。`));
@@ -828,7 +833,7 @@ export default function App() {
     setRefreshingBriefId(briefId);
     try {
       const response = await productApiClient.refreshSearchBrief(briefId);
-      setProductState(response.state);
+      adoptServerState(response.state);
       setApiPersistenceEnabled(true);
       setNotice(buildNotice("success", "外部调研已刷新", `「${response.brief.topic}」的研究内容已更新。`));
     } catch {
@@ -843,7 +848,7 @@ export default function App() {
     setTrackingBriefId(briefId);
     try {
       const response = await productApiClient.trackSearchBrief(briefId, tracked);
-      setProductState(response.state);
+      adoptServerState(response.state);
       setApiPersistenceEnabled(true);
       setNotice(buildNotice("success", tracked ? "已标记为持续追踪" : "已取消持续追踪", tracked ? "该主题将持续追踪，可随时刷新获取最新研究。" : "已取消持续追踪标记。"));
     } catch {
@@ -862,7 +867,7 @@ export default function App() {
   async function autoRunResearch() {
     try {
       const response = await productApiClient.autoRunResearch();
-      setProductState(response.state);
+      adoptServerState(response.state);
       setApiPersistenceEnabled(true);
       setNotice(buildNotice("success", "自动盯梢完成", `新增 ${response.summary.generated} 条，刷新 ${response.summary.refreshed} 条。`));
       return response.summary;
@@ -889,7 +894,7 @@ export default function App() {
         format: "solo",
         voice: podcastVoice
       } as any);
-      setProductState(apiRun.state);
+      adoptServerState(apiRun.state);
       setApiPersistenceEnabled(true);
       setPodcastNoteId(effectiveSourceId);
       setPodcastEditingScript(apiRun.episode.script);
@@ -1008,7 +1013,7 @@ export default function App() {
     setCorpusAnalyzing(true);
     try {
       const apiRun = await productApiClient.analyzeCorpusImport(input, corpusFocus.trim() || undefined);
-      setProductState(apiRun.state);
+      adoptServerState(apiRun.state);
       setApiPersistenceEnabled(true);
       setNotice(buildNotice("success", "语料分析已完成", "已生成可确认的访谈策略补丁。"));
       setView("corpus");
@@ -1166,7 +1171,7 @@ export default function App() {
       // spread the STALE closure `session` here, which dropped the new turns
       // whenever the reply included pre_signals, i.e. always with the real LLM.)
       setSession(apiRun.session);
-      setProductState(apiRun.state);
+      adoptServerState(apiRun.state);
       setApiPersistenceEnabled(true);
       return;
     } catch {
@@ -1276,7 +1281,7 @@ export default function App() {
     try {
       const apiRun = await productApiClient.applyInterviewControl(session.id, { action });
       setSession(apiRun.session);
-      setProductState(apiRun.state);
+      adoptServerState(apiRun.state);
       setApiPersistenceEnabled(true);
       setNotice(buildNotice("info", "访谈控制已应用", `下一轮会按「${controlLabel}」调整。`));
       return;
@@ -1445,7 +1450,7 @@ export default function App() {
               // would overwrite the user's newly-started turn and waste budget).
               const r = await productApiClient.sendInterviewTurn(interviewId, { content: text }, signal);
               setSession(r.session);
-              setProductState(r.state);
+              adoptServerState(r.state);
               setApiPersistenceEnabled(true);
               if (r.preSignals) cascadePipelineRef.current?.updatePreSignals(r.preSignals);
               const lastTurn = r.session.turns.at(-1);
