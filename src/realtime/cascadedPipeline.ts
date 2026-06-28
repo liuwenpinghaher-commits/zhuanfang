@@ -275,10 +275,16 @@ export function connectCascadedPipeline(
       classifyAbort = null;
       clearMaxWaitTimer();
       setState("interrupted");
+      // Barge-in discards the superseded turn → reset so the new utterance starts fresh.
+      // CRITICAL: only reset on barge-in. A listening-state speech_started is the SAME
+      // utterance RESUMING after a VAD-induced pause (server_vad cuts on silence). Resetting
+      // there dropped everything said before the pause — the "话被断成很多段 + 前段丢失" bug:
+      // committedTranscript kept only the last fragment (or emptied → turn never met
+      // completeness → never committed → session.turns stayed 0 → /end 422 "结束失败").
+      // Normal turn boundaries are cleared by resetTurn() after doRespond() instead.
+      committedTranscript = "";
+      partialTranscript = "";
     }
-    // Reset accumulator — new utterance starts fresh
-    committedTranscript = "";
-    partialTranscript = "";
     return wasActive;
   }
 

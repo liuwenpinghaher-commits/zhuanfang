@@ -28,7 +28,11 @@ function buildAsrSessionUpdate(instructions: string) {
       turn_detection: {
         type: "server_vad",
         threshold: 0.5,
-        silence_duration_ms: 600,
+        // 受访者深度思考时会自然停顿(换气/斟酌),常 >0.6s。过短会把一句话切成很多段
+        // (用户侧表现为"转译被断成很多段"),且每个碎段语义不完整 → 编排层判 wait → 主持人
+        // 迟迟不回应、turn 难以提交。给到 1.5s 让正常思考停顿不被误判为"说完了"。配合
+        // cascadedPipeline 不在 listening 态 speech_started 清累积(同一句续说),即便偶尔被切也不丢前段。
+        silence_duration_ms: 1500,
         // Pure transcriber: emit VAD turn events + transcription, but do NOT let
         // omni auto-generate a response each turn. The cascade orchestrator owns
         // the respond/留白 decision and the LLM+TTS reply. Verified accepted by

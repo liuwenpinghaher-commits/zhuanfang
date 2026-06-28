@@ -232,6 +232,37 @@ describe("connectCascadedPipeline", () => {
   });
 
   // -------------------------------------------------------------------------
+  // 2c. VAD 误切同一句:listening 态 speech_started 不清累积(前段不丢)
+  //     回归:server_vad 在思考停顿处切段 → 用户续说触发 speech_started(非 barge-in)。
+  //     旧实现每次 speech_started 都清 committedTranscript → 前段丢失 → 残段不完整不
+  //     respond → session.turns 永远 0 → /end 返回 422「结束失败,本次未生成档案」。
+  // -------------------------------------------------------------------------
+  it("VAD 误切同一句:listening 态 speech_started 累积前段(不丢),最终合并提交", async () => {
+    const pipeline = connectCascadedPipeline(makeOpts());
+    await pipeline.startListening();
+
+    // 第一段:用户说半句后思考停顿,被 server_vad 切段(短停顿 → wait,未 respond)
+    asr.setExpressionState("organizing");
+    asr.pushDelta("我觉得这个产品的核心，", true);
+    asr.pushSpeechStopped(300); // silenceMs < minPauseMs(600) → wait
+    await new Promise((r) => setTimeout(r, 0));
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+
+    // 用户继续说同一句:listening 态 speech_started(非 barge-in)——必须保留前段
+    asr.pushSpeechStarted();
+    asr.setExpressionState("concluding");
+    asr.pushDelta("是认知沉淀。", true);
+    asr.pushSpeechStopped(1000); // concluding → respond
+    await new Promise((r) => setTimeout(r, 0));
+
+    // sendUserTurn 必须收到累积的完整句,而不是只有最后一段("是认知沉淀。")
+    expect(sendUserTurn.fn).toHaveBeenCalledOnce();
+    expect(sendUserTurn.fn.mock.calls[0][0]).toBe("我觉得这个产品的核心，是认知沉淀。");
+
+    pipeline.close();
+  });
+
+  // -------------------------------------------------------------------------
   // 2a. interrupt() during playback reports NO spoken text. The reply is streamed to the
   //     TTS sink as one gapless batch (per-sentence calls would gap the audio), so we can't
   //     know how much was heard mid-utterance — we report "" rather than over-claim, and the
