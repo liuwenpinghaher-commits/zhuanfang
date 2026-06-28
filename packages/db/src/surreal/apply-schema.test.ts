@@ -19,6 +19,13 @@ describe("applySchema", () => {
     expect(applied).toEqual(["001_nodes.surql", "002_relations.surql", "003_index.surql", "004_p1a_rest_meta.surql"]);
   });
 
+  it("L1:关系表 ENFORCED——RELATE 指向不存在端点节点应被引擎拒绝(DB 层引用完整性兜底)", async () => {
+    const d = await freshDb();
+    await applySchema(d);
+    // point:ghost / theme:ghost 节点不存在;ENFORCED 应拒绝建悬挂边(应用层 collectEdges 之外的双保险)。
+    await expect(d.query("RELATE point:ghost->belongs_to_theme->theme:ghost;")).rejects.toThrow();
+  });
+
   it("二次 apply 幂等:不报错、不重复、INFO 不变", async () => {
     const d = await freshDb();
     await applySchema(d);
