@@ -168,6 +168,31 @@ describe("surreal graph edges (mem://)", () => {
     const [rows] = await repo.query<[Array<{ id: unknown }>]>("SELECT id FROM point;");
     expect((rows ?? []).length).toBe(2);
   });
+
+  // 轻量推理(欠账②):contradicts 边投影 mem:// 往返。symmetric 去重 → DB 里只一条边,
+  // 连两端 point;清空软链后边不残留(全量覆盖)。
+  it("contradicts 边:双向软链 symmetric 去重投影成一条 point↔point 边,清空后不残留", async () => {
+    const repo = await makeMem();
+    const base = repo.getState();
+    repo.replaceState({ ...base,
+      points: [
+        { id: "pt_a", title: "集权", content: "c", status: "被挑战中" as const, confidence: "AI 推断" as const, evidence: [], relatedThemeIds: [], important: false, updatedAt: "2026-06-27T00:00:00.000Z", contradictsPointIds: ["pt_b"] },
+        { id: "pt_b", title: "放权", content: "c", status: "稳定观点" as const, confidence: "用户确认" as const, evidence: [], relatedThemeIds: [], important: false, updatedAt: "2026-06-27T00:00:00.000Z", contradictsPointIds: ["pt_a"] }
+      ]
+    });
+    await repo.flush();
+    // 双向软链 → symmetric 去重 → 整库恰一条 contradicts 边。
+    const [all] = await repo.query<[unknown[]]>("SELECT * FROM contradicts;");
+    expect((all ?? []).length).toBe(1);
+    // 该边从 pt_a(字典序在前)出、指向 pt_b。
+    const [out] = await repo.query<[unknown[]]>("SELECT VALUE ->contradicts->point FROM point:pt_a;");
+    expect((out?.[0] as unknown[] ?? []).length).toBe(1);
+    // 清空 contradictsPointIds 重写 → 边被全量覆盖清掉。
+    repo.replaceState({ ...repo.getState(), points: repo.getState().points.map((p) => ({ ...p, contradictsPointIds: [] })) });
+    await repo.flush();
+    const [after] = await repo.query<[unknown[]]>("SELECT * FROM contradicts;");
+    expect((after ?? []).length).toBe(0);
+  });
 });
 
 describe("surreal diff-upsert (surrealkv://)", () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { buildInterviewCard, buildInterviewContextPack, buildInterviewGuide, buildSemanticRagContext, scoreMemoryForRetrieval } from "./context-pack";
+import { buildInterviewCard, buildInterviewContextPack, buildInterviewGuide, buildOpinionEvolution, buildSemanticRagContext, scoreMemoryForRetrieval } from "./context-pack";
 import { createInitialProductState } from "./engine";
-import type { MemoryCorrection, MemoryRecord, RagChunk, ImportSource, SearchBrief } from "./types";
+import type { MemoryCorrection, MemoryRecord, PointAsset, RagChunk, ImportSource, SearchBrief } from "./types";
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -488,5 +488,96 @@ describe("M4: context memory source = memoryRecords only", () => {
     const contextPack = buildInterviewContextPack(state, {});
 
     expect(contextPack.memoryRecords.some((r) => r.text === "来自 memoryRecords 的真实记忆")).toBe(true);
+  });
+});
+
+// ─── 轻量推理(欠账②):buildOpinionEvolution 做实 ──────────────────────────────
+describe("buildOpinionEvolution（做实:从 supersededByPointId 链产真实演化）", () => {
+  const point = (id: string, overrides: Partial<PointAsset> = {}): PointAsset => ({
+    id,
+    title: `观点 ${id}`,
+    content: `内容 ${id}`,
+    status: "临时想法",
+    confidence: "AI 推断",
+    evidence: [],
+    relatedThemeIds: [],
+    important: false,
+    updatedAt: "2026-06-27T00:00:00.000Z",
+    ...overrides
+  });
+
+  it("有 supersededBy → 真实 oldView/newView/date/topic(共同主题名)", () => {
+    const state = createInitialProductState();
+    state.themes = [{ id: "th_1", name: "放权与拍板", summary: "", maturity: "聚焦", representativeQuote: "", appearances: 3, nextQuestion: "", updatedAt: "2026-06-27T00:00:00.000Z" }];
+    state.points = [
+      point("pt_old", { content: "凡事都该自己拍板", relatedThemeIds: ["th_1"], supersededByPointId: "pt_new", status: "已修正", updatedAt: "2026-06-01T00:00:00.000Z" }),
+      point("pt_new", { content: "关键决策拍板,执行充分放权", relatedThemeIds: ["th_1"], updatedAt: "2026-06-20T00:00:00.000Z" })
+    ];
+    const evo = buildOpinionEvolution(state);
+    expect(evo).toHaveLength(1);
+    expect(evo[0]).toEqual({
+      topic: "放权与拍板",
+      oldView: "凡事都该自己拍板",
+      newView: "关键决策拍板,执行充分放权",
+      date: "2026-06-20T00:00:00.000Z"
+    });
+  });
+
+  it("无任何 supersededBy 关系 → 空数组(诚实空,不再假拼 notes[0]+points[0])", () => {
+    const state = createInitialProductState();
+    state.notes = [{ id: "n1", sessionId: "s1", title: "t", summary: "s", keyQuote: "q", saidTrack: ["说过的话"], learnedTrack: [], nextQuestions: [], createdAt: "2026-06-27T00:00:00.000Z" }];
+    state.points = [point("pt_1", { content: "孤立观点" })];
+    expect(buildOpinionEvolution(state)).toEqual([]);
+  });
+
+  it("取代方 point 不存在(悬挂)→ 跳过该条,不产空壳", () => {
+    const state = createInitialProductState();
+    state.points = [point("pt_old", { supersededByPointId: "pt_ghost" })];
+    expect(buildOpinionEvolution(state)).toEqual([]);
+  });
+
+  it("无共同主题 → topic 回退到任一方主题名;都没有 → 通用文案", () => {
+    const state = createInitialProductState();
+    state.themes = [{ id: "th_x", name: "只挂在新观点上的主题", summary: "", maturity: "萌芽", representativeQuote: "", appearances: 1, nextQuestion: "", updatedAt: "2026-06-27T00:00:00.000Z" }];
+    state.points = [
+      point("pt_old", { supersededByPointId: "pt_new", relatedThemeIds: [] }),
+      point("pt_new", { relatedThemeIds: ["th_x"] })
+    ];
+    expect(buildOpinionEvolution(state)[0].topic).toBe("只挂在新观点上的主题");
+
+    const state2 = createInitialProductState();
+    state2.points = [point("a", { supersededByPointId: "b" }), point("b")];
+    expect(buildOpinionEvolution(state2)[0].topic).toBe("长期主题");
+  });
+
+  it("多条 supersededBy → 多条演化", () => {
+    const state = createInitialProductState();
+    state.points = [
+      point("o1", { supersededByPointId: "n1" }),
+      point("n1"),
+      point("o2", { supersededByPointId: "n2" }),
+      point("n2")
+    ];
+    expect(buildOpinionEvolution(state)).toHaveLength(2);
+  });
+
+  it("guide 消费:有 contradicts 软链 → strategyChecklist 出现对立观点复盘提示", () => {
+    const state = createInitialProductState();
+    state.points = [
+      point("pt_a", { title: "应当集中拍板", relatedThemeIds: ["th_1"], contradictsPointIds: ["pt_b"] }),
+      point("pt_b", { title: "应当充分放权", relatedThemeIds: ["th_1"], contradictsPointIds: ["pt_a"] })
+    ];
+    const guide = buildInterviewGuide(state);
+    const hint = guide.strategyChecklist.find((line) => line.includes("对立看法"));
+    expect(hint).toBeTruthy();
+    expect(hint).toContain("应当集中拍板");
+    expect(hint).toContain("应当充分放权");
+  });
+
+  it("guide 消费:无 contradicts → 不加复盘提示(checklist 无该行)", () => {
+    const state = createInitialProductState();
+    state.points = [point("pt_a", { relatedThemeIds: ["th_1"] })];
+    const guide = buildInterviewGuide(state);
+    expect(guide.strategyChecklist.some((line) => line.includes("对立看法"))).toBe(false);
   });
 });

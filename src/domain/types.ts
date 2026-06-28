@@ -684,6 +684,16 @@ export interface PointAsset {
   /** 产出该资产的专访会话 id */
   sourceSessionId?: string;
   evidenceAnchors?: EvidenceAnchor[];
+  /**
+   * 轻量推理(欠账②):与本观点【语义对立】的其他观点 id(内嵌软链,与 relatedThemeIds 同模式)。
+   * 由 LLM 精判检出、双向写两端,投影成 contradicts 边。可选——对齐 L3 可空性纪律。
+   */
+  contradictsPointIds?: string[];
+  /**
+   * 轻量推理(欠账②):本观点被哪一条更新的观点【修正/取代】(functional 单值)。
+   * 由 LLM 精判检出,旧观点持此链 + status 置「已修正」,投影成 buildOpinionEvolution 的真实演化。
+   */
+  supersededByPointId?: string;
 }
 
 export interface QuestionAsset {

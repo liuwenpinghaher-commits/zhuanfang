@@ -584,6 +584,58 @@ describe("interview-sessions routes", () => {
     await server.close();
   });
 
+  // --- /end: 轻量推理(欠账②)矛盾检测端到端接线 ---
+  it("/end (with chatClient): 同主题对立观点经 LLM 精判 → contradicts 软链双向落库 + 较弱方置「被挑战中」", async () => {
+    // 三路 chat 调用按 system prompt 分发:finalize / 候选记忆抽取 / 认知关系精判。
+    const complete = vi.fn(async (opts: any) => {
+      const system = (opts?.messages ?? []).filter((m: any) => m?.role === "system").map((m: any) => String(m?.content ?? "")).join("\n");
+      if (system.includes("认知关系审校员")) {
+        // 把预置的两条同主题观点判为对立。
+        return JSON.stringify({ relations: [{ a: "pt_x", b: "pt_y", verdict: "contradict" }] });
+      }
+      if (system.includes("候选记忆")) return JSON.stringify({ candidates: [] });
+      // finalize:不产新资产(只产笔记),让候选对仅由预置的两条观点构成。
+      return JSON.stringify({
+        summary: "推进了团队管理判断", keyQuote: "最难的是放权",
+        saidTrack: ["谈了带团队"], learnedTrack: ["放权要建机制"], nextQuestions: [],
+        points: [], questions: [], decisions: [], debts: [], themes: []
+      });
+    });
+
+    const seededState = {
+      ...createInitialProductState(),
+      themes: [{ id: "th_1", name: "放权与拍板", summary: "", maturity: "聚焦" as const, representativeQuote: "", appearances: 3, nextQuestion: "", updatedAt: "2026-06-01T00:00:00.000Z" }],
+      points: [
+        { id: "pt_x", title: "应当集中拍板", content: "凡事自己复核", status: "临时想法" as const, confidence: "AI 推断" as const, evidence: ["x"], relatedThemeIds: ["th_1"], important: false, updatedAt: "2026-06-01T00:00:00.000Z", evidenceAnchors: [{ sessionId: "se_old", turnId: "tu_old" }] },
+        { id: "pt_y", title: "应当充分放权", content: "把执行交出去", status: "稳定观点" as const, confidence: "用户确认" as const, evidence: ["y"], relatedThemeIds: ["th_1"], important: false, updatedAt: "2026-06-20T00:00:00.000Z", evidenceAnchors: [{ sessionId: "se_old", turnId: "tu_old2" }] }
+      ]
+    };
+    const repo = createInMemoryProductStateRepository(seededState);
+    const server = Fastify({ logger: false });
+    await registerInterviewSessionRoutes(server, repo, {
+      bailianChatClient: { complete } as any,
+      llmBudget: createLlmBudget({ maxCallsPerSession: 10 })
+    });
+
+    const id = await seedEndableSession(server);
+    const res = await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/end` });
+    expect(res.statusCode).toBe(200);
+
+    const points = repo.getState().points;
+    const px = points.find((p) => p.id === "pt_x")!;
+    const py = points.find((p) => p.id === "pt_y")!;
+    // 双向软链。
+    expect(px.contradictsPointIds).toContain("pt_y");
+    expect(py.contradictsPointIds).toContain("pt_x");
+    // 较弱方(AI 推断 < 用户确认)被挑战;较强方维持原状态。
+    expect(px.status).toBe("被挑战中");
+    expect(py.status).toBe("稳定观点");
+    // 精判确实被调用过。
+    expect(complete.mock.calls.some((c: any) => String(c[0]?.messages?.[0]?.content ?? "").includes("认知关系审校员"))).toBe(true);
+
+    await server.close();
+  });
+
   // C1: the /end RESPONSE must return the SAME light state that was persisted
   // (turns stripped + rawMaterialOffloaded), not the heavy finalized state. The
   // client adopts the response and an autosave effect would PUT it straight back;

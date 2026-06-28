@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { collectEdges, turnRecordsOf } from "./edge-mapper";
 import { createInitialProductState } from "../../../../src/domain/engine";
+import type { ProductState } from "../../../../src/domain/types";
 
-function baseState() {
+function baseState(): ProductState {
   const s = createInitialProductState();
   return {
     ...s,
@@ -83,5 +84,47 @@ describe("edge-mapper", () => {
     }));
     // turns 空 → 不再产 part_of(persist 侧靠"part_of 跳 DELETE"保住已写的边)。
     expect(edges.some((e) => e.edge === "part_of")).toBe(false);
+  });
+
+  // ⑤ 轻量推理(欠账②):contradictsPointIds → contradicts 边(point↔point,symmetric)。
+  it("contradictsPointIds → contradicts(symmetric 去重:A↔B 只投影一条,按 id 字典序 from<to)", () => {
+    const st = baseState();
+    // 两条互指对立的观点 + 第三条无关。双向软链应只产一条 contradicts(pt_a < pt_b)。
+    st.points = [
+      { id: "pt_b", title: "t", content: "c", status: "被挑战中", confidence: "AI 推断", evidence: [], relatedThemeIds: ["th_1"], important: false, updatedAt: "2026-06-27T00:00:00.000Z", contradictsPointIds: ["pt_a"] },
+      { id: "pt_a", title: "t", content: "c", status: "稳定观点", confidence: "用户确认", evidence: [], relatedThemeIds: ["th_1"], important: false, updatedAt: "2026-06-27T00:00:00.000Z", contradictsPointIds: ["pt_b"] }
+    ];
+    const cd = collectEdges(st).filter((e) => e.edge === "contradicts");
+    expect(cd).toHaveLength(1);
+    expect(cd[0]).toEqual(expect.objectContaining({ edge: "contradicts", fromTable: "point", fromId: "pt_a", toTable: "point", toId: "pt_b" }));
+  });
+
+  it("contradicts:单向软链也产边(只一端记录对立时不漏)", () => {
+    const st = baseState();
+    st.points = [
+      { id: "pt_a", title: "t", content: "c", status: "稳定观点" as const, confidence: "用户确认" as const, evidence: [], relatedThemeIds: ["th_1"], important: false, updatedAt: "2026-06-27T00:00:00.000Z", contradictsPointIds: ["pt_b"] },
+      { id: "pt_b", title: "t", content: "c", status: "稳定观点" as const, confidence: "用户确认" as const, evidence: [], relatedThemeIds: ["th_1"], important: false, updatedAt: "2026-06-27T00:00:00.000Z" }
+    ];
+    const cd = collectEdges(st).filter((e) => e.edge === "contradicts");
+    expect(cd).toHaveLength(1);
+    expect(cd[0]).toEqual(expect.objectContaining({ fromId: "pt_a", toId: "pt_b" }));
+  });
+
+  it("contradicts:point 端 known-id 过滤(指向不存在 point 不产悬挂边)", () => {
+    const st = baseState();
+    st.points = [
+      { id: "pt_a", title: "t", content: "c", status: "稳定观点" as const, confidence: "用户确认" as const, evidence: [], relatedThemeIds: ["th_1"], important: false, updatedAt: "2026-06-27T00:00:00.000Z", contradictsPointIds: ["pt_gone"] }
+    ];
+    const cd = collectEdges(st).filter((e) => e.edge === "contradicts");
+    expect(cd).toHaveLength(0);
+  });
+
+  it("contradicts:自指被忽略(A→A 不产边)", () => {
+    const st = baseState();
+    st.points = [
+      { id: "pt_a", title: "t", content: "c", status: "稳定观点" as const, confidence: "用户确认" as const, evidence: [], relatedThemeIds: ["th_1"], important: false, updatedAt: "2026-06-27T00:00:00.000Z", contradictsPointIds: ["pt_a"] }
+    ];
+    const cd = collectEdges(st).filter((e) => e.edge === "contradicts");
+    expect(cd).toHaveLength(0);
   });
 });

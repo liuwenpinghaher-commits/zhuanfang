@@ -570,21 +570,48 @@ export function computeRecordThemeIds(state: ProductState, record: MemoryRecord)
     .filter(({ sharedCount }) => sharedCount >= 2)
     .map(({ theme }) => theme.id);
 }
-function buildOpinionEvolution(state: ProductState): InterviewGuide["opinionEvolution"] {
-  const note = state.notes[0];
-  const point = state.points[0];
-  if (!note || !point) {
-    return [];
-  }
+// 轻量推理(欠账②)做实:观点演化从 point 的 supersededByPointId 链产生真实条目,
+// 不再用 notes[0]+points[0] 假拼。每条 = (被取代观点 → 取代观点):
+//   oldView = 旧 point.content;newView = 取代方 point.content;
+//   topic   = 两者共同主题名(relatedThemeIds 交集 → theme.name),无共同主题则回退到任一方主题/通用文案;
+//   date    = 取代方 updatedAt(演化发生时间)。
+// 无任何 supersededBy 关系 → 返回 [](诚实空,而非假造一条)。
+export function buildOpinionEvolution(state: ProductState): InterviewGuide["opinionEvolution"] {
+  const pointById = new Map(state.points.map((p) => [p.id, p] as const));
+  const themeNameById = new Map(state.themes.map((t) => [t.id, t.name] as const));
 
-  return [
-    {
-      topic: state.themes[0]?.name ?? "长期主题",
-      oldView: note.saidTrack[0] ?? note.keyQuote,
-      newView: point.content,
-      date: point.updatedAt
-    }
-  ];
+  const evolution: InterviewGuide["opinionEvolution"] = [];
+  for (const oldP of state.points) {
+    if (!oldP.supersededByPointId) continue;
+    const newP = pointById.get(oldP.supersededByPointId);
+    if (!newP) continue; // 取代方不存在(被删/悬挂)→ 跳过,不产空壳条目
+
+    evolution.push({
+      topic: resolveEvolutionTopic(oldP.relatedThemeIds, newP.relatedThemeIds, themeNameById),
+      oldView: oldP.content,
+      newView: newP.content,
+      date: newP.updatedAt
+    });
+  }
+  return evolution;
+}
+
+// 共同主题名:先取两观点 relatedThemeIds 的交集→主题名;无交集则取任一方第一个有名字的主题;
+// 都没有则通用文案。纯查表,不臆造。
+function resolveEvolutionTopic(
+  oldThemeIds: string[] | undefined,
+  newThemeIds: string[] | undefined,
+  themeNameById: Map<string, string>
+): string {
+  const olds = oldThemeIds ?? [];
+  const news = newThemeIds ?? [];
+  const shared = olds.find((id) => news.includes(id) && themeNameById.has(id));
+  if (shared) return themeNameById.get(shared)!;
+  for (const id of [...olds, ...news]) {
+    const name = themeNameById.get(id);
+    if (name) return name;
+  }
+  return "长期主题";
 }
 function buildPerspectiveCoverage(state: ProductState): Record<string, number> {
   const corpus = [
@@ -718,10 +745,34 @@ function buildStrategyChecklist(
     `开场先落到具体事件：${input.openingQuestion}`,
     ...(input.agendaContext ? [`按主动搜集依据追问：${input.agendaContext}`] : []),
     ...collectAppliedPlaybookRules(state).slice(0, 2).map((rule) => `已应用样本技法：${rule}`),
+    // 轻量推理(欠账②)消费:存在同主题对立观点时,提示主持人安排一次复盘。
+    ...buildContradictionReviewHints(state),
     input.debtToAddress ? `第 2-3 轮回访知识债：${input.debtToAddress}` : "若用户出现新概念，生成知识债候选。",
     `中段至少引入两个视角：${input.recommendedPerspectives.slice(0, 2).join(" / ")}`,
     "所有外部素材必须作为追问线索，不直接替用户下结论。"
   ];
+}
+
+// 轻量推理(欠账②)消费:把 contradicts 软链翻成"对立观点复盘"提示。每对只提示一次
+// (symmetric 去重,按 id 字典序),最多 2 条避免淹没 checklist;指向不存在 point 的悬挂软链跳过。
+function buildContradictionReviewHints(state: ProductState): string[] {
+  const pointById = new Map(state.points.map((p) => [p.id, p] as const));
+  const seen = new Set<string>();
+  const hints: string[] = [];
+  for (const p of state.points) {
+    for (const otherId of p.contradictsPointIds ?? []) {
+      if (p.id === otherId) continue;
+      const other = pointById.get(otherId);
+      if (!other) continue;
+      const [lo, hi] = p.id < otherId ? [p.id, otherId] : [otherId, p.id];
+      const key = `${lo}|${hi}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      hints.push(`你在「${p.title}」与「${other.title}」上有对立看法，值得本轮复盘是哪一方变了、为什么。`);
+      if (hints.length >= 2) return hints;
+    }
+  }
+  return hints;
 }
 function chooseRecommendedPerspectives(
   topicHint: string,

@@ -1,7 +1,7 @@
 import type { ProductState, EvidenceAnchor } from "../../../../src/domain/types";
 
 export interface EdgeSpec {
-  edge: "belongs_to_theme" | "derived_from" | "about_theme" | "part_of";
+  edge: "belongs_to_theme" | "derived_from" | "about_theme" | "part_of" | "contradicts";
   fromTable: string;
   fromId: string;
   toTable: string;
@@ -78,6 +78,23 @@ export function collectEdges(state: ProductState): EdgeSpec[] {
 
   // ④ session.turns → part_of(turn→session)
   for (const s of state.sessions) for (const t of s.turns ?? []) edges.push({ edge: "part_of", fromTable: "turn", fromId: t.id, toTable: "session", toId: s.id });
+
+  // ⑤ 轻量推理(欠账②):point.contradictsPointIds[] → contradicts(point↔point,symmetric)。
+  //    symmetric 去重:对立是无向的,A↔B 只投影【一条】边,方向归一为 id 字典序(from<to),
+  //    避免双向软链(两端各记一次)产生重复边、以及召回时把一对算成两条。
+  //    point 两端均按 known-id 过滤(沿用 ① theme/③ memory 端的悬挂边杜绝风格);自指(A→A)忽略。
+  const pointIds = new Set(state.points.map((p) => p.id));
+  const seenContradicts = new Set<string>();
+  for (const p of state.points) {
+    for (const otherId of p.contradictsPointIds ?? []) {
+      if (p.id === otherId || !pointIds.has(otherId)) continue;
+      const [lo, hi] = p.id < otherId ? [p.id, otherId] : [otherId, p.id];
+      const key = `${lo}|${hi}`;
+      if (seenContradicts.has(key)) continue;
+      seenContradicts.add(key);
+      edges.push({ edge: "contradicts", fromTable: "point", fromId: lo, toTable: "point", toId: hi });
+    }
+  }
 
   return edges;
 }

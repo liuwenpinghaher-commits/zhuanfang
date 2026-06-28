@@ -26,6 +26,8 @@ import { stripSpokenAsides, deriveSpeechProsody } from "../../../../src/domain/s
 import { buildRealtimeVoiceInstructions } from "../../../../src/domain/voice-instructions";
 import { finalizeSessionWithLlm } from "../intelligence/finalize-llm";
 import { extractCandidateMemories, toSessionMemoryCandidates } from "../intelligence/memory-extraction-llm";
+import { judgeCognitiveRelations } from "../intelligence/cognitive-relations-llm";
+import { collectCandidatePointPairs, applyCognitiveRelations } from "../../../../src/domain/reasoning";
 import { generatePreSignals } from "../intelligence/pre-signals-llm";
 import { classifyTurnComplete } from "../intelligence/turn-endpoint-llm";
 import type { ProductStateRepository } from "../product-state-repository";
@@ -316,7 +318,16 @@ export async function registerInterviewSessionRoutes(
           createdAt: nowIso()
         })
       : result.nextState;
-    const completedSession = finalizedState.sessions.find((item) => item.id === session.id) ?? session;
+    // 轻量推理(欠账②):finalize 之后,对全量观点做矛盾/演化检出。规则粗筛 → LLM 精判 →
+    // 应用关系(双向 contradicts + supersedes)。fail-safe:无 LLM/超预算/无候选 → 原样返回,
+    // 绝不阻塞 finalize。确定性 finalize 路径(无 chatClient)本就不产观点资产,这里自然空跑。
+    const reasonedState = await applySessionCognitiveRelations(
+      finalizedState,
+      session.id,
+      options.bailianChatClient,
+      budget
+    );
+    const completedSession = reasonedState.sessions.find((item) => item.id === session.id) ?? session;
 
     // Cold-storage offload: move this just-completed session's heavy evidence
     // (turns + strategyTrace) into the raw-material repository and persist only
@@ -327,10 +338,10 @@ export async function registerInterviewSessionRoutes(
     // regression). The raw material is served lazily via
     // GET /api/sessions/:id/raw-material. The end screen shows the dual-track
     // note, not the transcript, so a light state doesn't degrade it.
-    let stateToPersist = finalizedState;
+    let stateToPersist = reasonedState;
     let offloadedTurns: InterviewTurn[] | undefined;
     if (options.rawMaterialRepository) {
-      const { hotState, material } = offloadCompletedSession(finalizedState, session.id);
+      const { hotState, material } = offloadCompletedSession(reasonedState, session.id);
       if (material) {
         options.rawMaterialRepository.put(material);
         stateToPersist = hotState;
@@ -711,6 +722,26 @@ async function extractSessionMemoryCandidates(
     }));
     return undefined;
   }
+}
+
+// 轻量推理(欠账②)编排:规则粗筛同主题观点对 → LLM 精判对立/取代 → 应用关系到 state。
+// 全程 fail-safe(judgeCognitiveRelations 内部吞错、空候选不消费预算),任何缺失都返回原 state,
+// 绝不阻塞 finalize。确定性 finalize(无 chatClient)路径下 finalize 不产观点资产 → 候选为空 → 空跑。
+async function applySessionCognitiveRelations(
+  state: ProductState,
+  sessionId: string,
+  chatClient: BailianChatClient | undefined,
+  budget: LlmBudget
+): Promise<ProductState> {
+  const pairs = collectCandidatePointPairs(state);
+  if (pairs.length === 0) {
+    return state;
+  }
+  const relations = await judgeCognitiveRelations(pairs, chatClient, budget, sessionId);
+  if (relations.contradicts.length === 0 && relations.supersedes.length === 0) {
+    return state;
+  }
+  return applyCognitiveRelations(state, relations);
 }
 
 // Join the conversation into a 用户/主持人 transcript (same shape finalize-llm uses),
