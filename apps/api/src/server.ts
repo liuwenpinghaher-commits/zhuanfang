@@ -15,6 +15,7 @@ import { createInMemoryRawMaterialRepository, type RawMaterialRepository } from 
 import { createInMemoryAudioRepository, type AudioRepository } from "./audio-repository";
 import { createInMemoryKnowledgeIndexRepository, type KnowledgeIndexRepository } from "./knowledge-index-repository";
 import { createAnySearchClientFromEnv, type AnySearchClient } from "./providers/anysearch";
+import { createLocalEmbeddingClient } from "./providers/local-embedding";
 import {
   createBailianAudioTranscriptionClientFromEnv,
   createBailianChatClientFromEnv,
@@ -378,8 +379,12 @@ function refreshRuntimeProviderClients(
     options.bailianTranscriptionClient ?? createBailianAudioTranscriptionClientFromEnv(env);
   // Embedding client for RAG / semantic search. Returns null when no API key — routes
   // that need it should fall back to deterministic retrieval when null.
+  // B2:EMBEDDING_PROVIDER=local → 本地 bge-large-zh(离线、不卡);否则云端 DashScope(默认,无 key→undefined)。
   providerClients.embeddingClient =
-    options.embeddingClient ?? createBailianEmbeddingClientFromEnv(env) ?? undefined;
+    options.embeddingClient ??
+    ((env.EMBEDDING_PROVIDER ?? "").trim().toLowerCase() === "local"
+      ? createLocalEmbeddingClient()
+      : createBailianEmbeddingClientFromEnv(env) ?? undefined);
   // Streaming TTS client for the TTS WebSocket proxy (browser ↔ CosyVoice).
   // If no API key is configured, the proxy will reject upgrades with 4001 at
   // connect time — safe to leave undefined here.
