@@ -84,7 +84,9 @@ const repo = await createSurrealProductStateRepository({ url: ${JSON.stringify(u
 const state = repo.getState();
 const pt = state.points.find((p: { id: string }) => p.id === "pt_kv");
 const th = state.themes.find((t: { id: string }) => t.id === "th_kv");
-console.log(JSON.stringify({ pt, th }));
+// P0 B:loadState 从 DB 读回 datetime 列后,updatedAt 必须 coerce 回 string(非 DateTime 对象)。
+// 必须在子进程内、JSON.stringify 之前捕获 typeof——JSON 会把 DateTime 也转成 ISO 字符串而掩盖问题。
+console.log(JSON.stringify({ pt, th, ptUpdatedAtType: typeof pt?.updatedAt }));
 await repo.close();
 process.exit(0);
 `, join(dir, "reader.mts"));
@@ -97,11 +99,15 @@ process.exit(0);
       const parsed = JSON.parse(jsonLine) as {
         pt?: { title: string; relatedThemeIds: string[]; evidence: string[] };
         th?: { id: string };
+        ptUpdatedAtType?: string;
       };
       expect(parsed.pt?.title, "point title persisted").toBe("持久化");
       expect(parsed.pt?.relatedThemeIds, "relatedThemeIds (rest) persisted").toEqual(["th_kv"]);
       expect(parsed.pt?.evidence, "evidence (rest) persisted").toEqual(["x"]);
       expect(parsed.th?.id, "theme persisted").toBe("th_kv");
+      // P0 B 真实 reload 验证:跨进程 loadState 从 DB datetime 列读回后,updatedAt 被 coerce 回 string
+      //(非 DateTime 对象)。这是 mem:// getState(返回内存副本)测不到、只有真实 DB reload 才暴露的路径。
+      expect(parsed.ptUpdatedAtType, "P0 B: loadState 日期 coerce 回 string").toBe("string");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
