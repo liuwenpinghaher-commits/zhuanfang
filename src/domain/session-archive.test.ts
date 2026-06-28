@@ -26,7 +26,6 @@ function makeMinimalState(overrides: Partial<ProductState> = {}): ProductState {
     memoryCorrections: [],
     memoryRecords: [],
     memoryCandidates: [],
-    memoryEdges: [],
     searchBriefs: [],
     importSources: [],
     ragChunks: [],

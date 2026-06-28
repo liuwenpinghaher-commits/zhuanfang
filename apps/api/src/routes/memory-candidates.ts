@@ -120,14 +120,16 @@ export async function registerMemoryCandidateRoutes(
     const clusters = collectMergedClusters(before, after);
     const deprecated = clusters.reduce((sum, cluster) => sum + cluster.losers.length, 0);
 
-    // Drop graph edges originating from records we just deprecated, matching
-    // deleteMemoryRecord's edge hygiene (otherwise the graph keeps dangling edges).
+    // M1: theme attribution now lives inline on each record (record.relatedThemeIds),
+    // replacing state.memoryEdges. dedupeMemoryRecords deprecates (not deletes) losers, so
+    // strip the deprecated losers' theme links here — matching the old edge hygiene that
+    // dropped memoryEdges from deprecated records (keeps them out of about_theme aggregation).
     const loserIds = new Set(clusters.flatMap((cluster) => cluster.losers.map((loser) => loser.id)));
-    const prunedEdges = loserIds.size > 0
-      ? state.memoryEdges.filter((edge) => !loserIds.has(edge.fromMemoryRecordId))
-      : state.memoryEdges;
+    const prunedRecords = loserIds.size > 0
+      ? after.map((record) => (loserIds.has(record.id) ? { ...record, relatedThemeIds: [] } : record))
+      : after;
 
-    let nextState: ProductState = { ...state, memoryRecords: after, memoryEdges: prunedEdges };
+    let nextState: ProductState = { ...state, memoryRecords: prunedRecords };
     if (deprecated > 0) {
       const reviewedAt = nowIso();
       // Optional LLM summaries — one pending candidate per merged cluster.

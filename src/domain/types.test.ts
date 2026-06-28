@@ -40,7 +40,7 @@ describe("domain types", () => {
       chatSessions: [],
       sessions: [], notes: [], points: [], questions: [], decisions: [], debts: [], themes: [],
       memoryCorrections: [], searchBriefs: [], podcastEpisodes: [], corpusImports: [], corpusInsights: [], playbookPatches: [],
-      memoryRecords: [], memoryCandidates: [], memoryEdges: [],
+      memoryRecords: [], memoryCandidates: [],
       importSources: [], ragChunks: [], configVersions: [],
       auditEvents: [], aiRunEvents: [], workflowRuns: [], operationalChecks: [],
       revision: 0,

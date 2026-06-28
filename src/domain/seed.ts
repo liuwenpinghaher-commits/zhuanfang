@@ -110,7 +110,6 @@ export const initialProductState: ProductState = {
   playbookPatches: [],
   memoryRecords: [],
   memoryCandidates: [],
-  memoryEdges: [],
   importSources: [
     {
       id: "source-control-note",

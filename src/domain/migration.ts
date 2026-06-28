@@ -128,7 +128,7 @@ function buildMigrationEntityCounts(state: ProductState): MigrationEntityCount[]
     {
       id: "memory",
       label: "长期记忆",
-      count: state.memoryCorrections.length + state.memoryRecords.length + state.memoryCandidates.length + state.memoryEdges.length
+      count: state.memoryCorrections.length + state.memoryRecords.length + state.memoryCandidates.length
     },
     {
       id: "external_knowledge",

@@ -66,7 +66,9 @@ export function normalizeProductState(value: unknown): ProductState {
     playbookPatches: Array.isArray(candidate.playbookPatches)
       ? candidate.playbookPatches
       : fallback.playbookPatches,
-    memoryRecords: Array.isArray(candidate.memoryRecords) ? candidate.memoryRecords : fallback.memoryRecords,
+    memoryRecords: Array.isArray(candidate.memoryRecords)
+      ? mergeLegacyMemoryEdges(candidate.memoryRecords, (candidate as Record<string, unknown>).memoryEdges)
+      : fallback.memoryRecords,
     memoryCandidates: Array.isArray(candidate.memoryCandidates)
       ? (() => {
           // ponytail: pending 全留 + 最近 200 已审,防 state 膨胀
@@ -81,7 +83,6 @@ export function normalizeProductState(value: unknown): ProductState {
           return [...pending, ...reviewed];
         })()
       : fallback.memoryCandidates,
-    memoryEdges: Array.isArray(candidate.memoryEdges) ? migrateMemoryEdges(candidate.memoryEdges) : fallback.memoryEdges,
     importSources: Array.isArray(candidate.importSources) ? normalizeImportSources(candidate.importSources) : fallback.importSources,
     ragChunks: Array.isArray(candidate.ragChunks) ? candidate.ragChunks : fallback.ragChunks,
     configVersions: Array.isArray(candidate.configVersions) ? candidate.configVersions : fallback.configVersions,
@@ -119,10 +120,13 @@ export function normalizeProductState(value: unknown): ProductState {
   };
   // R3: intel 子系统已删除。`...candidate` spread 会带入历史 intelTasks/intelItems,显式丢弃。
   // readings 字段在 R1 中已删除,同样通过 spread 透传,一并清除。
+  // M1: memoryEdges 退役 —— 其主题归属已由 mergeLegacyMemoryEdges 折进 record.relatedThemeIds,
+  // 这里删除经 spread 透传的原始 memoryEdges 数组,使该字段从持久化状态彻底消失。
   const legacy = normalized as unknown as Record<string, unknown>;
   delete legacy.intelTasks;
   delete legacy.intelItems;
   delete legacy.readings;
+  delete legacy.memoryEdges;
   return pruneDanglingThemeRefs(normalized);
 }
 
@@ -174,31 +178,56 @@ function migrateThemesToTracks(value: unknown[]): import("./types").LongTermThem
   });
 }
 
-// R4: MemoryEdge 砍为 record→theme 软链。历史 rich edge 仅保留指向主题的边,其它丢弃。
-function migrateMemoryEdges(value: unknown[]): import("./types").MemoryEdge[] {
-  const results = value
-    .filter((edge): edge is Record<string, unknown> => Boolean(edge && typeof edge === "object"))
-    .map((edge): import("./types").MemoryEdge | null => {
-      const fromMemoryRecordId = edge.fromMemoryRecordId;
-      if (typeof fromMemoryRecordId !== "string") return null;
-      const id = typeof edge.id === "string" ? edge.id : undefined;
-      const createdAt = typeof edge.createdAt === "string" ? edge.createdAt : undefined;
-      // 已是简化形(有 themeId)
-      if (typeof edge.themeId === "string") {
-        return { id, fromMemoryRecordId, themeId: edge.themeId, createdAt };
-      }
-      // 历史 rich 形:只保留指向 long_term_theme 的边,targetId→themeId
-      if (edge.targetType === "long_term_theme" && typeof edge.targetId === "string") {
-        return { id, fromMemoryRecordId, themeId: edge.targetId, createdAt };
-      }
-      return null;
-    });
-  const kept = results.filter((edge): edge is import("./types").MemoryEdge => edge !== null);
-  const dropped = results.length - kept.length;
+// M1: 退役 state.memoryEdges,把历史边的主题归属一次性、幂等、无损地折进
+// record.relatedThemeIds(与七类资产统一的内嵌软链)。兼容两种历史边形态:
+//   · 简化形 { fromMemoryRecordId, themeId }
+//   · 富形   { fromMemoryRecordId, targetType:"long_term_theme", targetId }(其余 targetType 丢弃)
+// 非主题边按 R4 老语义丢弃并告警(count)。后续 pruneDanglingThemeRefs 会再裁掉指向已删主题的 id。
+function legacyMemoryEdgeThemeMap(value: unknown): Map<string, string[]> {
+  const map = new Map<string, string[]>();
+  if (!Array.isArray(value)) return map;
+  let dropped = 0;
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object") {
+      dropped += 1;
+      continue;
+    }
+    const edge = raw as Record<string, unknown>;
+    const fromMemoryRecordId = edge.fromMemoryRecordId;
+    let themeId: string | undefined;
+    if (typeof edge.themeId === "string") {
+      themeId = edge.themeId;
+    } else if (edge.targetType === "long_term_theme" && typeof edge.targetId === "string") {
+      themeId = edge.targetId;
+    }
+    if (typeof fromMemoryRecordId !== "string" || !themeId) {
+      dropped += 1;
+      continue;
+    }
+    const existing = map.get(fromMemoryRecordId) ?? [];
+    if (!existing.includes(themeId)) existing.push(themeId);
+    map.set(fromMemoryRecordId, existing);
+  }
   if (dropped > 0) {
     console.warn(JSON.stringify({ event: "memory_edges_migration_dropped", count: dropped }));
   }
-  return kept;
+  return map;
+}
+
+function mergeLegacyMemoryEdges(
+  records: import("./types").MemoryRecord[],
+  legacyEdges: unknown
+): import("./types").MemoryRecord[] {
+  const byRecord = legacyMemoryEdgeThemeMap(legacyEdges);
+  if (byRecord.size === 0) return records;
+  return records.map((record) => {
+    const fromEdges = byRecord.get(record.id);
+    if (!fromEdges || fromEdges.length === 0) return record;
+    // 幂等 + 无损:并集已有 relatedThemeIds 与历史边归属(去重,保序:先已有后新增)。
+    const merged = [...(record.relatedThemeIds ?? [])];
+    for (const id of fromEdges) if (!merged.includes(id)) merged.push(id);
+    return { ...record, relatedThemeIds: merged };
+  });
 }
 
 function migrateWorkflowRuns(value: unknown[]): import("./types").WorkflowRun[] {
@@ -407,7 +436,9 @@ function pruneDanglingThemeRefs(state: ProductState): ProductState {
     questions: state.questions.map((q) => ({ ...q, relatedThemeIds: pruneRequired(q.relatedThemeIds ?? []) })),
     decisions: state.decisions.map((d) => ({ ...d, relatedThemeIds: pruneOptional(d.relatedThemeIds) })),
     debts: state.debts.map((d) => ({ ...d, relatedThemeIds: pruneOptional(d.relatedThemeIds) })),
-    importSources: state.importSources.map((src) => ({ ...src, relatedThemeIds: pruneOptional(src.relatedThemeIds) }))
+    importSources: state.importSources.map((src) => ({ ...src, relatedThemeIds: pruneOptional(src.relatedThemeIds) })),
+    // M1: memory records now carry relatedThemeIds too — prune dangling theme links alongside the seven assets.
+    memoryRecords: state.memoryRecords.map((m) => ({ ...m, relatedThemeIds: pruneOptional(m.relatedThemeIds) }))
   };
 }
 

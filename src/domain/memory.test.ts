@@ -12,18 +12,18 @@ function pendingCandidate(id: string, text: string): MemoryCandidate {
   } as MemoryCandidate;
 }
 
-describe("updateMemoryRecordText 边保留(审查修复)", () => {
-  it("重算边为空时保留原主题归属(防编辑文本意外清空)", () => {
+describe("updateMemoryRecordText 主题归属保留(审查修复 → M1)", () => {
+  it("重算为空时保留原主题归属(防编辑文本意外清空)", () => {
     const base = createInitialProductState();
-    const rec: MemoryRecord = { id: "me_1", text: "原文本内容", status: "confirmed", sourceType: "profile", sourceId: "p", evidenceQuote: "", sensitivity: "normal", createdAt: "2026-06-27T00:00:00.000Z", updatedAt: "2026-06-27T00:00:00.000Z" };
+    // M1: 主题归属内嵌于 record.relatedThemeIds(退役 state.memoryEdges)。
+    const rec: MemoryRecord = { id: "me_1", text: "原文本内容", status: "confirmed", sourceType: "profile", sourceId: "p", evidenceQuote: "", sensitivity: "normal", createdAt: "2026-06-27T00:00:00.000Z", updatedAt: "2026-06-27T00:00:00.000Z", relatedThemeIds: ["th_1"] };
     const state = { ...base,
       themes: [{ id: "th_1", name: "X主题", summary: "", maturity: "聚焦" as const, representativeQuote: "", appearances: 1, nextQuestion: "", updatedAt: "2026-06-27T00:00:00.000Z" }],
-      memoryRecords: [rec],
-      memoryEdges: [{ fromMemoryRecordId: "me_1", themeId: "th_1" }]
+      memoryRecords: [rec]
     };
-    // "z" 单字符必被 token 过滤 → buildMemoryEdgesForRecord 重算为空 → 应保留原 me_1→th_1 归属
+    // "z" 单字符必被 token 过滤 → computeRecordThemeIds 重算为空 → 应保留原 me_1→th_1 归属
     const updated = updateMemoryRecordText(state, "me_1", "z");
-    expect(updated.memoryEdges.filter((e) => e.fromMemoryRecordId === "me_1").length).toBeGreaterThan(0);
+    expect(updated.memoryRecords.find((r) => r.id === "me_1")?.relatedThemeIds).toContain("th_1");
   });
 });
 

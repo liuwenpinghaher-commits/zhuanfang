@@ -35,7 +35,6 @@ export function turnRecordsOf(state: ProductState): Array<Record<string, unknown
 export function collectEdges(state: ProductState): EdgeSpec[] {
   const edges: EdgeSpec[] = [];
   const themeIds = new Set(state.themes.map((t) => t.id));
-  const memoryIds = new Set(state.memoryRecords.map((m) => m.id));
 
   // ① relatedThemeIds[] → belongs_to_theme
   const theme = (fromTable: string, fromId: string, ids?: string[]) => {
@@ -71,8 +70,11 @@ export function collectEdges(state: ProductState): EdgeSpec[] {
   for (const x of state.notes)            derived("note", x.id, x.keyQuoteAnchor ? [x.keyQuoteAnchor] : undefined);
   for (const x of state.themes)           derived("theme", x.id, x.representativeQuoteAnchor ? [x.representativeQuoteAnchor] : undefined);
 
-  // ③ MemoryEdge → about_theme(审查修复:同时过滤 from 端 memory 是否存在,与 belongs_to_theme 的 theme-end known-id 过滤对齐,杜绝悬挂边)
-  for (const e of state.memoryEdges) if (themeIds.has(e.themeId) && memoryIds.has(e.fromMemoryRecordId)) edges.push({ edge: "about_theme", fromTable: "memory", fromId: e.fromMemoryRecordId, toTable: "theme", toId: e.themeId });
+  // ③ memoryRecords[].relatedThemeIds → about_theme(M1:记忆主题归属统一为内嵌软链,退役 MemoryEdge 双轨)。
+  //    沿用 ① theme() 的 theme-end known-id 过滤风格杜绝悬挂边;from 端遍历的是真实存在的 record(隐式过滤)。
+  for (const m of state.memoryRecords)
+    for (const tid of m.relatedThemeIds ?? [])
+      if (themeIds.has(tid)) edges.push({ edge: "about_theme", fromTable: "memory", fromId: m.id, toTable: "theme", toId: tid });
 
   // ④ session.turns → part_of(turn→session)
   for (const s of state.sessions) for (const t of s.turns ?? []) edges.push({ edge: "part_of", fromTable: "turn", fromId: t.id, toTable: "session", toId: s.id });

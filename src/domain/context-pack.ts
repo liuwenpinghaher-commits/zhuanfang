@@ -9,7 +9,6 @@ import type {
   InterviewTurn,
   InterviewStrength,
   ImportSource,
-  MemoryEdge,
   MemoryGraphReference,
   MemoryRecord,
   ProductState,
@@ -77,24 +76,47 @@ function buildBlindspotCandidates(missingPerspectives: string[], topicHint: stri
         }
       ];
 }
-function buildContextPackMemoryEdges(state: ProductState, memoryRecords: MemoryRecord[], topicHint: string) {
-  const visibleMemoryRecordIds = new Set(memoryRecords.map((record) => record.id));
-  const recordsById = new Map(memoryRecords.map((record) => [record.id, record]));
+// M1: memory→theme graph references now project from record.relatedThemeIds (the
+// unified embedded soft-link that replaced state.memoryEdges). Same topic-token gate +
+// 16-link cap as before, then dedup by theme into MemoryGraphReference[]. Iteration is
+// record-then-theme so the cap counts contributing (record, theme) pairs identically to
+// the old edge list (which was record-keyed too).
+function buildMemoryGraphReferences(
+  state: ProductState,
+  memoryRecords: MemoryRecord[],
+  topicHint: string
+): MemoryGraphReference[] {
   const topicTokens = tokenizeMemoryGraphText(topicHint);
-  return (state.memoryEdges ?? [])
-    .filter((edge) => visibleMemoryRecordIds.has(edge.fromMemoryRecordId))
-    .filter((edge) => {
-      if (topicTokens.size === 0) {
-        return true;
+  const themesById = new Map(state.themes.map((t) => [t.id, t]));
+  const seenThemes = new Set<string>();
+  const references: MemoryGraphReference[] = [];
+  let kept = 0;
+  for (const record of memoryRecords) {
+    for (const themeId of record.relatedThemeIds ?? []) {
+      const theme = themesById.get(themeId);
+      if (!theme) {
+        continue;
       }
-      const record = recordsById.get(edge.fromMemoryRecordId);
-      const theme = state.themes.find((t) => t.id === edge.themeId);
-      const edgeTokens = tokenizeMemoryGraphText(
-        [record?.text, record?.evidenceQuote, theme?.name, theme?.summary].filter(Boolean).join(" ")
-      );
-      return hasMemoryGraphTokenOverlap(topicTokens, edgeTokens);
-    })
-    .slice(0, 16);
+      if (topicTokens.size > 0) {
+        const edgeTokens = tokenizeMemoryGraphText(
+          [record.text, record.evidenceQuote, theme.name, theme.summary].filter(Boolean).join(" ")
+        );
+        if (!hasMemoryGraphTokenOverlap(topicTokens, edgeTokens)) {
+          continue;
+        }
+      }
+      // 16-link cap mirrors the legacy memoryEdges.slice(0, 16) on the filtered set.
+      if (kept >= 16) {
+        return references;
+      }
+      kept += 1;
+      if (!seenThemes.has(theme.id)) {
+        seenThemes.add(theme.id);
+        references.push({ themeId: theme.id, themeLabel: theme.name });
+      }
+    }
+  }
+  return references;
 }
 function buildContextSecurityInterceptions(
   state: ProductState,
@@ -315,8 +337,7 @@ export function buildInterviewContextPack(state: ProductState, options: Intervie
     : options.queryEmbedding
       ? rankMemoryRecordsBySemantics(memoryRecords, topicHint, options.queryEmbedding)
       : rankMemoryTexts(memoryRecords.map((record) => record.text), topicHint);
-  const memoryEdges = buildContextPackMemoryEdges(state, memoryRecords, topicHint);
-  const graphReferences = buildMemoryGraphReferences(memoryEdges, state);
+  const graphReferences = buildMemoryGraphReferences(state, memoryRecords, topicHint);
   const pendingCandidates = memoryPolicy.includePendingCandidatesInContext
     ? state.memoryCandidates.filter(
         (candidate) =>
@@ -338,7 +359,6 @@ export function buildInterviewContextPack(state: ProductState, options: Intervie
     corrections: [...state.memoryCorrections]
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, MAX_CONTEXT_CORRECTIONS),
-    memoryEdges,
     graphReferences,
     ...(recall?.provenance ? { provenanceTurns: recall.provenance } : {}),
     searchBriefs: searchBrief ? [searchBrief] : [],
@@ -529,20 +549,17 @@ function buildKnowledgeFragments(state: ProductState, searchBrief: SearchBrief |
     .flatMap((patch) => patch.rules.slice(0, 2));
   return [...fromSearch, ...fromRagChunks, ...fromDebts, ...fromPatches].slice(0, 6);
 }
-export function buildMemoryEdgesForRecord(state: ProductState, record: MemoryRecord, createdAt: string): MemoryEdge[] {
+// M1: compute the theme ids a memory record belongs to (token≥2 overlap with each
+// theme's text). Replaces buildMemoryEdgesForRecord — returns plain theme ids that the
+// caller merges into record.relatedThemeIds, instead of minting MemoryEdge objects.
+// Computes from scratch over all themes; dedup/preservation is the caller's concern.
+export function computeRecordThemeIds(state: ProductState, record: MemoryRecord): string[] {
   const sourceTokens = tokenizeMemoryGraphText(`${record.text} ${record.evidenceQuote}`);
   if (sourceTokens.size === 0) {
     return [];
   }
 
-  const existingThemeIds = new Set(
-    (state.memoryEdges ?? [])
-      .filter((edge) => edge.fromMemoryRecordId === record.id)
-      .map((edge) => edge.themeId)
-  );
-
   return state.themes
-    .filter((theme) => !existingThemeIds.has(theme.id))
     .map((theme) => {
       const themeTokens = tokenizeMemoryGraphText(
         [theme.name, theme.summary, theme.representativeQuote, theme.nextQuestion].join(" ")
@@ -551,25 +568,7 @@ export function buildMemoryEdgesForRecord(state: ProductState, record: MemoryRec
       return { theme, sharedCount };
     })
     .filter(({ sharedCount }) => sharedCount >= 2)
-    .map(({ theme }) => ({
-      id: makeId("memory-edge"),
-      fromMemoryRecordId: record.id,
-      themeId: theme.id,
-      createdAt,
-    }));
-}
-function buildMemoryGraphReferences(edges: MemoryEdge[], state: ProductState): MemoryGraphReference[] {
-  const seen = new Set<string>();
-  const result: MemoryGraphReference[] = [];
-  for (const edge of edges) {
-    const theme = state.themes.find((t) => t.id === edge.themeId);
-    if (!theme || seen.has(theme.id)) {
-      continue;
-    }
-    seen.add(theme.id);
-    result.push({ themeId: theme.id, themeLabel: theme.name });
-  }
-  return result;
+    .map(({ theme }) => theme.id);
 }
 function buildOpinionEvolution(state: ProductState): InterviewGuide["opinionEvolution"] {
   const note = state.notes[0];

@@ -635,24 +635,47 @@ describe("product state storage", () => {
       expect(normalized.themes[0].name).toBe(state.themes[0].name);
     });
 
-    it("memoryEdges: 历史 rich edge 仅保留指向主题的边,迁移为简化形", () => {
+    // M1 数据迁移:历史 state.memoryEdges → record.relatedThemeIds(无损折入,memoryEdges 字段消失)。
+    function memRec(id: string): import("./types").MemoryRecord {
+      return { id, text: "记忆", status: "confirmed", sourceType: "profile", sourceId: "p", evidenceQuote: "", sensitivity: "normal", createdAt: "2026-06-01T00:00:00.000Z", updatedAt: "2026-06-01T00:00:00.000Z" };
+    }
+
+    it("M1 迁移:历史 rich edge 指向主题的归属折入 record.relatedThemeIds,非主题边丢弃,memoryEdges 字段消失", () => {
       const state = createInitialProductState();
       const themeId = state.themes[0]?.id ?? "theme-control";
       const legacyEdges = [
         { id: "e1", fromMemoryRecordId: "r1", targetType: "long_term_theme", targetId: themeId, relation: "supports", weight: 3 },
         { id: "e2", fromMemoryRecordId: "r1", targetType: "point", targetId: "p1", relation: "contradicts", weight: 1 }
       ];
-      const normalized = normalizeProductState({ ...state, memoryEdges: legacyEdges as never });
-      expect(normalized.memoryEdges).toHaveLength(1);
-      expect(normalized.memoryEdges[0]).toMatchObject({ fromMemoryRecordId: "r1", themeId });
-      expect((normalized.memoryEdges[0] as unknown as Record<string, unknown>).relation).toBeUndefined();
+      const normalized = normalizeProductState({ ...state, memoryRecords: [memRec("r1")], memoryEdges: legacyEdges as never });
+      expect(normalized.memoryRecords.find((r) => r.id === "r1")?.relatedThemeIds).toEqual([themeId]);
+      // memoryEdges 字段从持久化状态彻底消失
+      expect((normalized as unknown as Record<string, unknown>).memoryEdges).toBeUndefined();
     });
 
-    it("memoryEdges: 已简化的 edge 幂等", () => {
+    it("M1 迁移:简化形边折入 record.relatedThemeIds(指向真实主题),幂等无损", () => {
       const state = createInitialProductState();
-      const simplified = [{ id: "e1", fromMemoryRecordId: "r1", themeId: "theme-x", createdAt: "2026-06-01T00:00:00.000Z" }];
-      const normalized = normalizeProductState({ ...state, memoryEdges: simplified as never });
-      expect(normalized.memoryEdges).toEqual(simplified);
+      const themeId = state.themes[0]?.id ?? "theme-control";
+      const simplified = [{ id: "e1", fromMemoryRecordId: "r1", themeId, createdAt: "2026-06-01T00:00:00.000Z" }];
+      const once = normalizeProductState({ ...state, memoryRecords: [memRec("r1")], memoryEdges: simplified as never });
+      expect(once.memoryRecords.find((r) => r.id === "r1")?.relatedThemeIds).toEqual([themeId]);
+      // 幂等:把一轮迁移后的结果(record 已带 relatedThemeIds、无 memoryEdges)再 normalize 一次,归属不变、不重复
+      const twice = normalizeProductState(once as never);
+      expect(twice.memoryRecords.find((r) => r.id === "r1")?.relatedThemeIds).toEqual([themeId]);
+    });
+
+    it("M1 迁移:record 已有 relatedThemeIds 时与历史边取并集(去重无损)", () => {
+      const state = createInitialProductState();
+      const themeA = state.themes[0]?.id ?? "theme-a";
+      const recWithExisting = { ...memRec("r1"), relatedThemeIds: [themeA] };
+      // 历史边同时含已存在的 themeA(去重)与悬空 ghost(后续 prune 裁掉)
+      const legacyEdges = [
+        { fromMemoryRecordId: "r1", themeId: themeA },
+        { fromMemoryRecordId: "r1", themeId: "theme-ghost" }
+      ];
+      const normalized = normalizeProductState({ ...state, memoryRecords: [recWithExisting], memoryEdges: legacyEdges as never });
+      // themeA 不重复;ghost 被 pruneDanglingThemeRefs 裁掉
+      expect(normalized.memoryRecords.find((r) => r.id === "r1")?.relatedThemeIds).toEqual([themeA]);
     });
   });
 
@@ -773,27 +796,32 @@ describe("product state storage", () => {
     });
   });
 
-  describe("migrateMemoryEdges 丢边告警", () => {
-    it("全部为非主题边时迁移后 memoryEdges 为 []", () => {
+  describe("M1 迁移:非主题历史边丢弃(无归属折入)", () => {
+    function memRec(id: string): import("./types").MemoryRecord {
+      return { id, text: "记忆", status: "confirmed", sourceType: "profile", sourceId: "p", evidenceQuote: "", sensitivity: "normal", createdAt: "2026-06-01T00:00:00.000Z", updatedAt: "2026-06-01T00:00:00.000Z" };
+    }
+
+    it("全部为非主题边时无任何主题归属折入 record", () => {
       const state = createInitialProductState();
       const nonThemeEdges = [
         { id: "e1", fromMemoryRecordId: "r1", targetType: "point", targetId: "p1" },
         { id: "e2", fromMemoryRecordId: "r2", targetType: "question", targetId: "q1" }
       ];
-      const normalized = normalizeProductState({ ...state, memoryEdges: nonThemeEdges as never });
-      expect(normalized.memoryEdges).toEqual([]);
+      const normalized = normalizeProductState({ ...state, memoryRecords: [memRec("r1"), memRec("r2")], memoryEdges: nonThemeEdges as never });
+      expect(normalized.memoryRecords.find((r) => r.id === "r1")?.relatedThemeIds ?? []).toEqual([]);
+      expect(normalized.memoryRecords.find((r) => r.id === "r2")?.relatedThemeIds ?? []).toEqual([]);
     });
 
-    it("混合边时只保留 long_term_theme 边，非主题边被丢弃", () => {
+    it("混合边时只把 long_term_theme 边折入对应 record,非主题边被丢弃", () => {
       const state = createInitialProductState();
       const themeId = state.themes[0]?.id ?? "theme-x";
       const mixed = [
         { id: "e1", fromMemoryRecordId: "r1", targetType: "long_term_theme", targetId: themeId },
         { id: "e2", fromMemoryRecordId: "r2", targetType: "point", targetId: "p-xyz" }
       ];
-      const normalized = normalizeProductState({ ...state, memoryEdges: mixed as never });
-      expect(normalized.memoryEdges).toHaveLength(1);
-      expect(normalized.memoryEdges[0].themeId).toBe(themeId);
+      const normalized = normalizeProductState({ ...state, memoryRecords: [memRec("r1"), memRec("r2")], memoryEdges: mixed as never });
+      expect(normalized.memoryRecords.find((r) => r.id === "r1")?.relatedThemeIds).toEqual([themeId]);
+      expect(normalized.memoryRecords.find((r) => r.id === "r2")?.relatedThemeIds ?? []).toEqual([]);
     });
   });
 

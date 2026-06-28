@@ -12,8 +12,8 @@ function baseState() {
     ] }],
     points: [{ id: "pt_1", title: "t", content: "c", status: "稳定观点" as const, confidence: "用户确认" as const, evidence: [], relatedThemeIds: ["th_1"], important: false, updatedAt: "2026-06-27T00:00:00.000Z", evidenceAnchors: [{ sessionId: "se_1", turnId: "tu_1" }] }],
     decisions: [{ id: "de_1", title: "t", decisionKind: "用户决策" as const, confirmationStatus: "用户确认" as const, choice: "c", tradeOff: "", riskHypothesis: "", reviewAt: "", status: "待复盘" as const, updatedAt: "2026-06-27T00:00:00.000Z", relatedThemeIds: ["th_1"] }],
-    memoryRecords: [{ id: "me_1", text: "x", status: "confirmed" as const, sourceType: "profile" as const, sourceId: "p", evidenceQuote: "", createdAt: "2026-06-27T00:00:00.000Z", updatedAt: "2026-06-27T00:00:00.000Z" }],
-    memoryEdges: [{ fromMemoryRecordId: "me_1", themeId: "th_1" }]
+    // M1: 记忆主题归属内嵌于 record.relatedThemeIds(退役 state.memoryEdges)。
+    memoryRecords: [{ id: "me_1", text: "x", status: "confirmed" as const, sourceType: "profile" as const, sourceId: "p", evidenceQuote: "", createdAt: "2026-06-27T00:00:00.000Z", updatedAt: "2026-06-27T00:00:00.000Z", relatedThemeIds: ["th_1"] }]
   };
 }
 
@@ -33,17 +33,25 @@ describe("edge-mapper", () => {
     }));
   });
 
-  it("memoryEdges → about_theme", () => {
+  it("record.relatedThemeIds → about_theme(M1:统一内嵌软链投影)", () => {
     const at = collectEdges(baseState()).filter((e) => e.edge === "about_theme");
     expect(at).toContainEqual(expect.objectContaining({ edge: "about_theme", fromTable: "memory", fromId: "me_1", toTable: "theme", toId: "th_1" }));
   });
 
-  it("审查修复:about_theme 过滤 from 端 —— memory 不存在时不产悬挂边", () => {
+  it("M1:about_theme 过滤 theme 端 —— record 指向不存在主题时不产悬挂边;from 端遍历真实 record(隐式不悬挂)", () => {
     const st = baseState();
-    const withGhost = { ...st, memoryEdges: [...st.memoryEdges, { fromMemoryRecordId: "me_gone", themeId: "th_1" }] };
-    const at = collectEdges(withGhost).filter((e) => e.edge === "about_theme");
-    expect(at.map((e) => e.fromId)).toContain("me_1"); // 存在的 memory 仍产边
-    expect(at.map((e) => e.fromId)).not.toContain("me_gone"); // 不存在的 memory 被过滤,不悬挂
+    // 给 me_1 追加一个指向不存在主题的归属,且新增一条挂同主题 th_1 的真实记忆 me_2。
+    const withGhostTheme = {
+      ...st,
+      memoryRecords: [
+        { ...st.memoryRecords[0], relatedThemeIds: ["th_1", "th_gone"] },
+        { id: "me_2", text: "y", status: "confirmed" as const, sourceType: "profile" as const, sourceId: "p", evidenceQuote: "", createdAt: "2026-06-27T00:00:00.000Z", updatedAt: "2026-06-27T00:00:00.000Z", relatedThemeIds: ["th_1"] }
+      ]
+    };
+    const at = collectEdges(withGhostTheme).filter((e) => e.edge === "about_theme");
+    expect(at.map((e) => e.fromId).sort()).toEqual(["me_1", "me_2"]);     // 两条真实记忆各产边
+    expect(at.map((e) => e.toId)).not.toContain("th_gone");                // 指向不存在主题的归属被过滤,不悬挂
+    expect(at.every((e) => e.toId === "th_1")).toBe(true);
   });
 
   it("session.turns → part_of + turn 记录", () => {

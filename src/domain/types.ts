@@ -836,6 +836,10 @@ export interface MemoryRecord {
    *  按每次召回回写为后续增强（domain 纯函数不持时钟，回写需在路由层做）。 */
   lastAccessedAt?: string;
   evidenceAnchors?: EvidenceAnchor[];
+  /** M1: 主题归属 — 与七类资产(point/question/decision/...)统一的内嵌软链。
+   *  退役了独立的 MemoryEdge / state.memoryEdges 双轨建模;边投影(about_theme)与
+   *  记忆召回(buildMemoryGraphReferences / recallThemeAssets)统一从此字段派生。 */
+  relatedThemeIds?: string[];
 }
 
 export interface MemoryCandidate {
@@ -864,13 +868,6 @@ export interface MemoryCandidate {
   evidenceAnchors?: EvidenceAnchor[];
 }
 
-export interface MemoryEdge {
-  id?: string;
-  fromMemoryRecordId: string;
-  themeId: string;
-  createdAt?: string;
-}
-
 export interface MemoryGraphReference {
   themeId: string;
   themeLabel: string;
@@ -895,7 +892,6 @@ export interface InterviewContextPack {
   memoryRecords: MemoryRecord[];
   pendingCandidates: MemoryCandidate[];
   corrections: MemoryCorrection[];
-  memoryEdges: MemoryEdge[];
   graphReferences: MemoryGraphReference[];
   /** P2b:surreal 权威时召回出的资产沿 derived_from 取到的证据 turn;回落时 undefined。 */
   provenanceTurns?: RecallProvenanceEntry[];
@@ -1269,7 +1265,6 @@ export interface ProductState {
   memoryCorrections: MemoryCorrection[];
   memoryRecords: MemoryRecord[];
   memoryCandidates: MemoryCandidate[];
-  memoryEdges: MemoryEdge[];
   searchBriefs: SearchBrief[];
   importSources: ImportSource[];
   ragChunks: RagChunk[];

@@ -34,7 +34,8 @@ export {
 export {
   addMemoryGraphToken, buildInterviewCard, buildInterviewContextPack,
   buildInterviewGuide, buildInterviewResumeCard,
-  buildMemoryEdgesForRecord, collectAppliedPlaybookRules,
+  collectAppliedPlaybookRules,
+  computeRecordThemeIds,
   createSessionDraft, formatMemoryGraphTargetLabel,
   tokenizeMemoryGraphText,
 } from "./context-pack";
@@ -146,7 +147,6 @@ import type {
   InterviewTurn,
   ImportSource,
   MemoryCandidate,
-  MemoryEdge,
   MemoryGraphReference,
   MemoryRecord,
   MonthlyReview,
@@ -264,7 +264,8 @@ function buildWorkflowRunDetails(
       memoryRecordCount: contextPack.memoryRecords.length,
       pendingCandidateCount: contextPack.pendingCandidates.length,
       correctionCount: contextPack.corrections.length,
-      memoryEdgeCount: contextPack.memoryEdges.length,
+      // M1: 记忆图谱边数 = 各确认记忆内嵌的 relatedThemeIds 之和(替代退役的 contextPack.memoryEdges)。
+      memoryEdgeCount: contextPack.memoryRecords.reduce((sum, record) => sum + (record.relatedThemeIds?.length ?? 0), 0),
       graphReferenceCount: contextPack.graphReferences.length,
       searchBriefCount: contextPack.searchBriefs.length,
       sourceHighlightCount: contextPack.sourceHighlights.length,
@@ -489,7 +490,7 @@ export function createEmptyProductState(): ProductState {
   return {
     ...base,
     sessions: [], notes: [], points: [], questions: [], decisions: [], debts: [], themes: [],
-    memoryCorrections: [], memoryRecords: [], memoryCandidates: [], memoryEdges: [],
+    memoryCorrections: [], memoryRecords: [], memoryCandidates: [],
     searchBriefs: [], podcastEpisodes: [], corpusImports: [], corpusInsights: [], playbookPatches: [],
     importSources: [], ragChunks: [],
     configVersions: [], auditEvents: [], aiRunEvents: [], workflowRuns: [], operationalChecks: [],

@@ -1,12 +1,11 @@
 import type {
   MemoryCandidate,
-  MemoryEdge,
   MemoryRecord,
   ProductState,
 } from "./types";
 
 import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent } from "./utils";
-import { buildMemoryEdgesForRecord, formatMemoryGraphTargetLabel, tokenizeMemoryGraphText } from "./context-pack";
+import { computeRecordThemeIds, formatMemoryGraphTargetLabel, tokenizeMemoryGraphText } from "./context-pack";
 import { cosineSimilarity } from "./vector";
 
 import { withMemoryCandidateReview } from "./memoryReview";
@@ -349,14 +348,15 @@ export function approveMemoryCandidate(
     // from (route-side write-back on each recall is a later enhancement).
     lastAccessedAt: reviewedAt
   };
+  // M1: theme attribution is now embedded on the record (replaces minting MemoryEdge rows).
+  const relatedThemeIds = computeRecordThemeIds(state, record);
+  if (relatedThemeIds.length > 0) {
+    record.relatedThemeIds = relatedThemeIds;
+  }
   const clonedState = cloneState(state);
-  const projectedState: ProductState = {
-    ...clonedState,
-    memoryRecords: [record, ...(clonedState.memoryRecords ?? [])]
-  };
-  const memoryEdges = buildMemoryEdgesForRecord(projectedState, record, reviewedAt);
   const nextState: ProductState = {
-    ...projectedState,
+    ...clonedState,
+    memoryRecords: [record, ...(clonedState.memoryRecords ?? [])],
     memoryCandidates: state.memoryCandidates.map((item) =>
       item.id === candidate.id
         ? {
@@ -365,8 +365,7 @@ export function approveMemoryCandidate(
             reviewedAt
           }
         : item
-    ),
-    memoryEdges: [...memoryEdges, ...(state.memoryEdges ?? [])]
+    )
   };
 
   return withAuditEvent(nextState, {
@@ -393,10 +392,11 @@ export function deleteMemoryRecord(state: ProductState, recordId: string): Produ
   }
 
   const deletedAt = nowIso();
+  // M1: theme attribution lives on the record (relatedThemeIds), so removing the record
+  // drops its theme links with it — no separate edge cleanup needed.
   const nextState: ProductState = {
     ...cloneState(state),
-    memoryRecords: state.memoryRecords.filter((item) => item.id !== record.id),
-    memoryEdges: (state.memoryEdges ?? []).filter((edge) => edge.fromMemoryRecordId !== record.id)
+    memoryRecords: state.memoryRecords.filter((item) => item.id !== record.id)
   };
 
   return withAuditEvent(nextState, {
@@ -518,20 +518,21 @@ export function updateMemoryRecordText(state: ProductState, recordId: string, te
     text: revisedText,
     updatedAt
   };
-  const baseState: ProductState = {
-    ...cloneState(state),
-    memoryRecords: state.memoryRecords.map((item) => (item.id === record.id ? updatedRecord : item)),
-    memoryEdges: (state.memoryEdges ?? []).filter((edge) => edge.fromMemoryRecordId !== record.id)
-  };
-  // 审查修复:重算边为空时(新文本与任一主题 token 重叠 <2)保留该记忆原有的有效主题归属,
-  // 避免"编辑记忆文本意外清空全部主题关联"的数据丢失;重算非空则以重算为准(文本变了归属可变)。
+  // 审查修复(P2c → M1 平移):重算主题归属为空时(新文本与任一主题 token 重叠 <2)保留该记忆
+  // 原有的有效主题归属,避免"编辑记忆文本意外清空全部主题关联"的数据丢失;重算非空则以重算
+  // 为准(文本变了归属可变)。归属现内嵌于 record.relatedThemeIds(替代 state.memoryEdges)。
   const themeIds = new Set(state.themes.map((t) => t.id));
-  const rebuiltEdges = buildMemoryEdgesForRecord(baseState, updatedRecord, updatedAt);
-  const priorEdges = (state.memoryEdges ?? []).filter((edge) => edge.fromMemoryRecordId === record.id && themeIds.has(edge.themeId));
-  const recordEdges = rebuiltEdges.length > 0 ? rebuiltEdges : priorEdges;
+  const rebuilt = computeRecordThemeIds(state, updatedRecord);
+  const prior = (record.relatedThemeIds ?? []).filter((id) => themeIds.has(id));
+  const nextThemeIds = rebuilt.length > 0 ? rebuilt : prior;
+  if (nextThemeIds.length > 0) {
+    updatedRecord.relatedThemeIds = nextThemeIds;
+  } else {
+    delete updatedRecord.relatedThemeIds;
+  }
   const nextState: ProductState = {
-    ...baseState,
-    memoryEdges: [...recordEdges, ...baseState.memoryEdges]
+    ...cloneState(state),
+    memoryRecords: state.memoryRecords.map((item) => (item.id === record.id ? updatedRecord : item))
   };
 
   return withAuditEvent(nextState, {

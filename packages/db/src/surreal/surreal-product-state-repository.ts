@@ -54,7 +54,7 @@ function fillUpsertDefaults(table: string, rec: Record<string, unknown>): Record
  *  导出供分区完整性守卫测试用(防将来新增 ProductState 数组未映射被静默丢弃)。 */
 export const META_KEYS = [
   "profile","profileSuggestions","interviewAnnotations","chatSessions","memoryCorrections",
-  "memoryEdges","podcastEpisodes","corpusImports","corpusInsights","playbookPatches",
+  "podcastEpisodes","corpusImports","corpusInsights","playbookPatches",
   "configVersions","auditEvents","aiRunEvents","workflowRuns","operationalChecks",
   "systemConfig","schemaVersion"
 ] as const;
