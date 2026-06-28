@@ -18,12 +18,15 @@ export function diffById<T extends { id: string }>(prev: readonly T[], next: rea
   return { upsert, removeIds };
 }
 
-/** 边身份(无稳定 id):from 表:id | 边类型 | to 表:id。
- *  注:key 不含 provenance。本投影下同 (from,edge,to) 的 provenance 恒等
- *  (derived_from 的 turnId 全局唯一→sessionId 唯一→origin 固定 'llm_extracted'),
- *  故按 key 去重无损。若将来给某种边加“同端点但可变”的字段,需把它并入 key,否则会被静默吞。 */
+/** 边身份(无稳定 id):from 表:id | 边类型 | to 表:id [| origin]。
+ *  ⑤:derived_from 的 provenance.origin 现按资产确认状态【可变】(用户确认→user_confirmed,
+ *  其余→llm_extracted),不再恒定 'llm_extracted'。故把 origin 并入 key——同端点 origin 变时
+ *  旧 key 进 removed(persist 先 DELETE in/out)、新 key 进 added(后 RELATE),顺序保证 origin
+ *  更新正确落库,不滞后。无 origin 的边(belongs_to_theme/about_theme/part_of/contradicts)
+ *  key 无后缀、行为不变。 */
 export function edgeKey(e: EdgeSpec): string {
-  return `${e.fromTable}:${e.fromId}|${e.edge}|${e.toTable}:${e.toId}`;
+  const origin = e.data?.provenance?.origin;
+  return `${e.fromTable}:${e.fromId}|${e.edge}|${e.toTable}:${e.toId}${origin ? `|${origin}` : ""}`;
 }
 
 export interface EdgeDiff { added: EdgeSpec[]; removed: EdgeSpec[]; }

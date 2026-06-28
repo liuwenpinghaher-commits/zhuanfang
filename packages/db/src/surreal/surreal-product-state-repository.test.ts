@@ -136,7 +136,7 @@ describe("surreal graph edges (mem://)", () => {
     });
     await repo.flush();
     const [prov] = await repo.query<[Array<{ provenance: { origin: string } }>]>("SELECT provenance FROM derived_from;");
-    expect(prov?.[0]?.provenance?.origin).toBe("llm_extracted");
+    expect(prov?.[0]?.provenance?.origin).toBe("user_confirmed"); // ⑤:pt_1 confidence='用户确认' → user_confirmed
     const [src] = await repo.query<[unknown[]]>("SELECT VALUE ->derived_from->turn FROM point:pt_1;");
     expect((src?.[0] as unknown[] ?? []).length).toBe(1);
     const [parent] = await repo.query<[unknown[]]>("SELECT VALUE ->part_of->session FROM turn:tu_1;");

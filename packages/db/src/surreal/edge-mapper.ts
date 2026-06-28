@@ -56,16 +56,25 @@ export function collectEdges(state: ProductState): EdgeSpec[] {
   // 改为从资产 anchor 无条件投影:资产在则边在(资产删则其 anchor 没了 → 边自然进 removed,正确)。
   // 协同 L1 ENFORCED(002 关系表 TYPE RELATION ENFORCED):anchor 来自 resolveEvidenceAnchors
   // 的真实 turn,且 turn append-only 保证写过的 turn 仍在,故 RELATE 不会因端点缺失被拒。
-  const derived = (fromTable: string, fromId: string, anchors?: EvidenceAnchor[]) => {
+  // ⑤ provenance.origin 按资产确认状态【真区分】(不再写死 llm_extracted),让公理 A3
+  //    (origin='llm_extracted' 未经 user_confirmed 不得当事实)在 derived_from 边上有判别力。
+  //    用户确认过的资产(point.confidence/decision.confirmationStatus='用户确认'、memory.status='confirmed')
+  //    → user_confirmed;其余(AI 抽/待确认/候选/笔记/主题代表句)→ llm_extracted。
+  const derived = (
+    fromTable: string,
+    fromId: string,
+    anchors?: EvidenceAnchor[],
+    origin: "llm_extracted" | "user_confirmed" = "llm_extracted"
+  ) => {
     for (const a of anchors ?? []) edges.push({
       edge: "derived_from", fromTable, fromId, toTable: "turn", toId: a.turnId,
-      data: { provenance: { origin: "llm_extracted", sessionId: a.sessionId, turnId: a.turnId } }
+      data: { provenance: { origin, sessionId: a.sessionId, turnId: a.turnId } }
     });
   };
-  for (const x of state.points)           derived("point", x.id, x.evidenceAnchors);
-  for (const x of state.decisions)        derived("decision", x.id, x.evidenceAnchors);
+  for (const x of state.points)           derived("point", x.id, x.evidenceAnchors, x.confidence === "用户确认" ? "user_confirmed" : "llm_extracted");
+  for (const x of state.decisions)        derived("decision", x.id, x.evidenceAnchors, x.confirmationStatus === "用户确认" ? "user_confirmed" : "llm_extracted");
   for (const x of state.debts)            derived("debt", x.id, x.evidenceAnchors);
-  for (const x of state.memoryRecords)    derived("memory", x.id, x.evidenceAnchors);
+  for (const x of state.memoryRecords)    derived("memory", x.id, x.evidenceAnchors, x.status === "confirmed" ? "user_confirmed" : "llm_extracted");
   for (const x of state.memoryCandidates) derived("memory_candidate", x.id, x.evidenceAnchors);
   for (const x of state.notes)            derived("note", x.id, x.keyQuoteAnchor ? [x.keyQuoteAnchor] : undefined);
   for (const x of state.themes)           derived("theme", x.id, x.representativeQuoteAnchor ? [x.representativeQuoteAnchor] : undefined);

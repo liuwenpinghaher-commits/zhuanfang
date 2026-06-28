@@ -28,10 +28,25 @@ describe("edge-mapper", () => {
 
   it("evidenceAnchors → derived_from(带 provenance,指向现存 turn)", () => {
     const df = collectEdges(baseState()).filter((e) => e.edge === "derived_from");
+    // ⑤:pt_1 confidence='用户确认' → origin='user_confirmed'(不再写死 llm_extracted)
     expect(df).toContainEqual(expect.objectContaining({
       edge: "derived_from", fromTable: "point", fromId: "pt_1", toTable: "turn", toId: "tu_1",
-      data: { provenance: { origin: "llm_extracted", sessionId: "se_1", turnId: "tu_1" } }
+      data: { provenance: { origin: "user_confirmed", sessionId: "se_1", turnId: "tu_1" } }
     }));
+  });
+
+  it("⑤ provenance.origin 按确认状态真区分(user_confirmed vs llm_extracted)", () => {
+    const s = baseState();
+    const state: ProductState = {
+      ...s,
+      points: [
+        ...s.points, // pt_1: confidence='用户确认' → user_confirmed
+        { id: "pt_2", title: "t2", content: "c2", status: "临时想法" as const, confidence: "AI 推断" as const, evidence: [], relatedThemeIds: ["th_1"], important: false, updatedAt: "2026-06-27T00:00:00.000Z", evidenceAnchors: [{ sessionId: "se_1", turnId: "tu_1" }] }
+      ]
+    };
+    const df = collectEdges(state).filter((e) => e.edge === "derived_from");
+    expect(df.find((e) => e.fromId === "pt_1")?.data?.provenance.origin).toBe("user_confirmed");
+    expect(df.find((e) => e.fromId === "pt_2")?.data?.provenance.origin).toBe("llm_extracted");
   });
 
   it("record.relatedThemeIds → about_theme(M1:统一内嵌软链投影)", () => {
