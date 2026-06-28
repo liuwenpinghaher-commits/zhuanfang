@@ -274,3 +274,67 @@ await repo.close(); process.exit(0);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }, 60000);
 });
+
+describe("surreal A5: 删 session → DB 级联清子记录 + 边,跨进程 reload 无孤儿 (surrealkv://)", () => {
+  it("写 session(turn/note)+point(锚点) → 删 session → reload:turn/note/part_of/derived_from 全清,point 留", () => {
+    const dir = mkdtempSync(join(tmpdir(), "surreal-a5-"));
+    try {
+      const url = `surrealkv://${dir}/surreal`;
+      const repoSrc = JSON.stringify(join(process.cwd(), "packages/db/src/surreal/surreal-product-state-repository.ts"));
+      // 写进程:① persist 含 session(带 turn)+ note(sessionId=se_1)+ point(evidenceAnchors→derived_from)。
+      //         ② 真正删除 session(从 state 移除)→ persist 发 `DELETE session WHERE id IN $del`,
+      //            触发 005 EVENT 级联清 turn/note;turn 节点删除又令 part_of/derived_from 边原生消失。
+      //            注:point 不归属 session,应保留(其 derived_from 指向已删 turn 的边随端点消失,无孤儿)。
+      const w = runScript(`
+import { createSurrealProductStateRepository } from ${repoSrc};
+const repo = await createSurrealProductStateRepository({ url: ${JSON.stringify(url)} });
+const base = repo.getState();
+const session = { id:'se_1', title:'会话', mode:'daily', strength:'standard', status:'completed',
+  startedAt:'2026-06-27T00:00:00.000Z', card:{}, guide:{},
+  turns:[{ id:'tu_1', role:'user', content:'原话', intent:'', timestamp:'2026-06-27T00:00:00.000Z' }] };
+const note = { id:'no_1', sessionId:'se_1', title:'笔记', summary:'s', keyQuote:'', saidTrack:[], learnedTrack:[], nextQuestions:[], createdAt:'2026-06-27T00:00:00.000Z' };
+const point = { id:'pt_1', title:'观点', content:'c', status:'稳定观点', confidence:'用户确认',
+  evidence:[], relatedThemeIds:[], important:false, updatedAt:'2026-06-27T00:00:00.000Z',
+  evidenceAnchors:[{ sessionId:'se_1', turnId:'tu_1' }] };
+repo.replaceState({ ...base, sessions:[session], notes:[note], points:[point] });
+await repo.flush();
+// ── 真删 session(purge):从 state 移除 → diff 算入 removeIds → DELETE session → EVENT 级联 ──
+const hot = repo.getState();
+repo.replaceState({ ...hot, sessions: hot.sessions.filter(s => s.id !== 'se_1') });
+await repo.flush();
+await repo.close();
+console.log('ok'); process.exit(0);
+`, join(dir, "w.mts"));
+      if (w.status !== 0) throw new Error("写进程失败:\n" + w.stderr);
+      // 读进程:reload,直查底层确认无孤儿(turn/note/两类边全 0),point 仍在。
+      const r = runScript(`
+import { createSurrealProductStateRepository } from ${repoSrc};
+const repo = await createSurrealProductStateRepository({ url: ${JSON.stringify(url)} });
+const [sessions] = await repo.query("SELECT id FROM session;");
+const [turns] = await repo.query("SELECT id FROM turn;");
+const [notes] = await repo.query("SELECT id FROM note;");
+const [partOf] = await repo.query("SELECT id FROM part_of;");
+const [derived] = await repo.query("SELECT id FROM derived_from;");
+const [points] = await repo.query("SELECT id FROM point;");
+console.log(JSON.stringify({
+  sessionCount: (sessions ?? []).length,
+  turnCount: (turns ?? []).length,
+  noteCount: (notes ?? []).length,
+  partOfCount: (partOf ?? []).length,
+  derivedCount: (derived ?? []).length,
+  pointCount: (points ?? []).length
+}));
+await repo.close(); process.exit(0);
+`, join(dir, "r.mts"));
+      if (r.status !== 0) throw new Error("读进程失败:\n" + r.stderr);
+      const out = JSON.parse(r.stdout.trim().split("\n").filter(l=>l.startsWith("{")).at(-1) ?? "{}") as
+        { sessionCount?: number; turnCount?: number; noteCount?: number; partOfCount?: number; derivedCount?: number; pointCount?: number };
+      expect(out.sessionCount, "session 已删").toBe(0);
+      expect(out.turnCount, "turn 被 EVENT 级联清(无孤儿)").toBe(0);
+      expect(out.noteCount, "note 被 EVENT 级联清(无孤儿)").toBe(0);
+      expect(out.partOfCount, "part_of 边随 turn 节点删除自动消失").toBe(0);
+      expect(out.derivedCount, "derived_from 边随 turn 节点删除自动消失(无孤儿边)").toBe(0);
+      expect(out.pointCount, "point 不归属 session,保留").toBe(1);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 60000);
+});

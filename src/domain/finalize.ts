@@ -13,6 +13,7 @@ import type {
 } from "./types";
 
 import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent } from "./utils";
+import { checkAxioms } from "./axioms";
 import { withMemoryCandidateReview } from "./memoryReview";
 import { addProfileSuggestions, type ProfileSuggestionInput } from "./profile";
 import { buildInterviewQualityReport, planMemoryUpdate, tokenizeMemoryGraphText } from "./engine";
@@ -243,10 +244,42 @@ export function mergeFinalizedState(
     ? addProfileSuggestions(nextState, content.profileSuggestions, session.id, completedAt)
     : nextState;
 
+  const finalized = withInterviewFinalizedEvents(withSuggestions, completedSession, anchoredNote, completedAt);
+
+  // P3 公理引擎(统一兜底/审计层):写完本次 finalize 后跑一遍 checkAxioms,违例只记审计、**不阻断写**
+  // (对齐现有 withAuditEvent 模式 + spec 03 §3"记 auditEvent");既有散落规则继续工作,这里再核一遍。
   return {
     note: anchoredNote,
-    nextState: withInterviewFinalizedEvents(withSuggestions, completedSession, anchoredNote, completedAt)
+    nextState: withAxiomAuditEvents(finalized, completedSession.id, completedAt)
   };
+}
+
+/**
+ * P3:在写路径尾部跑统一公理校验器,把违例落成可审计的 auditEvent(每次 finalize 至多一条汇总事件,
+ * 避免逐实体刷屏)。**纯审计、不拦截**——封闭世界下只报已存在事实的违例。无违例则原样返回。
+ */
+export function withAxiomAuditEvents(state: ProductState, sessionId: string, createdAt: string): ProductState {
+  const violations = checkAxioms(state);
+  if (violations.length === 0) {
+    return state;
+  }
+  const counts = violations.reduce<Record<string, number>>((acc, v) => {
+    acc[v.axiom] = (acc[v.axiom] ?? 0) + 1;
+    return acc;
+  }, {});
+  const summary = Object.entries(counts)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([axiom, n]) => `${axiom}×${n}`)
+    .join("、");
+  return withAuditEvent(state, {
+    type: "axiom_violation",
+    label: "公理校验发现违例",
+    detail: `本次沉淀后统一公理校验命中 ${violations.length} 处违例(${summary})。详见公理引擎(A1 溯源／A2 成熟度／A3 HITL／A4 敏感)。`,
+    severity: "warning",
+    entityType: "interview_session",
+    entityId: sessionId,
+    createdAt
+  });
 }
 
 const MATURITY_LADDER: LongTermTheme["maturity"][] = ["萌芽", "重复", "聚焦", "成型", "变化", "关闭"];

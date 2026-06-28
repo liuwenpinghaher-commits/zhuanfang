@@ -16,7 +16,7 @@ describe("applySchema", () => {
   it("在空库上应用全部 migrations(返回已应用文件名)", async () => {
     const d = await freshDb();
     const applied = await applySchema(d);
-    expect(applied).toEqual(["001_nodes.surql", "002_relations.surql", "003_index.surql", "004_p1a_rest_meta.surql"]);
+    expect(applied).toEqual(["001_nodes.surql", "002_relations.surql", "003_index.surql", "004_p1a_rest_meta.surql", "005_p3_cascade.surql"]);
   });
 
   it("L1:关系表 ENFORCED——RELATE 指向不存在端点节点应被引擎拒绝(DB 层引用完整性兜底)", async () => {
@@ -33,7 +33,7 @@ describe("applySchema", () => {
     expect(second).toEqual([]); // 全部已应用
     const [ledger] = await d.query<[{ name: string }[]]>("SELECT name FROM _migration;");
     const names = (ledger ?? []).map((r) => r.name).sort();
-    expect(names).toEqual(["001_nodes.surql", "002_relations.surql", "003_index.surql", "004_p1a_rest_meta.surql"]);
+    expect(names).toEqual(["001_nodes.surql", "002_relations.surql", "003_index.surql", "004_p1a_rest_meta.surql", "005_p3_cascade.surql"]);
   });
 
   it("INFO FOR DB:13 节点表 + entity_kind + 8 边表齐全", async () => {
@@ -99,6 +99,52 @@ describe("applySchema", () => {
       "SELECT provenance FROM derived_from;"
     );
     expect(prov?.[0]?.provenance?.origin).toBe("llm_extracted");
+  });
+
+  it("A5 cascade EVENT 定义齐全(cascade_session_delete / cascade_material_delete)", async () => {
+    const d = await freshDb();
+    await applySchema(d);
+    const [sInfo] = await d.query<[{ events: Record<string, string> }]>("INFO FOR TABLE session;");
+    expect(Object.keys(sInfo?.events ?? {})).toContain("cascade_session_delete");
+    const [mInfo] = await d.query<[{ events: Record<string, string> }]>("INFO FOR TABLE material;");
+    expect(Object.keys(mInfo?.events ?? {})).toContain("cascade_material_delete");
+  });
+
+  it("A5 cascade(mem://):删 session → 其 turn/note 被级联清,RELATE 边随端点节点自动消失", async () => {
+    const d = await freshDb();
+    await applySchema(d);
+    // 造一条会话 + 它的 turn/note,并建图边(part_of: turn→session;derived_from: point→turn)。
+    await d.query("CREATE session:s1 SET title='会话', mode='daily', strength='standard', status='completed';");
+    await d.query("CREATE turn:t1 SET sessionId='s1', role='user', content='原话';");
+    await d.query("CREATE note:n1 SET sessionId='s1', title='笔记', summary='s';");
+    await d.query("CREATE point:p1 SET title='观点', content='c', status='稳定观点', confidence='用户确认';");
+    await d.query("RELATE turn:t1->part_of->session:s1;");
+    await d.query("RELATE point:p1->derived_from->turn:t1 SET provenance = { origin: 'llm_extracted' };");
+
+    await d.query("DELETE session:s1;");
+
+    const [turns] = await d.query<[unknown[]]>("SELECT id FROM turn;");
+    const [notes] = await d.query<[unknown[]]>("SELECT id FROM note;");
+    const [partOf] = await d.query<[unknown[]]>("SELECT id FROM part_of;");
+    const [derived] = await d.query<[unknown[]]>("SELECT id FROM derived_from;");
+    expect((turns ?? []).length, "turn 应被级联清(string-FK 子记录)").toBe(0);
+    expect((notes ?? []).length, "note 应被级联清").toBe(0);
+    expect((partOf ?? []).length, "part_of 边随 turn 节点删除自动消失").toBe(0);
+    expect((derived ?? []).length, "derived_from 边随 turn 节点删除自动消失(无孤儿边)").toBe(0);
+    // point 自身不属于 session,不应被删。
+    const [points] = await d.query<[unknown[]]>("SELECT id FROM point;");
+    expect((points ?? []).length, "point 不归属 session,保留").toBe(1);
+  });
+
+  it("A5 cascade(mem://):删 material → 其 rag_chunk 被级联清(派生块不成孤儿)", async () => {
+    const d = await freshDb();
+    await applySchema(d);
+    await d.query("CREATE material:m1 SET title='素材', sourceType='text', content='正文', status='chunked';");
+    await d.query("CREATE rag_chunk:c1 SET sourceId='m1', text='块', usage='interview-context';");
+    await d.query("CREATE rag_chunk:c2 SET sourceId='m1', text='块2', usage='interview-context';");
+    await d.query("DELETE material:m1;");
+    const [chunks] = await d.query<[unknown[]]>("SELECT id FROM rag_chunk;");
+    expect((chunks ?? []).length, "rag_chunk 应被级联清").toBe(0);
   });
 
   it("belongs_to_theme 双向图遍历(根治召回漏类的图模型基础)", async () => {

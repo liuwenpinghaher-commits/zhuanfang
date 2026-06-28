@@ -362,7 +362,8 @@ export interface AuditEvent {
     | "annotation_removed"
     | "chat_session_created"
     | "knowledge_index_rebuilt"
-    | "import_source_deleted";
+    | "import_source_deleted"
+    | "axiom_violation";
   label: string;
   detail: string;
   severity: AuditEventSeverity;
