@@ -37,7 +37,7 @@ export const STREAMING_TTS_SAMPLE_RATE = 24000;
 export interface BailianStreamingTtsClient {
   /** Stream synthesis of one or more text segments; onAudio fires per binary chunk. */
   synthesizeStream(
-    input: { segments: string[]; voice?: string; prosody?: { rate?: number; pitch?: number; volume?: number } },
+    input: { segments: string[]; voice?: string; prosody?: { emotion?: string; rate?: number; pitch?: number; volume?: number } },
     handlers: {
       onAudio: (chunk: ArrayBuffer | Buffer) => void;
       onComplete: () => void;
@@ -107,7 +107,7 @@ export function createBailianStreamingTtsClient(
 // ── Core implementation ───────────────────────────────────────────────────────
 
 interface SynthesizeStreamParams {
-  input: { segments: string[]; voice?: string; prosody?: { rate?: number; pitch?: number; volume?: number } };
+  input: { segments: string[]; voice?: string; prosody?: { emotion?: string; rate?: number; pitch?: number; volume?: number } };
   handlers: {
     onAudio: (chunk: ArrayBuffer | Buffer) => void;
     onComplete: () => void;
@@ -218,9 +218,13 @@ function synthesizeStream(params: SynthesizeStreamParams): Promise<void> {
             // audio. Raw PCM concatenates seamlessly. (Spike: scripts/spike-tts-pcm.)
             format: "pcm",
             sample_rate: STREAMING_TTS_SAMPLE_RATE,
-            // Prosody control (语速/语调/音量). CosyVoice v3-plus + system voices honor these
-            // numeric params (verified: scripts/spike-tts-prosody). Driven by the reply's
-            // （…）manner asides via deriveSpeechProsody. Omitted entirely when absent.
+            // 情绪 → 官方 instruction 模板「你说话的情感是<枚举>。」。系统音色(longanyang)仅接受此固定格式
+            // (任意自由文本 428;spike 实测 happy/sad/angry/surprised 出真实情绪音色,字节数各异)。neutral/缺省省略。
+            ...(prosody?.emotion && prosody.emotion !== "neutral"
+              ? { instruction: `你说话的情感是${prosody.emotion}。` }
+              : {}),
+            // 语速/语调/音量走数值参数 (verified: scripts/spike-tts-prosody),与 instruction 独立叠加。
+            // Driven by the reply's （…）manner asides + 文本语义 via deriveSpeechProsody. Omitted when absent.
             ...(prosody?.rate !== undefined ? { rate: prosody.rate } : {}),
             ...(prosody?.pitch !== undefined ? { pitch: prosody.pitch } : {}),
             ...(prosody?.volume !== undefined ? { volume: prosody.volume } : {})

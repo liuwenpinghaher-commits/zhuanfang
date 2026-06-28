@@ -29,7 +29,7 @@ describe("interview-sessions routes", () => {
     const res = await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/turns`, payload: { content: "我有点纠结。" } });
     const sess = res.json().session;
     const lastAssistant = [...sess.turns].reverse().find((t: { role: string }) => t.role === "assistant") as
-      | { role: string; content: string; prosody?: { rate: number; pitch: number; volume: number } }
+      | { role: string; content: string; prosody?: { emotion?: string; rate: number; pitch: number; volume: number } }
       | undefined;
     expect(lastAssistant).toBeDefined();
     // stored question is clean — no parenthetical stage directions
@@ -39,6 +39,10 @@ describe("interview-sessions routes", () => {
     // manner preserved as prosody (好奇 → faster + higher pitch)
     expect(lastAssistant!.prosody).toBeDefined();
     expect(lastAssistant!.prosody!.pitch).toBeGreaterThan(1);
+    // 情绪也随 manner 派生成官方枚举(好奇 → surprised),至少必是合法 CosyVoice 情绪值
+    expect(["neutral", "happy", "sad", "angry", "surprised", "fearful", "disgusted"]).toContain(
+      lastAssistant!.prosody!.emotion
+    );
     await server.close();
   });
 

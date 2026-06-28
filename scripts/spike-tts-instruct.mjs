@@ -22,8 +22,12 @@ function synth({label,extra,text},i){return new Promise((resolve)=>{
   ws.on("error",(e)=>{clearTimeout(timer);finish("WS_ERR",String(e?.message||e).slice(0,110));});});}
 const cases=[
   {label:"baseline",                                extra:{}},
-  {label:"组合 enable_ssml(break)+rate/pitch/vol",  extra:{enable_ssml:true, rate:0.85, pitch:1.1, volume:55}, text:"<speak>你好。<break time=\"400ms\"/>这是情绪+停顿组合测试。</speak>"},
-  {label:"纯 rate/pitch/volume(无 ssml)",           extra:{rate:0.85, pitch:1.1, volume:55}},
+  {label:"官方模板 情感=happy",                      extra:{instruction:"你说话的情感是happy。"}},
+  {label:"官方模板 情感=sad",                        extra:{instruction:"你说话的情感是sad。"}},
+  {label:"官方模板 情感=angry",                      extra:{instruction:"你说话的情感是angry。"}},
+  {label:"官方模板 情感=surprised",                  extra:{instruction:"你说话的情感是surprised。"}},
+  {label:"官方模板 场景+情感(新闻neutral)",          extra:{instruction:"你正在进行新闻播报,你说话的情感是neutral。"}},
+  {label:"官方模板 happy + rate/pitch(组合)",        extra:{instruction:"你说话的情感是happy。", rate:1.1, pitch:1.05}},
 ];
 console.log(`\n=== CosyVoice instruct/SSML spike · longanyang (key ${String(KEY).slice(0,6)}…) ===\n`);
 for(let i=0;i<cases.length;i++){const r=await synth(cases[i],i);const icon=r.verdict==="OK"?"✅":(r.verdict==="FAILED"?"❌":"⚠️ ");console.log(`${icon} ${r.label.padEnd(28)} → ${r.verdict} (${r.detail})`);}

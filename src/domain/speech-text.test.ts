@@ -31,7 +31,7 @@ describe("stripSpokenAsides", () => {
 
 describe("deriveSpeechProsody", () => {
   it("returns neutral prosody for a plain statement with no aside and no semantic cue", () => {
-    expect(deriveSpeechProsody("我们继续聊聊这件事的另一面")).toEqual({ rate: 1, pitch: 1, volume: 50 });
+    expect(deriveSpeechProsody("我们继续聊聊这件事的另一面")).toEqual({ emotion: "neutral", rate: 1, pitch: 1, volume: 50 });
   });
 
   it("②文本语义派生:问句无 aside 也轻升调(不再单调 neutral)", () => {
@@ -76,5 +76,29 @@ describe("deriveSpeechProsody", () => {
       expect(p.volume).toBeGreaterThanOrEqual(20);
       expect(p.volume).toBeLessThanOrEqual(80);
     }
+  });
+
+  it("③情绪枚举:笑/兴奋旁白 → happy(走官方 instruction 真情绪)", () => {
+    expect(deriveSpeechProsody("（轻笑）那咱们换个角度。").emotion).toBe("happy");
+  });
+
+  it("③情绪枚举:悲伤/低落旁白 → sad", () => {
+    expect(deriveSpeechProsody("（语气低落，遗憾）这真的很可惜。").emotion).toBe("sad");
+  });
+
+  it("③情绪枚举:好奇/惊讶旁白 → surprised", () => {
+    expect(deriveSpeechProsody("（惊讶地）真的吗？").emotion).toBe("surprised");
+  });
+
+  it("③情绪枚举:感叹句(无 aside)文本派生 → happy", () => {
+    expect(deriveSpeechProsody("这个洞察太关键了！").emotion).toBe("happy");
+  });
+
+  it("③情绪枚举:严肃质问 → neutral(访谈不真怒,改走数值 prosody)", () => {
+    expect(deriveSpeechProsody("（神情严肃）我必须挑战这个前提。").emotion).toBe("neutral");
+  });
+
+  it("③情绪枚举:纯陈述无情绪 → neutral(不发 instruction)", () => {
+    expect(deriveSpeechProsody("我们继续聊下一个话题。").emotion).toBe("neutral");
   });
 });

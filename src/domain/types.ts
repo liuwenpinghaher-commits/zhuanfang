@@ -270,7 +270,14 @@ export interface InterviewTurn {
    * are stripped out of `content` (so the transcript reads as clean words like a real interview)
    * and kept here so the voice path can still deliver the question with the intended emotion.
    */
-  prosody?: { rate: number; pitch: number; volume: number };
+  prosody?: {
+    /** 官方情绪枚举(CosyVoice instruction「你说话的情感是<值>。」);neutral = 不发 instruction,用系统默认。
+     *  与 SpeechProsody 结构对齐:由 deriveSpeechProsody 派生,总会带 emotion(无情绪即 neutral)。 */
+    emotion: "neutral" | "happy" | "sad" | "angry" | "surprised" | "fearful" | "disgusted";
+    rate: number;
+    pitch: number;
+    volume: number;
+  };
 }
 
 export interface InterviewTurnTruncation {

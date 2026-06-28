@@ -104,6 +104,35 @@ describe("createBailianStreamingTtsClient", () => {
     expect(runTask.payload.parameters.volume).toBe(46);
   });
 
+  it("threads emotion as the official instruction「你说话的情感是<枚举>。」, omits it for neutral", async () => {
+    // happy → instruction(系统音色真情绪),rate 同时透传(两通道叠加,spike 确证共存)
+    const { factory, instances } = buildMockWsFactory();
+    const client = createBailianStreamingTtsClient({ apiKey: "test-key", wsFactory: factory });
+    void client.synthesizeStream(
+      { segments: ["你认同这个顺序吗？"], prosody: { emotion: "happy", rate: 1.1, pitch: 1.12, volume: 55 } },
+      { onAudio: vi.fn(), onComplete: vi.fn() }
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    instances[0].handlers.onOpen!();
+    await new Promise((r) => setTimeout(r, 0));
+    const happy = parseSent(instances[0]).find((m) => m.header?.action === "run-task");
+    expect(happy.payload.parameters.instruction).toBe("你说话的情感是happy。");
+    expect(happy.payload.parameters.rate).toBe(1.1);
+
+    // neutral → 不发 instruction(用系统默认音色),只保留数值
+    const { factory: f2, instances: i2 } = buildMockWsFactory();
+    const c2 = createBailianStreamingTtsClient({ apiKey: "test-key", wsFactory: f2 });
+    void c2.synthesizeStream(
+      { segments: ["你好"], prosody: { emotion: "neutral", rate: 1, pitch: 1, volume: 50 } },
+      { onAudio: vi.fn(), onComplete: vi.fn() }
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    i2[0].handlers.onOpen!();
+    await new Promise((r) => setTimeout(r, 0));
+    const neutral = parseSent(i2[0]).find((m) => m.header?.action === "run-task");
+    expect(neutral.payload.parameters.instruction).toBeUndefined();
+  });
+
   it("omits prosody params entirely when none is provided (default delivery)", async () => {
     const { factory, instances } = buildMockWsFactory();
     const client = createBailianStreamingTtsClient({ apiKey: "test-key", wsFactory: factory });

@@ -853,14 +853,20 @@ function normalizeCosyVoice(value: unknown): string | undefined {
   return v;
 }
 
+// CosyVoice 官方情绪枚举白名单——只放行这 7 个值进 instruction 模板,杜绝把任意浏览器文本拼进
+// 「你说话的情感是<...>。」(既防 428,也防 instruction 注入)。
+const TTS_EMOTIONS = new Set(["neutral", "happy", "sad", "angry", "surprised", "fearful", "disgusted"]);
+
 // The prosody comes from the browser, so clamp it to a safe range before forwarding to
 // CosyVoice — a bad value must not produce cartoonish or rejected synthesis.
-function normalizeProsody(value: unknown): { rate: number; pitch: number; volume: number } | undefined {
+function normalizeProsody(value: unknown): { emotion?: string; rate: number; pitch: number; volume: number } | undefined {
   if (!value || typeof value !== "object") return undefined;
-  const v = value as { rate?: unknown; pitch?: unknown; volume?: unknown };
+  const v = value as { emotion?: unknown; rate?: unknown; pitch?: unknown; volume?: unknown };
   const num = (x: unknown, lo: number, hi: number, fallback: number) =>
     typeof x === "number" && Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : fallback;
+  const emotion = typeof v.emotion === "string" && TTS_EMOTIONS.has(v.emotion) ? v.emotion : undefined;
   return {
+    ...(emotion ? { emotion } : {}),
     rate: num(v.rate, 0.5, 2, 1),
     pitch: num(v.pitch, 0.5, 2, 1),
     volume: num(v.volume, 1, 100, 50)
