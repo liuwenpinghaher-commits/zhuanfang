@@ -403,8 +403,8 @@ function pruneDanglingThemeRefs(state: ProductState): ProductState {
     ...state,
     sessions: state.sessions.map((s) => ({ ...s, relatedThemeIds: pruneOptional(s.relatedThemeIds) })),
     notes: state.notes.map((n) => ({ ...n, relatedThemeIds: pruneOptional(n.relatedThemeIds) })),
-    points: state.points.map((p) => ({ ...p, relatedThemeIds: pruneRequired(p.relatedThemeIds) })),
-    questions: state.questions.map((q) => ({ ...q, relatedThemeIds: pruneRequired(q.relatedThemeIds) })),
+    points: state.points.map((p) => ({ ...p, relatedThemeIds: pruneRequired(p.relatedThemeIds ?? []) })),
+    questions: state.questions.map((q) => ({ ...q, relatedThemeIds: pruneRequired(q.relatedThemeIds ?? []) })),
     decisions: state.decisions.map((d) => ({ ...d, relatedThemeIds: pruneOptional(d.relatedThemeIds) })),
     debts: state.debts.map((d) => ({ ...d, relatedThemeIds: pruneOptional(d.relatedThemeIds) })),
     importSources: state.importSources.map((src) => ({ ...src, relatedThemeIds: pruneOptional(src.relatedThemeIds) }))

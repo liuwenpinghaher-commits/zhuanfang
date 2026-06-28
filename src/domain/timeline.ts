@@ -165,11 +165,11 @@ export function buildTrackWorkspace(state: ProductState, themeId: string): Track
   );
 
   const points = state.points.filter((p) =>
-    p.relatedThemeIds.includes(themeId)
+    (p.relatedThemeIds ?? []).includes(themeId)
   );
 
   const questions = state.questions.filter((q) =>
-    q.relatedThemeIds.includes(themeId)
+    (q.relatedThemeIds ?? []).includes(themeId)
   );
 
   const decisions = state.decisions.filter((d) =>

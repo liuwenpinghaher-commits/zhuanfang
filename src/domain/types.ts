@@ -677,7 +677,7 @@ export interface PointAsset {
   status: PointStatus;
   confidence: "用户确认" | "AI 推断" | "待验证";
   evidence: string[];
-  relatedThemeIds: string[];
+  relatedThemeIds?: string[];
   important: boolean;
   updatedAt: string;
   /** 产出该资产的专访会话 id */
@@ -691,7 +691,7 @@ export interface QuestionAsset {
   whyImportant: string;
   status: QuestionStatus;
   appearances: number;
-  relatedThemeIds: string[];
+  relatedThemeIds?: string[];
   nextPrompt: string;
   important: boolean;
   updatedAt: string;
