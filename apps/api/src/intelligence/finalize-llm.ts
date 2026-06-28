@@ -31,6 +31,7 @@ const SYSTEM_PROMPT = [
   "1) 双轨笔记：轨道一「我说了什么」（用户的核心事件/判断/情绪/矛盾），轨道二「我学到了什么」（被挑战的假设、新视角、值得沉淀的问题）。",
   "2) 长期资产：观点、问题、决策、知识债、长期主题。",
   "铁律：只能基于用户真实说过的话，不许编造事实。keyQuote 和每条 evidence 必须是用户原话里的逐字片段。",
+  "为每条资产标注它属于哪些主题（themeRefs）时，主题名必须逐字取自你本次输出的 themes[] 或已有主题线；拿不准就留空，不要臆造主题名。",
   "如果对话很浅、信息不足，就少产出资产（甚至只给 note），不要硬凑。",
   "只输出一个 JSON 对象，不要 Markdown、不要解释。"
 ].join("\n");
@@ -41,10 +42,13 @@ interface ParsedFinalize {
   saidTrack: string[];
   learnedTrack: string[];
   nextQuestions: string[];
-  points: Array<{ title: string; content: string; evidence: string[] }>;
-  questions: Array<{ question: string; whyImportant: string; nextPrompt: string }>;
-  decisions: Array<{ title: string; choice: string; tradeOff: string; riskHypothesis: string; reviewAt: string }>;
-  debts: Array<{ concept: string; context: string; whyImportant: string; nextQuestion: string }>;
+  // themeRefs: the theme NAMES the LLM says this asset belongs to. Grounded (not trusted blindly)
+  // in mapToFinalizeContent against this finalize's themes[] ∪ existing state themes; unknown names
+  // are dropped, an empty/absent list yields no attribution (no themes[0] fallback).
+  points: Array<{ title: string; content: string; evidence: string[]; themeRefs: string[] }>;
+  questions: Array<{ question: string; whyImportant: string; nextPrompt: string; themeRefs: string[] }>;
+  decisions: Array<{ title: string; choice: string; tradeOff: string; riskHypothesis: string; reviewAt: string; themeRefs: string[] }>;
+  debts: Array<{ concept: string; context: string; whyImportant: string; nextQuestion: string; themeRefs: string[] }>;
   themes: Array<{ name: string; summary: string; representativeQuote: string; nextQuestion: string; maturity: string }>;
   profileSuggestions: Array<{ field: string; suggestedValue: string; reason: string; evidenceQuote: string }>;
 }
@@ -111,6 +115,11 @@ function buildFinalizePrompt(state: ProductState, session: InterviewSession): st
     openDebts.length ? `· 既往未还知识债（仅当本次对话真的涉及时才引用）：${openDebts.join("、")}` : "",
     blindspots.length ? `· 盲区候选（仅参考）：${blindspots.join("、")}` : "",
     "",
+    "【主题归属规则（themeRefs）】每条 points/questions/decisions/debts 都要标注它属于哪些长期主题：",
+    "  · 取值来源【只有两个】：① 你本次在 themes[] 里产出的主题 name；② 上面【已有长期主题线】里列出的名称。两者都要【逐字一致】。",
+    "  · 一条资产可属于 0、1 或多个主题；不确定它属于哪条主题，就给空数组 []——【宁可留空，绝不硬凑或臆造主题名】。",
+    "  · 不要为了归属而新造一个没在 themes[] 里出现、也不在已有主题线里的名字（那样的名字会被直接丢弃）。",
+    "",
     "请输出以下结构的 JSON（字段含义见注释，列表可为空数组）：",
     `{
   "summary": "一句话：这次对话真正把哪个问题推进到了哪一步（基于真实内容）",
@@ -118,10 +127,10 @@ function buildFinalizePrompt(state: ProductState, session: InterviewSession): st
   "saidTrack": ["我说了什么：3-5 条，复述用户真实表达的核心"],
   "learnedTrack": ["我学到了什么：2-5 条，被挑战的假设/新视角/留待深挖的问题"],
   "nextQuestions": ["下次值得继续追问的问题，1-3 条"],
-  "points": [{"title":"观点标题","content":"观点内容","evidence":["支撑这个观点的用户原话"]}],
-  "questions": [{"question":"值得长期追的问题","whyImportant":"为什么重要","nextPrompt":"下次怎么问"}],
-  "decisions": [{"title":"决策标题","choice":"用户倾向的选择","tradeOff":"取舍","riskHypothesis":"风险假设","reviewAt":"复盘日期YYYY-MM-DD，没有就留空"}],
-  "debts": [{"concept":"概念","context":"在本次对话中如何出现","whyImportant":"为什么值得补","nextQuestion":"下次的引导问题"}],
+  "points": [{"title":"观点标题","content":"观点内容","evidence":["支撑这个观点的用户原话"],"themeRefs":["这条观点属于哪些主题：主题名必须逐字取自本次输出的 themes[] 的 name、或上面列出的已有主题线名称；拿不准就留空数组[]，绝不臆造或硬凑"]}],
+  "questions": [{"question":"值得长期追的问题","whyImportant":"为什么重要","nextPrompt":"下次怎么问","themeRefs":["同上：本问题所属主题名，取自 themes[] 或已有主题线，拿不准留空[]"]}],
+  "decisions": [{"title":"决策标题","choice":"用户倾向的选择","tradeOff":"取舍","riskHypothesis":"风险假设","reviewAt":"复盘日期YYYY-MM-DD，没有就留空","themeRefs":["同上：本决策所属主题名，取自 themes[] 或已有主题线，拿不准留空[]"]}],
+  "debts": [{"concept":"概念","context":"在本次对话中如何出现","whyImportant":"为什么值得补","nextQuestion":"下次的引导问题","themeRefs":["同上：本知识债所属主题名，取自 themes[] 或已有主题线，拿不准留空[]"]}],
   "themes": [{"name":"主题名：必须是能在别的对话里再次认出的【可复现主题】——一个反复出现的问题/张力/取舍，不要用一次性金句、比喻或诗意短语当名字","summary":"这条主题在追踪什么，以及下次靠什么线索能认出它又出现了","representativeQuote":"代表性原话","nextQuestion":"下次追问","maturity":"按它真实出现过几次填：只出现一次就是萌芽，不要凭单次对话的深度就标成型/聚焦"}],
   "profileSuggestions": [{"field":"currentFocus 或 longTermGoal","suggestedValue":"用户【当前关注】或【长期目标】的新表述——仅当本次对话清楚显示它相比下面【现有档案】发生了实质变化、或第一次被明确说清时才填；只是顺带提到、与现状一致、或只是一次性感慨，就把整个数组留空[]","reason":"为什么这是一个真实、稳定的变化，而不是一次性发言","evidenceQuote":"支撑这个判断的用户原话"}]
 }`
@@ -161,25 +170,29 @@ function parseFinalizeJson(raw: string, session: InterviewSession): ParsedFinali
     points: asObjectArray(json.points).map((p) => ({
       title: asNonEmptyString(p.title),
       content: asNonEmptyString(p.content),
-      evidence: asStringArray(p.evidence)
+      evidence: asStringArray(p.evidence),
+      themeRefs: asStringArray(p.themeRefs)
     })).filter((p) => p.title && p.content),
     questions: asObjectArray(json.questions).map((q) => ({
       question: asNonEmptyString(q.question),
       whyImportant: asNonEmptyString(q.whyImportant),
-      nextPrompt: asNonEmptyString(q.nextPrompt)
+      nextPrompt: asNonEmptyString(q.nextPrompt),
+      themeRefs: asStringArray(q.themeRefs)
     })).filter((q) => q.question),
     decisions: asObjectArray(json.decisions).map((d) => ({
       title: asNonEmptyString(d.title),
       choice: asNonEmptyString(d.choice),
       tradeOff: asNonEmptyString(d.tradeOff),
       riskHypothesis: asNonEmptyString(d.riskHypothesis),
-      reviewAt: asNonEmptyString(d.reviewAt)
+      reviewAt: asNonEmptyString(d.reviewAt),
+      themeRefs: asStringArray(d.themeRefs)
     })).filter((d) => d.title),
     debts: asObjectArray(json.debts).map((d) => ({
       concept: asNonEmptyString(d.concept),
       context: asNonEmptyString(d.context),
       whyImportant: asNonEmptyString(d.whyImportant),
-      nextQuestion: asNonEmptyString(d.nextQuestion)
+      nextQuestion: asNonEmptyString(d.nextQuestion),
+      themeRefs: asStringArray(d.themeRefs)
     })).filter((d) => d.concept),
     themes: asObjectArray(json.themes).map((t) => ({
       name: asNonEmptyString(t.name),
@@ -216,20 +229,26 @@ function mapToFinalizeContent(
       maturity: clampMaturity(theme.maturity)
     };
   });
-  const themeIds = themes.map((theme) => theme.id as string);
-  // Attribute an asset to the theme(s) whose name actually appears in its text, instead of
-  // blanket-linking every asset to every theme of the session.
-  const attributeThemeIds = (text: string): string[] => {
-    // 阈值提到 3:两字主题名(如"控制""成长")作为子串极易在无关文本里命中,造成假阳性归属。
-    // ≥3 字才做子串归属;更短的名靠 fallback 兜底,不冒险误挂。
-    const matched = themes
-      .filter((theme) => theme.name.trim().length >= 3 && text.includes(theme.name.trim()))
-      .map((theme) => theme.id as string);
-    if (matched.length) return matched;
-    // 无任何主题名命中时,只挂到本次会话的"主导主题"(themes[0],LLM 输出顺序通常反映显著性),
-    // 而非挂到全部主题——后者会把弱相关资产塞进每条主题线,系统性污染 Track 聚合(假阳性)。
-    // 单主题会话下二者等价;多主题会话下避免交叉污染,同时仍保证资产不被孤儿化。
-    return themeIds.length ? [themeIds[0]] : [];
+  // 受控主题归属(替代旧的 attributeThemeIds 子串猜):资产的 relatedThemeIds 由 LLM 在 finalize
+  // 时直出的 themeRefs(主题名)解析而来。每个名字只能解析到「本次 content.themes(已 resolve id)
+  // ∪ 历史 state.themes」里【同名】主题的 id;对不上的名字直接【忽略】(无幻觉,绝不创建新主题——
+  // 主题只由 themes[] 产);themeRefs 为空 → 诚实留空 [],不再 fallback 到 themes[0]。
+  // name→id 索引:本次主题优先(保证新主题/被合并的既有主题用本次解析出的同一 id),历史主题兜底
+  // (让"延续既有主题但本次没在 themes[] 重列"的资产也能挂上)。
+  const themeIdByName = new Map<string, string>();
+  for (const theme of state.themes) {
+    themeIdByName.set(theme.name.trim(), theme.id);
+  }
+  for (const theme of themes) {
+    themeIdByName.set(theme.name.trim(), theme.id as string);
+  }
+  const resolveThemeRefs = (themeRefs: string[]): string[] => {
+    const ids: string[] = [];
+    for (const ref of themeRefs) {
+      const id = themeIdByName.get(ref.trim());
+      if (id && !ids.includes(id)) ids.push(id);
+    }
+    return ids;
   };
 
   const note: DualTrackNote = {
@@ -251,7 +270,7 @@ function mapToFinalizeContent(
     status: "临时想法",
     confidence: "AI 推断",
     evidence: point.evidence.length ? point.evidence : [parsed.keyQuote],
-    relatedThemeIds: attributeThemeIds(`${point.title} ${point.content}`),
+    relatedThemeIds: resolveThemeRefs(point.themeRefs),
     important: false,
     updatedAt: completedAt
   }));
@@ -262,7 +281,7 @@ function mapToFinalizeContent(
     whyImportant: question.whyImportant || "这个问题值得在后续专访中继续追问。",
     status: "正在聚焦",
     appearances: 1,
-    relatedThemeIds: attributeThemeIds(`${question.question} ${question.whyImportant ?? ""}`),
+    relatedThemeIds: resolveThemeRefs(question.themeRefs),
     nextPrompt: question.nextPrompt || question.question,
     important: false,
     updatedAt: completedAt
@@ -278,7 +297,7 @@ function mapToFinalizeContent(
     riskHypothesis: decision.riskHypothesis || "（待补充风险假设）",
     reviewAt: normalizeReviewAt(decision.reviewAt, completedAt),
     status: "待复盘",
-    relatedThemeIds: attributeThemeIds(`${decision.title} ${decision.choice ?? ""}`),
+    relatedThemeIds: resolveThemeRefs(decision.themeRefs),
     updatedAt: completedAt
   }));
 
@@ -289,7 +308,7 @@ function mapToFinalizeContent(
     whyImportant: debt.whyImportant || "补全它有助于把模糊判断说清楚。",
     status: "待了解",
     nextQuestion: debt.nextQuestion || `你能用一个具体例子说明「${debt.concept}」吗？`,
-    relatedThemeIds: attributeThemeIds(`${debt.concept} ${debt.context ?? ""}`),
+    relatedThemeIds: resolveThemeRefs(debt.themeRefs),
     updatedAt: completedAt
   }));
 
