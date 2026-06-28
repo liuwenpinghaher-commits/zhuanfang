@@ -156,6 +156,9 @@ export default function App() {
   const [interviewInput, setInterviewInput] = useState("");
   const [submittingTurn, setSubmittingTurn] = useState(false);
   const [startingInterview, setStartingInterview] = useState(false);
+  // 同步防重入:setStartingInterview 是异步 state,挡不住"创建请求在途时"的二次触发(双击 /
+  // 快速重渲染),会创建多个空 session。startInterview 入口用这个 ref 同步短路。
+  const startingRef = useRef(false);
   const [correctionText, setCorrectionText] = useState("");
   const [assetQuery, setAssetQuery] = useState("");
   const [assetFilter, setAssetFilter] = useState<AssetFilter>("all");
@@ -649,6 +652,8 @@ export default function App() {
   }
 
   async function startInterview(mode: InterviewMode = pendingMode, searchBriefId = activeSearchBriefId) {
+    if (startingRef.current) return; // 已在创建中 → 跳过,避免双触发产生多个空 session
+    startingRef.current = true;
     setStartingInterview(true);
     try {
       const apiRun = await productApiClient.createInterviewSession({
@@ -671,6 +676,7 @@ export default function App() {
       setApiPersistenceEnabled(false);
       setNotice(buildNotice("info", "已进入离线模式", "后端不可用，本次专访在本地进行，稍后可同步。"));
     } finally {
+      startingRef.current = false;
       setStartingInterview(false);
     }
 
