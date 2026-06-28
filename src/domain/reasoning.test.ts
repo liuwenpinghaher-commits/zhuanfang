@@ -151,4 +151,36 @@ describe("applyCognitiveRelations", () => {
     expect(next.points[0].status).toBe("临时想法");
     expect(next.points[0].contradictsPointIds).toBeUndefined();
   });
+
+  it("C 守卫:两方都用户确认时,对立软链照写但谁都不被降级为被挑战中", () => {
+    const state = stateWith([
+      point("pt_a", { relatedThemeIds: ["th_1"], confidence: "用户确认", status: "稳定观点", updatedAt: "2026-06-01T00:00:00.000Z" }),
+      point("pt_b", { relatedThemeIds: ["th_1"], confidence: "用户确认", status: "稳定观点", updatedAt: "2026-06-20T00:00:00.000Z" })
+    ]);
+    const next = applyCognitiveRelations(state, { contradicts: [["pt_a", "pt_b"]], supersedes: [] });
+    expect(next.points.find((p) => p.id === "pt_a")!.contradictsPointIds).toContain("pt_b");
+    // 用户确认是用户的明确立场,不被 LLM 对立判定降级。
+    expect(next.points.find((p) => p.id === "pt_a")!.status).toBe("稳定观点");
+    expect(next.points.find((p) => p.id === "pt_b")!.status).toBe("稳定观点");
+  });
+
+  it("C 守卫:用户确认的观点不被 supersede 自动作废", () => {
+    const state = stateWith([
+      point("pt_user", { relatedThemeIds: ["th_1"], confidence: "用户确认", status: "稳定观点", updatedAt: "2026-06-01T00:00:00.000Z" }),
+      point("pt_new", { relatedThemeIds: ["th_1"], updatedAt: "2026-06-20T00:00:00.000Z" })
+    ]);
+    const next = applyCognitiveRelations(state, { contradicts: [], supersedes: [{ oldId: "pt_user", newId: "pt_new" }] });
+    expect(next.points.find((p) => p.id === "pt_user")!.supersededByPointId).toBeUndefined();
+    expect(next.points.find((p) => p.id === "pt_user")!.status).toBe("稳定观点");
+  });
+
+  it("H2 防倒流:取代方比被取代方更早时忽略该 supersede(不写时间倒流演化链)", () => {
+    const state = stateWith([
+      point("pt_old", { relatedThemeIds: ["th_1"], updatedAt: "2026-06-20T00:00:00.000Z" }), // 实际较新
+      point("pt_new", { relatedThemeIds: ["th_1"], updatedAt: "2026-06-01T00:00:00.000Z" })  // 实际较早
+    ]);
+    const next = applyCognitiveRelations(state, { contradicts: [], supersedes: [{ oldId: "pt_old", newId: "pt_new" }] });
+    expect(next.points.find((p) => p.id === "pt_old")!.supersededByPointId).toBeUndefined();
+    expect(next.points.find((p) => p.id === "pt_old")!.status).not.toBe("已修正");
+  });
 });

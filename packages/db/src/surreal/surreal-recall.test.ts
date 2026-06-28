@@ -42,6 +42,26 @@ describe("surreal native recall: 图遍历", () => {
     expect(turns.map((t) => t.id)).toContain("tu_1");
     expect(turns[0]?.content).toBe("原话");
   });
+
+  it("D 溯源门控:已放弃的观点不再溯源(终态资产证据 turn 不喂进 LLM 引导)", async () => {
+    const repo = await makeMem();
+    const s = linkedState();
+    repo.replaceState({ ...s, points: s.points.map((p) => ({ ...p, status: "已放弃" as const })) });
+    await repo.flush();
+    const turns = await repo.recallProvenanceTurns("point", "pt_1");
+    expect(turns).toHaveLength(0); // status NOT IN ['已放弃',...] 拦住终态来源,即便 derived_from 边仍在
+  });
+});
+
+describe("surreal native recall: 权威库落库健康度(E)", () => {
+  it("getPersistHealth:初始为 0,persist 成功后连续失败计数仍为 0", async () => {
+    const repo = await makeMem();
+    expect(repo.getPersistHealth().consecutiveFailures).toBe(0); // 初始
+    repo.replaceState(linkedState());
+    await repo.flush();
+    expect(repo.getPersistHealth().consecutiveFailures).toBe(0); // 成功落库后清零
+    expect(repo.getPersistHealth().lastError).toBeUndefined();
+  });
 });
 
 function memWithEmbedding(id: string, text: string, vec: number[], opts: { sensitivity?: "normal" | "sensitive"; status?: "confirmed" | "deprecated" } = {}) {

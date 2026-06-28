@@ -44,10 +44,31 @@ export function toRecord(entity: Record<string, unknown>, m: NodeMapping): Recor
   return rec;
 }
 
-/** 记录 → 实体:id(记录 id) + 核心列 + 展开 rest。核心列优先级低于 rest？不——核心列即真值,
- *  rest 不含核心键(toRecord 已分流),故合并无冲突。 */
+/** SurrealDB datetime 列读回是 SDK 的 DateTime 包装类(非原生 Date、更非 string;实测 ctor=DateTime$1)。
+ *  域类型把所有时间戳声明为 ISO string,故读回时统一 coerce 回字符串——否则 surreal 权威进程重启后
+ *  loadState 出来的 updatedAt/createdAt 等是对象,`.slice()`/字符串比较的消费点会炸(JSON.stringify
+ *  恰好把它转回 ISO 而掩盖了这个 bug)。只对 datetime-like 生效:string/number/array(embedding) 原样返回。 */
+function coerceSurrealDate(v: unknown): unknown {
+  if (v == null || typeof v === "string") return v;
+  if (v instanceof Date) return v.toISOString();
+  const o = v as { toISOString?: () => unknown; toJSON?: () => unknown };
+  if (typeof o.toISOString === "function") {
+    const s = o.toISOString();
+    if (typeof s === "string") return s;
+  }
+  if (typeof o.toJSON === "function") {
+    const j = o.toJSON();
+    if (typeof j === "string") return j;
+  }
+  return v;
+}
+
+/** 记录 → 实体:id(记录 id) + 核心列(datetime 列 coerce 回 ISO string) + 展开 rest。
+ *  rest 不含核心键(toRecord 已分流),故合并无冲突;核心列即真值,覆盖 rest 中的同名(若有)。 */
 export function fromRecord(id: string, rec: Record<string, unknown>): Record<string, unknown> {
   const { rest, ...core } = rec;
   const restObj = (rest && typeof rest === "object") ? rest as Record<string, unknown> : {};
-  return { id, ...restObj, ...core };
+  const coercedCore: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(core)) coercedCore[k] = coerceSurrealDate(v);
+  return { id, ...restObj, ...coercedCore };
 }

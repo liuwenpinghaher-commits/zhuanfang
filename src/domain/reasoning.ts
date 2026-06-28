@@ -114,7 +114,13 @@ export function applyCognitiveRelations(state: ProductState, relations: Cognitiv
     pushContradict(pb.id, pa.id);
     const weaker = weakerPoint(pa, pb);
     // 只在弱方仍是非终态(未放弃/未修正)时降级为被挑战,避免覆盖更确定的生命周期态。
-    if (!TERMINAL_POINT_STATUSES.has(weaker.status) && weaker.status !== "已修正") {
+    // C 守卫:用户已确认的观点(confidence='用户确认')是用户的明确立场,不被一次 LLM 对立判定
+    // 降级——其优先级高于 AI 的矛盾推断。两方都用户确认时只记 contradicts 软链、都不降级。
+    if (
+      weaker.confidence !== "用户确认" &&
+      !TERMINAL_POINT_STATUSES.has(weaker.status) &&
+      weaker.status !== "已修正"
+    ) {
       nextStatus.set(weaker.id, "被挑战中");
     }
   }
@@ -123,6 +129,12 @@ export function applyCognitiveRelations(state: ProductState, relations: Cognitiv
     const oldP = byId.get(oldId);
     const newP = byId.get(newId);
     if (!oldP || !newP || oldP.id === newP.id) continue;
+    // C 守卫:用户已确认的观点不被 LLM 自动判为「已修正」并作废(与 contradicts 弱方守卫一致)。
+    if (oldP.confidence === "用户确认") continue;
+    // H2 防演化倒流:取代方(newP)不应比被取代方(oldP)更早。LLM 判 newer 只验「是这对里的一个」、
+    // 不验时序,可能把方向搞反;用 updatedAt 兜底——newP 更早则忽略这条 supersede(宁可不取代,
+    // 也不写出「旧取代新」的时间倒流演化链)。
+    if (newP.updatedAt < oldP.updatedAt) continue;
     supersededBy.set(oldP.id, newP.id);
     // 已修正优先级高于被挑战:若同一 point 既被判对立又被判取代,落「已修正」。
     nextStatus.set(oldP.id, "已修正");

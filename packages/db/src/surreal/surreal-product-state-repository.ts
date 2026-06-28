@@ -59,9 +59,19 @@ export const META_KEYS = [
   "systemConfig","schemaVersion"
 ] as const;
 
+/** E:权威库异步落库健康度。dual-surreal 下 surreal 是权威库,持续 persist 失败=静默丢数据,
+ *  须经此暴露给 /api/health。consecutiveFailures>0 即上次落库未成功(基线未推进,正自愈重试)。 */
+export interface PersistHealth {
+  consecutiveFailures: number;
+  lastError?: string;
+  lastErrorAt?: string;
+}
+
 export interface SurrealRepoHandle extends ProductStateRepository {
   /** 等待所有挂起的异步落库完成(测试/优雅关闭用)。 */
   flush(): Promise<void>;
+  /** E:权威库落库健康度(连续失败计数/最后错误)。/api/health 用以感知 dual-surreal 静默丢数据。 */
+  getPersistHealth(): PersistHealth;
   /** 关闭底层连接(测试/关闭用)。 */
   close(): Promise<void>;
   /** 仅测试/诊断用:直查底层 db(读边等)。生产路径不应依赖。 */
@@ -87,21 +97,35 @@ export async function createSurrealProductStateRepository(opts: SurrealRepoOptio
   // diff 基线:上次成功落库的状态(非内存 state)。失败不更新 → 下次 diff 自动补回漏掉的增量(自愈)。
   let lastPersisted: ProductState = state;
   let persistQueue: Promise<void> = Promise.resolve();
+  // E:权威库落库健康度。成功清零、失败累积——dual-surreal 下持续写不进=静默丢数据,必须可观测。
+  let persistHealth: PersistHealth = { consecutiveFailures: 0 };
 
   function enqueuePersist(snapshot: ProductState) {
     persistQueue = persistQueue
       .then(async () => {
         await persist(db, lastPersisted, snapshot);
         lastPersisted = snapshot;                 // 仅成功后推进基线
+        persistHealth = { consecutiveFailures: 0 };
       })
       .catch((err) => {
         // fail-loud:基线不动,下次 persist 以旧基线 diff、补回本次漏写(自愈)。
-        console.error(JSON.stringify({ event: "surreal_persist_failed", error: String(err) }));
+        // 连续失败计数随告警一起出——dual-surreal 下持续写不进权威库=静默丢数据,/api/health 须能感知。
+        persistHealth = {
+          consecutiveFailures: persistHealth.consecutiveFailures + 1,
+          lastError: String(err),
+          lastErrorAt: new Date().toISOString()
+        };
+        console.error(JSON.stringify({
+          event: "surreal_persist_failed",
+          consecutiveFailures: persistHealth.consecutiveFailures,
+          error: persistHealth.lastError
+        }));
       });
   }
 
   return {
     getState() { return structuredClone(state); },
+    getPersistHealth() { return { ...persistHealth }; },
     resetState() {
       state = createEmptyProductState();
       enqueuePersist(state);
@@ -139,8 +163,12 @@ export async function createSurrealProductStateRepository(opts: SurrealRepoOptio
     },
     async recallProvenanceTurns(table: string, id: string) {
       const from = new RecordId(table, id);
+      // D 溯源门控:已放弃/已修正的观点、deprecated/deleted 的资产不再溯源——这些是用户或系统
+      // 已废弃的认知,不该再把它们的证据 turn 原话喂进 LLM 引导。WHERE 作用在来源资产 $from 上,
+      // 终态则查无、返回空。(turn 层无 sensitivity 维度,敏感原话的更深门控见审计报告 P2。)
       const [rows] = await db.query<[Array<Record<string, unknown>>]>(
-        "SELECT VALUE ->derived_from->turn.* FROM $from;", { from }
+        "SELECT VALUE ->derived_from->turn.* FROM $from WHERE status NOT IN ['已放弃','已修正','deprecated','deleted'];",
+        { from }
       );
       const turns = (rows?.[0] as unknown as Array<Record<string, unknown>> | undefined) ?? [];
       return turns.map((t) => ({

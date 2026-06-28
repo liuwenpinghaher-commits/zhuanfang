@@ -23,6 +23,24 @@ describe("node-mapper", () => {
     expect(back).toEqual(entity);                   // 完整无损
   });
 
+  it("B fromRecord:datetime 列(SDK DateTime 包装 / 原生 Date)coerce 回 ISO string", () => {
+    // surreal 读回时 typed datetime 列是 SDK 的 DateTime 包装(非 string、非原生 Date);模拟之 + 原生 Date。
+    const sdkDatetime = { toISOString: () => "2026-06-28T00:00:00.000Z" }; // 模拟 DateTime$1
+    const back = fromRecord("pt_1", {
+      title: "t", content: "c", status: "稳定观点", confidence: "用户确认", important: true,
+      updatedAt: sdkDatetime, rest: { evidence: ["e1"] }
+    });
+    expect(typeof back.updatedAt).toBe("string");
+    expect(back.updatedAt).toBe("2026-06-28T00:00:00.000Z");
+    // 原生 Date 也 coerce 回 ISO string。
+    expect(typeof fromRecord("m_1", { status: "x", createdAt: new Date("2026-06-28T00:00:00.000Z"), rest: {} }).createdAt).toBe("string");
+    // 非日期核心值(string/number/array embedding)原样不受影响。
+    const b3 = fromRecord("m_2", { text: "hi", importance: 0.5, embedding: [0.1, 0.2], rest: {} });
+    expect(b3.text).toBe("hi");
+    expect(b3.importance).toBe(0.5);
+    expect(b3.embedding).toEqual([0.1, 0.2]);
+  });
+
   it("覆盖全部 12 本体映射", () => {
     expect(NODE_MAPPINGS.map((x) => x.stateKey).sort()).toEqual(
       ["debts","decisions","importSources","memoryCandidates","memoryRecords","notes","points","questions","ragChunks","searchBriefs","sessions","themes"].sort()
