@@ -657,7 +657,38 @@ export interface IntentDecision {
   };
 }
 
-export interface DualTrackNote {
+/**
+ * 本体论分类法(欠账④ · 原子 D · ontology/01 §5.2,经 OntoClean 检验)。
+ *
+ * 显式写出"认知实体"家族树:观点/决策/知识债/笔记/问题/记忆原本是平行数组、无父类,
+ * 但它们在本体上都是**可溯源、可归类、可治理**的兄弟。这里用**结构性 extends**把这层
+ * is-a 关系钉成一等公民——保留各资产现有全部字段、不改字段名,只在类型层加约束。
+ *
+ * 父类只取**真正的共性最小集**:目前唯一对所有认知实体都成立的字段是 `id`。
+ * (反例:DualTrackNote 用 `createdAt` 无 `updatedAt`;Note 溯源走 `keyQuoteAnchor` 而
+ * point/decision/debt 走 `evidenceAnchors`——字段不一致是历史现状,本期不强行统一,
+ * 故父类不擅自上提 `updatedAt`/`relatedThemeIds`/溯源字段,以免破坏既有结构。)
+ *
+ * OntoClean 关键:Theme 是**反刚性**的(跨多条资产涌现的聚合轴,成员会增减、成熟度会变),
+ * 不能当不变资产的父类——故单列 `Axis`,**不塞进 Distillation**(详见 01 §4.6 / §5.2)。
+ */
+export interface CognitiveEntity {
+  id: string;
+}
+
+/** 蒸馏类(continuant):用户从专访中沉淀下来的认知资产。Note / Point / Decision / Debt 是兄弟。 */
+export interface Distillation extends CognitiveEntity {}
+
+/** 追问类(continuant):待回访的开放问题。 */
+export interface Inquiry extends CognitiveEntity {}
+
+/** 主轴类(聚合, 反刚性):跨专访涌现的认知轴。单列,不做资产父类(OntoClean 刚性检验)。 */
+export interface Axis extends CognitiveEntity {}
+
+/** 记忆类(continuant):确认入库、可召回的长期记忆。 */
+export interface Memory extends CognitiveEntity {}
+
+export interface DualTrackNote extends Distillation {
   id: string;
   sessionId: string;
   title: string;
@@ -671,7 +702,7 @@ export interface DualTrackNote {
   keyQuoteAnchor?: EvidenceAnchor;
 }
 
-export interface PointAsset {
+export interface PointAsset extends Distillation {
   id: string;
   title: string;
   content: string;
@@ -696,7 +727,7 @@ export interface PointAsset {
   supersededByPointId?: string;
 }
 
-export interface QuestionAsset {
+export interface QuestionAsset extends Inquiry {
   id: string;
   question: string;
   whyImportant: string;
@@ -710,7 +741,7 @@ export interface QuestionAsset {
   sourceSessionId?: string;
 }
 
-export interface DecisionAsset {
+export interface DecisionAsset extends Distillation {
   id: string;
   title: string;
   decisionKind: "候选决策" | "用户决策";
@@ -727,7 +758,7 @@ export interface DecisionAsset {
   evidenceAnchors?: EvidenceAnchor[];
 }
 
-export interface KnowledgeDebt {
+export interface KnowledgeDebt extends Distillation {
   id: string;
   concept: string;
   context: string;
@@ -744,7 +775,7 @@ export interface KnowledgeDebt {
 }
 
 
-export interface LongTermTheme {
+export interface LongTermTheme extends Axis {
   id: string;
   name: string;
   summary: string;
@@ -827,7 +858,7 @@ export type MemoryRecordStatus = "confirmed" | "deprecated" | "deleted";
 export type MemoryCandidateStatus = "pending" | "approved" | "rejected";
 export type MemorySensitivity = "normal" | "sensitive";
 
-export interface MemoryRecord {
+export interface MemoryRecord extends Memory {
   id: string;
   text: string;
   status: MemoryRecordStatus;

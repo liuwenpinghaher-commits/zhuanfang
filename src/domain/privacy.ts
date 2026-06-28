@@ -1,3 +1,4 @@
+import { countRetrievableAssetCategory } from "./cognitive-entity";
 import { createInitialProductState } from "./engine";
 import type { AuditEvent, ProductState } from "./types";
 import { withAuditEvent } from "./utils";
@@ -63,7 +64,9 @@ export function buildPrivacyReport(state: ProductState, generatedAt = new Date()
     {
       id: "assets",
       label: "观点、问题、决策、知识债和主题",
-      count: state.points.length + state.questions.length + state.decisions.length + state.debts.length + state.themes.length,
+      // 欠账④:与 migration 的 "assets" 类目共用同一道求和,统一到 cognitive-entity 单一真值,
+      // 避免两处口径漂移(隐私 report 与 scoped-purge case "assets" 同源)。
+      count: countRetrievableAssetCategory(state),
       detail: "专访沉淀出的可检索资产、状态流转和长期追踪主题。",
       exported: true,
       purged: true

@@ -1,3 +1,4 @@
+import { countRetrievableAssetCategory } from "./cognitive-entity";
 import { normalizeProductState } from "./storage";
 import type { ProductState } from "./types";
 
@@ -123,7 +124,8 @@ function buildMigrationEntityCounts(state: ProductState): MigrationEntityCount[]
     {
       id: "assets",
       label: "认知资产",
-      count: state.points.length + state.questions.length + state.decisions.length + state.debts.length + state.themes.length
+      // 欠账④:与 privacy 的 "assets" 类目同口径,统一到 cognitive-entity 单一真值。
+      count: countRetrievableAssetCategory(state)
     },
     {
       id: "memory",

@@ -34,6 +34,12 @@ export function checkAxioms(state: ProductState): AxiomViolation[] {
  * A1 · 每个 Distillation(point/decision/debt)应有 ≥1 条溯源(evidenceAnchors)。
  * 无溯源 = 幻觉(无 derived_from)。域层用 evidenceAnchors 承载溯源,collectEdges 投影成
  * derived_from 边——所以"无 evidenceAnchors"等价于"无 derived_from 出边"。
+ *
+ * 欠账④ 评估:这三段循环看似可用 collectDistillations 收敛,但各类的 entityType 字面量、
+ * 文案前缀、取名字段(point/decision 用 title、debt 用 concept)都不同,且 DualTrackNote
+ * 虽同属 Distillation 却走 keyQuoteAnchor 而非 evidenceAnchors——收敛需引入带类型转换的
+ * 描述符表,复杂度 > 收益(红线:不为收敛硬塞 cast)。故**保持三段显式循环**,只在父类
+ * 类型层(types.ts)体现"它们是 Distillation 兄弟",逻辑不强行收敛。
  */
 export function checkA1_provenance(state: ProductState): AxiomViolation[] {
   const out: AxiomViolation[] = [];
