@@ -37,4 +37,11 @@ describe("prefetchRecall", () => {
     expect(r.memoryHits).toBeUndefined();
     expect(r.themeAssets?.points).toContain("pt_1");
   });
+  it("③ 混合检索:把 topicHint 作为 queryText + includeSensitive 透传给 recallMemoriesByVector", async () => {
+    let seen: { includeSensitive?: boolean; queryText?: string } | undefined;
+    const port: NativeRecallPort = { ...okPort(), recallMemoriesByVector: async (_e, _k, o) => { seen = o; return [{ id: "me_1", text: "记忆" }]; } };
+    await prefetchRecall(port, stateWithTheme(), "放权", [0.1, 0.2], { includeSensitive: true, topN: 5 });
+    expect(seen?.queryText).toBe("放权");
+    expect(seen?.includeSensitive).toBe(true);
+  });
 });

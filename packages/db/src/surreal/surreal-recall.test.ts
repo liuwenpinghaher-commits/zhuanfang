@@ -80,3 +80,78 @@ describe("surreal native recall: 向量 HNSW + A4 门控", () => {
     expect(withSens.map((h) => h.id).sort()).toEqual(["me_norm", "me_sens"]); // 含 sensitive,仍不含 deprecated
   });
 });
+
+describe("surreal native recall: 混合检索(HNSW + BM25 + search::rrf,③)", () => {
+  it("混合检索:召回 BM25 精确词命中(向量远)+ 向量语义近,纯 HNSW(同 k)漏掉前者", async () => {
+    const repo = await makeMem();
+    const base = createInitialProductState();
+    // me_near:向量 vec(1) 与 query 同向(向量最近)。
+    // me_kw:文本含专名「区块链」,但向量 vec(-1) 与 query 相反 → 纯 HNSW 排在最末。
+    // 另造 6 条「向量比 me_kw 更靠近 query、但文本不含专名」的噪声(vecAt:第0位 0.1..0.6,
+    //   余弦比 vec(-1) 更接近 vec(1))。k=2 时纯 HNSW 只会取 me_near + 1 条噪声,必漏 me_kw;
+    //   混合检索靠 BM25 把 me_kw 拉回。
+    const noise = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6].map((s, i) => memWithEmbedding(`me_noise_${i}`, `无关内容${i}`, vec(s)));
+    repo.replaceState({ ...base, memoryRecords: [
+      memWithEmbedding("me_near", "关于授权放权的深度思考", vec(1)),
+      memWithEmbedding("me_kw", "团队评估区块链技术选型", vec(-1)),
+      ...noise
+    ] });
+    await repo.flush();
+    const kSmall = 2;
+    // 基线:纯 HNSW(无 queryText),k=2 → me_near + 最近噪声,绝不含向量最远的 me_kw。
+    const hnswOnly = await repo.recallMemoriesByVector(vec(1), kSmall);
+    expect(hnswOnly.map((h) => h.id)).not.toContain("me_kw");
+    // 混合:queryText 命中专名「区块链」(多 ngram token)→ me_kw 被 BM25 拉回;向量项仍在。
+    const hybrid = await repo.recallMemoriesByVector(vec(1), kSmall, { queryText: "区块链" });
+    const ids = hybrid.map((h) => h.id);
+    expect(ids).toContain("me_kw");    // BM25 把向量最远的专名命中拉进来(纯 HNSW 漏)
+    expect(ids).toContain("me_near");  // 向量语义项仍在
+  });
+
+  it("A4 门控在混合检索下保持:非 confirmed / sensitive 不进结果", async () => {
+    const repo = await makeMem();
+    const base = createInitialProductState();
+    // 三条文本都含「区块链」(BM25 都命中),但 sensitivity/status 不同 → A4 必须拦。
+    repo.replaceState({ ...base, memoryRecords: [
+      memWithEmbedding("me_norm", "区块链普通记忆", vec(-1)),
+      memWithEmbedding("me_sens", "区块链敏感记忆", vec(-1), { sensitivity: "sensitive" }),
+      memWithEmbedding("me_dep", "区块链弃用记忆", vec(-1), { status: "deprecated" })
+    ] });
+    await repo.flush();
+    const def = await repo.recallMemoriesByVector(vec(1), 10, { queryText: "区块链" });
+    expect(def.map((h) => h.id).sort()).toEqual(["me_norm"]);            // BM25 命中也只放 confirmed+normal
+    const withSens = await repo.recallMemoriesByVector(vec(1), 10, { queryText: "区块链", includeSensitive: true });
+    expect(withSens.map((h) => h.id).sort()).toEqual(["me_norm", "me_sens"]); // 含 sensitive,仍不含 deprecated
+  });
+
+  it("fail-safe:无 queryText → 退化为纯 HNSW,结果与现状一致", async () => {
+    const repo = await makeMem();
+    const base = createInitialProductState();
+    const records = [
+      memWithEmbedding("me_near", "近", vec(1)),
+      memWithEmbedding("me_far", "远", vec(-1))
+    ];
+    repo.replaceState({ ...base, memoryRecords: records });
+    await repo.flush();
+    // 不传 queryText → 与既有纯 HNSW 调用同参、同结果。
+    const baseline = await repo.recallMemoriesByVector(vec(1), 1);
+    const noQueryText = await repo.recallMemoriesByVector(vec(1), 1, { queryText: undefined });
+    const emptyQueryText = await repo.recallMemoriesByVector(vec(1), 1, { queryText: "   " });
+    expect(baseline.map((h) => h.id)).toEqual(["me_near"]);
+    expect(noQueryText.map((h) => h.id)).toEqual(["me_near"]);     // undefined queryText 等价纯 HNSW
+    expect(emptyQueryText.map((h) => h.id)).toEqual(["me_near"]);  // 空白 queryText 也退化
+  });
+
+  it("fail-safe:queryText 有词但 BM25 零命中 → 退化为向量召回(不破坏)", async () => {
+    const repo = await makeMem();
+    const base = createInitialProductState();
+    repo.replaceState({ ...base, memoryRecords: [
+      memWithEmbedding("me_near", "授权放权", vec(1)),
+      memWithEmbedding("me_far", "目标管理", vec(-1))
+    ] });
+    await repo.flush();
+    // queryText「量子飞船」与任何记忆都无 ngram 交集 → BM25 路空,rrf 仅剩向量路。
+    const hits = await repo.recallMemoriesByVector(vec(1), 2, { queryText: "量子飞船" });
+    expect(hits.map((h) => h.id)).toContain("me_near"); // 向量召回照常,不因 BM25 空而崩
+  });
+});

@@ -38,7 +38,12 @@ export async function prefetchRecall(
     queryEmbedding && queryEmbedding.length > 0
       ? safe("memoryHits", () =>
           // 大候选集(topN*4)逼近精确,A4 门控由 includeSensitive 传入;三因子精排在域层叠加。
-          port.recallMemoriesByVector(queryEmbedding, Math.max(opts.topN, 5) * 4, { includeSensitive: opts.includeSensitive })
+          // ③ 混合检索:topicHint 作为 queryText 叠加 BM25(补 HNSW 对专名/精确词的盲区);
+          //    无 topicHint / BM25 不可用 → recallMemoriesByVector 内部退化为纯 HNSW(fail-safe)。
+          port.recallMemoriesByVector(queryEmbedding, Math.max(opts.topN, 5) * 4, {
+            includeSensitive: opts.includeSensitive,
+            ...(topicHint ? { queryText: topicHint } : {})
+          })
         )
       : Promise.resolve(undefined)
   ]);

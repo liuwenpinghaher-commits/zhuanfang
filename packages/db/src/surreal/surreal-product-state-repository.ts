@@ -70,8 +70,10 @@ export interface SurrealRepoHandle extends ProductStateRepository {
   recallThemeAssets(themeId: string): Promise<{ points: string[]; decisions: string[]; questions: string[]; memories: string[] }>;
   /** 溯源:沿 derived_from 取某资产的证据 turn。 */
   recallProvenanceTurns(table: string, id: string): Promise<Array<{ id: string; content: string; sessionId: string; role: string }>>;
-  /** 记忆向量召回(HNSW KNN + 余弦)。A4 门控:默认仅 confirmed+normal;includeSensitive 含 sensitive。 */
-  recallMemoriesByVector(embedding: number[], k: number, opts?: { includeSensitive?: boolean }): Promise<Array<{ id: string; text: string }>>;
+  /** 记忆混合召回(HNSW 语义 + BM25 关键词,search::rrf 倒数排名融合)。
+   *  传 queryText → 叠加 BM25(补 HNSW 对专名/精确词的盲区);无/空 queryText 或 BM25 在 3.x 不可用
+   *  → 退化为纯 HNSW(现状)。A4 门控始终:默认仅 confirmed+normal;includeSensitive 含 sensitive。 */
+  recallMemoriesByVector(embedding: number[], k: number, opts?: { includeSensitive?: boolean; queryText?: string }): Promise<Array<{ id: string; text: string }>>;
 }
 
 export type SurrealRepoOptions = SurrealConnectionOptions;
@@ -146,21 +148,72 @@ export async function createSurrealProductStateRepository(opts: SurrealRepoOptio
         sessionId: String(t.sessionId ?? ""), role: String(t.role ?? "")
       }));
     },
-    async recallMemoriesByVector(embedding: number[], k: number, recallOpts?: { includeSensitive?: boolean }) {
+    async recallMemoriesByVector(embedding: number[], k: number, recallOpts?: { includeSensitive?: boolean; queryText?: string }) {
       const includeSensitive = recallOpts?.includeSensitive ?? false;
-      // A4:status='confirmed' 必须;sensitivity 默认仅 normal。
+      const queryText = recallOpts?.queryText?.trim();
+
+      // 纯 HNSW(现状 / 退化基线)。A4:status='confirmed' 必须;sensitivity 默认仅 normal。
       // 3.x:KNN 算子 <|k,ef|> 已按余弦相似度近似排序;ORDER BY 不能用函数表达式
       //      (报 "Missing order idiom vector"),故去掉 ORDER BY,靠 KNN 本身的近邻序。
+      //      注:<|k,ef|> 只接受字面量($k 报 "expected an unsigned integer"),故 k/ef 插值。
       const ef = Math.max(k * 4, 40);
-      const [rows] = await db.query<[Array<Record<string, unknown>>]>(
-        `SELECT id, text FROM memory
-           WHERE status = 'confirmed'
-             AND (sensitivity = 'normal' OR $includeSensitive)
-             AND embedding <|${k},${ef}|> $q;`,
-        { q: embedding, includeSensitive }
-      );
-      const hits = (rows ?? []) as Array<{ id: unknown; text: unknown }>;
-      return hits.map((h) => ({ id: recordIdToDomainId(h.id), text: String(h.text ?? "") }));
+      const hnswOnly = async (): Promise<Array<{ id: string; text: string }>> => {
+        const [rows] = await db.query<[Array<Record<string, unknown>>]>(
+          `SELECT id, text FROM memory
+             WHERE status = 'confirmed'
+               AND (sensitivity = 'normal' OR $includeSensitive)
+               AND embedding <|${k},${ef}|> $q;`,
+          { q: embedding, includeSensitive }
+        );
+        const hits = (rows ?? []) as Array<{ id: unknown; text: unknown }>;
+        return hits.map((h) => ({ id: recordIdToDomainId(h.id), text: String(h.text ?? "") }));
+      };
+
+      // fail-safe:无 queryText → 纯 HNSW(绝不破坏召回)。
+      if (!queryText) return hnswOnly();
+
+      try {
+        // ③ 混合检索:HNSW(语义)+ BM25(关键词)→ search::rrf 倒数排名融合(实测 @3.0.2)。
+        //
+        // 3.0.2 实测要点(本轮 spike 锁定):
+        //  · search::rrf([resultSetA, resultSetB], k, limit):入参是「结果集数组的数组」,每个
+        //    结果集须为 [{id}, ...](即 `SELECT id`,不能 `SELECT VALUE id` 裸 RecordId,否则恒返 [])。
+        //    返回 [{ id, rrf_score }],按融合名次降序。limit 必传(漏则报 "limit must be a number")。
+        //  · BM25 用 ngram(2,2) analyzer 时,裸 `@@ '多字词'`(及 @AND@/@OR@)对**多 token** query
+        //    恒不命中(token 切分后匹配条件不满足);**单 token `@@` 才命中**。故把 queryText 经
+        //    `search::analyze` 切成 ngram,逐 token `text @@ $tN` 用 OR 串联,等价 OR 召回。
+        //  · ⚠️ KNN/BM25 子查询里**不能再叠加额外 AND 过滤**:`... AND embedding <|k,ef|> $q` 放进
+        //    `LET` 绑定时索引路径失效、子查询恒空(同 P2a 的 KNN 脆弱性)。故两路保持「纯索引」,
+        //    A4 门控移到**最终取回 SELECT**(强度等同:confirmed + sensitivity)。
+        const tokensRes = await db.query<[string[]]>("RETURN search::analyze('zh', $t);", { t: queryText });
+        const tokens = Array.isArray(tokensRes?.[0]) ? (tokensRes[0] as unknown[]).map(String).filter(Boolean) : [];
+        // fail-safe:query 切不出 token → 无 BM25 可加,退化纯 HNSW。
+        if (tokens.length === 0) return hnswOnly();
+
+        const tokenVars: Record<string, unknown> = {};
+        const bmClause = tokens.map((tok, i) => { tokenVars[`t${i}`] = tok; return `text @@ $t${i}`; }).join(" OR ");
+
+        const results = await db.query<Array<Array<Record<string, unknown>>>>(
+          `LET $vec = (SELECT id FROM memory WHERE embedding <|${k},${ef}|> $q);
+           LET $bm  = (SELECT id FROM memory WHERE ${bmClause});
+           LET $fused = search::rrf([$vec, $bm], 60, ${k});
+           SELECT id, text FROM memory
+             WHERE id IN $fused.map(|$r| $r.id)
+               AND status = 'confirmed'
+               AND (sensitivity = 'normal' OR $includeSensitive);`,
+          { q: embedding, includeSensitive, ...tokenVars }
+        );
+        // 多语句:前 3 个 LET 返回 null,取最后一条 SELECT 的结果集(不能取 results[0])。
+        const fusedRows = results[results.length - 1];
+        // fail-safe:融合空(rrf 在该 query 下无产出)→ 退化纯 HNSW,绝不返空召回。
+        const fused = (fusedRows ?? []) as Array<{ id: unknown; text: unknown }>;
+        if (fused.length === 0) return hnswOnly();
+        return fused.map((h) => ({ id: recordIdToDomainId(h.id), text: String(h.text ?? "") }));
+      } catch (err) {
+        // fail-safe:search::rrf / BM25 在该环境不可用或报错 → 退化纯 HNSW(现状),记降级日志。
+        console.warn(JSON.stringify({ event: "surreal_hybrid_recall_degraded", error: err instanceof Error ? err.message : String(err) }));
+        return hnswOnly();
+      }
     },
   };
 }
