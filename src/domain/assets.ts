@@ -23,8 +23,9 @@ export function confirmDecisionCandidate(state: ProductState, decisionId: string
     decisions: state.decisions.map((item) =>
       item.id === decisionId
         ? {
+            // 审查修复(L2):确认只改 confirmationStatus,保留 decisionKind 来源标记
+            // (从而区分"用户原创决策"与"已确认的 AI 候选决策"),不再把来源覆盖成"用户决策"。
             ...item,
-            decisionKind: "用户决策",
             confirmationStatus: "用户确认",
             updatedAt: confirmedAt
           }

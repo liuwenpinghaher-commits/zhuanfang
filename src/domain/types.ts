@@ -724,6 +724,8 @@ export interface KnowledgeDebt {
   status: DebtStatus;
   nextQuestion: string;
   updatedAt: string;
+  /** 审查改进(M3):被反复欠的次数(finalize 命中同 concept 自增),与 Theme/Question 的 appearances 对称。 */
+  appearances?: number;
   relatedThemeIds?: string[];
   /** 产出该资产的专访会话 id */
   sourceSessionId?: string;

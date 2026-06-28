@@ -19,7 +19,9 @@ export function turnRecordsOf(state: ProductState): Array<Record<string, unknown
   const out: Array<Record<string, unknown>> = [];
   for (const s of state.sessions) {
     for (const t of s.turns ?? []) {
-      const rec: Record<string, unknown> = { id: t.id, sessionId: s.id, role: t.role, content: t.content, intent: t.intent };
+      const rec: Record<string, unknown> = { id: t.id, sessionId: s.id, role: t.role, content: t.content };
+      // 审查加固(L5):intent 有值才写(对齐 timestamp),防将来 null 致 surreal option<string> coerce 失败、双写发散。
+      if (t.intent != null) rec.intent = t.intent;
       if (t.timestamp) rec.timestamp = new Date(t.timestamp);
       out.push(rec);
     }

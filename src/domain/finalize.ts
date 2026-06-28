@@ -203,7 +203,7 @@ export function mergeFinalizedState(
   nextState.points = [...content.points.map(p => ({ ...p, sourceSessionId: session.id })), ...nextState.points];
   nextState.questions = [...content.questions.map(q => ({ ...q, sourceSessionId: session.id })), ...nextState.questions];
   nextState.decisions = [...content.decisions.map(d => ({ ...d, sourceSessionId: session.id })), ...nextState.decisions];
-  nextState.debts = [...content.debts.map(db => ({ ...db, sourceSessionId: session.id })), ...nextState.debts];
+  nextState.debts = upsertFinalizeDebts(nextState.debts, content.debts, session.id, completedAt);
   nextState.themes = upsertFinalizeThemes(nextState.themes, content.themes, completedAt);
 
   // ── 证据锚点扩展：把 LLM 逐字摘录回匹配到来自的 user 轮。匹配不到不盖、不伪造来源。──
@@ -275,6 +275,31 @@ function normalizeThemeName(name: string): string {
 /** Upsert each theme: merge into an existing theme line by normalized name (increment
  *  appearances, refresh quote/next-question, clamp maturity to the new count), else create a
  *  fresh theme born at 萌芽. */
+/** 审查改进(M3):按归一化 concept upsert 知识债——命中同概念则 appearances++ 并 refresh,否则新建 appearances=1。
+ *  与 upsertFinalizeThemes 对称,根治"同概念债每次 finalize 重复 prepend"+ 补"反复欠的债"优先级信号。 */
+export function upsertFinalizeDebts(
+  existingDebts: KnowledgeDebt[],
+  incoming: KnowledgeDebt[],
+  sessionId: string,
+  completedAt: string
+): KnowledgeDebt[] {
+  let debts = existingDebts;
+  for (const inc of incoming) {
+    const key = normalizeThemeName(inc.concept);
+    const match = key ? debts.find((d) => normalizeThemeName(d.concept) === key) : undefined;
+    if (match) {
+      debts = debts.map((d) =>
+        d.id === match.id
+          ? { ...d, appearances: (d.appearances ?? 1) + 1, context: inc.context, whyImportant: inc.whyImportant, nextQuestion: inc.nextQuestion, status: inc.status, updatedAt: completedAt }
+          : d
+      );
+    } else {
+      debts = [{ ...inc, sourceSessionId: sessionId, appearances: inc.appearances ?? 1 }, ...debts];
+    }
+  }
+  return debts;
+}
+
 export function upsertFinalizeThemes(
   existingThemes: LongTermTheme[],
   upserts: FinalizeThemeUpsert[],
