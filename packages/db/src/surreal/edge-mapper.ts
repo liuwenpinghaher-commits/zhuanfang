@@ -1,7 +1,7 @@
 import type { ProductState, EvidenceAnchor } from "../../../../src/domain/types";
 
 export interface EdgeSpec {
-  edge: "belongs_to_theme" | "derived_from" | "about_theme" | "part_of" | "contradicts";
+  edge: "belongs_to_theme" | "derived_from" | "about_theme" | "part_of" | "contradicts" | "evolves_into";
   fromTable: string;
   fromId: string;
   toTable: string;
@@ -103,6 +103,15 @@ export function collectEdges(state: ProductState): EdgeSpec[] {
       seenContradicts.add(key);
       edges.push({ edge: "contradicts", fromTable: "point", fromId: lo, toTable: "point", toId: hi });
     }
+  }
+
+  // ⑥ 取代关系(欠账②):point.supersededByPointId → evolves_into(旧→新,有向)。
+  //    复活 002 的 evolves_into 死表 + 让"观点取代"在图层可达(此前只有内嵌软链 supersededByPointId,
+  //    图遍历不到)。两端按 known-id 过滤(沿用悬挂边杜绝风格);自指(A→A)忽略。
+  for (const p of state.points) {
+    const newId = p.supersededByPointId;
+    if (!newId || newId === p.id || !pointIds.has(newId)) continue;
+    edges.push({ edge: "evolves_into", fromTable: "point", fromId: p.id, toTable: "point", toId: newId });
   }
 
   return edges;

@@ -142,4 +142,25 @@ describe("edge-mapper", () => {
     const cd = collectEdges(st).filter((e) => e.edge === "contradicts");
     expect(cd).toHaveLength(0);
   });
+
+  // ⑥ 取代关系(欠账②):supersededByPointId → evolves_into(复活死 schema + 图层可达)。
+  it("supersededByPointId → evolves_into(旧→新有向,复活死 schema)", () => {
+    const st = baseState();
+    st.points = [
+      { id: "pt_old", title: "t", content: "c", status: "已修正" as const, confidence: "AI 推断" as const, evidence: [], relatedThemeIds: ["th_1"], important: false, updatedAt: "2026-06-27T00:00:00.000Z", supersededByPointId: "pt_new" },
+      { id: "pt_new", title: "t", content: "c", status: "稳定观点" as const, confidence: "用户确认" as const, evidence: [], relatedThemeIds: ["th_1"], important: false, updatedAt: "2026-06-27T00:00:00.000Z" }
+    ];
+    const ev = collectEdges(st).filter((e) => e.edge === "evolves_into");
+    expect(ev).toHaveLength(1);
+    expect(ev[0]).toEqual(expect.objectContaining({ edge: "evolves_into", fromTable: "point", fromId: "pt_old", toTable: "point", toId: "pt_new" }));
+  });
+
+  it("evolves_into:取代方不存在(悬挂)/自指 不产边", () => {
+    const st = baseState();
+    st.points = [
+      { id: "pt_old", title: "t", content: "c", status: "已修正" as const, confidence: "AI 推断" as const, evidence: [], relatedThemeIds: ["th_1"], important: false, updatedAt: "2026-06-27T00:00:00.000Z", supersededByPointId: "pt_gone" },
+      { id: "pt_self", title: "t", content: "c", status: "临时想法" as const, confidence: "AI 推断" as const, evidence: [], relatedThemeIds: ["th_1"], important: false, updatedAt: "2026-06-27T00:00:00.000Z", supersededByPointId: "pt_self" }
+    ];
+    expect(collectEdges(st).filter((e) => e.edge === "evolves_into")).toHaveLength(0);
+  });
 });

@@ -193,6 +193,27 @@ describe("surreal graph edges (mem://)", () => {
     const [after] = await repo.query<[unknown[]]>("SELECT * FROM contradicts;");
     expect((after ?? []).length).toBe(0);
   });
+
+  // ⑥ 取代关系(欠账②):supersededByPointId → evolves_into 边 mem:// 往返(验证 ENFORCED point→point + diff)。
+  it("evolves_into 边:supersededByPointId 投影成 point→point 边,清空后不残留", async () => {
+    const repo = await makeMem();
+    const base = repo.getState();
+    repo.replaceState({ ...base,
+      points: [
+        { id: "pt_old", title: "旧", content: "c", status: "已修正" as const, confidence: "AI 推断" as const, evidence: [], relatedThemeIds: [], important: false, updatedAt: "2026-06-27T00:00:00.000Z", supersededByPointId: "pt_new" },
+        { id: "pt_new", title: "新", content: "c", status: "稳定观点" as const, confidence: "用户确认" as const, evidence: [], relatedThemeIds: [], important: false, updatedAt: "2026-06-27T00:00:00.000Z" }
+      ]
+    });
+    await repo.flush();
+    const [all] = await repo.query<[unknown[]]>("SELECT * FROM evolves_into;");
+    expect((all ?? []).length).toBe(1);                          // ENFORCED point→point RELATE 成功
+    const [out] = await repo.query<[unknown[]]>("SELECT VALUE ->evolves_into->point FROM point:pt_old;");
+    expect((out?.[0] as unknown[] ?? []).length).toBe(1);        // pt_old →evolves_into→ pt_new
+    repo.replaceState({ ...repo.getState(), points: repo.getState().points.map((p) => ({ ...p, supersededByPointId: undefined })) });
+    await repo.flush();
+    const [gone] = await repo.query<[unknown[]]>("SELECT * FROM evolves_into;");
+    expect((gone ?? []).length).toBe(0);                         // 清空 supersededByPointId → 边全量覆盖清掉
+  });
 });
 
 describe("surreal diff-upsert (surrealkv://)", () => {
