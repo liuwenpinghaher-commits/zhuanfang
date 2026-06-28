@@ -302,7 +302,7 @@ export async function registerInterviewSessionRoutes(
     const providedCandidates = session.doNotSave
       ? undefined
       : await extractSessionMemoryCandidates(session, options.bailianChatClient, budget);
-    const result = await finalizeInterview(baseState, session, options.bailianChatClient, providedCandidates);
+    const result = await finalizeInterview(baseState, session, options.bailianChatClient, providedCandidates, options.embeddingClient);
     // P1-13: if the LLM diary degraded to the deterministic finalize, record an
     // aiRunEvent(degraded) on the finalized state (single write below).
     const finalizedState = result.degradedReason
@@ -658,11 +658,12 @@ async function finalizeInterview(
   state: ProductState,
   session: InterviewSession,
   chatClient: BailianChatClient | undefined,
-  providedCandidates?: MemoryCandidate[]
+  providedCandidates?: MemoryCandidate[],
+  embeddingClient?: BailianEmbeddingClient
 ): Promise<FinalizeResult & { degradedReason?: string }> {
   if (chatClient) {
     try {
-      return await finalizeSessionWithLlm(state, session, chatClient, providedCandidates);
+      return await finalizeSessionWithLlm(state, session, chatClient, providedCandidates, embeddingClient);
     } catch (error) {
       // P1-13: capture the reason so the route records an aiRunEvent(degraded) — the LLM diary
       // failed and we're falling back to the deterministic finalize.
@@ -695,10 +696,13 @@ function stripAsidesFromLatestAssistantTurn(session: InterviewSession): Intervie
   }
   const turn = turns[lastAssistantIndex];
   const clean = stripSpokenAsides(turn.content);
-  if (clean === turn.content) {
-    return session; // no asides to strip
-  }
+  // 总是 stamp prosody:deriveSpeechProsody 即使在无 （…）asides 时也会从文本语义派生(问句升调 /
+  // 感叹热情 / 共情放缓 / 情绪枚举等)。原来"无 asides 即早退"会让真实 LLM(其追问不产 manner asides)
+  // 的每轮 assistant turn 丢失全部语音情绪(2026-06-29 真实 E2E:每轮缺 prosody 的根因)。
   const prosody = deriveSpeechProsody(turn.content);
+  if (clean === turn.content && prosody.emotion === "neutral" && prosody.rate === 1 && prosody.pitch === 1 && prosody.volume === 50) {
+    return session; // 既无 asides 又派生为纯中性 → 无需改写
+  }
   const nextTurns = turns.slice();
   // Guard against an aside-only reply collapsing to empty — keep the original in that edge case.
   nextTurns[lastAssistantIndex] = { ...turn, content: clean || turn.content, prosody };

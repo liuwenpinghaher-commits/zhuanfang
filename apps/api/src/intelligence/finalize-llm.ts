@@ -22,7 +22,8 @@ import type {
   ProfileSuggestionField,
   QuestionAsset
 } from "../../../../src/domain/types";
-import type { BailianChatClient } from "../providers/bailian";
+import type { BailianChatClient, BailianEmbeddingClient } from "../providers/bailian";
+import { cosineSimilarity } from "../../../../src/domain/vector";
 
 const THEME_MATURITIES: LongTermTheme["maturity"][] = ["萌芽", "重复", "聚焦", "成型", "变化", "关闭"];
 
@@ -57,7 +58,8 @@ export async function finalizeSessionWithLlm(
   state: ProductState,
   session: InterviewSession,
   chatClient: BailianChatClient,
-  providedCandidates?: MemoryCandidate[]
+  providedCandidates?: MemoryCandidate[],
+  embeddingClient?: BailianEmbeddingClient
 ): Promise<FinalizeResult> {
   const completedAt = nowIso();
   const raw = await chatClient.complete({
@@ -79,7 +81,54 @@ export async function finalizeSessionWithLlm(
 
   const parsed = parseFinalizeJson(raw, session);
   const content = mapToFinalizeContent(parsed, state, session, completedAt);
+  // 主题归属补全:LLM 在长 finalize JSON 里经常省略/留空 themeRefs(实测两次全空),且 point/theme
+  // 字面不重叠(LLM 抽象命名,bigram 兜底失效,实测 best 仅 0.07~0.12)。用本地 embedding 做语义归属:
+  // 把 relatedThemeIds 仍为空的资产挂到语义最近的本次主题,矛盾/演化②才有"同主题观点对"可判。
+  await attributeThemesByEmbedding(content, embeddingClient);
   return mergeFinalizedState(state, session, content, completedAt, providedCandidates);
+}
+
+// 语义主题归属兜底(本地 embedding)。只补 relatedThemeIds 仍为空的资产,挂到本次 finalize 的 themes
+// (同源最相关);相似度低于阈值则诚实留空。fail-safe:无 client / embed 失败 → 原样返回不阻塞归档。
+async function attributeThemesByEmbedding(
+  content: FinalizeContent,
+  embeddingClient?: BailianEmbeddingClient
+): Promise<void> {
+  if (!embeddingClient || content.themes.length === 0) return;
+  const themed = content.themes.filter(
+    (t): t is FinalizeThemeUpsert & { id: string } => typeof t.id === "string" && t.id.length > 0
+  );
+  if (themed.length === 0) return;
+  const assetText = (a: {
+    title?: string; content?: string; choice?: string; concept?: string; context?: string; question?: string; whyImportant?: string;
+  }) => [a.title, a.content, a.choice, a.concept, a.context, a.question, a.whyImportant].filter(Boolean).join("。");
+  const targets: Array<{ asset: { relatedThemeIds?: string[] }; text: string }> = [];
+  for (const p of content.points) if (!p.relatedThemeIds?.length) targets.push({ asset: p, text: assetText(p) });
+  for (const d of content.decisions) if (!d.relatedThemeIds?.length) targets.push({ asset: d, text: assetText(d) });
+  for (const d of content.debts) if (!d.relatedThemeIds?.length) targets.push({ asset: d, text: assetText(d) });
+  for (const q of content.questions) if (!q.relatedThemeIds?.length) targets.push({ asset: q, text: assetText(q) });
+  if (targets.length === 0) return;
+  let themeVecs: number[][];
+  let assetVecs: number[][];
+  try {
+    themeVecs = await embeddingClient.embed(themed.map((t) => `${t.name}。${t.summary ?? ""}`));
+    assetVecs = await embeddingClient.embed(targets.map((t) => t.text));
+  } catch (err) {
+    console.warn(JSON.stringify({ event: "finalize_embed_attribution_failed", error: err instanceof Error ? err.message : String(err) }));
+    return;
+  }
+  targets.forEach((t, i) => {
+    const av = assetVecs[i];
+    if (!av) return;
+    let bestSim = -1;
+    let bestId = "";
+    themed.forEach((theme, j) => {
+      const sim = cosineSimilarity(av, themeVecs[j]);
+      if (sim > bestSim) { bestSim = sim; bestId = theme.id; }
+    });
+    // bge-large-zh 同主题语义相似度通常 >0.5;阈值 0.5 平衡召回与误挂。
+    if (bestSim >= 0.5 && bestId) t.asset.relatedThemeIds = [bestId];
+  });
 }
 
 function buildFinalizePrompt(state: ProductState, session: InterviewSession): string {
@@ -238,20 +287,47 @@ function mapToFinalizeContent(
   // name→id 索引:本次主题优先(保证新主题/被合并的既有主题用本次解析出的同一 id),历史主题兜底
   // (让"延续既有主题但本次没在 themes[] 重列"的资产也能挂上)。
   const themeIdByName = new Map<string, string>();
-  for (const theme of state.themes) {
+  const themeIdByNorm = new Map<string, string>();
+  // 归一化:去空白与中英标点、转小写。吸收 LLM 在 themes[].name 与各资产 themeRefs 两处命名的细微
+  // 不一致(空格/标点/大小写)。否则精确匹配会大面积丢失主题归属 → relatedThemeIds 普遍为空 →
+  // 矛盾/演化检测(欠账②)因无"同主题观点对"而完全失效(2026-06-29 真实业务 E2E 实测根因)。
+  const normTheme = (s: string) =>
+    s.trim().replace(/[\s「」《》“”‘’·,，。、:：;；!！?？()（）\-—_~～]/g, "").toLowerCase();
+  const allThemesForRef = [
+    ...state.themes.map((t) => ({ name: t.name, id: t.id })),
+    ...themes.map((t) => ({ name: t.name, id: t.id }))
+  ].filter((t): t is { name: string; id: string } => typeof t.id === "string" && t.id.length > 0);
+  for (const theme of allThemesForRef) {
     themeIdByName.set(theme.name.trim(), theme.id);
-  }
-  for (const theme of themes) {
-    themeIdByName.set(theme.name.trim(), theme.id as string);
+    const nk = normTheme(theme.name);
+    if (nk) themeIdByNorm.set(nk, theme.id);
   }
   const resolveThemeRefs = (themeRefs: string[]): string[] => {
     const ids: string[] = [];
     for (const ref of themeRefs) {
-      const id = themeIdByName.get(ref.trim());
+      // ① 精确 → ② 归一化精确 → ③ 归一化双向包含(唯一命中才采纳,避免把一个 ref 误挂到多主题)
+      let id = themeIdByName.get(ref.trim()) ?? themeIdByNorm.get(normTheme(ref));
+      if (!id) {
+        const nr = normTheme(ref);
+        if (nr.length >= 3) {
+          const hits = allThemesForRef.filter((t) => {
+            const nt = normTheme(t.name);
+            return nt && (nt.includes(nr) || nr.includes(nt));
+          });
+          if (hits.length === 1) id = hits[0].id;
+        }
+      }
       if (id && !ids.includes(id)) ids.push(id);
+      else if (!id && ref.trim())
+        console.warn(JSON.stringify({ event: "finalize_themeref_unresolved", ref: ref.trim().slice(0, 24) }));
     }
     return ids;
   };
+
+  // 注:字面 bigram 兜底已移除——实测对 LLM 抽象主题名无效(best 仅 0.07~0.12),且会违反"不靠子串
+  // 共现臆造归属"的设计(误挂)。LLM 省略 themeRefs 时的归属改由 finalizeSessionWithLlm 末尾的
+  // attributeThemesByEmbedding(本地 embedding 语义匹配)统一兜底,既准又不破坏 themeRefs 的受控语义。
+  const resolveOrAttribute = (themeRefs: string[], _assetText: string): string[] => resolveThemeRefs(themeRefs);
 
   const note: DualTrackNote = {
     id: makeId("note"),
@@ -272,7 +348,7 @@ function mapToFinalizeContent(
     status: "临时想法",
     confidence: "AI 推断",
     evidence: point.evidence.length ? point.evidence : [parsed.keyQuote],
-    relatedThemeIds: resolveThemeRefs(point.themeRefs),
+    relatedThemeIds: resolveOrAttribute(point.themeRefs, `${point.title} ${point.content}`),
     important: false,
     updatedAt: completedAt
   }));
@@ -283,7 +359,7 @@ function mapToFinalizeContent(
     whyImportant: question.whyImportant || "这个问题值得在后续专访中继续追问。",
     status: "正在聚焦",
     appearances: 1,
-    relatedThemeIds: resolveThemeRefs(question.themeRefs),
+    relatedThemeIds: resolveOrAttribute(question.themeRefs, `${question.question} ${question.whyImportant ?? ""}`),
     nextPrompt: question.nextPrompt || question.question,
     important: false,
     updatedAt: completedAt
@@ -300,7 +376,7 @@ function mapToFinalizeContent(
     reviewAt: normalizeReviewAt(decision.reviewAt, completedAt),
     status: "待复盘",
     evidence: decision.evidence.length ? decision.evidence : [parsed.keyQuote],
-    relatedThemeIds: resolveThemeRefs(decision.themeRefs),
+    relatedThemeIds: resolveOrAttribute(decision.themeRefs, `${decision.title} ${decision.choice ?? ""}`),
     updatedAt: completedAt
   }));
 
@@ -312,7 +388,7 @@ function mapToFinalizeContent(
     status: "待了解",
     nextQuestion: debt.nextQuestion || `你能用一个具体例子说明「${debt.concept}」吗？`,
     evidence: debt.evidence.length ? debt.evidence : [parsed.keyQuote],
-    relatedThemeIds: resolveThemeRefs(debt.themeRefs),
+    relatedThemeIds: resolveOrAttribute(debt.themeRefs, `${debt.concept} ${debt.context ?? ""}`),
     updatedAt: completedAt
   }));
 
