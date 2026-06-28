@@ -53,7 +53,7 @@ import { addAnnotation, removeAnnotation } from "./domain/raw-material";
 import { deleteImportSource } from "./domain/material";
 import { executeSearchProvider } from "./capabilities/search";
 import { createIdleCapabilityTask, failCapabilityTask, startCapabilityTask } from "./capabilities/task";
-import { productApiClient, getProductApiBaseUrl, isNetworkError, type ReviewsResponse } from "./api/productApi";
+import { productApiClient, getProductApiBaseUrl, isNetworkError, ApiError, type ReviewsResponse } from "./api/productApi";
 import type { RealtimeVoiceSessionResponse, SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigUpdateRequest, VoiceInfo } from "./api/productApi";
 // WebRTC omni client is incomplete (no callbacks/turn recording); the connect path is
 // downlined to WebSocket in startVoiceSession. Type kept for the connection union only.
@@ -159,6 +159,10 @@ export default function App() {
   // 同步防重入:setStartingInterview 是异步 state,挡不住"创建请求在途时"的二次触发(双击 /
   // 快速重渲染),会创建多个空 session。startInterview 入口用这个 ref 同步短路。
   const startingRef = useRef(false);
+  // 同步防重入:/end 要调真实 LLM 做档案抽取(数秒),用户等不及会重复点"结束"。没有这个 guard,
+  // 第一次成功 completed 后,后续点击全部 409(已结束)→ "结束失败"提示覆盖成功 → 诱导继续点。
+  const finishingRef = useRef(false);
+  const [finishingInterview, setFinishingInterview] = useState(false); // UI:结束按钮显示"正在生成档案…"
   const [correctionText, setCorrectionText] = useState("");
   const [assetQuery, setAssetQuery] = useState("");
   const [assetFilter, setAssetFilter] = useState<AssetFilter>("all");
@@ -1201,6 +1205,7 @@ export default function App() {
     if (!session) {
       return;
     }
+    if (finishingRef.current) return; // 防重入:/end 在途(LLM 档案抽取慢),忽略重复点击
     // Align with the server's rule: at least one USER turn (control feedback turns
     // don't count). Pre-checking avoids a 422 that the catch would misread as offline.
     const userTurnCount = session.turns.filter((turn) => turn.role === "user").length;
@@ -1209,6 +1214,8 @@ export default function App() {
       return;
     }
 
+    finishingRef.current = true;
+    setFinishingInterview(true);
     try {
       const endedSessionId = session.id;
       const apiRun = await productApiClient.endInterviewSession(endedSessionId);
@@ -1260,11 +1267,23 @@ export default function App() {
       setView("notes");
       return;
     } catch (err) {
+      // 已结束(409)/会话不存在(404):这场专访其实已经收尾(常见于 /end 调 LLM 较慢时用户
+      // 重复点"结束")。视为成功跳转,绝不误报"结束失败"再诱导继续点。
+      if (err instanceof ApiError && (err.status === 409 || err.status === 404)) {
+        setSession(null);
+        closeRealtimeVoiceSession();
+        setNotice(buildNotice("info", "专访已结束", "这场专访已经收尾，已为你跳转到笔记。"));
+        setView("notes");
+        return;
+      }
       if (!isNetworkError(err)) {
         setNotice(buildNotice("warning", "结束失败", "服务返回错误，请稍后重试。本次未生成档案。"));
         return;
       }
       setApiPersistenceEnabled(false);
+    } finally {
+      finishingRef.current = false;
+      setFinishingInterview(false);
     }
 
     // Offline path (network error only): the deterministic finalize produces a
@@ -1838,6 +1857,7 @@ export default function App() {
             onInterrupt={interruptAssistant}
             submitting={submittingTurn}
             starting={startingInterview}
+            finishing={finishingInterview}
             guidanceState={guidanceState}
           />
         )}

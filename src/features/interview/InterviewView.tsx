@@ -27,6 +27,7 @@ interface InterviewViewProps {
   onInterrupt: () => void;
   submitting?: boolean;
   starting?: boolean;
+  finishing?: boolean;
   guidanceState?: {
     active: boolean;
     kind: string | null;
@@ -55,6 +56,7 @@ export function InterviewView({
   onInterrupt,
   submitting,
   starting,
+  finishing,
   guidanceState
 }: InterviewViewProps) {
   // Hooks must run unconditionally on every render (Rules of Hooks). Keep them
@@ -276,8 +278,8 @@ export function InterviewView({
               <span className="field-help">可以先写片段，系统会保留停顿，并围绕表达里的锚点继续追问。</span>
             </label>
             <div className="composer-actions">
-              <button className="secondary-action" type="button" onClick={onFinish} disabled={session.turns.length === 0 || submitting}>
-                结束并生成档案
+              <button className="secondary-action" type="button" onClick={onFinish} disabled={session.turns.length === 0 || submitting || finishing} aria-busy={finishing}>
+                {finishing ? "正在生成档案…" : "结束并生成档案"}
               </button>
               <button className="primary-action" type="submit" disabled={submitting || !input.trim()} aria-busy={submitting}>
                 <ChevronRight size={18} />{submitting ? "思考中…" : "提交表达"}
