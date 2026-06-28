@@ -184,7 +184,7 @@ function buildContextSecurityInterceptions(
 
   return interceptions;
 }
-export function buildInterviewCard(state: ProductState, searchBriefId?: string, topicHint?: string, queryEmbedding?: number[], recall?: RecallResult): InterviewCard {
+export function buildInterviewCard(state: ProductState, searchBriefId?: string, topicHint?: string, queryEmbedding?: number[], recall?: RecallResult, prebuiltGuide?: InterviewGuide): InterviewCard {
   const topTheme = [...state.themes].sort((a, b) => b.appearances - a.appearances)[0];
   const themeName = topTheme?.name ?? "当前问题";
   const openDebt = state.debts.find((debt) => debt.status === "待了解") ?? state.debts[0];
@@ -216,7 +216,9 @@ export function buildInterviewCard(state: ProductState, searchBriefId?: string, 
         .slice(0, 2)
         .map((chunk) => `导入资料（来源：${formatRagChunkSourceLabel(state, chunk)}）：${chunk.text}`);
   const hasContextSources = contextSourceHighlights.length > 0;
-  const guide = buildInterviewGuide(state, contextOptions, recall);
+  // M4:复用上游(createSessionDraft)已 build 的 guide,避免 session 创建路径重复 build guide
+  //（含 buildInterviewContextPack + buildPerspectiveCoverage 全语料 × signal 的热点);前端/独立调用不传则自行 build。
+  const guide = prebuiltGuide ?? buildInterviewGuide(state, contextOptions, recall);
   // P2b:溯源原话(surreal 权威召回带回时)纳入历史参照,让 LLM 能引用受访者原话佐证观点。
   const evidenceQuotes = (contextPack.provenanceTurns ?? [])
     .flatMap((entry) => entry.turns.map((t) => `证据原话（${entry.assetTable}）：${t.content}`))
@@ -869,7 +871,7 @@ export function createSessionDraft(
     ...(options.topicHint ? { topicHint: options.topicHint } : {}),
     ...(options.queryEmbedding ? { queryEmbedding: options.queryEmbedding } : {})
   }, options.recall);
-  const card = buildInterviewCard(state, options.searchBriefId, options.topicHint, options.queryEmbedding, options.recall);
+  const card = buildInterviewCard(state, options.searchBriefId, options.topicHint, options.queryEmbedding, options.recall, guide);
   return {
     id: makeId("session"),
     mode,
