@@ -1339,6 +1339,18 @@ select:focus-visible {
   padding-bottom: 0;
 }
 
+/* ②:观点演化 / 对立观点 —— 让"系统发现的认知变化/矛盾"在采访侧栏有辨识度(图标对齐 + 条目间距)。 */
+.context-block.opinion-evolution span,
+.context-block.contradictions span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.context-block.opinion-evolution li {
+  margin-bottom: 5px;
+}
+
 .record-list {
   display: grid;
   gap: 14px;

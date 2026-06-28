@@ -210,15 +210,20 @@ export function mergeFinalizedState(
   // ── 证据锚点扩展：把 LLM 逐字摘录回匹配到来自的 user 轮。匹配不到不盖、不伪造来源。──
   const anchor = (quote: string | undefined) => resolveEvidenceAnchors(quote ?? "", session.id, session.turns)[0];
 
-  // points: 本次 session 产生且尚未盖锚点的，用首个非空证据原话解析。
-  nextState.points = nextState.points.map((point) => {
-    if (point.sourceSessionId !== session.id || (point.evidenceAnchors && point.evidenceAnchors.length > 0)) {
-      return point;
+  // points/decisions/debts(都是 Distillation,A1 要求溯源):本次 session 产生且尚未盖锚点的,
+  // 用首个非空证据原话解析回 user turn。匹配不到不盖、不伪造来源(诚实留空,A1 会如实报缺)。
+  // F:decisions/debts 此前从不盖锚 → checkA1 每次违例;现与 points 对称(LLM 也为它们输出 evidence)。
+  const stampDistillationAnchor = <T extends { sourceSessionId?: string; evidence?: string[]; evidenceAnchors?: ReturnType<typeof resolveEvidenceAnchors> }>(asset: T): T => {
+    if (asset.sourceSessionId !== session.id || (asset.evidenceAnchors && asset.evidenceAnchors.length > 0)) {
+      return asset;
     }
-    const evidenceQuote = point.evidence?.find((e) => e.trim());
+    const evidenceQuote = asset.evidence?.find((e) => e.trim());
     const anchors = resolveEvidenceAnchors(evidenceQuote ?? "", session.id, session.turns);
-    return anchors.length > 0 ? { ...point, evidenceAnchors: anchors } : point;
-  });
+    return anchors.length > 0 ? { ...asset, evidenceAnchors: anchors } : asset;
+  };
+  nextState.points = nextState.points.map(stampDistillationAnchor);
+  nextState.decisions = nextState.decisions.map(stampDistillationAnchor);
+  nextState.debts = nextState.debts.map(stampDistillationAnchor);
 
   // note.keyQuoteAnchor: 单 anchor。已有则不动。
   const keyQuoteAnchor = finalNote.keyQuoteAnchor ?? anchor(finalNote.keyQuote);

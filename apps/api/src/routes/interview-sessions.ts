@@ -586,6 +586,11 @@ export async function registerInterviewSessionRoutes(
 // memory recall. Fail-safe — returns undefined on no client / empty text / embed
 // error, so the interview line silently degrades to keyword recall (unchanged
 // behaviour). Embeddings are computed here (route layer); the domain stays pure.
+// I:嵌入查询超时上限。本地 embedding(transformers.js)首次需加载模型、无内部超时,直接 await
+// 会把"开始专访"/turn 卡住;超时即降级 undefined → fail-safe 走关键词召回。server 启动会预热本地
+// 模型(见 server.ts startServer),稳态下 embed 远快于此;真超时只在冷启动未预热完就建会话的窄窗口。
+const EMBED_QUERY_TIMEOUT_MS = 8000;
+
 async function embedQueryText(
   text: string | undefined,
   embeddingClient: BailianEmbeddingClient | undefined
@@ -594,8 +599,14 @@ async function embedQueryText(
   if (!embeddingClient || !trimmed) {
     return undefined;
   }
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const vectors = await embeddingClient.embed([trimmed]);
+    const vectors = await Promise.race([
+      embeddingClient.embed([trimmed]),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("embed timeout")), EMBED_QUERY_TIMEOUT_MS);
+      })
+    ]);
     const vector = vectors[0];
     return Array.isArray(vector) && vector.length > 0 ? vector : undefined;
   } catch (error) {
@@ -603,6 +614,8 @@ async function embedQueryText(
       JSON.stringify({ event: "interview_query_embed_failed", error: error instanceof Error ? error.message : String(error) })
     );
     return undefined;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

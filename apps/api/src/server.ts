@@ -166,7 +166,16 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     sharedBudget
   );
 
-  void server.register(registerHealthRoutes);
+  // E:权威库(surreal / dual-surreal)落库健康度探针 → /api/health 暴露 persist.degraded。
+  // surreal 权威直接有 getPersistHealth;dual-surreal 经 getAuthoritative 取到 surreal 权威库;sqlite/dual → undefined。
+  const probePersistHealth = () => {
+    const repo = innerProductStateRepository as {
+      getPersistHealth?: () => { consecutiveFailures: number; lastError?: string; lastErrorAt?: string };
+      getAuthoritative?: () => { getPersistHealth?: () => { consecutiveFailures: number; lastError?: string; lastErrorAt?: string } };
+    };
+    return repo.getPersistHealth?.() ?? repo.getAuthoritative?.().getPersistHealth?.();
+  };
+  void server.register(registerHealthRoutes(probePersistHealth));
   void server.register(async (registeredServer) => {
     await registerSystemRoutes(registeredServer, productStateRepository, {
       stateStore,
@@ -583,6 +592,13 @@ function isInMemoryDbPath(dbPath: string) {
 
 export async function startServer() {
   loadLocalEnvFile();
+
+  // I 预热:本地 embedding(transformers.js)首次需加载模型(~数十秒)。启动即后台预热,让首个
+  // "开始专访"不撞冷加载(embedQueryText 有 8s 超时,未预热完只是降级关键词召回、不卡住)。
+  // fire-and-forget + catch:预热失败绝不阻塞启动;单例 extractorPromise 模块级,与路由层共享同一次加载。
+  if ((process.env.EMBEDDING_PROVIDER ?? "").trim().toLowerCase() === "local") {
+    void createLocalEmbeddingClient().embed(["预热"]).catch(() => {});
+  }
 
   // P0-A fail-closed: in the production profile the bearer guard only activates when a
   // token is present (see isAuthGuardActive). Refuse to start a production deployment

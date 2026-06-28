@@ -47,8 +47,8 @@ interface ParsedFinalize {
   // are dropped, an empty/absent list yields no attribution (no themes[0] fallback).
   points: Array<{ title: string; content: string; evidence: string[]; themeRefs: string[] }>;
   questions: Array<{ question: string; whyImportant: string; nextPrompt: string; themeRefs: string[] }>;
-  decisions: Array<{ title: string; choice: string; tradeOff: string; riskHypothesis: string; reviewAt: string; themeRefs: string[] }>;
-  debts: Array<{ concept: string; context: string; whyImportant: string; nextQuestion: string; themeRefs: string[] }>;
+  decisions: Array<{ title: string; choice: string; tradeOff: string; riskHypothesis: string; reviewAt: string; evidence: string[]; themeRefs: string[] }>;
+  debts: Array<{ concept: string; context: string; whyImportant: string; nextQuestion: string; evidence: string[]; themeRefs: string[] }>;
   themes: Array<{ name: string; summary: string; representativeQuote: string; nextQuestion: string; maturity: string }>;
   profileSuggestions: Array<{ field: string; suggestedValue: string; reason: string; evidenceQuote: string }>;
 }
@@ -129,8 +129,8 @@ function buildFinalizePrompt(state: ProductState, session: InterviewSession): st
   "nextQuestions": ["下次值得继续追问的问题，1-3 条"],
   "points": [{"title":"观点标题","content":"观点内容","evidence":["支撑这个观点的用户原话"],"themeRefs":["这条观点属于哪些主题：主题名必须逐字取自本次输出的 themes[] 的 name、或上面列出的已有主题线名称；拿不准就留空数组[]，绝不臆造或硬凑"]}],
   "questions": [{"question":"值得长期追的问题","whyImportant":"为什么重要","nextPrompt":"下次怎么问","themeRefs":["同上：本问题所属主题名，取自 themes[] 或已有主题线，拿不准留空[]"]}],
-  "decisions": [{"title":"决策标题","choice":"用户倾向的选择","tradeOff":"取舍","riskHypothesis":"风险假设","reviewAt":"复盘日期YYYY-MM-DD，没有就留空","themeRefs":["同上：本决策所属主题名，取自 themes[] 或已有主题线，拿不准留空[]"]}],
-  "debts": [{"concept":"概念","context":"在本次对话中如何出现","whyImportant":"为什么值得补","nextQuestion":"下次的引导问题","themeRefs":["同上：本知识债所属主题名，取自 themes[] 或已有主题线，拿不准留空[]"]}],
+  "decisions": [{"title":"决策标题","choice":"用户倾向的选择","tradeOff":"取舍","riskHypothesis":"风险假设","reviewAt":"复盘日期YYYY-MM-DD，没有就留空","evidence":["支撑这个决策的用户原话，逐字摘录"],"themeRefs":["同上：本决策所属主题名，取自 themes[] 或已有主题线，拿不准留空[]"]}],
+  "debts": [{"concept":"概念","context":"在本次对话中如何出现","whyImportant":"为什么值得补","nextQuestion":"下次的引导问题","evidence":["这个知识债在对话里冒出来时的用户原话，逐字摘录"],"themeRefs":["同上：本知识债所属主题名，取自 themes[] 或已有主题线，拿不准留空[]"]}],
   "themes": [{"name":"主题名：必须是能在别的对话里再次认出的【可复现主题】——一个反复出现的问题/张力/取舍，不要用一次性金句、比喻或诗意短语当名字","summary":"这条主题在追踪什么，以及下次靠什么线索能认出它又出现了","representativeQuote":"代表性原话","nextQuestion":"下次追问","maturity":"按它真实出现过几次填：只出现一次就是萌芽，不要凭单次对话的深度就标成型/聚焦"}],
   "profileSuggestions": [{"field":"currentFocus 或 longTermGoal","suggestedValue":"用户【当前关注】或【长期目标】的新表述——仅当本次对话清楚显示它相比下面【现有档案】发生了实质变化、或第一次被明确说清时才填；只是顺带提到、与现状一致、或只是一次性感慨，就把整个数组留空[]","reason":"为什么这是一个真实、稳定的变化，而不是一次性发言","evidenceQuote":"支撑这个判断的用户原话"}]
 }`
@@ -185,6 +185,7 @@ function parseFinalizeJson(raw: string, session: InterviewSession): ParsedFinali
       tradeOff: asNonEmptyString(d.tradeOff),
       riskHypothesis: asNonEmptyString(d.riskHypothesis),
       reviewAt: asNonEmptyString(d.reviewAt),
+      evidence: asStringArray(d.evidence),
       themeRefs: asStringArray(d.themeRefs)
     })).filter((d) => d.title),
     debts: asObjectArray(json.debts).map((d) => ({
@@ -192,6 +193,7 @@ function parseFinalizeJson(raw: string, session: InterviewSession): ParsedFinali
       context: asNonEmptyString(d.context),
       whyImportant: asNonEmptyString(d.whyImportant),
       nextQuestion: asNonEmptyString(d.nextQuestion),
+      evidence: asStringArray(d.evidence),
       themeRefs: asStringArray(d.themeRefs)
     })).filter((d) => d.concept),
     themes: asObjectArray(json.themes).map((t) => ({
@@ -297,6 +299,7 @@ function mapToFinalizeContent(
     riskHypothesis: decision.riskHypothesis || "（待补充风险假设）",
     reviewAt: normalizeReviewAt(decision.reviewAt, completedAt),
     status: "待复盘",
+    evidence: decision.evidence.length ? decision.evidence : [parsed.keyQuote],
     relatedThemeIds: resolveThemeRefs(decision.themeRefs),
     updatedAt: completedAt
   }));
@@ -308,6 +311,7 @@ function mapToFinalizeContent(
     whyImportant: debt.whyImportant || "补全它有助于把模糊判断说清楚。",
     status: "待了解",
     nextQuestion: debt.nextQuestion || `你能用一个具体例子说明「${debt.concept}」吗？`,
+    evidence: debt.evidence.length ? debt.evidence : [parsed.keyQuote],
     relatedThemeIds: resolveThemeRefs(debt.themeRefs),
     updatedAt: completedAt
   }));

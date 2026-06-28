@@ -280,7 +280,10 @@ export function buildInterviewCard(state: ProductState, searchBriefId?: string, 
       ...(hasContextSources ? [`素材引用：${contextSourceHighlights[0]?.title}`] : [])
     ],
     searchBriefId: searchBrief?.id,
-    sourceHighlights: hasContextSources ? contextSourceHighlights : undefined
+    sourceHighlights: hasContextSources ? contextSourceHighlights : undefined,
+    // ②:把"系统发现的观点演化/对立观点"带进 card,让采访 UI 可触达(此前只在 LLM prompt 隐式)。
+    opinionEvolution: buildOpinionEvolution(state),
+    contradictions: buildPointContradictions(state)
   };
 }
 
@@ -576,6 +579,25 @@ export function computeRecordThemeIds(state: ProductState, record: MemoryRecord)
 //   topic   = 两者共同主题名(relatedThemeIds 交集 → theme.name),无共同主题则回退到任一方主题/通用文案;
 //   date    = 取代方 updatedAt(演化发生时间)。
 // 无任何 supersededBy 关系 → 返回 [](诚实空,而非假造一条)。
+/** ②:从 points 的 contradictsPointIds 派生对立观点对(symmetric 去重、字典序),供 card/UI 呈现。 */
+export function buildPointContradictions(state: ProductState): Array<{ a: string; b: string }> {
+  const byId = new Map(state.points.map((p) => [p.id, p] as const));
+  const seen = new Set<string>();
+  const out: Array<{ a: string; b: string }> = [];
+  for (const p of state.points) {
+    for (const otherId of p.contradictsPointIds ?? []) {
+      const key = p.id < otherId ? `${p.id}|${otherId}` : `${otherId}|${p.id}`;
+      if (seen.has(key)) continue;
+      const other = byId.get(otherId);
+      if (!other) continue;
+      seen.add(key);
+      const [lo, hi] = p.id < otherId ? [p, other] : [other, p];
+      out.push({ a: lo.title, b: hi.title });
+    }
+  }
+  return out.slice(0, 5);
+}
+
 export function buildOpinionEvolution(state: ProductState): InterviewGuide["opinionEvolution"] {
   const pointById = new Map(state.points.map((p) => [p.id, p] as const));
   const themeNameById = new Map(state.themes.map((t) => [t.id, t.name] as const));

@@ -142,6 +142,39 @@ describe("finalize memory extraction (M1a)", () => {
     expect(nextState.memoryCandidates.length).toBeGreaterThan(0);
     expect(nextState.memoryCandidates[0].text).not.toContain("判断责任和机制代价");
   });
+
+  it("F: decisions/debts 带 evidence 时 mergeFinalizedState 补 evidenceAnchors(满足 A1 溯源)", async () => {
+    const { mergeFinalizedState } = await import("./finalize");
+    const { createInitialProductState: initState, createInterviewSession: cis, addTurn: at } = await import("./engine");
+    const { nowIso } = await import("./utils");
+
+    const state = initState();
+    let s = cis({ id: "s5", title: "决策溯源测试" });
+    s = at(s, { role: "user", content: "我决定把招聘权下放给团队负责人。" });
+
+    const completedAt = nowIso();
+    const note = {
+      id: "note-f", sessionId: "s5", title: s.title, summary: "x",
+      keyQuote: "我决定把招聘权下放给团队负责人。", saidTrack: [], learnedTrack: [], nextQuestions: [], createdAt: completedAt
+    };
+    const decision = {
+      id: "de_f", title: "下放招聘权", decisionKind: "候选决策" as const, confirmationStatus: "待用户确认" as const,
+      choice: "下放", tradeOff: "", riskHypothesis: "", reviewAt: "", status: "待复盘" as const,
+      evidence: ["我决定把招聘权下放给团队负责人。"], updatedAt: completedAt
+    };
+    const debt = {
+      id: "dt_f", concept: "授权边界", context: "", whyImportant: "", status: "待了解" as const,
+      nextQuestion: "", evidence: ["我决定把招聘权下放给团队负责人。"], updatedAt: completedAt
+    };
+    const content = { note, points: [], questions: [], decisions: [decision], debts: [debt], themes: [] };
+
+    const { nextState } = mergeFinalizedState(state, s, content, completedAt, undefined);
+    const de = nextState.decisions.find((d) => d.id === "de_f")!;
+    const dt = nextState.debts.find((d) => d.concept === "授权边界")!;
+    expect(de.evidenceAnchors?.length).toBeGreaterThan(0);       // F:decision 有溯源 anchor
+    expect(de.evidenceAnchors?.[0].turnId).toBeTruthy();
+    expect(dt.evidenceAnchors?.length).toBeGreaterThan(0);       // F:debt 有溯源 anchor
+  });
 });
 
 describe("finalize 证据锚点扩展 (Phase 1 收尾)", () => {

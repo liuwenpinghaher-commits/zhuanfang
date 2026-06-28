@@ -307,6 +307,26 @@ export function InterviewView({
               ))}
             </ul>
           </div>
+          {card.opinionEvolution && card.opinionEvolution.length > 0 && (
+            <div className="context-block opinion-evolution">
+              <span><Sparkles size={12} />观点演化</span>
+              <ul>
+                {card.opinionEvolution.slice(0, 3).map((evo, evoIdx) => (
+                  <li key={`evo-${evoIdx}`}><strong>{evo.topic}</strong>：{evo.oldView} → {evo.newView}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {card.contradictions && card.contradictions.length > 0 && (
+            <div className="context-block contradictions">
+              <span><Flag size={12} />发现的对立观点</span>
+              <ul>
+                {card.contradictions.slice(0, 3).map((contra, contraIdx) => (
+                  <li key={`contra-${contraIdx}`}>「{contra.a}」⇄「{contra.b}」</li>
+                ))}
+              </ul>
+            </div>
+          )}
           {session.card.sourceHighlights && session.card.sourceHighlights.length > 0 && (
             <div className="context-block">
               <span>联网素材</span>

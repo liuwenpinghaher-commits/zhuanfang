@@ -443,9 +443,16 @@ function roleQuery(role?: SessionAudioRole): string {
 
 export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchImpl: FetchLike = fetch): ProductApiClient {
   const normalizedBaseUrl = baseUrl.replace(/\/$/, "");
+  // H 生产 bearer 鉴权:前端从 Vite env(VITE_PRODUCT_API_TOKEN)注入 token,所有请求自动附 Authorization。
+  // 无 token(dev / 未配)→ 不附头,dev fail-open 行为不变;配了 token 的生产 profile 不再整站 401。
+  const rawFetch = fetchImpl;
+  const authedToken = (import.meta.env.VITE_PRODUCT_API_TOKEN ?? "").trim();
+  const authedFetch: FetchLike = authedToken
+    ? (url, init) => rawFetch(url, { ...init, headers: { ...((init?.headers as Record<string, string> | undefined) ?? {}), authorization: `Bearer ${authedToken}` } })
+    : rawFetch;
 
   async function requestJson(path: string, init: RequestInit): Promise<unknown> {
-    const response = await fetchImpl(`${normalizedBaseUrl}${path}`, init);
+    const response = await authedFetch(`${normalizedBaseUrl}${path}`, init);
     if (!response.ok) {
       throw new ApiError(response.status, path);
     }
@@ -453,7 +460,7 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
   }
 
   async function requestText(path: string, init: RequestInit): Promise<string> {
-    const response = await fetchImpl(`${normalizedBaseUrl}${path}`, init);
+    const response = await authedFetch(`${normalizedBaseUrl}${path}`, init);
     if (!response.ok) {
       throw new ApiError(response.status, path);
     }
@@ -463,7 +470,7 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
   return {
     async health() {
       try {
-        const response = await fetchImpl(`${normalizedBaseUrl}/api/health`, { method: "GET" });
+        const response = await authedFetch(`${normalizedBaseUrl}/api/health`, { method: "GET" });
         return response.ok;
       } catch {
         return false;
@@ -581,7 +588,7 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
       return normalizeProductState(response.state);
     },
     async saveState(state) {
-      const response = await fetchImpl(`${normalizedBaseUrl}/api/state`, {
+      const response = await authedFetch(`${normalizedBaseUrl}/api/state`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(state)
@@ -741,7 +748,7 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
     async getRawMaterial(sessionId) {
       // 404 is a valid "not assembled yet" answer, not an error — handle it via
       // fetchImpl directly since requestJson would throw ApiError on any non-2xx.
-      const response = await fetchImpl(`${normalizedBaseUrl}/api/sessions/${sessionId}/raw-material`, {
+      const response = await authedFetch(`${normalizedBaseUrl}/api/sessions/${sessionId}/raw-material`, {
         method: "GET"
       });
       if (response.status === 404) {
@@ -836,7 +843,7 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
       })) as VoiceInfo;
     },
     async deleteVoice(voiceId) {
-      await fetchImpl(`${normalizedBaseUrl}/api/realtime-voice/voices/${encodeURIComponent(voiceId)}`, {
+      await authedFetch(`${normalizedBaseUrl}/api/realtime-voice/voices/${encodeURIComponent(voiceId)}`, {
         method: "DELETE"
       });
     },
@@ -848,7 +855,7 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         : await new Response(blob).arrayBuffer();
       const buf = new Uint8Array(arrayBuffer);
       const audioBase64 = bytesToBase64(buf);
-      const response = await fetchImpl(`${normalizedBaseUrl}/api/sessions/${sessionId}/audio${roleQuery(role)}`, {
+      const response = await authedFetch(`${normalizedBaseUrl}/api/sessions/${sessionId}/audio${roleQuery(role)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -868,7 +875,7 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
     async fetchSessionAudioBlob(sessionId, role) {
       // Use fetch (carries client-configured headers) instead of <audio src>,
       // which cannot send Authorization and 401s under production bearer auth.
-      const response = await fetchImpl(`${normalizedBaseUrl}/api/sessions/${sessionId}/audio${roleQuery(role)}`, {
+      const response = await authedFetch(`${normalizedBaseUrl}/api/sessions/${sessionId}/audio${roleQuery(role)}`, {
         method: "GET"
       });
       if (response.status === 404) {

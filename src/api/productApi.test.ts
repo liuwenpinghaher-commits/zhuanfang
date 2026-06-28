@@ -15,6 +15,25 @@ describe("product api client", () => {
     expect(result.systemConfig.search.activeProvider).toBe("bailian");
   });
 
+  it("H: 配了 VITE_PRODUCT_API_TOKEN 时所有请求自动附 Authorization bearer", async () => {
+    vi.stubEnv("VITE_PRODUCT_API_TOKEN", "tok-123");
+    const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify(createInitialProductState()), { status: 200 }));
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+    await client.getState();
+    const init = fetchImpl.mock.calls[0]?.[1] as RequestInit | undefined;
+    expect((init?.headers as Record<string, string> | undefined)?.authorization).toBe("Bearer tok-123");
+    vi.unstubAllEnvs();
+  });
+
+  it("H: 未配 token(dev)时不附 Authorization(fail-open 行为不变)", async () => {
+    vi.unstubAllEnvs();
+    const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify(createInitialProductState()), { status: 200 }));
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+    await client.getState();
+    const init = fetchImpl.mock.calls[0]?.[1] as RequestInit | undefined;
+    expect((init?.headers as Record<string, string> | undefined)?.authorization).toBeUndefined();
+  });
+
   it("resets state through the API", async () => {
     const state = createInitialProductState();
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify(state), { status: 200 }));

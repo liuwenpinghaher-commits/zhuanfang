@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildInterviewCard, buildInterviewContextPack, buildInterviewGuide, buildOpinionEvolution, buildSemanticRagContext, scoreMemoryForRetrieval } from "./context-pack";
+import { buildInterviewCard, buildInterviewContextPack, buildInterviewGuide, buildOpinionEvolution, buildPointContradictions, buildSemanticRagContext, scoreMemoryForRetrieval } from "./context-pack";
 import { createInitialProductState } from "./engine";
 import type { MemoryCorrection, MemoryRecord, PointAsset, RagChunk, ImportSource, SearchBrief } from "./types";
 
@@ -559,6 +559,34 @@ describe("buildOpinionEvolution（做实:从 supersededByPointId 链产真实演
       point("n2")
     ];
     expect(buildOpinionEvolution(state)).toHaveLength(2);
+  });
+
+  it("buildPointContradictions(A):从 contradictsPointIds 派生对立对(symmetric 去重、字典序 title)", () => {
+    const state = createInitialProductState();
+    state.points = [
+      point("pt_a", { title: "凡事自己拍板", contradictsPointIds: ["pt_b"] }),
+      point("pt_b", { title: "充分放权", contradictsPointIds: ["pt_a"] }) // 双向软链
+    ];
+    const contras = buildPointContradictions(state);
+    expect(contras).toHaveLength(1); // symmetric 去重:一对只出现一次
+    expect(contras[0]).toEqual({ a: "凡事自己拍板", b: "充分放权" }); // 字典序 pt_a<pt_b
+  });
+
+  it("buildPointContradictions(A):指向不存在 point 的软链跳过(不产悬挂对)", () => {
+    const state = createInitialProductState();
+    state.points = [point("pt_a", { contradictsPointIds: ["pt_ghost"] })];
+    expect(buildPointContradictions(state)).toEqual([]);
+  });
+
+  it("buildInterviewCard(A):card 带 opinionEvolution + contradictions(让 ② 前端可触达)", () => {
+    const state = createInitialProductState();
+    state.points = [
+      point("pt_a", { title: "凡事自己拍板", contradictsPointIds: ["pt_b"] }),
+      point("pt_b", { title: "充分放权", contradictsPointIds: ["pt_a"] })
+    ];
+    const card = buildInterviewCard(state);
+    expect(card.contradictions).toHaveLength(1);
+    expect(card.opinionEvolution).toBeDefined(); // 字段透出到 card(空数组也算可访问)
   });
 
   it("guide 消费:有 contradicts 软链 → strategyChecklist 出现对立观点复盘提示", () => {

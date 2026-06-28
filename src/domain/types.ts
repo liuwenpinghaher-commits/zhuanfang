@@ -190,6 +190,10 @@ export interface InterviewCard {
   likelyOutputs: string[];
   searchBriefId?: string;
   sourceHighlights?: SourceHighlight[];
+  /** ②:观点演化(supersededBy 链派生)与对立观点对,供采访 UI 呈现"系统发现的认知变化/矛盾"。
+   *  optional:仅 buildInterviewCard 填充;LiveKit/离线极简构造不带(新建 session 无历史演化)。 */
+  opinionEvolution?: Array<{ topic: string; oldView: string; newView: string; date: string }>;
+  contradictions?: Array<{ a: string; b: string }>;
 }
 
 export interface InterviewResumeCard {
@@ -753,6 +757,8 @@ export interface DecisionAsset extends Distillation {
   status: "待复盘" | "已复盘";
   updatedAt: string;
   relatedThemeIds?: string[];
+  /** F:支撑该决策的用户原话(对称 PointAsset.evidence);finalize 用它匹配 turn 补 evidenceAnchors(A1 溯源)。 */
+  evidence?: string[];
   /** 产出该资产的专访会话 id */
   sourceSessionId?: string;
   evidenceAnchors?: EvidenceAnchor[];
@@ -766,6 +772,8 @@ export interface KnowledgeDebt extends Distillation {
   status: DebtStatus;
   nextQuestion: string;
   updatedAt: string;
+  /** F:支撑该知识债的用户原话(对称 PointAsset.evidence);finalize 用它匹配 turn 补 evidenceAnchors(A1 溯源)。 */
+  evidence?: string[];
   /** 审查改进(M3):被反复欠的次数(finalize 命中同 concept 自增),与 Theme/Question 的 appearances 对称。 */
   appearances?: number;
   relatedThemeIds?: string[];
