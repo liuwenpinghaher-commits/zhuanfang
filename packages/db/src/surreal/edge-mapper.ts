@@ -29,12 +29,12 @@ export function turnRecordsOf(state: ProductState): Array<Record<string, unknown
   return out;
 }
 
-/** 把四套旧编码 + turns 投影成统一 EdgeSpec[]。known-id 集过滤悬挂边。 */
+/** 把四套旧编码 + turns 投影成统一 EdgeSpec[]。theme/memory 端按 known-id 集过滤悬挂边;
+ *  derived_from 的 turn 端不过滤(H1:turn 是 append-only 冷层,降冷后内存 turns 空但节点仍在,
+ *  见 ② 注释)。 */
 export function collectEdges(state: ProductState): EdgeSpec[] {
   const edges: EdgeSpec[] = [];
   const themeIds = new Set(state.themes.map((t) => t.id));
-  const turnIds = new Set<string>();
-  for (const s of state.sessions) for (const t of s.turns ?? []) turnIds.add(t.id);
   const memoryIds = new Set(state.memoryRecords.map((m) => m.id));
 
   // ① relatedThemeIds[] → belongs_to_theme
@@ -49,9 +49,16 @@ export function collectEdges(state: ProductState): EdgeSpec[] {
   for (const x of state.sessions)      theme("session", x.id, x.relatedThemeIds);
   for (const x of state.importSources) theme("material", x.id, x.relatedThemeIds);
 
-  // ② EvidenceAnchor → derived_from(带 provenance,指向现存 turn)
+  // ② EvidenceAnchor → derived_from(带 provenance,指向 turn)
+  // H1:turn 是 append-only 冷层 occurrent。**不**按内存 turnIds 过滤——降冷
+  // (offloadCompletedSession 剥 session.turns)后内存 turns 为空,但 turn 节点在
+  // surreal 里 append-only 保留。若在此过滤,持有 evidenceAnchor 的资产(point/decision)
+  // 会丢掉 derived_from 投影 → diff 判为 removed → 溯源边被删 → recallProvenanceTurns 失效。
+  // 改为从资产 anchor 无条件投影:资产在则边在(资产删则其 anchor 没了 → 边自然进 removed,正确)。
+  // 协同 L1 ENFORCED(002 关系表 TYPE RELATION ENFORCED):anchor 来自 resolveEvidenceAnchors
+  // 的真实 turn,且 turn append-only 保证写过的 turn 仍在,故 RELATE 不会因端点缺失被拒。
   const derived = (fromTable: string, fromId: string, anchors?: EvidenceAnchor[]) => {
-    for (const a of anchors ?? []) if (turnIds.has(a.turnId)) edges.push({
+    for (const a of anchors ?? []) edges.push({
       edge: "derived_from", fromTable, fromId, toTable: "turn", toId: a.turnId,
       data: { provenance: { origin: "llm_extracted", sessionId: a.sessionId, turnId: a.turnId } }
     });
@@ -64,7 +71,7 @@ export function collectEdges(state: ProductState): EdgeSpec[] {
   for (const x of state.notes)            derived("note", x.id, x.keyQuoteAnchor ? [x.keyQuoteAnchor] : undefined);
   for (const x of state.themes)           derived("theme", x.id, x.representativeQuoteAnchor ? [x.representativeQuoteAnchor] : undefined);
 
-  // ③ MemoryEdge → about_theme(审查修复:同时过滤 from 端 memory 是否存在,与 belongs_to_theme/derived_from 的 known-id 过滤对齐,杜绝悬挂边)
+  // ③ MemoryEdge → about_theme(审查修复:同时过滤 from 端 memory 是否存在,与 belongs_to_theme 的 theme-end known-id 过滤对齐,杜绝悬挂边)
   for (const e of state.memoryEdges) if (themeIds.has(e.themeId) && memoryIds.has(e.fromMemoryRecordId)) edges.push({ edge: "about_theme", fromTable: "memory", fromId: e.fromMemoryRecordId, toTable: "theme", toId: e.themeId });
 
   // ④ session.turns → part_of(turn→session)

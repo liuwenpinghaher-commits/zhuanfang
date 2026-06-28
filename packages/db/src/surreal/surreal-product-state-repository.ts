@@ -220,21 +220,22 @@ async function persist(db: Surreal, prev: ProductState, next: ProductState): Pro
     }
   }
 
-  // 2) turn 表:同样 diffById(turnRecordsOf)
+  // 2) turn 表:diffById,但**只 UPSERT 不 DELETE**(H1)。
+  //    turn 是 append-only 冷层 occurrent:降冷(offloadCompletedSession)会从内存 state
+  //    剥掉 session.turns,使 turnRecordsOf(next) 变空、diffById 把它们算进 removeIds。
+  //    若执行该 DELETE,降冷会连带删掉 turn 节点 + derived_from/part_of 边 → 溯源召回失效。
+  //    故 turn 永不删:只投影 upsert。`void removeIds` 显式弃用,避免 noUnusedLocals 报错。
   {
     const { upsert, removeIds } = diffById(
       turnRecordsOf(prev) as Array<Record<string, unknown> & { id: string }>,
       turnRecordsOf(next) as Array<Record<string, unknown> & { id: string }>,
     );
+    void removeIds;
     for (const t of upsert) {
       const tv = `t${i++}`;
       vars[tv] = fillUpsertDefaults("turn", { ...t });
       vars[`${tv}_id`] = t.id;
       surql += `UPSERT type::record('turn', $${tv}_id) CONTENT $${tv};\n`;
-    }
-    if (removeIds.length) {
-      vars.del_turn = removeIds.map((id) => new RecordId("turn", id));
-      surql += `DELETE turn WHERE id IN $del_turn;\n`;
     }
   }
 
@@ -242,6 +243,11 @@ async function persist(db: Surreal, prev: ProductState, next: ProductState): Pro
   {
     const { added, removed } = diffEdges(collectEdges(prev), collectEdges(next));
     for (const e of removed) {
+      // H1:part_of(turn→session)与 turn 同为 append-only,降冷剥 turns 时 collectEdges(next)
+      //     不再投影它 → 进 removed,但不应删(turn 节点还在,part_of 是其归属事实)。跳过。
+      //     derived_from 无需特判:edge-mapper #② 改为从资产 anchor 投影,降冷时资产仍在 →
+      //     边仍被投影 → 不进 removed;只有资产被真正删除时其 anchor 消失,边才正确进 removed 被删。
+      if (e.edge === "part_of") continue;
       const xv = `x${i++}`;
       vars[`${xv}_f`] = new RecordId(e.fromTable, e.fromId);
       vars[`${xv}_t`] = new RecordId(e.toTable, e.toId);

@@ -217,3 +217,60 @@ await repo.close(); process.exit(0);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }, 60000);
 });
+
+describe("surreal H1: 降冷剥 turns 后溯源仍可召回 (surrealkv://)", () => {
+  it("先写 turns+资产锚点 → 再写 turns 剥空(资产留)→ reload:turn 节点 + derived_from/part_of 仍在,recallProvenanceTurns 能召回", () => {
+    const dir = mkdtempSync(join(tmpdir(), "surreal-h1-"));
+    try {
+      const url = `surrealkv://${dir}/surreal`;
+      const repoSrc = JSON.stringify(join(process.cwd(), "packages/db/src/surreal/surreal-product-state-repository.ts"));
+      // 写进程:① persist 含 turn + point(带 evidenceAnchors→derived_from)→ ② 模拟降冷:
+      //         同一 session 的 turns 剥空(资产保留),再 persist。turn append-only 应保住节点+边。
+      const w = runScript(`
+import { createSurrealProductStateRepository } from ${repoSrc};
+const repo = await createSurrealProductStateRepository({ url: ${JSON.stringify(url)} });
+const base = repo.getState();
+const session = { id:'se_1', title:'会话', mode:'daily', strength:'standard', status:'active',
+  startedAt:'2026-06-27T00:00:00.000Z', card:{}, guide:{},
+  turns:[{ id:'tu_1', role:'user', content:'原话', intent:'', timestamp:'2026-06-27T00:00:00.000Z' }] };
+const point = { id:'pt_1', title:'观点', content:'c', status:'稳定观点', confidence:'用户确认',
+  evidence:[], relatedThemeIds:[], important:false, updatedAt:'2026-06-27T00:00:00.000Z',
+  evidenceAnchors:[{ sessionId:'se_1', turnId:'tu_1' }] };
+repo.replaceState({ ...base, sessions:[session], points:[point] });
+await repo.flush();
+// ── 降冷:剥掉该 session 的 turns(资产 pt_1 + 其 evidenceAnchors 保留) ──
+const hot = repo.getState();
+repo.replaceState({ ...hot, sessions: hot.sessions.map(s => s.id==='se_1' ? { ...s, turns:[], rawMaterialOffloaded:true } : s) });
+await repo.flush();
+await repo.close();
+console.log('ok'); process.exit(0);
+`, join(dir, "w.mts"));
+      if (w.status !== 0) throw new Error("写进程失败:\n" + w.stderr);
+      // 读进程:reload(内存 turns 已空),直查底层确认 turn 节点 + 两类边仍在,并走 recallProvenanceTurns。
+      const r = runScript(`
+import { createSurrealProductStateRepository } from ${repoSrc};
+const repo = await createSurrealProductStateRepository({ url: ${JSON.stringify(url)} });
+const [turnRows] = await repo.query("SELECT id FROM turn;");
+const [dfRows] = await repo.query("SELECT VALUE ->derived_from->turn FROM point:pt_1;");
+const [poRows] = await repo.query("SELECT VALUE ->part_of->session FROM turn:tu_1;");
+const prov = await repo.recallProvenanceTurns("point", "pt_1");
+console.log(JSON.stringify({
+  turnCount: (turnRows ?? []).length,
+  dfCount: (dfRows?.[0] ?? []).length,
+  poCount: (poRows?.[0] ?? []).length,
+  provIds: prov.map(t => t.id),
+  provContent: prov[0]?.content ?? null
+}));
+await repo.close(); process.exit(0);
+`, join(dir, "r.mts"));
+      if (r.status !== 0) throw new Error("读进程失败:\n" + r.stderr);
+      const out = JSON.parse(r.stdout.trim().split("\n").filter(l=>l.startsWith("{")).at(-1) ?? "{}") as
+        { turnCount?: number; dfCount?: number; poCount?: number; provIds?: string[]; provContent?: string | null };
+      expect(out.turnCount, "turn 节点 append-only 保留").toBe(1);
+      expect(out.dfCount, "derived_from 边降冷后仍在").toBe(1);
+      expect(out.poCount, "part_of 边降冷后仍在(跳 DELETE)").toBe(1);
+      expect(out.provIds, "溯源召回到证据 turn").toContain("tu_1");
+      expect(out.provContent, "证据 turn 内容无损").toBe("原话");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 60000);
+});

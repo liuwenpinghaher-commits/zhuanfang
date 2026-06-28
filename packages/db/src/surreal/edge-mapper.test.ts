@@ -53,12 +53,27 @@ describe("edge-mapper", () => {
     expect(turns).toContainEqual(expect.objectContaining({ id: "tu_1", sessionId: "se_1", role: "user", content: "原话" }));
   });
 
-  it("过滤悬挂边:指向不存在 turn/theme 的锚点/关联不产边", () => {
+  it("过滤悬挂边:theme/memory 端按 known-id 过滤;derived_from 改从资产 anchor 投影(H1)", () => {
     const st = baseState();
+    // H1:derived_from 不再按内存 turnIds 过滤(turn 是 append-only 冷层,降冷后内存 turns 空
+    //     但 turn 节点仍在 surreal)。资产持锚点即投影边,溯源召回不被降冷打断。
     st.points[0].evidenceAnchors = [{ sessionId: "se_x", turnId: "tu_missing" }];
     st.decisions[0].relatedThemeIds = ["th_missing"];
     const edges = collectEdges(st);
-    expect(edges.some((e) => e.edge === "derived_from" && e.toId === "tu_missing")).toBe(false);
+    expect(edges.some((e) => e.edge === "derived_from" && e.toId === "tu_missing")).toBe(true);
+    // belongs_to_theme/about_theme 的 theme 端过滤仍在(theme 不是 append-only,悬挂会污染聚合)。
     expect(edges.some((e) => e.edge === "belongs_to_theme" && e.toId === "th_missing")).toBe(false);
+  });
+
+  it("H1:降冷剥 turns 后,持锚点资产仍投影 derived_from(溯源边不丢)", () => {
+    const st = baseState();
+    // 模拟 offloadCompletedSession:session.turns 被剥空,但 point 仍保留 evidenceAnchors。
+    st.sessions[0].turns = [];
+    const edges = collectEdges(st);
+    expect(edges).toContainEqual(expect.objectContaining({
+      edge: "derived_from", fromTable: "point", fromId: "pt_1", toTable: "turn", toId: "tu_1"
+    }));
+    // turns 空 → 不再产 part_of(persist 侧靠"part_of 跳 DELETE"保住已写的边)。
+    expect(edges.some((e) => e.edge === "part_of")).toBe(false);
   });
 });
