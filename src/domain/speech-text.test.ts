@@ -30,8 +30,23 @@ describe("stripSpokenAsides", () => {
 });
 
 describe("deriveSpeechProsody", () => {
-  it("returns neutral prosody when there is no aside", () => {
-    expect(deriveSpeechProsody("你刚才说的审批权，具体卡在哪了？")).toEqual({ rate: 1, pitch: 1, volume: 50 });
+  it("returns neutral prosody for a plain statement with no aside and no semantic cue", () => {
+    expect(deriveSpeechProsody("我们继续聊聊这件事的另一面")).toEqual({ rate: 1, pitch: 1, volume: 50 });
+  });
+
+  it("②文本语义派生:问句无 aside 也轻升调(不再单调 neutral)", () => {
+    const p = deriveSpeechProsody("你刚才说的审批权，具体卡在哪了？");
+    expect(p.pitch).toBeGreaterThan(1);
+  });
+
+  it("②文本语义派生:共情词放缓温和", () => {
+    const p = deriveSpeechProsody("我理解那种不容易，你不用着急。");
+    expect(p.rate).toBeLessThan(1);
+  });
+
+  it("②文本语义派生:感叹句更热情(略快略响)", () => {
+    const p = deriveSpeechProsody("这个洞察太关键了！");
+    expect(p.volume).toBeGreaterThan(50);
   });
 
   it("maps a gentle/calm aside to slower rate and slightly lower pitch", () => {
