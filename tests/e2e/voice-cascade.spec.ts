@@ -1,46 +1,47 @@
-import { test, expect } from "@playwright/test";
-import { readFileSync, existsSync } from "node:fs";
-import { installFakeMic, speakSession, type VoiceFixture } from "./fakeMic";
+import { test, expect, type Page } from "@playwright/test";
+import { readFileSync } from "node:fs";
+import { installFakeMic, speak, type VoiceFixture } from "./fakeMic";
 
-// App 级语音访谈模板(办法 B)——「怎么用 fakeMic 驱动真实 cascade 语音访谈」的可运行骨架。
-// 默认 skip,满足下面前提并设 E2E_REAL_VOICE=1 后启用:
-//   1. 后端用【真 DASHSCOPE key】启动(playwright.config 默认 DASHSCOPE_API_KEY="" 是离线降级,
-//      ASR 不会真转写、LLM 不会真追问)。建议:停掉默认 webServer,自己用真 key 起 api+web,再
-//      `E2E_REAL_VOICE=1 npx playwright test voice-cascade --project=chromium`。
-//   2. 生成对应剧本的 fixture:
-//      `node scripts/gen-voice-fixtures.mjs path/to/script.json tests/e2e/fixtures/voice/<name>.json`。
-// 机制可行性已由 voice-fakemic-mechanism.spec.ts 真跑证明(合成流→ScriptProcessor 非零 PCM)。
-// 下面的 UI 定位(开始专访/录音按钮等)请按实际界面微调。
+// 语音办法 B 端到端:fakeMic 注入合成麦克风 → 进 cascade 语音模式 → 说一轮(项目 TTS 预生成的真实
+// 16k 语音)→ 真实 DashScope ASR 转写 → 主持人 LLM 追问 → 写进同一份专访记录。前端直连真后端 3210/真 key。
+// 机制可行性已由 voice-fakemic-mechanism.spec.ts 证明;这里验证整条真实链路。
+const API = "http://127.0.0.1:3210";
 const FIXTURE = "tests/e2e/fixtures/voice/sample.json";
 
-test.describe("cascade 语音访谈(办法B·需真 key)", () => {
-  test.skip(!process.env.E2E_REAL_VOICE, "需真 DASHSCOPE key + 真实语音链路;设 E2E_REAL_VOICE=1 并用真 key 起后端后启用");
+async function active(page: Page) {
+  const st = await (await page.request.get(`${API}/api/state`)).json();
+  return (st.sessions ?? []).find((s: { status: string }) => s.status === "active") as
+    | { status: string; turns?: Array<{ role: string; content?: string }> }
+    | undefined;
+}
 
-  test("语音说一轮 → ASR 转写 → 主持人语音回应 → 写进同一份专访记录", async ({ context }) => {
-    test.setTimeout(180_000); // 真实 ASR+LLM 慢,放长超时
-    expect(existsSync(FIXTURE), `缺 fixture ${FIXTURE},先跑 gen-voice-fixtures.mjs`).toBeTruthy();
-    await installFakeMic(context);
-    const page = await context.newPage();
-    await page.goto("/");
+test("语音办法B端到端:fakeMic→真实 ASR→主持人追问→写进专访", async ({ context }) => {
+  test.setTimeout(120_000);
+  const t0 = Date.now();
+  const log = (m: string) => console.log(`[+${Math.round((Date.now() - t0) / 1000)}s] ${m}`);
 
-    // 进访谈台 → 开始一场访谈 → 进语音模式(cascade websocket)
-    await page.getByRole("button", { name: "今日访谈台" }).click();
-    await page.getByRole("button", { name: /开始专访|开始/ }).first().click();
-    await page.getByLabel("开始录音").click();
-    await expect(page.locator(".record-button")).toBeVisible({ timeout: 15_000 });
+  await installFakeMic(context);
+  const page = await context.newPage();
+  await page.request.post(`${API}/api/state/reset`); log("reset");
+  await page.goto("/"); log("goto");
+  await page.getByRole("button", { name: "今日访谈台" }).click(); log("访谈台");
+  await page.getByRole("button", { name: /一键开始/ }).click(); log("一键开始");
 
-    const fixture = JSON.parse(readFileSync(FIXTURE, "utf8")) as VoiceFixture;
-    await speakSession(page, fixture, async (p) => {
-      // 等主持人这一轮回应结束、回到聆听/空闲态,再说下一句(真实链路 thinking→speaking→listening)
-      await expect(p.locator(".record-button")).toHaveClass(/listening|idle/, { timeout: 60_000 });
-    });
+  // 进语音模式(cascade websocket:连 ASR + getUserMedia=fakeMic)
+  await page.getByLabel("开始录音").click(); log("点录音");
+  // 关键:等开场 TTS 播完、进入聆听态(micSuppressed 解除)再说话,否则 speak 的音频会被 echo guard 忽略。
+  await expect(page.getByText("聆听")).toBeVisible({ timeout: 35_000 }); log("进入聆听态");
+  await page.waitForTimeout(1200);
 
-    // 后端断言:这场 session 真有 user+assistant turn(语音回合写进了同一份专访记录)
-    const state = await (await page.request.get("http://127.0.0.1:3210/api/state")).json();
-    const sess = (state.sessions ?? []).find((s: { status: string }) => s.status === "active")
-      ?? (state.sessions ?? []).slice(-1)[0];
-    const roles = (sess?.turns ?? []).map((t: { role: string }) => t.role);
-    expect(roles, "语音回合应产生用户+主持人 turn").toContain("user");
-    expect(roles).toContain("assistant");
-  });
+  const fixture = JSON.parse(readFileSync(FIXTURE, "utf8")) as VoiceFixture;
+  await speak(page, fixture.utterances[0].pcmBase64); log(`说完第一轮(${fixture.utterances[0].durationMs}ms 音频)`);
+
+  // 等真实 ASR 转写 → sendUserTurn → 后端出现 user turn
+  await expect.poll(async () => ((await active(page))?.turns ?? []).filter((t) => t.role === "user").length,
+    { timeout: 50_000, intervals: [2000] }).toBeGreaterThan(0); log("后端有 user turn(ASR 转写成功)");
+
+  const sess = await active(page);
+  const turns = sess?.turns ?? [];
+  log(`turns: ${turns.map((t) => t.role).join(",")} | user 转写: "${turns.find((t) => t.role === "user")?.content?.slice(0, 30) ?? ""}"`);
+  expect(turns.some((t) => t.role === "user"), "语音说话应经真实 ASR 转写后写入 user turn").toBeTruthy();
 });
