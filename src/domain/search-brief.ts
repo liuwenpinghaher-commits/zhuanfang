@@ -42,6 +42,13 @@ export function buildProactiveSearchAgenda(state: ProductState): SearchAgendaIte
   const debt = state.debts.find((item) => item.status === "待了解") ?? state.debts[0];
   const decision = state.decisions[0];
   const confirmedMemory = state.memoryRecords.find((record) => record.status === "confirmed");
+  // 没有任何真实认知资产(主题/知识债/决策/已确认记忆)时返回空议程,不再用 profile + 硬编码示例
+  // (如"短期失控的可承受边界""下一步产品判断")硬造 4 条。否则空状态/新用户一进"外部调研",前端
+  // "打开即更新"(App.tsx)就自动触发 4 条 bailian 联网搜索:查的是硬编码示例而非用户内容(无意义)、
+  // 产 4 条占位简报污染空状态、又因串行联网把后端拖垮(reset/turn 卡满)。有真实资产后才主动调研。
+  if (!theme && !debt && !decision && !confirmedMemory) {
+    return [];
+  }
   const themeQuery = theme?.name ?? state.profile.currentFocus;
   const debtQuery = debt?.concept ?? "短期失控的可承受边界";
   const decisionQuery = decision?.title ?? "下一步产品判断";

@@ -23,7 +23,9 @@ export const BAILIAN_EMBEDDING_MODEL = "text-embedding-v3";
 // Hard wall-clock caps so a half-dead DashScope connection (TCP connected but
 // never streaming) can't hang a route/turn forever. Each fetch that previously
 // had no `signal` now aborts at one of these.
-const SEARCH_REQUEST_TIMEOUT_MS = 30_000; // 联网搜索本就慢（~9s 模型），留足余量但仍有界
+const SEARCH_REQUEST_TIMEOUT_MS = 15_000; // 联网搜索正常 ~9s；15s 覆盖正常+余量但不久等。
+// 原 30s 在 half-dead 连接下,叠加前端"打开即 auto-run"(App.tsx) 串行多条搜索,会让 in-flight
+// 长时间堆积拖垮后端(实测 reset 卡满 30s)。缩短让单条快速 degrade 到本地占位,降低堆积窗口。
 const WEBRTC_SDP_TIMEOUT_MS = 15_000; // SDP 建连握手，应较快
 const ASR_REQUEST_TIMEOUT_MS = 15_000; // ASR 提交 / 单次轮询查询，应较快
 const ASR_RESULT_FETCH_TIMEOUT_MS = 30_000; // 转写结果文件可能较大，放宽

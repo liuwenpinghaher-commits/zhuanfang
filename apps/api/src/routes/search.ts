@@ -231,6 +231,11 @@ export async function registerSearchRoutes(
     const planned = planResearchAgendaRun(state, now);
     const agendaItems = planned.agendaItems.slice(0, 3);
     const staleTrackedBriefIds = planned.staleTrackedBriefIds.slice(0, 3);
+    // 无议程也无过期 tracked 简报时直接短路:不进 replaceState/reindex/dedupe。否则前端"打开即更新"
+    // 在空/少资产状态下每次进外部调研视图都做一轮无意义的全量写 + 知识重建,徒增负载。
+    if (agendaItems.length === 0 && staleTrackedBriefIds.length === 0) {
+      return reply.send({ state, summary: { generated: 0, refreshed: 0, dedupedSources: 0, note: "无可调研议程，跳过本轮" } });
+    }
 
     const allowLlm = !!options.bailianChatClient && budget.tryConsume("research_auto_run");
     if (!!options.bailianChatClient && !allowLlm) {

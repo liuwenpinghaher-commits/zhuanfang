@@ -13,7 +13,10 @@ export const LOCAL_EMBEDDING_MODEL = "Xenova/bge-large-zh-v1.5"; // 1024 维 = c
 
 // 进程级单例:首次 pipeline() 加载模型 ~20s(下载缓存命中后是纯加载),之后每次 embed 复用。
 // 用 promise 缓存避免并发首调重复加载。
-type Extractor = (texts: string[], opts: { pooling: "mean"; normalize: boolean }) => Promise<{ tolist(): number[][] }>;
+type Extractor = (
+  texts: string[],
+  opts: { pooling: "mean"; normalize: boolean; truncation: boolean }
+) => Promise<{ tolist(): number[][] }>;
 let extractorPromise: Promise<Extractor> | null = null;
 
 async function getExtractor(): Promise<Extractor> {
@@ -39,7 +42,12 @@ export function createLocalEmbeddingClient(): BailianEmbeddingClient {
     async embed(texts: string[]): Promise<number[][]> {
       if (texts.length === 0) return [];
       const extractor = await getExtractor();
-      const out = await extractor(texts, { pooling: "mean", normalize: true });
+      // bge-large-zh 的 position embedding 上限 512 token。实测 knowledge reindex 出现
+      // "broadcast 512 by 2002" 维度错误 = 超长输入没被截断、直接喂进模型。显式开 truncation
+      // (tokenizer 截到 model_max_length);再用保守字符上限兜底,防个别 transformers.js 版本
+      // truncation 不透传(中文≈1字符1token,480 字符 +[CLS][SEP] 稳落 512 内,仍保留主体语义)。
+      const safe = texts.map((t) => (t.length > 480 ? t.slice(0, 480) : t));
+      const out = await extractor(safe, { pooling: "mean", normalize: true, truncation: true });
       return out.tolist(); // [n, 1024]
     }
   };

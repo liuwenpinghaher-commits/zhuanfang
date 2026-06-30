@@ -331,3 +331,170 @@ describe("POST /api/research/auto-run", () => {
     await noKeyApp.close();
   });
 });
+
+// ---------------------------------------------------------------------------
+// POST /api/research/auto-run — 并发保护(autoRunInFlight 标志)
+//
+// 守护 P0 稳定性修复:已有一轮 auto-run 在跑时,第二个并发请求必须立即降级返回
+//   { summary: { generated: 0, refreshed: 0, dedupedSources: 0, note: "已有自动调研在进行中,跳过本次" } }
+// 防止联网搜索堆积拖垮后端(压测发现 reset 卡 30s)。
+//
+// 时序控制要点:generateBriefForTopic 仅在 activeProvider === "bailian" 且传入
+// bailianSearchClient 时才 await client.createSearchBrief(...)。createInitialProductState()
+// 的 activeProvider 正是 "bailian",故注入一个"可控延迟"的 bailianSearchClient——其
+// createSearchBrief 返回一个由测试手动 resolve 的 promise,让第一个 auto-run 卡在
+// in-flight 阶段(autoRunInFlight=true),从而能确定性地观察并发请求被跳过。
+// ---------------------------------------------------------------------------
+describe("POST /api/research/auto-run — 并发保护", () => {
+  // 可控延迟的搜索 client:每次 createSearchBrief 调用领取一个"闸门"(deferred promise),
+  // 测试通过 releaseNext() 手动放行。waitForCall() 让测试等到 handler 真的进入了
+  // await client.createSearchBrief(...) 这一挂起点,再发并发请求,确保命中 in-flight 守卫。
+  function createGatedSearchClient() {
+    const gates: Array<() => void> = [];
+    // arrivalWaiters: 等待"累计调用数 >= target"的解决器队列;每次新调用抵达后逐一检查唤醒。
+    const arrivalWaiters: Array<{ target: number; resolve: () => void }> = [];
+    let callCount = 0;
+
+    function notifyArrival() {
+      // 唤醒所有目标已达成的等待者(用 callCount 作为单调计数,避免双队列错配)。
+      for (let i = arrivalWaiters.length - 1; i >= 0; i -= 1) {
+        if (callCount >= arrivalWaiters[i].target) {
+          arrivalWaiters[i].resolve();
+          arrivalWaiters.splice(i, 1);
+        }
+      }
+    }
+
+    return {
+      get callCount() {
+        return callCount;
+      },
+      // 放行最早一个挂起的 createSearchBrief 调用(FIFO)。
+      releaseNext() {
+        const gate = gates.shift();
+        if (gate) gate();
+      },
+      // 等到累计 createSearchBrief 调用数达到 target(默认:比当前多 1 次)。
+      // 用单调计数而非"消费式队列",避免 A 的后续调用与 C 的等待相互错配。
+      waitForCall(target?: number): Promise<void> {
+        const want = target ?? callCount + 1;
+        if (callCount >= want) return Promise.resolve();
+        return new Promise<void>((resolve) => {
+          arrivalWaiters.push({ target: want, resolve });
+        });
+      },
+      client: {
+        async createSearchBrief(input: { topic: string }) {
+          callCount += 1;
+          notifyArrival();
+          // 挂起,直到测试 releaseNext() 放行
+          await new Promise<void>((resolve) => {
+            gates.push(resolve);
+          });
+          return {
+            topic: input.topic,
+            provider: "bailian" as const,
+            status: "ready" as const,
+            summary: `Gated summary for ${input.topic}`,
+            facts: [`Fact about ${input.topic}`],
+            controversies: [],
+            opposingViews: [],
+            interviewAngles: [],
+            discussionTopics: [],
+            sourceAngles: [],
+            sources: [
+              {
+                id: `gated-src-${input.topic}`,
+                title: `${input.topic}: source`,
+                url: `https://example.local/gated/${encodeURIComponent(input.topic)}`,
+                publisher: "GatedPublisher",
+                publishedAt: "2026-06-19T00:00:00.000Z",
+                snippet: "Gated snippet",
+                relevanceScore: 0.9,
+                usage: "interview-context" as const,
+              },
+            ],
+          };
+        },
+      },
+    };
+  }
+
+  it("rejects a concurrent auto-run while one is in-flight, then releases the flag in finally", async () => {
+    const gated = createGatedSearchClient();
+    const app = Fastify();
+    // 非空 state:createInitialProductState() 自带 demo 主题/知识债/决策/已确认记忆,
+    // buildProactiveSearchAgenda 必出非空 agenda → auto-run 真进入 generateBriefForTopic 的 await。
+    const repo = createInMemoryProductStateRepository(createInitialProductState());
+    await registerSearchRoutes(app, repo, { bailianSearchClient: gated.client });
+    await app.ready();
+
+    try {
+      // --- 请求 A:不 await,让它卡在 in-flight(第一个 createSearchBrief 挂起) ---
+      const reqA = app.inject({ method: "POST", url: "/api/research/auto-run" });
+
+      // 等到 A 真的进入了 await client.createSearchBrief(...) —— 此刻 autoRunInFlight=true
+      await gated.waitForCall(1);
+      expect(gated.callCount).toBe(1);
+
+      // --- 请求 B:A 仍在 in-flight 时并发发起,应被守卫立即降级返回 ---
+      const resB = await app.inject({ method: "POST", url: "/api/research/auto-run" });
+      expect(resB.statusCode).toBe(200);
+      const bodyB = resB.json();
+      expect(bodyB.summary.note).toContain("已有自动调研在进行中");
+      expect(bodyB.summary.generated).toBe(0);
+      expect(bodyB.summary.refreshed).toBe(0);
+      expect(bodyB.summary.dedupedSources).toBe(0);
+      // B 被守卫拦下,绝不应触达 provider —— 调用数仍为 1(仅 A 的那次)
+      expect(gated.callCount).toBe(1);
+
+      // --- 放行 A 的所有挂起调用(agenda 最多 3 条),等 A 完成 ---
+      // A 会为每个 agenda item 串行调一次 createSearchBrief;逐个放行直到 A resolve。
+      const resAPromise = reqA.then((r) => {
+        return r;
+      });
+      let settled = false;
+      resAPromise.then(() => {
+        settled = true;
+      });
+      // 循环放行,直到 A 完成(每放行一个就让事件循环推进)
+      for (let i = 0; i < 10 && !settled; i += 1) {
+        gated.releaseNext();
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      const resA = await resAPromise;
+      expect(resA.statusCode).toBe(200);
+      const bodyA = resA.json();
+      // A 正常执行:无降级 note,generated 为生成的简报数(agenda 非空 → >= 1)
+      expect(bodyA.summary.note).toBeUndefined();
+      expect(bodyA.summary.generated).toBeGreaterThanOrEqual(1);
+
+      // --- 请求 C:in-flight 已在 finally 中释放,应正常执行而非被跳过 ---
+      const callsBeforeC = gated.callCount;
+      const reqC = app.inject({ method: "POST", url: "/api/research/auto-run" });
+      // 等 C 进入 in-flight 并触达 provider(证明守卫已放行,flag 被正确重置)
+      await gated.waitForCall(callsBeforeC + 1);
+      expect(gated.callCount).toBe(callsBeforeC + 1);
+      // 放行 C 的所有挂起调用,等其完成
+      let settledC = false;
+      const resCPromise = reqC.then((r) => r);
+      resCPromise.then(() => {
+        settledC = true;
+      });
+      for (let i = 0; i < 10 && !settledC; i += 1) {
+        gated.releaseNext();
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      const resC = await resCPromise;
+      expect(resC.statusCode).toBe(200);
+      const bodyC = resC.json();
+      // C 未被跳过:无降级 note(finally 已释放 autoRunInFlight)
+      expect(bodyC.summary.note).toBeUndefined();
+      expect(bodyC.summary.generated).toBeGreaterThanOrEqual(1);
+    } finally {
+      // 兜底放行任何残留挂起,避免 app.close() 卡住
+      for (let i = 0; i < 20; i += 1) gated.releaseNext();
+      await app.close();
+    }
+  });
+});
