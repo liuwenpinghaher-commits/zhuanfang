@@ -212,14 +212,25 @@ export async function registerSearchRoutes(
   });
 
   // ---------------------------------------------------------------------------
+  let autoRunInFlight = false; // P0 稳定性:auto-run 并发保护标志(防多触发堆积拖垮后端)
   // POST /api/research/auto-run
   // 自动调研：生成新简报 + 刷新过期 tracked 简报 + 跨简报去重来源
   // 受 llmBudget "research_auto_run" key 守卫；耗尽时走降级仍返回 200
   // ---------------------------------------------------------------------------
-  server.post("/api/research/auto-run", async (_request, _reply) => {
+  server.post("/api/research/auto-run", async (_request, reply) => {
+    // P0 稳定性:并发保护 + 限量。auto-run 串行跑多条联网搜索(每条可达 30s),被前端"打开即更新"/
+    // 定时/测试重 mount 多次触发时并发堆积会把后端拖垮(reset/turn 卡满 30s)。已有一轮在跑直接降级,
+    // 且每轮最多取 3 条 agenda + 3 条刷新,防 state 累积导致 agenda 失控。
+    if (autoRunInFlight) {
+      return reply.send({ state: repository.getState(), summary: { generated: 0, refreshed: 0, dedupedSources: 0, note: "已有自动调研在进行中,跳过本次" } });
+    }
+    autoRunInFlight = true;
+    try {
     const now = new Date().toISOString();
     const state = repository.getState();
-    const { agendaItems, staleTrackedBriefIds } = planResearchAgendaRun(state, now);
+    const planned = planResearchAgendaRun(state, now);
+    const agendaItems = planned.agendaItems.slice(0, 3);
+    const staleTrackedBriefIds = planned.staleTrackedBriefIds.slice(0, 3);
 
     const allowLlm = !!options.bailianChatClient && budget.tryConsume("research_auto_run");
     if (!!options.bailianChatClient && !allowLlm) {
@@ -270,6 +281,9 @@ export async function registerSearchRoutes(
         dedupedSources: duplicateCount
       }
     };
+    } finally {
+      autoRunInFlight = false;
+    }
   });
 
   server.post("/api/search/auto-briefs", async (request, reply) => {
