@@ -273,9 +273,17 @@ export async function registerSearchRoutes(
       runningState = nextState;
     }
 
-    // --- 跨简报来源去重 ---
-    const { briefs: dedupedBriefs, duplicateCount } = dedupeBriefSources(runningState.searchBriefs);
-    const finalState: ProductState = { ...runningState, searchBriefs: dedupedBriefs };
+    // --- 跨简报来源去重 + 基于 latest 原子合并 ---
+    // auto-run 已豁免全局写串行化(联网期间不占写锁),所以这段联网时间里用户/其它写可能已改动 state。
+    // 这里重读 latest,把本轮 generated/refreshed 按 id 合并上去(而非用 90s 前的 runningState 作 base
+    // 覆盖);"重读→合并→replaceState"是连续同步块(无 await),JS 单线程下原子执行、不被其它写打断,
+    // 因此既不阻塞其它写、又不会 clobber 期间的用户写(lost-update)。
+    const latest = repository.getState();
+    const briefById = new Map(latest.searchBriefs.map((b) => [b.id, b]));
+    for (const b of refreshed) briefById.set(b.id, b);
+    for (const b of generated) briefById.set(b.id, b);
+    const { briefs: dedupedBriefs, duplicateCount } = dedupeBriefSources([...briefById.values()]);
+    const finalState: ProductState = { ...latest, searchBriefs: dedupedBriefs };
     repository.replaceState(finalState);
 
     return {

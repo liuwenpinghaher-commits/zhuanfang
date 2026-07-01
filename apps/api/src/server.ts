@@ -420,6 +420,13 @@ function registerWriteSerialization(server: ReturnType<typeof Fastify>) {
     if (!MUTATING_METHODS.has(request.method)) {
       return;
     }
+    // 豁免:auto-run 是可达 90s 的长联网 mutating 请求。若占用全局写 slot 整个请求期间,会把所有其它写
+    // (reset/用户操作)串行阻塞到它后面 → 后端"卡死不自恢复"(实测 GET 读不卡、reset 写卡满、无 event_loop_lag)。
+    // auto-run 联网期间并不碰 state(只 read-at-start + 最后一次 replaceState),且其最终写已改为"重读 latest
+    // + 原子合并"(search.ts:auto-run),连续同步不被打断、不会 clobber 并发写;并发由 autoRunInFlight 自管。安全豁免。
+    if (request.url.startsWith("/api/research/auto-run")) {
+      return;
+    }
     let release!: () => void;
     const slot = new Promise<void>((resolve) => {
       release = resolve;
