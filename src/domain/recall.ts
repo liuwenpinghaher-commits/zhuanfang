@@ -21,4 +21,7 @@ export interface RecallResult {
   memoryHits?: Array<{ id: string; text: string }>;
   /** 溯源:召回出的资产 → 证据 turn(recallProvenanceTurns)。 */
   provenance?: RecallProvenanceEntry[];
+  /** rag_chunk 原生混合召回命中(recallRagChunks,HNSW+BM25+rrf),按融合名次序;
+   *  域层消费时重验 usage/来源 policy 门控(buildSemanticRagContextFromRecall),不信任注入方。 */
+  ragHits?: Array<{ id: string; text: string }>;
 }

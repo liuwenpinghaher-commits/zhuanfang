@@ -90,6 +90,8 @@ export function createSqliteKnowledgeIndexRepository(
     );
   };
 
+  // 回归审查 R8-1:进程内单调代际号(索引是派生可重建的进程态,epoch 无需持久化)。
+  let epoch = 0;
   return {
     put,
     replaceSource(sourceType, sourceId, chunks) {
@@ -111,10 +113,12 @@ export function createSqliteKnowledgeIndexRepository(
     },
     deleteAll() {
       deleteAllStmt.run();
+      epoch += 1;   // R8-1:清空递增代际,丢弃陈旧后台嵌入
     },
     listAll() {
       const rows = selectAll.all() as unknown as KnowledgeChunkRow[];
       return rows.map(mapRow);
-    }
+    },
+    epoch: () => epoch
   };
 }

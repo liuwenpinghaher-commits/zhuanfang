@@ -29,3 +29,42 @@ describe("health route", () => {
     await app.close();
   });
 });
+
+describe("ops graph-consistency route(方案二)", () => {
+  const report = {
+    ok: true, auditedEdgeTables: ["belongs_to_theme"], expectedCount: 1, actualCount: 1,
+    missingCount: 0, unexpectedCount: 0, missingInDb: [] as string[], unexpectedInDb: [] as string[],
+    danglingProvenanceCount: 0,
+    nodeMissingCount: 0, nodeUnexpectedCount: 0, nodeMissingInDb: [] as string[], nodeUnexpectedInDb: [] as string[]
+  };
+  it("无审计能力(sqlite/dual 档位探针返回 undefined)→ 501", async () => {
+    const app = Fastify();
+    await app.register(registerHealthRoutes(undefined, () => undefined));
+    const res = await app.inject({ method: "GET", url: "/api/ops/graph-consistency" });
+    expect(res.statusCode).toBe(501);
+    await app.close();
+  });
+  it("未注入审计探针 → 同样 501(不因缺探针 500)", async () => {
+    const app = Fastify();
+    await app.register(registerHealthRoutes());
+    const res = await app.inject({ method: "GET", url: "/api/ops/graph-consistency" });
+    expect(res.statusCode).toBe(501);
+    await app.close();
+  });
+  it("有审计能力 → 200,report 原样透出", async () => {
+    const app = Fastify();
+    await app.register(registerHealthRoutes(undefined, () => Promise.resolve(report)));
+    const res = await app.inject({ method: "GET", url: "/api/ops/graph-consistency" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, report });
+    await app.close();
+  });
+  it("审计执行失败 → 500 且带错误细节(fail-loud,不吞)", async () => {
+    const app = Fastify();
+    await app.register(registerHealthRoutes(undefined, () => Promise.reject(new Error("db down"))));
+    const res = await app.inject({ method: "GET", url: "/api/ops/graph-consistency" });
+    expect(res.statusCode).toBe(500);
+    expect((res.json() as { detail?: string }).detail).toContain("db down");
+    await app.close();
+  });
+});

@@ -14,6 +14,7 @@ interface MemoryGovernanceViewProps {
   onEditCandidate: (candidateId: string, text: string) => void;
   onDeprecate: (recordId: string) => void;
   onDeleteRecord: (recordId: string) => void;
+  onEditRecord: (recordId: string, text: string) => void;
   onConsolidate: () => void | Promise<void>;
   // 透传给 RawMaterialViewer 的原文出处能力（Task 12 跳转）。
   onAddAnnotation: (sessionId: string, turnId: string, text: string) => void;
@@ -33,6 +34,9 @@ interface CandidateOp {
 }
 
 const MAX_IMPORT_CHARS = 20000;
+// 回归审查 R7-F2:对齐后端 memory-records MEMORY_TEXT_MAX_CHARS(16KB)。前端 textarea 硬限 maxLength +
+// 字数提示,避免用户写超长文本、提交后才被后端 422 拒(白写一大段)。
+const MEMORY_TEXT_MAX_CHARS = 16 * 1024;
 
 function SensitiveIcon() {
   return (
@@ -53,6 +57,7 @@ export function MemoryGovernanceView({
   onEditCandidate,
   onDeprecate,
   onDeleteRecord,
+  onEditRecord,
   onConsolidate,
   onAddAnnotation,
   onRemoveAnnotation,
@@ -70,6 +75,10 @@ export function MemoryGovernanceView({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftText, setDraftText] = useState("");
 
+  // per-record inline edit (confirmed long-term memory): id -> draft text (null = not editing)
+  const [editingRecordId, setEditingRecordId] = useState<string | null>(null);
+  const [draftRecordText, setDraftRecordText] = useState("");
+
   // brief "已保存" feedback after save
   const [savedId, setSavedId] = useState<string | null>(null);
 
@@ -80,6 +89,7 @@ export function MemoryGovernanceView({
   const [sourceOverlay, setSourceOverlay] = useState<{ sessionId: string; turnId: string } | null>(null);
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const recordTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   // Auto-focus textarea when entering edit mode
   useEffect(() => {
@@ -90,6 +100,15 @@ export function MemoryGovernanceView({
       textareaRef.current.setSelectionRange(len, len);
     }
   }, [editingId]);
+
+  // Auto-focus record textarea when entering record edit mode
+  useEffect(() => {
+    if (editingRecordId && recordTextareaRef.current) {
+      recordTextareaRef.current.focus();
+      const len = recordTextareaRef.current.value.length;
+      recordTextareaRef.current.setSelectionRange(len, len);
+    }
+  }, [editingRecordId]);
 
   // Auto-clear "已保存" feedback after 1.5s
   useEffect(() => {
@@ -170,6 +189,32 @@ export function MemoryGovernanceView({
       // Always close edit mode regardless of outcome
       setEditingId(null);
       setDraftText("");
+    }
+  }
+
+  function startEditRecord(recordId: string, currentText: string) {
+    setEditingRecordId(recordId);
+    setDraftRecordText(currentText);
+  }
+
+  function cancelEditRecord() {
+    setEditingRecordId(null);
+    setDraftRecordText("");
+  }
+
+  async function handleSaveRecord(recordId: string, originalText: string) {
+    const next = draftRecordText.trim();
+    if (!next || next === originalText) {
+      cancelEditRecord();
+      return;
+    }
+    // 回归审查 R7-F3:await 保存并吞掉 rejection(onEditRecord 在 App 层已 surface 成败 notice),
+    // 避免未处理的 promise rejection;无论成败都关闭编辑态(对齐 handleSave 的 try/finally)。
+    try {
+      await Promise.resolve(onEditRecord(recordId, next));
+    } finally {
+      setEditingRecordId(null);
+      setDraftRecordText("");
     }
   }
 
@@ -337,12 +382,13 @@ export function MemoryGovernanceView({
                   {isEditing && (
                     <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
                       <label className="field-label" htmlFor={`edit-candidate-${candidate.id}`}>
-                        修正内容（{draftText.length} 字）
+                        修正内容（{draftText.length} / {MEMORY_TEXT_MAX_CHARS} 字）
                       </label>
                       <textarea
                         id={`edit-candidate-${candidate.id}`}
                         ref={textareaRef}
                         rows={4}
+                        maxLength={MEMORY_TEXT_MAX_CHARS}
                         value={draftText}
                         onChange={(e) => setDraftText(e.target.value)}
                         aria-label="修正候选记忆内容"
@@ -439,8 +485,10 @@ export function MemoryGovernanceView({
             <p>还没有确认的长期记忆。审批候选记忆后，它们会出现在这里。</p>
           </div>
         ) : (
-          confirmed.map((record) => (
-            <article className="record-row" key={record.id}>
+          confirmed.map((record) => {
+            const isEditingRecord = editingRecordId === record.id;
+            return (
+            <article className={`record-row${isEditingRecord ? " edit-active" : ""}`} key={record.id}>
               <div className="record-main">
                 <span className="label">
                   {record.sensitivity === "sensitive" && (
@@ -455,30 +503,67 @@ export function MemoryGovernanceView({
                 {record.evidenceQuote && (
                   <div className="quote-line">"{record.evidenceQuote}"</div>
                 )}
-              </div>
-              <div className="note-actions">
-                {record.evidenceAnchors && record.evidenceAnchors.length > 0 && (
-                  <button
-                    className="secondary-action"
-                    type="button"
-                    title="打开这条记忆所依据的原始对话"
-                    onClick={() => {
-                      const anchor = record.evidenceAnchors![0];
-                      setSourceOverlay({ sessionId: anchor.sessionId, turnId: anchor.turnId });
-                    }}
-                  >
-                    <ExternalLink size={16} />查看原文出处
-                  </button>
+
+                {/* Inline edit area — 复用候选记忆同款 textarea + 保存/取消模式 */}
+                {isEditingRecord && (
+                  <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                    <label className="field-label" htmlFor={`edit-record-${record.id}`}>
+                      修正内容（{draftRecordText.length} / {MEMORY_TEXT_MAX_CHARS} 字）
+                    </label>
+                    <textarea
+                      id={`edit-record-${record.id}`}
+                      ref={recordTextareaRef}
+                      rows={4}
+                      maxLength={MEMORY_TEXT_MAX_CHARS}
+                      value={draftRecordText}
+                      onChange={(e) => setDraftRecordText(e.target.value)}
+                      aria-label="修正长期记忆内容"
+                    />
+                    <div className="note-actions">
+                      <button
+                        className="primary-action"
+                        type="button"
+                        disabled={!draftRecordText.trim()}
+                        onClick={() => handleSaveRecord(record.id, record.text)}
+                      >
+                        <Check size={16} />保存修正
+                      </button>
+                      <button className="secondary-action" type="button" onClick={cancelEditRecord}>
+                        <X size={16} />取消
+                      </button>
+                    </div>
+                  </div>
                 )}
-                <button className="secondary-action" type="button" onClick={() => onDeprecate(record.id)}>
-                  撤销（停止引用）
-                </button>
-                <button className="secondary-action" type="button" onClick={() => onDeleteRecord(record.id)}>
-                  <Trash2 size={16} />删除
-                </button>
               </div>
+              {!isEditingRecord && (
+                <div className="note-actions">
+                  {record.evidenceAnchors && record.evidenceAnchors.length > 0 && (
+                    <button
+                      className="secondary-action"
+                      type="button"
+                      title="打开这条记忆所依据的原始对话"
+                      onClick={() => {
+                        const anchor = record.evidenceAnchors![0];
+                        setSourceOverlay({ sessionId: anchor.sessionId, turnId: anchor.turnId });
+                      }}
+                    >
+                      <ExternalLink size={16} />查看原文出处
+                    </button>
+                  )}
+                  <button className="secondary-action" type="button" onClick={() => startEditRecord(record.id, record.text)}>
+                    <Pencil size={16} />编辑
+                  </button>
+                  <button className="secondary-action" type="button" onClick={() => onDeprecate(record.id)}>
+                    撤销（停止引用）
+                  </button>
+                  <button className="secondary-action" type="button" onClick={() => onDeleteRecord(record.id)}>
+                    <Trash2 size={16} />删除
+                  </button>
+                </div>
+              )}
             </article>
-          ))
+            );
+          })
         )}
       </div>
 

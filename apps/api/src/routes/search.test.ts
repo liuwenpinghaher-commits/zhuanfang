@@ -498,3 +498,27 @@ describe("POST /api/research/auto-run — 并发保护", () => {
     }
   });
 });
+
+describe("审计修复(P2-24):refresh 降级不覆盖真实内容", () => {
+  it("无有效 provider → 保留原内容, status=needs-review, degraded=true", async () => {
+    const app2 = Fastify();
+    const repo = createInMemoryProductStateRepository(createInitialProductState());
+    // 无任何 provider client → freshInput 恒空 → enriched 空 → 走降级分支
+    await registerSearchRoutes(app2, repo, {});
+    await app2.ready();
+    // 先种一条有真实内容的 tracked brief
+    const state = repo.getState();
+    const { brief: existing, nextState } = buildSearchBrief(state, "真实调研主题");
+    const realFact = "这是真实抓取的事实,不该被模板覆盖";
+    const seeded = { ...existing, tracked: true, facts: [realFact], status: "ready" as const };
+    repo.replaceState({ ...nextState, searchBriefs: [seeded, ...nextState.searchBriefs.slice(1)] });
+
+    const res = await app2.inject({ method: "POST", url: `/api/search/briefs/${existing.id}/refresh` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.degraded).toBe(true);
+    expect(body.brief.status).toBe("needs-review");
+    expect(body.brief.facts).toContain(realFact);   // 真实内容保留,未被 local-demo 模板替换
+    await app2.close();
+  });
+});

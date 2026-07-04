@@ -27,8 +27,10 @@ export async function registerAssetRoutes(server: FastifyInstance, repository: P
       return reply.code(500).send({ error: "Decision asset was not confirmed." });
     }
 
-    repository.replaceState(nextState);
-    return { asset: updatedDecision, state: nextState };
+    // 必须回 replaceState 的返回值:服务端已 bump revision,回传入参会让客户端携过期
+    // revision,下一次乐观 PUT 必 409、本地编辑被"改动已被其他更新覆盖"丢弃(真实业务 E2E 实测)。
+    const persisted = repository.replaceState(nextState);
+    return { asset: updatedDecision, state: persisted };
   });
 }
 

@@ -14,7 +14,10 @@ export interface LlmBudget {
 // chat / rag_query 是用户主动发起的能力，没有 session reset。若用裸单调计数器，达到 cap 后会在
 // 整个进程生命周期内永久拒绝该能力的 LLM 调用（长跑进程自我拒服，聊天/问答永久退化为离线文案）。
 // 纳入滑窗，使其按窗口恢复，与 system 桶一致。
-const SYSTEM_BUDGET_KEYS = new Set(["system", "research_auto_run", "chat", "rag_query"]);
+// 审计修复(P3-36/P1-6):knowledge_index(增量重索引嵌入)与 memory_consolidate(记忆整理摘要)
+// 同为非 session 键——前者曾两头落空(不 reset 也不在滑窗,长跑进程 200 次后嵌入永久静默关闭,
+// 正是上方注释点名要避免的失效模式);后者曾完全绕过预算。一并纳入滑窗。
+const SYSTEM_BUDGET_KEYS = new Set(["system", "research_auto_run", "chat", "rag_query", "knowledge_index", "memory_consolidate"]);
 
 // Default sliding window for system buckets (1 hour). Override via LLM_SYSTEM_WINDOW_MS or
 // the opts param (tests). The cap (maxCallsPerSession) is reused as the per-window cap.

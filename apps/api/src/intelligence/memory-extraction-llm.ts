@@ -1,7 +1,7 @@
 // LLM extraction of candidate long-term memories from an imported document.
 // Returns reviewable candidates (the user approves each before it's stored).
 import type { ImportedMemoryCandidate } from "../../../../src/domain/import";
-import { sanitizeExternalMaterialBlock } from "../../../../src/domain/engine";
+import { sanitizeExternalMaterialBlock , sanitizeExternalMaterialText } from "../../../../src/domain/engine";
 import { withMemoryCandidateReview } from "../../../../src/domain/memoryReview";
 import type { MemoryCandidate } from "../../../../src/domain/types";
 import { makeId } from "../../../../src/domain/utils";
@@ -31,7 +31,8 @@ export async function extractCandidateMemories(
       {
         role: "user",
         content: [
-          `资料标题：${title}`,
+          // 审计修复(F3):标题同为外部不可信文本,与正文同口径清洗(此前只清正文)。
+          `资料标题：${sanitizeExternalMaterialText(title, "（标题已清洗）")}`,
           "",
           "=== 资料内容 ===",
           // Cover a full long interview (~20K chars). At 8000 the back ~60% of a 20K-char

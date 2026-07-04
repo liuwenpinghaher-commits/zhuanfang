@@ -470,15 +470,6 @@ describe("product api client", () => {
     expect(result.profile.name).toBe("Mia");
   });
 
-  it("reports unavailable API health without throwing", async () => {
-    const fetchImpl = vi.fn(async () => {
-      throw new TypeError("fetch failed");
-    });
-    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
-
-    await expect(client.health()).resolves.toBe(false);
-  });
-
   it("fetches export/backup rehearsal report from the API", async () => {
     const report = {
       schemaVersion: 1,

@@ -28,7 +28,6 @@ import type {
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface ProductApiClient {
-  health(): Promise<boolean>;
   exportState(): Promise<BackupRestoreRehearsalReport>;
   importState(payload: unknown): Promise<ProductState>;
   getPrivacyReport(): Promise<PrivacyReport>;
@@ -57,6 +56,8 @@ export interface ProductApiClient {
   consolidateMemory(): Promise<{ state: ProductState; deprecated: number }>;
   updateMemoryCandidate(id: string, text: string): Promise<ProductState>;
   deprecateMemoryRecord(id: string, reason?: string): Promise<ProductState>;
+  /** Edit a confirmed long-term memory's text; the server recomputes its embedding. */
+  updateMemoryRecordText(id: string, text: string): Promise<ProductState>;
   deleteMemoryRecord(id: string): Promise<ProductState>;
   saveState(state: ProductState): Promise<{ state: ProductState; conflicted: boolean }>;
   resetState(): Promise<ProductState>;
@@ -86,6 +87,11 @@ export interface ProductApiClient {
    */
   refreshVoiceInstructions(interviewSessionId: string, latestUserText?: string): Promise<{ instructions: string }>;
   createRealtimeVoiceSession(input: CreateRealtimeVoiceSessionRequest): Promise<RealtimeVoiceSessionResponse>;
+  /**
+   * LiveKit 接入 token。走 authedFetch（production bearer 鉴权下裸 fetch 恒 401）。
+   * interviewSessionId 允许空串（当前没有进行中的访谈会话），与原有请求格式一致。
+   */
+  getLivekitToken(sessionId: string, interviewSessionId?: string): Promise<{ token: string; serverUrl?: string }>;
   exchangeRealtimeVoiceSdp(signalingPath: string, offerSdp: string): Promise<string>;
   interruptRealtimeVoiceSession(
     sessionId: string,
@@ -468,14 +474,6 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
   }
 
   return {
-    async health() {
-      try {
-        const response = await authedFetch(`${normalizedBaseUrl}/api/health`, { method: "GET" });
-        return response.ok;
-      } catch {
-        return false;
-      }
-    },
     async exportState() {
       return (await requestJson("/api/state/export", { method: "GET" })) as BackupRestoreRehearsalReport;
     },
@@ -498,13 +496,21 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
       return (await requestJson("/api/state/privacy-report", { method: "GET" })) as PrivacyReport;
     },
     async purgeState() {
-      return normalizeProductState(
-        await requestJson("/api/state/purge", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ confirm: "PURGE_PERSONAL_DATA" })
-        })
-      );
+      const payload = await requestJson("/api/state/purge", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ confirm: "PURGE_PERSONAL_DATA" })
+      });
+      // 服务端把执行回执（artifactPurge/deletedScope/deletedCount）spread 进了 state
+      // 响应体。这些装饰键不属于 ProductState，一旦进了 state 会被 autosave 原样 PUT
+      // 回服务器、寄生在持久化数据里——normalize 前先剥掉。
+      if (payload && typeof payload === "object") {
+        const record = payload as Record<string, unknown>;
+        delete record.artifactPurge;
+        delete record.deletedScope;
+        delete record.deletedCount;
+      }
+      return normalizeProductState(payload);
     },
     async getSystemCapabilities() {
       return (await requestJson("/api/system/capabilities", { method: "GET" })) as SystemCapabilitiesResponse;
@@ -580,6 +586,14 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ reason })
+      })) as { state: ProductState };
+      return normalizeProductState(response.state);
+    },
+    async updateMemoryRecordText(id, text) {
+      const response = (await requestJson(`/api/memory-records/${id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text })
       })) as { state: ProductState };
       return normalizeProductState(response.state);
     },
@@ -700,7 +714,9 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
       };
     },
     async classifyTurnComplete(sessionId, transcript, signal) {
-      const res = await fetch(`${normalizedBaseUrl}/api/interview-sessions/${sessionId}/turn-complete`, {
+      // authedFetch（非裸 fetch）：production bearer 鉴权下裸 fetch 恒 401，
+      // 级联判停会永远走 http-error fail-safe。失败语义保持不变（!ok → 立即应答）。
+      const res = await authedFetch(`${normalizedBaseUrl}/api/interview-sessions/${sessionId}/turn-complete`, {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ transcript }),
         // Pass the barge-in AbortSignal so an interrupted turn cancels the in-flight
@@ -712,7 +728,8 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
     },
     async logCascadeDecision(sessionId, trace) {
       try {
-        await fetch(`${normalizedBaseUrl}/api/interview-sessions/${sessionId}/decisions`, {
+        // authedFetch：同 classifyTurnComplete，production 鉴权下裸 fetch 会 401 丢审计。
+        await authedFetch(`${normalizedBaseUrl}/api/interview-sessions/${sessionId}/decisions`, {
           method: "POST", headers: { "content-type": "application/json" },
           body: JSON.stringify(trace)
         });
@@ -772,6 +789,12 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input)
       })) as RealtimeVoiceSessionResponse;
+    },
+    async getLivekitToken(sessionId, interviewSessionId = "") {
+      return (await requestJson(
+        `/api/realtime-voice/livekit-token?sessionId=${encodeURIComponent(sessionId)}&interviewSessionId=${encodeURIComponent(interviewSessionId)}`,
+        { method: "GET" }
+      )) as { token: string; serverUrl?: string };
     },
     async exchangeRealtimeVoiceSdp(signalingPath, offerSdp) {
       return requestText(signalingPath, {
@@ -843,9 +866,13 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
       })) as VoiceInfo;
     },
     async deleteVoice(voiceId) {
-      await authedFetch(`${normalizedBaseUrl}/api/realtime-voice/voices/${encodeURIComponent(voiceId)}`, {
+      const response = await authedFetch(`${normalizedBaseUrl}/api/realtime-voice/voices/${encodeURIComponent(voiceId)}`, {
         method: "DELETE"
       });
+      // 不检查 ok 就返回 = 假成功：服务端 4xx/5xx 时前端仍把音色从列表移除。
+      if (!response.ok) {
+        throw new ApiError(response.status, `/api/realtime-voice/voices/${voiceId}`);
+      }
     },
     async uploadSessionAudio(sessionId, blob, durationMs, recordingStartedAt, role) {
       // Prefer Blob.arrayBuffer() (real browsers); fall back to Response(blob)

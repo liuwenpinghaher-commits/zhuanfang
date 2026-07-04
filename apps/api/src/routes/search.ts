@@ -9,6 +9,7 @@ import {
   startCapabilityTask
 } from "../../../../src/capabilities/task";
 import { buildSearchBrief, createSearchBriefFromInput } from "../../../../src/domain/engine";
+import { sanitizeSearchBriefInputFields } from "../../../../src/domain/search-brief";
 import type { ProductState, SearchBrief, SearchBriefInput, SearchProviderId } from "../../../../src/domain/types";
 import {
   dedupeBriefSources,
@@ -30,11 +31,16 @@ interface SearchBriefRequestPayload {
 }
 
 export interface SearchRouteOptions {
+  /** 审计修复(D3/P2-17):全局写门——auto-run/调度器的最终读-合并-写经它与串行写互斥。 */
+  writeGate?: { runExclusive<T>(label: string, fn: () => Promise<T> | T): Promise<T> };
   bailianSearchClient?: BailianSearchClient;
   anySearchClient?: AnySearchClient;
   bailianChatClient?: BailianChatClient;
   llmBudget?: LlmBudget;
 }
+
+// 审计修复(P2-17):auto-run 并发旗标(HTTP 端点与后台调度器共享,防两路并发联网互相覆盖)。
+export const researchRunGate = { inFlight: false };
 
 export async function registerSearchRoutes(
   server: FastifyInstance,
@@ -73,8 +79,9 @@ export async function registerSearchRoutes(
       // brief (returned 200, flagged degraded) so this main route behaves like auto-briefs /
       // refresh / generateBriefForTopic, which all fall back instead of erroring.
       const { brief, nextState } = buildSearchBrief(state, searchInput.topic, "local-demo");
-      repository.replaceState(nextState);
-      return { brief, state: nextState, task: run.task, degraded: true };
+      // state 必须是 replaceState 返回的权威态(revision 已 bump),否则客户端下一次乐观 PUT 必 409。
+      const persistedDegraded = repository.replaceState(nextState);
+      return { brief, state: persistedDegraded, task: run.task, degraded: true };
     }
 
     // Replace templated insights with LLM synthesis over the real sources
@@ -86,8 +93,8 @@ export async function registerSearchRoutes(
     }
     const enriched = await enrichBriefInput(run.result, allowLlm ? options.bailianChatClient : undefined);
     const { brief, nextState } = createSearchBriefFromInput(state, enriched);
-    repository.replaceState(nextState);
-    return { brief, state: nextState, task: run.task };
+    const persisted = repository.replaceState(nextState);
+    return { brief, state: persisted, task: run.task };
   });
 
   // ---------------------------------------------------------------------------
@@ -130,29 +137,17 @@ export async function registerSearchRoutes(
       ? await enrichBriefInput(freshInput, allowLlm ? options.bailianChatClient : undefined)
       : undefined;
 
-    // Build refreshed brief from enriched input or fall back to local-demo
-    let refreshedBriefInput: SearchBriefInput;
-    if (enriched) {
-      refreshedBriefInput = enriched;
-    } else {
-      // Local fallback — re-create a deterministic brief for the topic
-      const { brief: fallback } = buildSearchBrief(state, topic, "local-demo");
-      refreshedBriefInput = {
-        topic: fallback.topic,
-        provider: fallback.provider,
-        status: fallback.status,
-        summary: fallback.summary,
-        facts: fallback.facts,
-        controversies: fallback.controversies,
-        opposingViews: fallback.opposingViews,
-        interviewAngles: fallback.interviewAngles,
-        discussionTopics: fallback.discussionTopics,
-        sourceAngles: fallback.sourceAngles,
-        sources: fallback.sources,
-        sourceTrace: fallback.sourceTrace,
-        agendaTrace: fallback.agendaTrace
-      };
+    // 审计修复(P2-24):降级不再用离线占位模板【覆盖】真实调研内容——只标 needs-review 供复核、
+    // 内容原样保留,响应带 degraded 标志(与创建路由契约对齐)并记事件。
+    if (!enriched) {
+      console.warn(JSON.stringify({ event: "refresh_degraded", briefId: id, topic }));
+      const kept = { ...existing, status: "needs-review" as const, lastRefreshedAt: new Date().toISOString() };
+      const keptState = { ...state, searchBriefs: state.searchBriefs.map((b) => (b.id === id ? kept : b)) };
+      const persistedKept = repository.replaceState(keptState);
+      return { brief: kept, state: persistedKept, degraded: true };
     }
+    // 审计修复(F1):refresh 路径的 provider 文本与 create 同口径清洗(此前直接 spread 落库)。
+    const refreshedBriefInput: SearchBriefInput = sanitizeSearchBriefInputFields(enriched);
 
     // Merge: preserve id, tracked, appliedToSessionIds, createdAt
     const updatedBrief = {
@@ -181,9 +176,9 @@ export async function registerSearchRoutes(
       ...state,
       searchBriefs: state.searchBriefs.map((b) => (b.id === id ? updatedBrief : b))
     };
-    repository.replaceState(nextState);
+    const persisted = repository.replaceState(nextState);
 
-    return { brief: updatedBrief, state: nextState };
+    return { brief: updatedBrief, state: persisted };
   });
 
   // ---------------------------------------------------------------------------
@@ -206,13 +201,14 @@ export async function registerSearchRoutes(
       ...state,
       searchBriefs: state.searchBriefs.map((b) => (b.id === id ? updatedBrief : b))
     };
-    repository.replaceState(nextState);
+    const persisted = repository.replaceState(nextState);
 
-    return { brief: updatedBrief, state: nextState };
+    return { brief: updatedBrief, state: persisted };
   });
 
   // ---------------------------------------------------------------------------
-  let autoRunInFlight = false; // P0 稳定性:auto-run 并发保护标志(防多触发堆积拖垮后端)
+  // P0 稳定性:auto-run 并发保护标志(防多触发堆积拖垮后端)。
+  // 审计修复(P2-17):提为模块级 researchRunGate——后台调度器与 HTTP auto-run 此前互不知晓可并发同跑。
   // POST /api/research/auto-run
   // 自动调研：生成新简报 + 刷新过期 tracked 简报 + 跨简报去重来源
   // 受 llmBudget "research_auto_run" key 守卫；耗尽时走降级仍返回 200
@@ -221,10 +217,10 @@ export async function registerSearchRoutes(
     // P0 稳定性:并发保护 + 限量。auto-run 串行跑多条联网搜索(每条可达 30s),被前端"打开即更新"/
     // 定时/测试重 mount 多次触发时并发堆积会把后端拖垮(reset/turn 卡满 30s)。已有一轮在跑直接降级,
     // 且每轮最多取 3 条 agenda + 3 条刷新,防 state 累积导致 agenda 失控。
-    if (autoRunInFlight) {
+    if (researchRunGate.inFlight) {
       return reply.send({ state: repository.getState(), summary: { generated: 0, refreshed: 0, dedupedSources: 0, note: "已有自动调研在进行中,跳过本次" } });
     }
-    autoRunInFlight = true;
+    researchRunGate.inFlight = true;
     try {
     const now = new Date().toISOString();
     const state = repository.getState();
@@ -278,16 +274,30 @@ export async function registerSearchRoutes(
     // 这里重读 latest,把本轮 generated/refreshed 按 id 合并上去(而非用 90s 前的 runningState 作 base
     // 覆盖);"重读→合并→replaceState"是连续同步块(无 await),JS 单线程下原子执行、不被其它写打断,
     // 因此既不阻塞其它写、又不会 clobber 期间的用户写(lost-update)。
-    const latest = repository.getState();
-    const briefById = new Map(latest.searchBriefs.map((b) => [b.id, b]));
-    for (const b of refreshed) briefById.set(b.id, b);
-    for (const b of generated) briefById.set(b.id, b);
-    const { briefs: dedupedBriefs, duplicateCount } = dedupeBriefSources([...briefById.values()]);
-    const finalState: ProductState = { ...latest, searchBriefs: dedupedBriefs };
-    repository.replaceState(finalState);
+    // 审计修复(D3):终写经全局写门排队——豁免只豁免"联网期间不持锁",最终读-合并-写必须与
+    // 串行写互斥,否则会落在某个长持锁写(如 /end)的读写窗口内被整态回滚(反向 clobber)。
+    const commitFinal = () => {
+      const latest = repository.getState();
+      const briefById = new Map(latest.searchBriefs.map((b) => [b.id, b]));
+      // 回归审查 R3-A:与调度器 commit 对齐——refreshed(刷新既有简报)只在该 id 仍存在于 latest 时回写,
+      // 否则复活用户在 90s 联网窗口内删除的 tracked 简报(lost-delete,与 auto-run 自述"不 clobber 用户写"
+      // 矛盾)。generated(本轮新建)无条件写(用户不可能删掉还没持久化的东西)。
+      const startIds = new Set(currentState.searchBriefs.map((b) => b.id));
+      for (const b of refreshed) {
+        const isNew = !startIds.has(b.id);   // 本轮才出现的(理论上 refreshed 不含新建,防御)
+        if (isNew || briefById.has(b.id)) briefById.set(b.id, b);   // 仍在 latest 才回写,已删不复活
+      }
+      for (const b of generated) briefById.set(b.id, b);
+      const { briefs: dedupedBriefs, duplicateCount } = dedupeBriefSources([...briefById.values()]);
+      const finalState: ProductState = { ...latest, searchBriefs: dedupedBriefs };
+      return { persisted: repository.replaceState(finalState), duplicateCount };
+    };
+    const { persisted, duplicateCount } = options.writeGate
+      ? await options.writeGate.runExclusive("auto-run-final-write", commitFinal)
+      : commitFinal();
 
     return {
-      state: finalState,
+      state: persisted,
       summary: {
         generated: generated.length,
         refreshed: refreshed.length,
@@ -295,7 +305,7 @@ export async function registerSearchRoutes(
       }
     };
     } finally {
-      autoRunInFlight = false;
+      researchRunGate.inFlight = false;
     }
   });
 
@@ -341,8 +351,8 @@ export async function registerSearchRoutes(
       if (result) {
         const enriched = await enrichBriefInput(result, allowLlm ? options.bailianChatClient : undefined);
         const { brief, nextState } = createSearchBriefFromInput(state, enriched);
-        repository.replaceState(nextState);
-        return { brief, state: nextState };
+        const persistedLlm = repository.replaceState(nextState);
+        return { brief, state: persistedLlm };
       }
     } catch (error) {
       console.warn(JSON.stringify({ event: "llm_fallback", capability: "search", error: error instanceof Error ? error.message : String(error) }));
@@ -350,8 +360,8 @@ export async function registerSearchRoutes(
 
     // Fallback: deterministic local brief when no live provider is configured.
     const { brief, nextState } = buildSearchBrief(state, topic, provider);
-    repository.replaceState(nextState);
-    return { brief, state: nextState };
+    const persisted = repository.replaceState(nextState);
+    return { brief, state: persisted };
   });
 }
 
@@ -478,7 +488,7 @@ export async function refreshExistingBrief(
   options: SearchRouteOptions,
   allowLlm: boolean,
   now: string
-): Promise<{ updatedBrief: SearchBrief; nextState: ProductState }> {
+): Promise<{ updatedBrief: SearchBrief; nextState: ProductState; degraded?: boolean }> {
   const topic = existing.topic;
   const providerId = isSearchProviderId(existing.provider) ? existing.provider : state.systemConfig.search.activeProvider;
   const searchInput = {
@@ -502,27 +512,18 @@ export async function refreshExistingBrief(
     ? await enrichBriefInput(freshInput, allowLlm ? options.bailianChatClient : undefined)
     : undefined;
 
-  let refreshedBriefInput: SearchBriefInput;
-  if (enriched) {
-    refreshedBriefInput = enriched;
-  } else {
-    const { brief: fallback } = buildSearchBrief(state, topic, "local-demo");
-    refreshedBriefInput = {
-      topic: fallback.topic,
-      provider: fallback.provider,
-      status: fallback.status,
-      summary: fallback.summary,
-      facts: fallback.facts,
-      controversies: fallback.controversies,
-      opposingViews: fallback.opposingViews,
-      interviewAngles: fallback.interviewAngles,
-      discussionTopics: fallback.discussionTopics,
-      sourceAngles: fallback.sourceAngles,
-      sources: fallback.sources,
-      sourceTrace: fallback.sourceTrace,
-      agendaTrace: fallback.agendaTrace
+  // 审计修复(P2-24):降级不覆盖真实内容,只标 needs-review + 刷新时间戳(scheduler/auto-run 共用)。
+  if (!enriched) {
+    console.warn(JSON.stringify({ event: "refresh_degraded", briefId: existing.id, topic }));
+    const kept: SearchBrief = { ...existing, status: "needs-review", lastRefreshedAt: now };
+    return {
+      updatedBrief: kept,
+      nextState: { ...state, searchBriefs: state.searchBriefs.map((b) => (b.id === existing.id ? kept : b)) },
+      degraded: true
     };
   }
+  // 审计修复(F1):与 create 同口径清洗。
+  const refreshedBriefInput: SearchBriefInput = sanitizeSearchBriefInputFields(enriched);
 
   const updatedBrief: SearchBrief = {
     ...existing,

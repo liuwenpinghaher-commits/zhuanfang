@@ -343,4 +343,73 @@ describe("POST /api/rag/query", () => {
 
     await server.close();
   });
+
+  // ── 方案一: surreal 权威档位的原生混合检索接线 ────────────────────────
+  function nativeRecallState() {
+    // chunk-a: 关键词与问题强匹配 → 域层排序路径必召回它(用于区分两条路径)。
+    // chunk-b: 文本与问题无关 → 域层路径召不回,只有原生命中才会出现。
+    const chunkA = makeChunk({ id: "chunk-a", sourceId: "src-n", title: "关键词资料", text: "AI 产品设计的应用与AI产品实践。", keywords: ["ai", "产品"] });
+    const chunkB = makeChunk({ id: "chunk-b", sourceId: "src-n", title: "原生命中资料", text: "完全无关的内容片段。", keywords: [] });
+    return {
+      state: { ...createInitialProductState(), ragChunks: [chunkA, chunkB], importSources: [makeSource("src-n")] },
+      chunkA, chunkB
+    };
+  }
+  /** 结构等价 SurrealRepoHandle 的三件套 + recallRagChunks(测试桩)。 */
+  function withNativeRecall<T extends object>(repo: T, recallRagChunks: () => Promise<Array<{ id: string; text: string }>>) {
+    return Object.assign(repo, {
+      recallThemeAssets: async () => ({ points: [], decisions: [], questions: [], memories: [] }),
+      recallMemoriesByVector: async () => [] as Array<{ id: string; text: string }>,
+      recallProvenanceTurns: async () => [] as Array<{ id: string; content: string; sessionId: string; role: string }>,
+      recallRagChunks
+    });
+  }
+
+  it("方案一: repo 具备原生 recallRagChunks → 原生命中优先于域层排序(域层重验门控后)", async () => {
+    const { state } = nativeRecallState();
+    const repository = withNativeRecall(createInMemoryProductStateRepository(state), async () => [
+      { id: "chunk-b", text: "完全无关的内容片段。" }
+    ]);
+    const server = Fastify();
+    await registerRagRoutes(server, repository, {}); // 无 LLM → 确定性 fallback,citations 与召回严格对齐
+    const res = await server.inject({ method: "POST", url: "/api/rag/query", payload: { question: "AI 产品" } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    // 原生命中 chunk-b;若走域层关键词路径则会是 chunk-a → 证明原生路径真被优先采用
+    expect(body.citations.map((c: { id: string }) => c.id)).toEqual(["chunk-b"]);
+    await server.close();
+  });
+
+  it("方案一 fail-safe: 原生召回抛错 → 回落域层排序,仍 200 且召回关键词命中", async () => {
+    const { state } = nativeRecallState();
+    const repository = withNativeRecall(createInMemoryProductStateRepository(state), async () => {
+      throw new Error("native boom");
+    });
+    const server = Fastify();
+    await registerRagRoutes(server, repository, {});
+    const res = await server.inject({ method: "POST", url: "/api/rag/query", payload: { question: "AI 产品" } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.citations.map((c: { id: string }) => c.id)).toContain("chunk-a"); // 域层关键词路径兜底
+    await server.close();
+  });
+
+  it("方案一 fail-safe: 原生命中全被域层门控滤掉(usage 不符)→ 回落域层排序", async () => {
+    const { state } = nativeRecallState();
+    // 把 chunk-b 改成 memory-candidate:原生桩仍返回它,但域层重验 usage 后为空 → 回落。
+    const gated = {
+      ...state,
+      ragChunks: state.ragChunks.map((c) => (c.id === "chunk-b" ? { ...c, usage: "memory-candidate" as const } : c))
+    };
+    const repository = withNativeRecall(createInMemoryProductStateRepository(gated), async () => [
+      { id: "chunk-b", text: "完全无关的内容片段。" }
+    ]);
+    const server = Fastify();
+    await registerRagRoutes(server, repository, {});
+    const res = await server.inject({ method: "POST", url: "/api/rag/query", payload: { question: "AI 产品" } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.citations.map((c: { id: string }) => c.id)).toContain("chunk-a"); // 门控滤空 → 域层兜底
+    await server.close();
+  });
 });

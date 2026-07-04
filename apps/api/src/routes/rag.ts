@@ -1,10 +1,11 @@
 import type { FastifyInstance } from "fastify";
-import { buildSemanticRagContext } from "../../../../src/domain/context-pack";
+import { buildSemanticRagContext, buildSemanticRagContextFromRecall } from "../../../../src/domain/context-pack";
 import { sanitizeExternalMaterialText } from "../../../../src/domain/engine";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import type { BailianChatClient, BailianEmbeddingClient } from "../providers/bailian";
 import type { ProductStateRepository } from "../product-state-repository";
 import type { RagChunk } from "../../../../src/domain/types";
+import { asNativeRecall } from "../recall/native-recall-capability";
 
 const TOP_K = 5;
 
@@ -32,6 +33,10 @@ export async function registerRagRoutes(
 ) {
   const budget = options.llmBudget ?? createLlmBudget();
 
+  // 端点定位(审计说明):专供【导入资料问答】——只检索 state.ragChunks(用户导入的参考文献),
+  // 独立于 /api/chat(后者是全局助手,召回八源知识索引含记忆/资产/主题/逐字稿)。当前前端主问答
+  // 走 /api/chat(覆盖面更全),本端点保留作纯资料 QA 的 API(可被外部集成/未来"就资料提问"UI 调用),
+  // 且是 native rag 混合召回(recallRagChunks,HNSW+BM25+rrf)在 HTTP 层的唯一出口。非死代码。
   server.post("/api/rag/query", async (request, reply) => {
     const payload = request.body && typeof request.body === "object"
       ? (request.body as Record<string, unknown>)
@@ -65,10 +70,32 @@ export async function registerRagRoutes(
       }
     }
 
-    // buildSemanticRagContext handles both cosine (when queryEmbedding present)
-    // and keyword fallback paths in a single call.
-    const ragContext = buildSemanticRagContext(state, question, TOP_K, queryEmbedding);
-    const chunks = ragContext.chunks;
+    // 方案一:surreal 权威档位优先走原生混合检索(HNSW+BM25+search::rrf,rag_ft/rag_emb 索引);
+    // 无 embedding 时原生仍可 BM25-only(question 作 queryText,补关键词/专名召回)。命中后由域层
+    // buildSemanticRagContextFromRecall 以与现状完全同口径重验 usage/来源 policy 门控并截断。
+    // fail-safe:无原生能力 / 抛错 / 命中为空 → 回落域层 buildSemanticRagContext,行为与此前一致。
+    let chunks: RagChunk[] = [];
+    const nativeRecall = asNativeRecall(repository);
+    if (nativeRecall && typeof nativeRecall.recallRagChunks === "function") {
+      try {
+        const hits = await nativeRecall.recallRagChunks({
+          ...(queryEmbedding ? { embedding: queryEmbedding } : {}),
+          queryText: question,
+          k: TOP_K * 2,
+          usage: "interview-context"
+        });
+        chunks = buildSemanticRagContextFromRecall(state, hits, TOP_K).chunks;
+      } catch (err) {
+        console.warn(
+          JSON.stringify({ event: "rag_native_recall_degraded", error: err instanceof Error ? err.message : String(err) })
+        );
+      }
+    }
+    if (chunks.length === 0) {
+      // buildSemanticRagContext handles both cosine (when queryEmbedding present)
+      // and keyword fallback paths in a single call.
+      chunks = buildSemanticRagContext(state, question, TOP_K, queryEmbedding).chunks;
+    }
 
     // ── 答案生成 ──
     const allowLlm = !!options.bailianChatClient && budget.tryConsume("rag_query");

@@ -6,6 +6,7 @@ import type { KnowledgeIndexRepository } from "../knowledge-index-repository";
 import type { BailianEmbeddingClient } from "../providers/bailian";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import { buildKnowledgeChunks, diffIndexableSources } from "../../../../src/domain/knowledge";
+import type { WriteGate } from "../server";
 
 // Bailian text-embedding 单次请求最多 10 条 input，超过会 400。批量大小必须 ≤ 10。
 const EMBED_BATCH = 10;
@@ -15,7 +16,9 @@ const EMBED_BATCH = 10;
  * 预算走共享 LlmBudget 的 "knowledge_index" 桶(任意字符串 capability，tryConsume 不限 union)。
  */
 // 嵌入 API 对空串/超长文本会 400，对单批文本数也有上限。送入前清洗：截断超长、剔空。
-const MAX_EMBED_CHARS = 2000;
+// 回归审查 R6-5:单一 embedding 输入截断上限,approve/PATCH重嵌/rebuild重嵌 全部共用,
+// 保证同一条记忆多次嵌入落在同一向量空间(此前 approve 全文、PATCH 截断 2000 → >2000字记忆两次向量漂移)。
+export const MAX_EMBED_CHARS = 2000;
 const MAX_EMBED_FAILURES = 3; // 连续失败上限：API 真挂了就尽快停，别 42 批逐个超时拖死。
 
 export async function embedChunks(
@@ -23,7 +26,12 @@ export async function embedChunks(
   embeddingClient: BailianEmbeddingClient | undefined,
   budget: LlmBudget
 ): Promise<KnowledgeChunk[]> {
-  if (!embeddingClient || chunks.length === 0 || !budget.tryConsume("knowledge_index")) {
+  if (!embeddingClient || chunks.length === 0) {
+    return chunks;
+  }
+  if (!budget.tryConsume("knowledge_index")) {
+    // 审计修复(P3-36):此前是全库唯一零信号的预算拒绝分支——嵌入静默关闭、召回退化无从察觉。
+    console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "knowledge_index" }));
     return chunks;
   }
   const out = [...chunks];
@@ -114,7 +122,13 @@ export async function reindexOnStateChange(
     const changedKeys = new Set(diff.changed.map((r) => `${r.sourceType}::${r.sourceId}`));
     const allChunks = buildKnowledgeChunks(next, new Map());
     const relevant = allChunks.filter((c) => changedKeys.has(`${c.sourceType}::${c.sourceId}`));
+    // R8-1:embed 前捕获代际,若嵌入期间被 reset/purge 清空则整批丢弃(不复活已清块)。
+    const epochAtEmbed = knowledgeRepo.epoch();
     const embedded = await embedChunks(relevant, embeddingClient, budget);
+    if (knowledgeRepo.epoch() !== epochAtEmbed) {
+      console.warn(JSON.stringify({ event: "reindex_discarded_stale_epoch" }));
+      return;
+    }
 
     // 按来源分组后整组 replaceSource，保证一个来源的旧块被一次性替换（即便它现在没有块也清空）。
     const bySource = new Map<string, KnowledgeChunk[]>();
@@ -157,7 +171,9 @@ export async function reindexMaterial(
     const chunks = buildKnowledgeChunks(state, new Map()).filter(
       (c) => c.sourceType === "material" && c.sourceId === sourceId
     );
+    const epochAtEmbed = knowledgeRepo.epoch();   // R8-1
     const embedded = await embedChunks(chunks, embeddingClient, budget);
+    if (knowledgeRepo.epoch() !== epochAtEmbed) return;   // 中途清空则丢弃
     knowledgeRepo.replaceSource("material", sourceId, embedded);
   } catch (err) {
     console.warn(
@@ -189,7 +205,9 @@ export async function reindexTranscript(
     const chunks = all.filter(
       (c) => c.sourceType === "transcript" && c.sourceId.startsWith(`${sessionId}#`)
     );
+    const epochAtEmbed = knowledgeRepo.epoch();   // R8-1
     const embedded = await embedChunks(chunks, embeddingClient, budget);
+    if (knowledgeRepo.epoch() !== epochAtEmbed) return;   // 中途清空则丢弃
     // 每条 user 轮一个独立 sourceId，逐条整组替换。
     const bySource = new Map<string, KnowledgeChunk[]>();
     for (const c of embedded) {
@@ -217,6 +235,70 @@ export async function reindexTranscript(
 export interface KnowledgeRouteOptions {
   embeddingClient?: BailianEmbeddingClient;
   llmBudget?: LlmBudget;
+  /** 回归审查 R4-4:后台 provider 重嵌的 replaceState 经此写门串行化,避免绕开全局写序列化 clobber 在途 HTTP 写。 */
+  writeGate?: WriteGate;
+}
+
+/** 全量重建知识索引(审计修复 B2 抽取复用:rebuild 路由 / import 恢复 / purge scope=assets 共用)。
+ *  同步部分:清空旧索引 + 立即写入关键词块(无嵌入即可召回);嵌入后台补,失败仅 warn。
+ *  rawMaterialRepo 可缺省(state 路由等无冷层配置的调用方):transcript 块跳过,其余照常。 */
+export function rebuildKnowledgeIndex(
+  state: ProductState,
+  deps: {
+    knowledgeRepo: KnowledgeIndexRepository;
+    rawMaterialRepo?: RawMaterialRepository;
+    embeddingClient?: BailianEmbeddingClient;
+    budget: LlmBudget;
+  }
+): { chunkCount: number } {
+  // 逐字稿属冷层，不在 ProductState 里——从 raw-material 仓库按会话补回。
+  const rawTurns = new Map<string, InterviewTurn[]>();
+  if (deps.rawMaterialRepo) {
+    for (const session of state.sessions) {
+      const material = deps.rawMaterialRepo.get(session.id);
+      if (material) {
+        rawTurns.set(session.id, material.turns);
+      }
+    }
+  }
+
+  const chunks = buildKnowledgeChunks(state, rawTurns);
+
+  // 全量重建：先清空旧索引、立即写入(无嵌入也能关键词召回)并返回——避免调用方
+  // 阻塞在数百次嵌入上(嵌入 API 慢时会拖到分钟级)。
+  deps.knowledgeRepo.deleteAll();
+  for (const chunk of chunks) {
+    deps.knowledgeRepo.put(chunk);
+  }
+  // 回归审查 R8-1:捕获本次重建的代际号。后台异步嵌入(数秒~分钟)期间若用户 reset/purge 清空了
+  // 索引(epoch 递增),下面的 put 必须被丢弃——否则会把 reset 前构建的块 put 回索引 → chat 再召回
+  // 已清空的私人内容(窄窗重开 P1-1 隐私症状)。
+  const rebuildEpoch = deps.knowledgeRepo.epoch();
+
+  // 嵌入在后台补：每补好一条就 upsert 覆盖(put 按 id 覆盖)，召回随之从关键词升级到向量。失败只 warn。
+  void embedChunks(chunks, deps.embeddingClient, deps.budget)
+    .then((embedded) => {
+      // R8-1:代际已变(中途被 reset/purge 清空)→ 整批陈旧嵌入丢弃,绝不复活已清私密块。
+      if (deps.knowledgeRepo.epoch() !== rebuildEpoch) {
+        console.warn(JSON.stringify({ event: "knowledge_embed_discarded_stale_epoch", rebuildEpoch, current: deps.knowledgeRepo.epoch() }));
+        return;
+      }
+      for (const chunk of embedded) {
+        if (chunk.embedding && chunk.embedding.length > 0) {
+          deps.knowledgeRepo.put(chunk);
+        }
+      }
+    })
+    .catch((err) => {
+      console.warn(
+        JSON.stringify({
+          event: "knowledge_background_embed_failed",
+          error: err instanceof Error ? err.message : String(err)
+        })
+      );
+    });
+
+  return { chunkCount: chunks.length };
 }
 
 export async function registerKnowledgeRoutes(
@@ -227,45 +309,72 @@ export async function registerKnowledgeRoutes(
   options: KnowledgeRouteOptions
 ): Promise<void> {
   server.post("/api/knowledge/rebuild", async () => {
-    const state = productRepo.getState();
-
-    // 逐字稿属冷层，不在 ProductState 里——从 raw-material 仓库按会话补回。
-    const rawTurns = new Map<string, InterviewTurn[]>();
-    for (const session of state.sessions) {
-      const material = rawMaterialRepo.get(session.id);
-      if (material) {
-        rawTurns.set(session.id, material.turns);
-      }
-    }
-
-    const chunks = buildKnowledgeChunks(state, rawTurns);
-
-    // 全量重建：先清空旧索引、立即写入(无嵌入也能关键词召回)并返回——避免 HTTP 请求
-    // 阻塞在数百次嵌入上(嵌入 API 慢时会拖到分钟级、卡死前端重建按钮)。
-    knowledgeRepo.deleteAll();
-    for (const chunk of chunks) {
-      knowledgeRepo.put(chunk);
-    }
-
-    // 嵌入在后台补：每补好一条就 upsert 覆盖(put 按 id 覆盖)，召回随之从关键词升级到向量。失败只 warn。
     const budget = options.llmBudget ?? createLlmBudget();
-    void embedChunks(chunks, options.embeddingClient, budget)
-      .then((embedded) => {
-        for (const chunk of embedded) {
-          if (chunk.embedding && chunk.embedding.length > 0) {
-            knowledgeRepo.put(chunk);
+    const state = productRepo.getState();
+    const result = rebuildKnowledgeIndex(state, {
+      knowledgeRepo,
+      rawMaterialRepo,
+      embeddingClient: options.embeddingClient,
+      budget
+    });
+    // 审计修复(P2-13):rebuild 兼作 EMBEDDING_PROVIDER 切换后的恢复工具——重嵌 provider 戳
+    // 不匹配(含无戳历史数据)的 memoryRecords 与 state.ragChunks(此前二者无任何重嵌通道,
+    // 切换后新旧向量跨空间混存,相似度≈噪声)。后台执行、fail-safe,不阻塞响应。
+    const client = options.embeddingClient;
+    if (client) {
+      void (async () => {
+        try {
+          const current = client.providerId;
+          const staleRecords = state.memoryRecords.filter(
+            (r) => Array.isArray(r.embedding) && r.embedding.length > 0 && r.embeddingProvider !== current
+          );
+          const staleChunks = state.ragChunks.filter(
+            (c) => Array.isArray(c.embedding) && c.embedding.length > 0 && c.embeddingProvider !== current
+          );
+          if (staleRecords.length === 0 && staleChunks.length === 0) return;
+          if (!budget.tryConsume("knowledge_index")) {
+            console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "knowledge_index", phase: "reembed" }));
+            return;
           }
+          const embedBatch = async (texts: string[]) => {
+            const out: number[][] = [];
+            for (let i = 0; i < texts.length; i += 10) {
+              out.push(...(await client.embed(texts.slice(i, i + 10).map((t) => t.slice(0, MAX_EMBED_CHARS)))));
+            }
+            return out;
+          };
+          const recVecs = await embedBatch(staleRecords.map((r) => r.text));
+          const chunkVecs = await embedBatch(staleChunks.map((c) => c.text));
+          const recById = new Map(staleRecords.map((r, i) => [r.id, recVecs[i]] as const));
+          const chunkById = new Map(staleChunks.map((c, i) => [c.id, chunkVecs[i]] as const));
+          // 回归审查 R4-4:embed(慢 IO)已在锁外完成;仅把"重读 latest + replaceState"的同步合并包进写门,
+          // 避免后台 replaceState 绕开全局写序列化与在途 HTTP 写互相 clobber(此前直接 replaceState,
+          // 并发下本次重嵌或用户写会被对方整态覆盖丢弃)。
+          const applyReembed = () => {
+            const latest = productRepo.getState();
+            return productRepo.replaceState({
+              ...latest,
+              memoryRecords: latest.memoryRecords.map((r) => {
+                const vec = recById.get(r.id);
+                return vec && vec.length > 0 ? { ...r, embedding: vec, ...(current ? { embeddingProvider: current } : {}) } : r;
+              }),
+              ragChunks: latest.ragChunks.map((c) => {
+                const vec = chunkById.get(c.id);
+                return vec && vec.length > 0 ? { ...c, embedding: vec, ...(current ? { embeddingProvider: current } : {}) } : c;
+              })
+            });
+          };
+          if (options.writeGate) {
+            await options.writeGate.runExclusive("knowledge-reembed", applyReembed);
+          } else {
+            applyReembed();
+          }
+          console.info(JSON.stringify({ event: "embedding_reembed_done", records: staleRecords.length, chunks: staleChunks.length, provider: current }));
+        } catch (err) {
+          console.warn(JSON.stringify({ event: "embedding_reembed_failed", error: err instanceof Error ? err.message : String(err) }));
         }
-      })
-      .catch((err) => {
-        console.warn(
-          JSON.stringify({
-            event: "knowledge_background_embed_failed",
-            error: err instanceof Error ? err.message : String(err)
-          })
-        );
-      });
-
-    return { chunkCount: chunks.length };
+      })();
+    }
+    return result;
   });
 }

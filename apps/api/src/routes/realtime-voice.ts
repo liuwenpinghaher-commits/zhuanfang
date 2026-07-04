@@ -130,6 +130,10 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       if (Date.parse(rec.expiresAt) <= now) sessions.delete(id);
     }
   }
+  // 审计修复(P1-5):TTL 改为滑动续期——此前只在创建时设 10 分钟且从不续期,而产品核心场景
+  // 就是长访谈:>10min 后 /interrupt 静默失效(截断跳过但仍回 interrupted:true → 归档失真)、
+  // cascade TTS WS 断线重连撞 404 直到会话结束。活跃访问即续期;真僵尸(无流量)照旧过期。
+  const SESSION_TTL_MS = 10 * 60 * 1000;
   function liveSession(id: string | undefined): RealtimeVoiceSessionRecord | undefined {
     if (!id) return undefined;
     const rec = sessions.get(id);
@@ -138,6 +142,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       sessions.delete(id);
       return undefined;
     }
+    rec.expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
     return rec;
   }
 
@@ -162,8 +167,10 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       const preset = voices.filter((v) => !v.targetModel || v.targetModel === "qwen3.5-omni-plus-realtime");
       const custom = voices.filter((v) => v.targetModel && v.targetModel !== "qwen3.5-omni-plus-realtime");
       return { preset, custom };
-    } catch {
-      return { preset: cosyvoiceFallbackPreset, custom: [] };
+    } catch (err) {
+      // 审计修复(P3):上游查询失败时此前零日志静默隐藏自定义克隆音色。保留回退但响亮+可判别。
+      console.warn(JSON.stringify({ event: "voice_list_degraded", error: err instanceof Error ? err.message : String(err) }));
+      return { preset: cosyvoiceFallbackPreset, custom: [], degraded: true };
     }
   });
 
@@ -212,6 +219,9 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     sessions.set(record.sessionId, record);
     return record;
   });
+  // 端点定位(审计说明):WebRTC 语音信令(SDP answer 交换)。WebRTC 传输通道尚未完成、当前强制回退
+  // WebSocket(见前端 realtimeMode),故本端点暂无生产流量。保留作 WebRTC 通道的半成品骨架(删除
+  // 将来重做成本高),未接入不是遗漏。启用 WebRTC 时前端 exchangeRealtimeVoiceSdp 会调它。
   server.post("/api/realtime-voice/sessions/:id/webrtc/answer", async (request, reply) => {
     const sessionId = getSessionId(request.params);
     const record = sessionId ? liveSession(sessionId) : undefined;
@@ -239,6 +249,11 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       return reply.code(400).send({ error: "sessionId is required." });
     }
     const record = liveSession(sessionId);
+    // 审计修复(P1-5 对偶):会话已过期/不存在时,此前静默跳过截断却回 interrupted:true——
+    // 逐字稿保留用户没听到的助手长文,归档失真且零信号。改为如实 410,客户端可感知。
+    if (!record) {
+      return reply.code(410).send({ error: "Realtime voice session expired or not found.", interrupted: false });
+    }
     const body = normalizeObject<InterruptPayload>(request.body);
     const spokenTextSoFar = typeof body.spokenTextSoFar === "string" ? body.spokenTextSoFar : "";
     const interruptedAtMs =
@@ -431,6 +446,10 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     };
   });
 
+  // 端点定位(审计说明):LiveKit Python agent 集成接口(agent-context 取引导 + agent-turn 记轮次的
+  // 服务端权威路径)。当前 Python agent(agent/main.py)只调 agent-context;agent-turn 的记轮职责在
+  // 浏览器路径由 /record-turn 顶替,故 agent 未调它。保留作 agent 侧集成的对称能力(浏览器不可用/
+  // 纯服务端 agent 场景),非死代码。同理 memory-context/config 是 agent 的记忆与配置拉取接口。
   server.post("/api/realtime-voice/agent-turn/:interviewSessionId", async (request, reply) => {
     const { interviewSessionId } = request.params as { interviewSessionId: string };
     const { role, text, strategy } = request.body as {

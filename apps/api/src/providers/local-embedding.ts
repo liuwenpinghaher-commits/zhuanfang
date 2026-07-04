@@ -39,6 +39,7 @@ async function getExtractor(): Promise<Extractor> {
 /** 本地 embedding client,实现与云端相同的 BailianEmbeddingClient 接口(embed → number[][])。 */
 export function createLocalEmbeddingClient(): BailianEmbeddingClient {
   return {
+    providerId: "local:bge-large-zh-v1.5",
     async embed(texts: string[]): Promise<number[][]> {
       if (texts.length === 0) return [];
       const extractor = await getExtractor();

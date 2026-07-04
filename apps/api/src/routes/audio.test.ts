@@ -1,11 +1,22 @@
 import { describe, it, expect } from "vitest";
 import { buildApiServer } from "../server";
 import { createInMemoryAudioRepository } from "../audio-repository";
+import { createInMemoryProductStateRepository } from "../product-state-repository";
+import { createInitialProductState } from "../../../../src/domain/engine";
+
+// 审计修复(P2-16):上传路由现校验会话存在——测试基底须带 s1 会话。
+function repoWithSession(id = "s1") {
+  const base = createInitialProductState();
+  return createInMemoryProductStateRepository({
+    ...base,
+    sessions: [{ id, mode: "daily", strength: "standard", status: "completed", title: "会话", startedAt: "2026-06-27T00:00:00.000Z", turns: [] }] as never
+  });
+}
 
 describe("audio routes", () => {
   it("POST /api/sessions/:id/audio 上传 → 200 + ok + byteSize,落入注入的 repo", async () => {
     const audioRepository = createInMemoryAudioRepository();
-    const server = buildApiServer({ env: {}, audioRepository });
+    const server = buildApiServer({ env: {}, audioRepository, productStateRepository: repoWithSession() });
     const res = await server.inject({
       method: "POST",
       url: "/api/sessions/s1/audio",
@@ -30,7 +41,7 @@ describe("audio routes", () => {
 
   it("GET /api/sessions/:id/audio 回放 → 200 + 二进制往返 + content-type", async () => {
     const audioRepository = createInMemoryAudioRepository();
-    const server = buildApiServer({ env: {}, audioRepository });
+    const server = buildApiServer({ env: {}, audioRepository, productStateRepository: repoWithSession() });
     await server.inject({
       method: "POST",
       url: "/api/sessions/s1/audio",
@@ -48,14 +59,14 @@ describe("audio routes", () => {
 
   it("GET /api/sessions/missing/audio → 404", async () => {
     const audioRepository = createInMemoryAudioRepository();
-    const server = buildApiServer({ env: {}, audioRepository });
+    const server = buildApiServer({ env: {}, audioRepository, productStateRepository: repoWithSession() });
     const res = await server.inject({ method: "GET", url: "/api/sessions/missing/audio" });
     expect(res.statusCode).toBe(404);
   });
 
   it("GET /api/sessions/:id/audio/meta 存在 → exists:true + 元数据", async () => {
     const audioRepository = createInMemoryAudioRepository();
-    const server = buildApiServer({ env: {}, audioRepository });
+    const server = buildApiServer({ env: {}, audioRepository, productStateRepository: repoWithSession() });
     await server.inject({
       method: "POST",
       url: "/api/sessions/s1/audio",
@@ -79,7 +90,7 @@ describe("audio routes", () => {
 
   it("POST 带 recordingStartedAt → meta 返回该值", async () => {
     const audioRepository = createInMemoryAudioRepository();
-    const server = buildApiServer({ env: {}, audioRepository });
+    const server = buildApiServer({ env: {}, audioRepository, productStateRepository: repoWithSession() });
     await server.inject({
       method: "POST",
       url: "/api/sessions/s1/audio",
@@ -107,7 +118,7 @@ describe("audio routes", () => {
 
   it("GET /api/sessions/missing/audio/meta → exists:false", async () => {
     const audioRepository = createInMemoryAudioRepository();
-    const server = buildApiServer({ env: {}, audioRepository });
+    const server = buildApiServer({ env: {}, audioRepository, productStateRepository: repoWithSession() });
     const res = await server.inject({ method: "GET", url: "/api/sessions/missing/audio/meta" });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ exists: false });
@@ -115,7 +126,7 @@ describe("audio routes", () => {
 
   it("POST 缺 audioBase64 → 422", async () => {
     const audioRepository = createInMemoryAudioRepository();
-    const server = buildApiServer({ env: {}, audioRepository });
+    const server = buildApiServer({ env: {}, audioRepository, productStateRepository: repoWithSession() });
     const res = await server.inject({
       method: "POST",
       url: "/api/sessions/s1/audio",
@@ -126,7 +137,7 @@ describe("audio routes", () => {
 
   it("role=interviewer: POST + GET 各自取回, 与默认(interviewee)互不干扰", async () => {
     const audioRepository = createInMemoryAudioRepository();
-    const server = buildApiServer({ env: {}, audioRepository });
+    const server = buildApiServer({ env: {}, audioRepository, productStateRepository: repoWithSession() });
     // interviewee (默认, 无 role)
     await server.inject({
       method: "POST",
@@ -156,7 +167,7 @@ describe("audio routes", () => {
 
   it("meta?role=interviewer 返回里带 role", async () => {
     const audioRepository = createInMemoryAudioRepository();
-    const server = buildApiServer({ env: {}, audioRepository });
+    const server = buildApiServer({ env: {}, audioRepository, productStateRepository: repoWithSession() });
     await server.inject({
       method: "POST",
       url: "/api/sessions/s1/audio?role=interviewer",
@@ -179,7 +190,7 @@ describe("audio routes", () => {
 
   it("非法 role → 回退 interviewee", async () => {
     const audioRepository = createInMemoryAudioRepository();
-    const server = buildApiServer({ env: {}, audioRepository });
+    const server = buildApiServer({ env: {}, audioRepository, productStateRepository: repoWithSession() });
     await server.inject({
       method: "POST",
       url: "/api/sessions/s1/audio?role=bogus",
@@ -194,7 +205,7 @@ describe("audio routes", () => {
 
   it("meta 默认存在时也带 role: interviewee", async () => {
     const audioRepository = createInMemoryAudioRepository();
-    const server = buildApiServer({ env: {}, audioRepository });
+    const server = buildApiServer({ env: {}, audioRepository, productStateRepository: repoWithSession() });
     await server.inject({
       method: "POST",
       url: "/api/sessions/s1/audio",
@@ -213,12 +224,49 @@ describe("audio routes", () => {
 
   it("POST 缺 mime → 422", async () => {
     const audioRepository = createInMemoryAudioRepository();
-    const server = buildApiServer({ env: {}, audioRepository });
+    const server = buildApiServer({ env: {}, audioRepository, productStateRepository: repoWithSession() });
     const res = await server.inject({
       method: "POST",
       url: "/api/sessions/s1/audio",
       payload: { audioBase64: Buffer.from([1, 2, 3]).toString("base64") }
     });
     expect(res.statusCode).toBe(422);
+  });
+
+  it("审计修复(P2-16):会话不存在 → 404 拒收(孤儿音频/doNotSave 录音入口封死)", async () => {
+    const audioRepository = createInMemoryAudioRepository();
+    const server = buildApiServer({ env: {}, audioRepository, productStateRepository: repoWithSession("s1") });
+    const res = await server.inject({
+      method: "POST",
+      url: "/api/sessions/ghost/audio",
+      payload: { audioBase64: Buffer.from([1]).toString("base64"), mime: "audio/webm" }
+    });
+    expect(res.statusCode).toBe(404);
+    expect(audioRepository.get("ghost")).toBeUndefined();
+  });
+
+  it("审计修复(F6):非白名单 mime(text/html)被降级为 application/octet-stream", async () => {
+    const audioRepository = createInMemoryAudioRepository();
+    const server = buildApiServer({ env: {}, audioRepository, productStateRepository: repoWithSession("s1") });
+    await server.inject({
+      method: "POST",
+      url: "/api/sessions/s1/audio",
+      payload: { audioBase64: Buffer.from([1, 2, 3]).toString("base64"), mime: "text/html" }
+    });
+    const meta = await server.inject({ method: "GET", url: "/api/sessions/s1/audio/meta" });
+    expect(meta.json().mime).toBe("application/octet-stream");
+  });
+
+  it("审计修复(F6):GET 回放响应含 nosniff + attachment 头", async () => {
+    const audioRepository = createInMemoryAudioRepository();
+    const server = buildApiServer({ env: {}, audioRepository, productStateRepository: repoWithSession("s1") });
+    await server.inject({
+      method: "POST",
+      url: "/api/sessions/s1/audio",
+      payload: { audioBase64: Buffer.from([1, 2, 3]).toString("base64"), mime: "audio/webm" }
+    });
+    const res = await server.inject({ method: "GET", url: "/api/sessions/s1/audio" });
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    expect(res.headers["content-disposition"]).toBe("attachment");
   });
 });

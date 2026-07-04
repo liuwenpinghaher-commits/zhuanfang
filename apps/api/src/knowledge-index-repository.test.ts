@@ -20,4 +20,21 @@ describe("in-memory KnowledgeIndexRepository", () => {
     r.replaceSource("note", "s1", [mk("c2", "note", "s1"), mk("c3", "note", "s1")]);
     expect(r.listAll().map((c) => c.id).sort()).toEqual(["c2", "c3"]);
   });
+
+  it("R8-1:deleteAll 单调递增 epoch——reset/purge 后陈旧后台嵌入据此丢弃,不复活已清私密块", () => {
+    const r = createInMemoryKnowledgeIndexRepository();
+    const e0 = r.epoch();
+    r.deleteAll();
+    expect(r.epoch()).toBe(e0 + 1);
+    r.deleteAll();
+    expect(r.epoch()).toBe(e0 + 2);
+  });
+
+  it("R8-1 消费方模式:rebuild 捕获 startEpoch,put 前 epoch 已变(reset 清空)则判定陈旧丢弃", () => {
+    const r = createInMemoryKnowledgeIndexRepository();
+    r.put(mk("c1", "note", "s1"));
+    const startEpoch = r.epoch();       // 后台嵌入开始时捕获
+    r.deleteAll();                       // 期间 reset/purge 清空私密数据
+    expect(r.epoch()).not.toBe(startEpoch);   // 守卫判定陈旧 → knowledge.ts 丢弃这批 put,不写回已清索引
+  });
 });

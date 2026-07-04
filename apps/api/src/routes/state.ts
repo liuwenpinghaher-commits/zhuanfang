@@ -9,6 +9,12 @@ import type { RawMaterialRepository } from "../raw-material-repository";
 import type { AudioRepository } from "../audio-repository";
 import type { KnowledgeIndexRepository } from "../knowledge-index-repository";
 import type { InterviewAudio, InterviewRawMaterial } from "../../../../src/domain/types";
+import type { BailianEmbeddingClient } from "../providers/bailian";
+import { createLlmBudget, type LlmBudget } from "../llm-budget";
+import { rebuildKnowledgeIndex } from "./knowledge";
+
+// 审计修复(P1-8):import 恢复通道的独立体限(默认全局 28MB 会让大备份"导出成功、恢复 413")。
+const IMPORT_BODY_LIMIT_BYTES = 64 * 1024 * 1024;
 
 interface StateRouteOptions {
   env?: Record<string, string | undefined>;
@@ -33,6 +39,9 @@ interface StateRouteOptions {
    * (purge skips the index wipe). Same governance pattern as raw-material/audio (Task 12).
    */
   knowledgeIndexRepository?: KnowledgeIndexRepository;
+  /** 审计修复 B2:import 恢复/assets purge 后全量重建知识索引所需(缺省则跳过重建,仅清空)。 */
+  embeddingClient?: BailianEmbeddingClient;
+  llmBudget?: LlmBudget;
 }
 
 export async function registerStateRoutes(
@@ -54,7 +63,26 @@ export async function registerStateRoutes(
     }
     return repository.replaceState(normalizeProductState(request.body));
   });
-  server.post("/api/state/reset", async () => repository.resetState());
+  server.post("/api/state/reset", async () => {
+    const next = repository.resetState();
+    // 审计修复(P1-1):reset 此前只清热态,冷层逐字稿/录音/派生知识索引全部残留——
+    // 实测 25/26 份冷层材料为跨 reset 孤儿,且 chat 继续召回"已清空"的私人内容。
+    // 与 purge 对齐:重置即三库同清(索引是派生可重建的,清空即语义正确的空索引)。
+    // 回归审查 R4-2:每库独立 try/catch 尽力清——某库 deleteAll 抛错(sqlite IO 故障)不该跳过
+    // 后续库(尤其知识索引残留=可召回私人数据泄漏);逐库告警,不让一处失败掩盖其余未清。
+    for (const [name, repo] of [
+      ["raw-material", rawMaterialRepository],
+      ["audio", audioRepository],
+      ["knowledge-index", knowledgeIndexRepository]
+    ] as const) {
+      try {
+        repo?.deleteAll();
+      } catch (err) {
+        console.warn(JSON.stringify({ event: "reset_cold_layer_clear_failed", store: name, error: err instanceof Error ? err.message : String(err) }));
+      }
+    }
+    return next;
+  });
 
   // P0-1: Privacy report
   server.get("/api/state/privacy-report", async () => {
@@ -64,7 +92,7 @@ export async function registerStateRoutes(
 
   // P0-2: Export. The rehearsal report now carries `exportPackage` (full ProductState),
   // so the downloaded JSON is genuinely restorable via POST /api/state/import below.
-  server.get("/api/state/export", async () => {
+  server.get("/api/state/export", async (_request, reply) => {
     const state = repository.getState();
     const report = buildBackupRestoreRehearsalReport(state);
     // Cold-layer raw material lives outside ProductState (its own SQLite store), so the
@@ -116,13 +144,31 @@ export async function registerStateRoutes(
       }
       audios.push(entry);
     }
-    return { ...report, rawMaterials, audioSessions, audios, audioOmittedSessions };
+    const bundle = { ...report, rawMaterials, audioSessions, audios, audioOmittedSessions };
+    // 审计修复(P1-8 对偶):导出侧如实预警包体积与导入体限的兼容性——"备份成功恢复失败"
+    // 必须在备份时就可见,而不是恢复时才 413。
+    // 回归审查 R4-5:大对象只序列化一次。此前 JSON.stringify(bundle) 算字节 + return 对象让 Fastify
+    // 再序列化整包一次 → 导出包(可达 ~28MB,含音频 base64)双序列化=瞬时内存峰值翻倍。改为手动序列化
+    // bundle 一次、复用该字符串,只额外序列化极小的 importCompatibility 尾并拼接(bundle 由对象字面量
+    // 构成,其 JSON 必以 } 结尾,slice(0,-1) 去尾后拼入兼容性字段安全)。
+    const bundleStr = JSON.stringify(bundle);
+    const bundleBytes = Buffer.byteLength(bundleStr);
+    const compatStr = JSON.stringify({
+      bytes: bundleBytes,
+      importBodyLimitBytes: IMPORT_BODY_LIMIT_BYTES,
+      exceedsImportLimit: bundleBytes > IMPORT_BODY_LIMIT_BYTES
+    });
+    return reply
+      .type("application/json")
+      .send(`${bundleStr.slice(0, -1)},"importCompatibility":${compatStr}}`);
   });
 
   // P0-2b: Import — restore a previously exported package (or a raw ProductState).
   // Accepts { exportPackage: { state } } (full export report shape) or { state } or a
   // bare ProductState. Normalizes before replacing so schema/field drift is healed.
-  server.post("/api/state/import", async (request, reply) => {
+  // 审计修复(P1-8):导出包(state+冷层+音频)可超默认 28MB 体限致"备份成功、恢复 413"。
+  // import 是恢复通道,单独放宽到 64MB;导出侧同步给出兼容性预警(见 export)。
+  server.post("/api/state/import", { bodyLimit: IMPORT_BODY_LIMIT_BYTES }, async (request, reply) => {
     const body = request.body as
       | {
           state?: unknown;
@@ -157,54 +203,77 @@ export async function registerStateRoutes(
       entityId: "local-product-state",
       createdAt: new Date().toISOString()
     });
-    const replaced = repository.replaceState(imported);
-    // Restore the cold layer from the export bundle (Task 13). Each entry is upserted by
-    // sessionId, so re-importing the same package is idempotent. Done after the hot-state
-    // overwrite so a partial/legacy package without `rawMaterials` still imports cleanly.
+    // 回归审查 R4-3:跳过包装层增量重索引——下方 rebuildKnowledgeIndex 全量重建(含冷层逐字稿),
+    // 增量与全量并跑是重复嵌入(浪费预算)。由显式 rebuild 负责索引一致性。
+    const replaced = repository.replaceState(imported, { skipReindex: true });
+    // 审计修复(P2-15 + 回归审查 R4-1):import 语义是"整体替换",热态 overwrite 而冷层此前是 upsert
+    // 合并——上一世代逐字稿/录音会残留并随下次导出打进"新备份"。改为先清后恢复,三库口径一致。
+    // ⚠️ R4-1 数据丢失窗口根治:此前"先 deleteAll 后逐条 put",若某 put 中途抛错(畸形/异构/截断包
+    // 缺 turns/createdAt,node:sqlite 会抛)→旧冷层已清空且未恢复=比不清更糟,且 audio.deleteAll 先于
+    // raw 恢复→raw 抛错则音频整体丢失。改为【先全量构建+校验合法条目,全部通过才 deleteAll+put】
+    // (build-then-swap):任一条目非法直接 422 拒,绝不在清空后才发现坏数据。
+    // legacy 包(无 rawMaterials/audios 字段)保持旧的纯热态导入行为(不清不恢复)。
+    let restoredRawMaterials: InterviewRawMaterial[] | undefined;
     if (rawMaterialRepository && Array.isArray(body?.rawMaterials)) {
+      const built: InterviewRawMaterial[] = [];
       for (const material of body.rawMaterials as InterviewRawMaterial[]) {
-        if (material && typeof material.sessionId === "string") {
-          rawMaterialRepository.put(material);
-        }
-      }
-    }
-    // Restore recorded audio bytes (base64) from the export bundle. Same defensive style as
-    // rawMaterials: validate each entry, decode base64 to exact bytes, upsert by sessionId
-    // (idempotent re-import). A legacy package without `audios` simply skips this.
-    if (audioRepository && Array.isArray(body?.audios)) {
-      for (const entry of body.audios as Array<{
-        sessionId?: unknown;
-        role?: unknown;
-        audioBase64?: unknown;
-        mime?: unknown;
-        durationMs?: unknown;
-        recordingStartedAt?: unknown;
-      }>) {
+        // 校验能安全 put 的形状:sessionId + turns(数组) + createdAt(string)——node:sqlite 对
+        // undefined/null 的 turns/createdAt 会抛,必须在 deleteAll 前挡住。
         if (
-          entry &&
-          typeof entry.sessionId === "string" &&
-          typeof entry.audioBase64 === "string" &&
-          typeof entry.mime === "string"
+          !material ||
+          typeof material.sessionId !== "string" ||
+          !Array.isArray(material.turns) ||
+          typeof material.createdAt !== "string"
         ) {
-          const audio = new Uint8Array(Buffer.from(entry.audioBase64, "base64"));
-          // role 缺省/非法 → interviewee（向后兼容旧的无 role 导出包）。
-          const role: InterviewAudio["role"] = entry.role === "interviewer" ? "interviewer" : "interviewee";
-          const restored: InterviewAudio = {
-            sessionId: entry.sessionId,
-            role,
-            audio,
-            mime: entry.mime,
-            byteSize: audio.byteLength,
-            createdAt: new Date().toISOString()
-          };
-          if (typeof entry.durationMs === "number") {
-            restored.durationMs = entry.durationMs;
-          }
-          if (typeof entry.recordingStartedAt === "string") {
-            restored.recordingStartedAt = entry.recordingStartedAt;
-          }
-          audioRepository.put(restored);
+          return reply.code(422).send({ error: "Import rawMaterials 含非法条目(需 sessionId/turns/createdAt),已拒绝以保护现有冷层数据。" });
         }
+        built.push(material);
+      }
+      restoredRawMaterials = built;
+    }
+
+    let restoredAudios: InterviewAudio[] | undefined;
+    if (audioRepository && Array.isArray(body?.audios)) {
+      const built: InterviewAudio[] = [];
+      for (const entry of body.audios as Array<{
+        sessionId?: unknown; role?: unknown; audioBase64?: unknown; mime?: unknown; durationMs?: unknown; recordingStartedAt?: unknown;
+      }>) {
+        // 跳过明显不完整的音频条目(与旧行为一致——音频缺失不阻断,但已校验的才恢复)。
+        if (!entry || typeof entry.sessionId !== "string" || typeof entry.audioBase64 !== "string" || typeof entry.mime !== "string") {
+          continue;
+        }
+        const audio = new Uint8Array(Buffer.from(entry.audioBase64, "base64"));
+        const role: InterviewAudio["role"] = entry.role === "interviewer" ? "interviewer" : "interviewee";
+        const restored: InterviewAudio = { sessionId: entry.sessionId, role, audio, mime: entry.mime, byteSize: audio.byteLength, createdAt: new Date().toISOString() };
+        if (typeof entry.durationMs === "number") restored.durationMs = entry.durationMs;
+        if (typeof entry.recordingStartedAt === "string") restored.recordingStartedAt = entry.recordingStartedAt;
+        built.push(restored);
+      }
+      restoredAudios = built;
+    }
+
+    // 全部条目已校验/构建完毕(上面任何非法都已 422 返回),现在才动既有冷层——clear+put 无中途失败风险。
+    if (restoredRawMaterials) {
+      rawMaterialRepository!.deleteAll();
+      for (const material of restoredRawMaterials) rawMaterialRepository!.put(material);
+    }
+    if (restoredAudios) {
+      audioRepository!.deleteAll();
+      for (const restored of restoredAudios) audioRepository!.put(restored);
+    }
+    // 审计修复(P3-39):恢复后自动重建知识索引——material/transcript 块此前只在 import 端点/
+    // /end 补点,备份恢复路径两者都不经过 → 恢复后资料明明在、chat/召回却查无此块。
+    // 同步清空+关键词重建立即生效,嵌入后台补;失败仅 warn 不影响恢复本身。
+    if (knowledgeIndexRepository) {
+      try {
+        rebuildKnowledgeIndex(replaced, {
+          knowledgeRepo: knowledgeIndexRepository,
+          ...(rawMaterialRepository ? { rawMaterialRepo: rawMaterialRepository } : {}),
+          ...(options.embeddingClient ? { embeddingClient: options.embeddingClient } : {}),
+          budget: options.llmBudget ?? createLlmBudget()
+        });
+      } catch (err) {
+        console.warn(JSON.stringify({ event: "import_knowledge_rebuild_failed", error: err instanceof Error ? err.message : String(err) }));
       }
     }
     return replaced;
@@ -252,7 +321,9 @@ export async function registerStateRoutes(
           createdAt: new Date().toISOString()
         });
       }
-      const nextState = repository.replaceState(purged);
+      // 回归审查 R4-3:跳过增量重索引——下方 knowledgeIndexRepository.deleteAll() 直接清空整个索引,
+      // 包装层的增量重索引纯属白做(且与 deleteAll 竞态,靠 R8-1 epoch 守卫才不残留)。
+      const nextState = repository.replaceState(purged, { skipReindex: true });
       // Cold layer (raw-material store) holds the verbatim interview transcripts. A full wipe
       // must clear it too, otherwise the original Q&A survives the "complete" purge (Task 13).
       rawMaterialRepository?.deleteAll();
@@ -268,6 +339,20 @@ export async function registerStateRoutes(
 
     const { nextState: scopedState, deletedScope, deletedCount } = createScopedPurge(state, scope);
     const nextState = repository.replaceState(scopedState);
+    // 审计修复(P3-38):assets 档的知识索引清理此前只靠异步增量 diff(失败/进程退出即永久残留
+    // 已清资产的可召回块)。与 all/interviews 对齐:同步全量重建(存活的会话/素材块随重建回来)。
+    if (scope === "assets" && knowledgeIndexRepository) {
+      try {
+        rebuildKnowledgeIndex(nextState, {
+          knowledgeRepo: knowledgeIndexRepository,
+          ...(rawMaterialRepository ? { rawMaterialRepo: rawMaterialRepository } : {}),
+          ...(options.embeddingClient ? { embeddingClient: options.embeddingClient } : {}),
+          budget: options.llmBudget ?? createLlmBudget()
+        });
+      } catch (err) {
+        console.warn(JSON.stringify({ event: "purge_knowledge_rebuild_failed", error: err instanceof Error ? err.message : String(err) }));
+      }
+    }
     // The interviews scope clears all sessions from hot state; their cold-layer raw materials
     // are keyed by sessionId and would otherwise be orphaned, so wipe the cold layer too.
     if (scope === "interviews") {

@@ -50,7 +50,12 @@ export async function renderEpisodeAudio(
       durationSec: renderedAudio.durationSec ?? episode.durationSec,
       voice: renderedAudio.voice,
       audioRenderStatus: "rendered",
-      audioRenderMessage: "音频已渲染。"
+      audioRenderMessage: "音频已渲染。",
+      // 审计修复(P3-31):provider 返回的过期时间此前被丢弃、audioExpiresAt 字段全库零写入
+      // → 次日播放 403 无过期语义。落地为 ISO(expiresAt 是秒级 epoch)。
+      ...(typeof renderedAudio.expiresAt === "number"
+        ? { audioExpiresAt: new Date(renderedAudio.expiresAt * 1000).toISOString() }
+        : {})
     };
   } catch (ttsError) {
     console.warn(
@@ -153,11 +158,12 @@ export async function registerPodcastRoutes(
     }
 
     // --- Step 1: Persist the episode FIRST (script is now saved, TTS failure won't lose it) ---
-    repository.replaceState(nextState);
+    // state 必须是 replaceState 返回的权威态(revision 已 bump),否则客户端下一次乐观 PUT 必 409。
+    const persistedDraft = repository.replaceState(nextState);
 
     // --- Step 2: If no TTS client, return the persisted episode as-is ---
     if (!options.bailianPodcastAudioClient) {
-      return { episode, state: nextState };
+      return { episode, state: persistedDraft };
     }
 
     // --- Step 3: Attempt TTS via shared renderEpisodeAudio; degrade gracefully on failure ---
@@ -170,8 +176,8 @@ export async function registerPodcastRoutes(
         item.id === episode.id ? finalEpisode : item
       )
     };
-    repository.replaceState(finalState);
-    return { episode: finalEpisode, state: finalState };
+    const persistedFinal = repository.replaceState(finalState);
+    return { episode: finalEpisode, state: persistedFinal };
   });
 
   // POST /api/podcast/episodes/:id/synthesize
@@ -210,8 +216,8 @@ export async function registerPodcastRoutes(
         ep.id === id ? updatedEpisode : ep
       )
     };
-    repository.replaceState(updatedState);
-    return { episode: updatedEpisode, state: updatedState };
+    const persisted = repository.replaceState(updatedState);
+    return { episode: updatedEpisode, state: persisted };
   });
 }
 

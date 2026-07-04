@@ -92,7 +92,8 @@ export function normalizeProductState(value: unknown): ProductState {
     // eventually hits the 28MB body limit, killing all writes. 1000 most-recent kept.
     auditEvents: Array.isArray(candidate.auditEvents) ? candidate.auditEvents.slice(0, MAX_EVENT_LOG) : fallback.auditEvents,
     aiRunEvents: Array.isArray(candidate.aiRunEvents) ? candidate.aiRunEvents.slice(0, MAX_EVENT_LOG) : fallback.aiRunEvents,
-    workflowRuns: Array.isArray(candidate.workflowRuns) ? migrateWorkflowRuns(candidate.workflowRuns) : fallback.workflowRuns,
+    // 审计修复(P3-32):workflowRuns 此前无封顶(audit/aiRun 有 1000);与它们对齐滚动窗。
+    workflowRuns: Array.isArray(candidate.workflowRuns) ? migrateWorkflowRuns(candidate.workflowRuns).slice(0, MAX_EVENT_LOG) : fallback.workflowRuns,
     operationalChecks: Array.isArray(candidate.operationalChecks) ? candidate.operationalChecks : fallback.operationalChecks,
     revision: typeof candidate.revision === "number" ? candidate.revision : fallback.revision,
     schemaVersion: 2,
@@ -127,7 +128,165 @@ export function normalizeProductState(value: unknown): ProductState {
   delete legacy.intelItems;
   delete legacy.readings;
   delete legacy.memoryEdges;
-  return pruneDanglingThemeRefs(normalized);
+  // 审计修复(P3-48):purge 路由曾把响应装饰键 spread 进 state 对象,经前端回写永久寄生——同 intel 死键一并清。
+  delete legacy.artifactPurge;
+  delete legacy.deletedScope;
+  delete legacy.deletedCount;
+  return pruneDanglingContainmentRefs(clampPersistableEnums(pruneDanglingThemeRefs(normalized)));
+}
+
+// ── 审计修复(P0-3):可持久化性规整 · 枚举钳制 ─────────────────────────────
+// SurrealDB SCHEMAFULL 的 ASSERT 白名单是全系统唯一的枚举强制点;API 边界(PUT/import/旧备份)
+// 可送进非法值 → normalize 放行 → persist 事务被 ASSERT 拒 → 基线冻结 wedge,其后所有写永不落
+// 权威库(真实业务 E2E 实测)。在 normalize 统一钳制:非法值规整为**最保守**的合法值(敏感度失败
+// 即敏感、记忆失败即弃用、简报失败即待复核——一律 fail-closed,绝不因坏值放大权限/可见性)。
+// ⚠️ 与 packages/db/src/surreal/migrations/001_nodes.surql 的 ASSERT 清单保持同步。
+function clampEnum<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
+  return (allowed as readonly string[]).includes(value as string) ? (value as T) : fallback;
+}
+
+const SESSION_MODES = ["daily", "decision", "point", "learning", "organization", "long-term"] as const;
+const SESSION_STRENGTHS = ["gentle", "standard", "sharp"] as const;
+const SESSION_STATUSES = ["active", "completed"] as const;
+const TURN_ROLES = ["user", "assistant"] as const;
+const POINT_STATUSES = ["临时想法", "稳定观点", "被挑战中", "已修正", "已放弃"] as const;
+const POINT_CONFIDENCES = ["用户确认", "AI 推断", "待验证"] as const;
+const DECISION_KINDS = ["候选决策", "用户决策"] as const;
+const DECISION_CONFIRMATIONS = ["待用户确认", "用户确认"] as const;
+const DECISION_STATUSES = ["待复盘", "已复盘"] as const;
+const DEBT_STATUSES = ["待了解", "能复述", "已应用", "不相关"] as const;
+const QUESTION_STATUSES = ["开放", "反复出现", "正在聚焦", "阶段性回答"] as const;
+const THEME_MATURITIES = ["萌芽", "重复", "聚焦", "成型", "变化", "关闭"] as const;
+const MEMORY_STATUSES = ["confirmed", "deprecated", "deleted"] as const;
+const SENSITIVITIES = ["normal", "sensitive"] as const;
+const CANDIDATE_STATUSES = ["pending", "approved", "rejected"] as const;
+const MATERIAL_SOURCE_TYPES = ["text", "webpage"] as const;
+const RAG_USAGES = ["interview-context", "memory-candidate"] as const;
+const BRIEF_STATUSES = ["ready", "needs-review"] as const;
+
+/** 必填 string 兜底(真实业务 E2E 实测补全 P0 家族):SurrealDB SCHEMAFULL 的 `TYPE string` 列
+ *  收到非 string(null/数字/缺失)时 persist coerce 失败 → wedge。坏数据(手工 PUT/坏 import/LLM
+ *  漏字段)不该冻结权威库,统一兜空串(fail-closed:宁可空串落库也不 wedge)。
+ *  回归审查 R1-F2:不仅无 DEFAULT 列,`TYPE string DEFAULT ''` 列(UPSERT CONTENT 不重跑 DEFAULT)
+ *  同样会被 null/数字 wedge——故本兜底覆盖 001 的**全部** TYPE string 列(含 DEFAULT '')。 */
+function str(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+/** 必填 array<string> 兜底(回归审查 R1-F2 补 P0-3 缺口):SurrealDB `TYPE array<string>` 列收到
+ *  非数组(null/字符串/数字)或含非 string 元素时 persist coerce 失败 → wedge。非数组→[]、含非
+ *  string 元素→只留 string。⚠️ 与 001_nodes.surql 的 array<string> 列(saidTrack/learnedTrack/keywords)同步。 */
+function strArr(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((x): x is string => typeof x === "string") : [];
+}
+
+function clampPersistableEnums(state: ProductState): ProductState {
+  return {
+    ...state,
+    sessions: state.sessions.map((s) => ({
+      ...s,
+      title: str(s.title),
+      mode: clampEnum(s.mode, SESSION_MODES, "daily"),
+      strength: clampEnum(s.strength, SESSION_STRENGTHS, "standard"),
+      status: clampEnum(s.status, SESSION_STATUSES, "active"),
+      turns: (s.turns ?? []).map((t) => ({
+        ...t,
+        sessionId: str((t as { sessionId?: unknown }).sessionId) || s.id,
+        content: str(t.content),
+        role: clampEnum(t.role, TURN_ROLES, "user")
+      }))
+    })),
+    notes: state.notes.map((n) => ({
+      ...n,
+      sessionId: str(n.sessionId),
+      title: str(n.title),
+      summary: str(n.summary),
+      // R1-F2:DEFAULT '' 的 keyQuote + array<string> 的 saidTrack/learnedTrack 兜底。
+      keyQuote: str(n.keyQuote),
+      saidTrack: strArr(n.saidTrack),
+      learnedTrack: strArr(n.learnedTrack)
+    })),
+    points: state.points.map((p) => ({
+      ...p,
+      title: str(p.title),
+      content: str(p.content),
+      status: clampEnum(p.status, POINT_STATUSES, "临时想法"),
+      // 置信钳制 fail-closed:坏值不得冒充「用户确认」(A3 精神)。
+      confidence: clampEnum(p.confidence, POINT_CONFIDENCES, "待验证")
+    })),
+    decisions: state.decisions.map((d) => ({
+      ...d,
+      title: str(d.title),
+      choice: str(d.choice),
+      decisionKind: clampEnum(d.decisionKind, DECISION_KINDS, "候选决策"),
+      confirmationStatus: clampEnum(d.confirmationStatus, DECISION_CONFIRMATIONS, "待用户确认"),
+      status: clampEnum(d.status, DECISION_STATUSES, "待复盘")
+    })),
+    debts: state.debts.map((d) => ({ ...d, concept: str(d.concept), context: str(d.context), status: clampEnum(d.status, DEBT_STATUSES, "待了解") })),
+    questions: state.questions.map((q) => ({ ...q, question: str(q.question), whyImportant: str(q.whyImportant), status: clampEnum(q.status, QUESTION_STATUSES, "开放") })),
+    themes: state.themes.map((t) => ({ ...t, name: str(t.name), summary: str(t.summary), representativeQuote: str(t.representativeQuote), maturity: clampEnum(t.maturity, THEME_MATURITIES, "萌芽") })),
+    memoryRecords: state.memoryRecords.map((m) => ({
+      ...m,
+      text: str(m.text),
+      sourceType: (str(m.sourceType) || "profile") as typeof m.sourceType,
+      sourceId: str(m.sourceId),
+      evidenceQuote: str(m.evidenceQuote),   // R1-F2:DEFAULT '' 兜底
+      // 坏值绝不冒充 confirmed(会越权进召回);敏感度坏值按敏感处理(隔离而非放行)。
+      status: clampEnum(m.status, MEMORY_STATUSES, "deprecated"),
+      sensitivity: clampEnum(m.sensitivity ?? "normal", SENSITIVITIES, "sensitive")
+    })),
+    memoryCandidates: state.memoryCandidates.map((c) => ({
+      ...c,
+      text: str(c.text),
+      sourceType: (str(c.sourceType) || "profile") as typeof c.sourceType,
+      sourceId: str(c.sourceId),
+      status: clampEnum(c.status, CANDIDATE_STATUSES, "pending"),
+      sensitivity: clampEnum(c.sensitivity ?? "normal", SENSITIVITIES, "sensitive")
+    })),
+    importSources: state.importSources.map((s) => ({
+      ...s,
+      title: str(s.title),
+      content: str(s.content),
+      sourceType: clampEnum(s.sourceType, MATERIAL_SOURCE_TYPES, "text"),
+      status: "chunked" as const,
+      // R1-F1:缺失→normal(与 material schema DEFAULT 'normal' 对齐)。此前独缺 ?? "normal" 致缺失被
+      // 钳成 sensitive → 合法参考资料静默从 RAG/chat 剔除。畸形非法值仍 fail-closed 到 sensitive。
+      sensitivity: clampEnum(s.sensitivity ?? "normal", SENSITIVITIES, "sensitive")
+    })),
+    ragChunks: state.ragChunks.map((c) => ({
+      // usage 坏值 fail-closed 到 memory-candidate(不会被注入访谈上下文)。
+      ...c,
+      sourceId: str(c.sourceId),
+      text: str(c.text),
+      title: str(c.title),          // R1-F2:DEFAULT '' 兜底
+      keywords: strArr(c.keywords), // R1-F2:array<string> 兜底
+      usage: clampEnum(c.usage, RAG_USAGES, "memory-candidate")
+    })),
+    searchBriefs: state.searchBriefs.map((b) => ({
+      ...b,
+      topic: str(b.topic),
+      summary: str(b.summary),   // R1-F2:DEFAULT '' 兜底
+      provider: (str(b.provider) || "local-demo") as SearchProviderId,
+      status: clampEnum(b.status, BRIEF_STATUSES, "needs-review")
+    }))
+  };
+}
+
+// ── 审计修复(P0-1 chunk 变体):悬空派生块修剪 ────────────────────────────
+// rag_chunk 是纯派生、可重建的索引块,sourceId 指向 importSource 或 memoryRecord。
+// 来源已不存在的块 = 孤儿:域层召回会引用不可跳转的来源,且手工包导入时 surreal 的
+// cascade_material_delete 会在 DB 侧删掉它而 hot 保留 → 三份真相静默发散(审计实测)。
+// 统一在 normalize 修剪:hot 先行删除,持久层经正常 diff 同步删 DB 行,绝无发散。
+// note 刻意**不**修剪:种子数据即含无会话 note(note-seed-1),产品语义允许 note 独立存在;
+// 其 DB 侧级联已由 006 migration 收缩(session 级联只删 turn)。
+function pruneDanglingContainmentRefs(state: ProductState): ProductState {
+  const sourceIds = new Set<string>(state.importSources.map((s) => s.id));
+  const memoryIds = new Set<string>(state.memoryRecords.map((m) => m.id));
+  const keptChunks = state.ragChunks.filter((c) => sourceIds.has(c.sourceId) || memoryIds.has(c.sourceId));
+  if (keptChunks.length === state.ragChunks.length) {
+    return state;
+  }
+  return { ...state, ragChunks: keptChunks };
 }
 
 // ponytail: backfill only the asset fields read unguarded downstream — point.evidence
@@ -466,7 +625,13 @@ export function loadProductState(): ProductState {
 
 export function saveProductState(state: ProductState) {
   if (typeof window !== "undefined") {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch {
+      // localStorage 只是本地快照缓存（服务器才是真相源）。配额超限 / 隐私模式下
+      // setItem 会抛 QuotaExceededError——绝不能让它冒泡炸掉渲染，静默跳过即可。
+      console.warn(JSON.stringify({ event: "local_snapshot_skipped" }));
+    }
   }
 }
 

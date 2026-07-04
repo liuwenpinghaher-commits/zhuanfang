@@ -16,9 +16,10 @@ export async function registerPlaybookPatchRoutes(server: FastifyInstance, repos
 
     const nextState = approvePlaybookPatch(state, patch.id);
     const appliedPatch = findPatch(nextState, patch.id);
-    repository.replaceState(nextState);
+    // state 必须是 replaceState 返回的权威态(revision 已 bump),否则客户端下一次乐观 PUT 必 409。
+    const persisted = repository.replaceState(nextState);
 
-    return { patch: appliedPatch, state: nextState };
+    return { patch: appliedPatch, state: persisted };
   });
 
   server.post("/api/playbook-patches/:id/revert", async (request, reply) => {
@@ -33,9 +34,9 @@ export async function registerPlaybookPatchRoutes(server: FastifyInstance, repos
 
     const nextState = revertPlaybookPatch(state, patch.id);
     const revertedPatch = findPatch(nextState, patch.id);
-    repository.replaceState(nextState);
+    const persisted = repository.replaceState(nextState);
 
-    return { patch: revertedPatch, state: nextState };
+    return { patch: revertedPatch, state: persisted };
   });
 }
 

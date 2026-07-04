@@ -105,11 +105,14 @@ interface ProviderClients {
 const REQUEST_BODY_LIMIT_BYTES = 28 * 1024 * 1024;
 
 export function buildApiServer(options: BuildApiServerOptions = {}) {
-  const server = Fastify({ logger: false, bodyLimit: REQUEST_BODY_LIMIT_BYTES });
+  // 回归审查 R3-C:trustProxy 让 request.protocol 认 X-Forwarded-Proto——否则 TLS 终止反代下
+  // request.protocol 恒 http,CSRF 守卫的 sameHost 比较(origin https:// vs http://internal)恒 false,
+  // 漏配 PRODUCT_WEB_ORIGINS + 同源托管时会 403 拦掉全部合法同源写。
+  const server = Fastify({ logger: false, bodyLimit: REQUEST_BODY_LIMIT_BYTES, trustProxy: true });
   const runtimeEnv = options.env ?? process.env;
   registerCors(server, runtimeEnv);
   registerProductionAuth(server, runtimeEnv);
-  registerWriteSerialization(server);
+  const writeGate = registerWriteSerialization(server);
   registerErrorHandler(server);
   const innerProductStateRepository = options.productStateRepository ?? createDefaultProductStateRepository(options.productStateDbPath);
   const providerClients: ProviderClients = {};
@@ -175,10 +178,28 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     };
     return repo.getPersistHealth?.() ?? repo.getAuthoritative?.().getPersistHealth?.();
   };
-  void server.register(registerHealthRoutes(probePersistHealth));
+  // 方案二:图↔软链一致性审计探针(同一注入矩阵:surreal 直接有 / dual-surreal 经 getAuthoritative /
+  // sqlite、dual → undefined → 路由回 501)。方法是 handle 闭包实现、不依赖 this,解包后直调安全。
+  type GraphAuditFn = () => Promise<{
+    ok: boolean; auditedEdgeTables: string[]; expectedCount: number; actualCount: number;
+    missingCount: number; unexpectedCount: number; missingInDb: string[]; unexpectedInDb: string[];
+    danglingProvenanceCount: number;
+    nodeMissingCount: number; nodeUnexpectedCount: number; nodeMissingInDb: string[]; nodeUnexpectedInDb: string[];
+  }>;
+  const probeGraphAudit = () => {
+    const repo = innerProductStateRepository as {
+      auditGraphConsistency?: GraphAuditFn;
+      getAuthoritative?: () => { auditGraphConsistency?: GraphAuditFn };
+    };
+    const audit = repo.auditGraphConsistency ?? repo.getAuthoritative?.().auditGraphConsistency;
+    return audit?.();
+  };
+  void server.register(registerHealthRoutes(probePersistHealth, probeGraphAudit));
   void server.register(async (registeredServer) => {
     await registerSystemRoutes(registeredServer, productStateRepository, {
       stateStore,
+      // 审计修复(P3-47):真实权威库档位透出(dual-surreal 下 stateStore 仍是 sqlite)。
+      productStore: (runtimeEnv.PRODUCT_STORE ?? "sqlite").trim().toLowerCase(),
       env: runtimeEnv,
       envFilePath,
       refreshProviderClients,
@@ -207,7 +228,9 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
       env: runtimeEnv,
       rawMaterialRepository,
       audioRepository,
-      knowledgeIndexRepository
+      knowledgeIndexRepository,
+      embeddingClient: providerClients.embeddingClient,
+      llmBudget: sharedBudget
     });
   });
   void server.register(async (registeredServer) => {
@@ -222,12 +245,13 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     await registerRawMaterialRoutes(registeredServer, rawMaterialRepository, productStateRepository);
   });
   void server.register(async (registeredServer) => {
-    await registerAudioRoutes(registeredServer, audioRepository);
+    await registerAudioRoutes(registeredServer, audioRepository, productStateRepository);
   });
   void server.register(async (registeredServer) => {
     await registerSearchRoutes(registeredServer, productStateRepository, {
       ...providerClients,
-      llmBudget: sharedBudget
+      llmBudget: sharedBudget,
+      writeGate
     });
   });
   void server.register(async (registeredServer) => {
@@ -266,7 +290,12 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     });
   });
   void server.register(async (registeredServer) => {
-    await registerMemoryRecordRoutes(registeredServer, productStateRepository);
+    await registerMemoryRecordRoutes(registeredServer, productStateRepository, {
+      // 审计修复(P2-12):编辑记忆文本重嵌所需(与 approve 同源 client)。
+      embeddingClient: providerClients.embeddingClient,
+      // 回归审查 R6-6:PATCH 豁免全局写锁后,handler 用 writeGate 把同步 RMW 串行化(embed 在锁外)。
+      writeGate
+    });
   });
   void server.register(async (registeredServer) => {
     // M3c: candidate approval embeds the new long-term record (semantic recall).
@@ -274,7 +303,9 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     // optionally summarize merged clusters into pending HITL candidates.
     await registerMemoryCandidateRoutes(registeredServer, productStateRepository, {
       embeddingClient: providerClients.embeddingClient,
-      bailianChatClient: providerClients.bailianChatClient
+      bailianChatClient: providerClients.bailianChatClient,
+      // 审计修复(P1-6):补上全库 13 个 LLM 调用点中唯一漏网的预算接线。
+      llmBudget: sharedBudget
     });
   });
   void server.register(async (registeredServer) => {
@@ -297,7 +328,8 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
       knowledgeIndexRepository,
       {
         embeddingClient: providerClients.embeddingClient,
-        llmBudget: sharedBudget
+        llmBudget: sharedBudget,
+        writeGate
       }
     );
   });
@@ -335,7 +367,8 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
       repository: productStateRepository,
       clients: providerClients, // live ref — picks up runtime key refreshes
       budget: sharedBudget,
-      intervalMs: (research?.scheduleIntervalMin ?? 1440) * 60 * 1000
+      intervalMs: (research?.scheduleIntervalMin ?? 1440) * 60 * 1000,
+      writeGate
     });
   }
 
@@ -352,13 +385,20 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
  * embeddingClient 通过 getter 取，因为运行时 refresh 会重建该 client（key 变更），
  * 装配期一次性捕获会拿到陈旧引用。其余方法显式转发（接口仅 4 个方法，显式比展开更稳）。
  */
-function withKnowledgeReindex(
+export function withKnowledgeReindex(
   inner: ProductStateRepository,
   knowledgeRepo: KnowledgeIndexRepository,
   getEmbeddingClient: () => BailianEmbeddingClient | undefined,
   budget: ReturnType<typeof createLlmBudget>
 ): ProductStateRepository {
   return {
+    // 能力透传(P2b 生产可达性修复):此前只回 4 个接口方法,把 inner(surreal handle /
+    // dual 的 getAuthoritative)的原生召回能力全部吞掉 → 路由层 asNativeRecall(wrapped)
+    // 恒 undefined,原生召回在生产静默失效、fail-safe 回落把问题掩成"一切正常"。
+    // spread 透传 own 方法(repo 各实现均为闭包方法的对象字面量,不依赖 this,解包安全),
+    // 使 asNativeRecall 的注入矩阵(surreal 直达 / dual-surreal 经 getAuthoritative)真正可达;
+    // 后声明的同名键覆盖 spread,读写语义与此前完全一致。
+    ...inner,
     getState: () => inner.getState(),
     resetState: () => inner.resetState(),
     getInterviewSession: (id) => inner.getInterviewSession(id),
@@ -366,7 +406,11 @@ function withKnowledgeReindex(
       const prev = inner.getState();
       const result = inner.replaceState(next, opts);
       // fire-and-forget：reindex 用落库后的真实下一态(result)，而非传入的 next（revision 已由仓库 bump）。
-      void reindexOnStateChange(prev, result, knowledgeRepo, getEmbeddingClient(), budget);
+      // 回归审查 R4-3:import/purge 传 skipReindex——它们随后显式全量 rebuild/清空,包装层的增量重索引
+      // 是重复嵌入(与显式 rebuild 竞态,浪费预算)。跳过后由显式路径负责索引一致性。
+      if (!opts?.skipReindex) {
+        void reindexOnStateChange(prev, result, knowledgeRepo, getEmbeddingClient(), budget);
+      }
       return result;
     }
   };
@@ -412,11 +456,27 @@ function refreshRuntimeProviderClients(
 // throughput cost is negligible and it eliminates the lost-update class entirely (including the
 // background research scheduler racing a user action). Reads (GET/HEAD/OPTIONS) are not gated.
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
-function registerWriteSerialization(server: ReturnType<typeof Fastify>) {
+// 写 slot 观测/自愈参数(真实业务 E2E 实测的死锁形态:某 mutating 请求的响应永不完成——客户端
+// 中途断连/永挂 await——onResponse/onError 均不触发,slot 永久持有,所有后续写排队冻结,而读全部正常)。
+const WRITE_SLOT_WAIT_WARN_MS = 10_000;   // 等锁超过此时长开始点名持锁者(每 10s 一条,凶手 URL 直接进日志)
+// 审计修复(P2-20 + 回归审查 R3-B):上限须盖过**最长合法写**,否则合法长写被强放后以旧基整态覆盖
+// 窗口内并发写(反向 clobber)。实测最长合法写:/end = 记忆抽取(60s)+finalize(180s)+矛盾精判(60s)
+// +embedding(2×15s)≈330s;consolidate 已由 MAX_SUMMARY_CLUSTERS 限规模到上限内(见 memory-candidates)。
+// 故上限提到 360s 覆盖 /end;真僵尸(断连腰斩)仍被 close 钩子即时放行,本上限只兜"永挂 await"极端
+// (合法写不再触发它 → 消除"强放-覆盖")。多出的 120s 仅在真死锁时多冻结,close 钩子已覆盖常见断连。
+const WRITE_SLOT_MAX_HOLD_MS = 360_000;   // 持锁上限:盖过最长合法写(/end~330s),使合法长写不被强放-覆盖
+export interface WriteGate {
+  /** 内部写方(调度器/auto-run 终写)经此与 HTTP 串行写互斥;fn 应保持短小(读-合并-写)。 */
+  runExclusive<T>(label: string, fn: () => Promise<T> | T): Promise<T>;
+}
+
+function registerWriteSerialization(server: ReturnType<typeof Fastify>): WriteGate {
   let writeQueue: Promise<void> = Promise.resolve();
   const releases = new WeakMap<FastifyRequest, () => void>();
+  // 当前持锁者快照:写路径卡死时日志能直接指认,而不是集体沉默。
+  let holder: { label: string; since: number } | null = null;
 
-  server.addHook("preHandler", async (request: FastifyRequest) => {
+  server.addHook("preHandler", async (request: FastifyRequest, reply: FastifyReply) => {
     if (!MUTATING_METHODS.has(request.method)) {
       return;
     }
@@ -427,14 +487,58 @@ function registerWriteSerialization(server: ReturnType<typeof Fastify>) {
     if (request.url.startsWith("/api/research/auto-run")) {
       return;
     }
+    // 回归审查 R6-6:PATCH 记忆记录 handler 会 await embedding(慢网络 IO,数百 ms)。它已改为 embed 在
+    // 锁外先算、只把同步 RMW 包进 writeGate.runExclusive(重读 latest 原子合并,并发安全),故豁免其全局
+    // preHandler 写锁——低频编辑不再持全局 slot 整个 embed 期间阻塞其它写。仅 PATCH 豁免(DELETE/deprecate
+    // 无 embed、快速同步,继续走全局锁)。
+    if (request.method === "PATCH" && request.url.startsWith("/api/memory-records/")) {
+      return;
+    }
+    const label = `${request.method} ${request.url}`;
     let release!: () => void;
     const slot = new Promise<void>((resolve) => {
       release = resolve;
     });
     const prior = writeQueue;
     writeQueue = writeQueue.then(() => slot); // enqueue our slot synchronously, in arrival order
-    releases.set(request, release);
-    await prior; // block here until every earlier write has released
+
+    let maxHoldTimer: NodeJS.Timeout | undefined;
+    let released = false;
+    const releaseOnce = () => {
+      if (released) return;
+      released = true;
+      if (maxHoldTimer) clearTimeout(maxHoldTimer);
+      if (holder?.label === label) holder = null;
+      release();
+    };
+    releases.set(request, releaseOnce);
+
+    // 等待观测:>10s 未拿到锁 → 周期性点名持锁者(诊断死锁必需;此前只能看到"全部写都卡")。
+    const waitStart = Date.now();
+    const warnTimer = setInterval(() => {
+      console.error(JSON.stringify({
+        event: "write_slot_blocked",
+        waiting: label,
+        waitedMs: Date.now() - waitStart,
+        heldBy: holder?.label ?? "unknown",
+        heldForMs: holder ? Date.now() - holder.since : undefined
+      }));
+    }, WRITE_SLOT_WAIT_WARN_MS);
+    try {
+      await prior; // block here until every earlier write has released
+    } finally {
+      clearInterval(warnTimer);
+    }
+    holder = { label, since: Date.now() };
+
+    // 持锁上限:响应永不完成的请求(断连腰斩/永挂 await)不再永久冻结全部写路径——强放并响亮记账。
+    maxHoldTimer = setTimeout(() => {
+      console.error(JSON.stringify({ event: "write_slot_force_released", holder: label, heldForMs: WRITE_SLOT_MAX_HOLD_MS }));
+      releaseOnce();
+    }, WRITE_SLOT_MAX_HOLD_MS);
+    // 客户端断连即放行:onResponse/onError 在"响应永不完成"时都不会触发(E2E 实测死锁形态);
+    // ServerResponse 'close' 在正常完成与提前断连两种情况都触发,释放是幂等的,可安全兜底。
+    reply.raw.once("close", releaseOnce);
   });
 
   const release = async (request: FastifyRequest) => {
@@ -448,6 +552,36 @@ function registerWriteSerialization(server: ReturnType<typeof Fastify>) {
   server.addHook("onError", async (request: FastifyRequest, _reply: FastifyReply, _err: Error) => {
     await release(request);
   });
+
+  // 审计修复(D3/D4):内部写方入口——后台调度器与 auto-run 终写此前完全绕开串行化,
+  // 与在途 HTTP 写互相 clobber。经同一队列排队,fn 短小(同步读-合并-写),不设 watchdog。
+  return {
+    async runExclusive<T>(label: string, fn: () => Promise<T> | T): Promise<T> {
+      let release!: () => void;
+      const slot = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const prior = writeQueue;
+      writeQueue = writeQueue.then(() => slot);
+      await prior;
+      const gateLabel = `internal:${label}`;
+      holder = { label: gateLabel, since: Date.now() };
+      // 回归审查 R3-D:与 preHandler 对齐的持锁上限强放(防御纵深)——当前调用方 fn 都是同步快速的
+      // 读-合并-写,但签名允许异步;若未来传入挂起的异步 fn,无此兜底会永久冻结全部 HTTP 写队列。
+      let released = false;
+      const releaseOnce = () => { if (released) return; released = true; if (holder?.label === gateLabel) holder = null; release(); };
+      const maxHoldTimer = setTimeout(() => {
+        console.error(JSON.stringify({ event: "write_slot_force_released", holder: gateLabel, heldForMs: WRITE_SLOT_MAX_HOLD_MS }));
+        releaseOnce();
+      }, WRITE_SLOT_MAX_HOLD_MS);
+      try {
+        return await fn();
+      } finally {
+        clearTimeout(maxHoldTimer);
+        releaseOnce();
+      }
+    }
+  };
 }
 
 // Global error handler. Routes that validate return explicit 4xx via reply.code(...).send(...)
@@ -499,6 +633,17 @@ function registerCors(server: ReturnType<typeof Fastify>, env: Record<string, st
 
     if (allowedOrigin) {
       reply.header("access-control-allow-origin", allowedOrigin);
+    }
+    // 审计修复(P1-1 CSRF 面):浏览器跨站"简单请求"(无预检 POST)不受 CORS 拦【发送】——
+    // dev/无 token 档下任意网页可盲发 POST /api/state/reset 清库(purge/import 有 confirm
+    // 护栏,reset 无)。凡 mutating 请求携带 Origin 且既不在允许集也非同宿主,一律 403;
+    // 无 Origin 的请求(curl/测试/服务端互调)不受影响,合法前端(允许集内)不受影响。
+    if (origin && MUTATING_METHODS.has(request.method)) {
+      const sameHost = origin === `${request.protocol}://${request.headers.host}`;
+      const allowedSet = extraOrigins ?? devOrigins;
+      if (!allowedSet.has(origin) && !sameHost) {
+        return reply.code(403).send({ error: "Cross-origin mutating request rejected." });
+      }
     }
     reply.header("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
     reply.header("access-control-allow-headers", "content-type,authorization");
@@ -645,10 +790,27 @@ export async function startServer() {
     repository = createDualWriteRepository({ authoritative: sqlite, shadow: surreal });
     console.warn(JSON.stringify({ event: "product_store", mode: "dual", detail: "sqlite 权威 / surreal 影子" }));
   } else if (productStore === "dual-surreal") {
+    // 审计修复(D6/P1-4):回退后再切回、或漏 migrate 直切时,surreal 处女库的 demo 种子会成为
+    // 权威并镜像覆盖 sqlite 冷备的真实数据(mirror 后比对恒等,零告警)。启动期比对两库 revision:
+    // surreal 明显落后(尤其 <=1 的处女态)而 sqlite 有实数据 → 响亮告警,让运维先 migrate。
     // P1d:surreal 权威 + sqlite 冷备。切读 surreal,sqlite 仍写以便回退。
     const sqlite = createSqliteProductStateRepository({ dbPath: productStateDbPath });
     const surreal = await loadSurreal();
     const { createDualWriteRepository } = await import("./dual-write-repository");
+    try {
+      const surrealRev = surreal.getState().revision ?? 0;
+      const sqliteRev = sqlite.getState().revision ?? 0;
+      if (surrealRev <= 1 && sqliteRev > 1) {
+        console.warn(JSON.stringify({
+          event: "dual_surreal_authority_suspect",
+          detail: "surreal 权威库近乎空(revision<=1)而 sqlite 冷备有实数据 —— 疑似漏 migrate 或回退后误切。" +
+            "首次写会以 surreal 空态镜像覆盖 sqlite。请先运行 migrate-sqlite-to-surreal 再切 dual-surreal。",
+          surrealRevision: surrealRev, sqliteRevision: sqliteRev
+        }));
+      }
+    } catch (err) {
+      console.warn(JSON.stringify({ event: "dual_surreal_authority_check_failed", error: err instanceof Error ? err.message : String(err) }));
+    }
     repository = createDualWriteRepository({ authoritative: surreal, shadow: sqlite });
     console.warn(JSON.stringify({ event: "product_store", mode: "dual-surreal", detail: "surreal 权威 / sqlite 冷备" }));
   } else {

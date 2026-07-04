@@ -327,12 +327,10 @@ export function createQuestionFromSearchBrief(
   return { question, nextState };
 }
 
-export function createSearchBriefFromInput(
-  state: ProductState,
-  input: SearchBriefInput
-): { brief: SearchBrief; nextState: ProductState } {
-  const createdAt = nowIso();
-  const sanitizedInputWithoutTrace: SearchBriefInput = {
+/** 审计修复(F1):外部 provider 文本字段的统一清洗口径——此前只有创建路径清洗,refresh/auto-run
+ *  直接 spread 落库,注入纵深不一致。create 与 refresh 两条路径共用本函数。 */
+export function sanitizeSearchBriefInputFields(input: SearchBriefInput): SearchBriefInput {
+  return {
     ...input,
     summary: sanitizeExternalMaterialText(input.summary, "外部资料摘要已清洗，需回到原始来源核验。"),
     facts: sanitizeExternalMaterialList(input.facts, "外部资料事实已清洗，需回到原始来源核验。"),
@@ -343,6 +341,14 @@ export function createSearchBriefFromInput(
     sourceAngles: sanitizeExternalMaterialList(input.sourceAngles, "外部素材角度已清洗，需回到用户具体事件验证。"),
     sources: input.sources.map(sanitizeExternalSource)
   };
+}
+
+export function createSearchBriefFromInput(
+  state: ProductState,
+  input: SearchBriefInput
+): { brief: SearchBrief; nextState: ProductState } {
+  const createdAt = nowIso();
+  const sanitizedInputWithoutTrace: SearchBriefInput = sanitizeSearchBriefInputFields(input);
   const sanitizedInput: SearchBriefInput = {
     ...sanitizedInputWithoutTrace,
     sourceTrace: normalizeSearchBriefSourceTrace(input.sourceTrace, sanitizedInputWithoutTrace)

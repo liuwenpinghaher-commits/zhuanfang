@@ -34,6 +34,9 @@ type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface BailianEmbeddingClient {
   embed(texts: string[]): Promise<number[][]>;
+  /** 审计修复(P2-13):向量空间标识——EMBEDDING_PROVIDER 切换后新旧向量同维混存零征兆,
+   *  相似度≈噪声;写入侧据此在记录上盖 embeddingProvider 戳,rebuild 可识别陈旧空间重嵌。 */
+  readonly providerId?: string;
 }
 
 export interface BailianSearchClient {
@@ -319,12 +322,14 @@ export function createBailianSearchClient(options: BailianSearchClientOptions): 
       }
 
       const payload = (await response.json()) as BailianResponsesOutput;
-      const parsedOutput = parseSearchJson(extractOutputText(payload));
+      const parseResult = parseSearchJson(extractOutputText(payload));
+      // 审计修复(P2-25):解析失败 → needs-review(模板兜底内容仍返回,但如实标降级供复核)。
+      const parsedOutput = parseResult ?? {};
 
       return {
         topic: input.topic,
         provider: "bailian",
-        status: "ready",
+        status: parseResult === null ? "needs-review" : "ready",
         summary:
           typeof parsedOutput.summary === "string" && parsedOutput.summary.trim()
             ? parsedOutput.summary.trim()
@@ -1088,14 +1093,17 @@ function extractOutputText(payload: BailianResponsesOutput) {
   );
 }
 
-function parseSearchJson(text: string): BailianSearchJson {
+function parseSearchJson(text: string): BailianSearchJson | null {
   const trimmed = text.trim();
   const jsonText = trimmed.match(/```json\s*([\s\S]*?)```/)?.[1] ?? trimmed;
 
   try {
     return JSON.parse(jsonText) as BailianSearchJson;
   } catch {
-    return {};
+    // 审计修复(P2-25):解析失败此前静默返回 {} → 全模板简报以 status:'ready' 冒充成功。
+    // 返回 null 让调用方标 needs-review 并记日志,坏输出不再被标成好数据。
+    console.warn(JSON.stringify({ event: "bailian_search_parse_failed", sample: trimmed.slice(0, 120) }));
+    return null;
   }
 }
 
@@ -1251,6 +1259,9 @@ export function createBailianVoiceEnrollmentClient(options: {
     async listVoices() {
       const response = await fetchImpl(customizationUrl, {
         method: "POST",
+        // 审计修复(P2-21):enrollment 三外呼此前是本文件唯一无 abort 的 fetch——half-dead 连接
+        // 挂到 undici 默认 headers 超时(~300s)且请求持全局写锁。对齐每呼必 abort 的基线。
+        signal: AbortSignal.timeout(30_000),
         headers: {
           authorization: `Bearer ${options.apiKey}`,
           "content-type": "application/json"
@@ -1285,6 +1296,9 @@ export function createBailianVoiceEnrollmentClient(options: {
     async createVoice(input) {
       const response = await fetchImpl(customizationUrl, {
         method: "POST",
+        // 审计修复(P2-21):enrollment 三外呼此前是本文件唯一无 abort 的 fetch——half-dead 连接
+        // 挂到 undici 默认 headers 超时(~300s)且请求持全局写锁。对齐每呼必 abort 的基线。
+        signal: AbortSignal.timeout(30_000),
         headers: {
           authorization: `Bearer ${options.apiKey}`,
           "content-type": "application/json"
@@ -1320,6 +1334,9 @@ export function createBailianVoiceEnrollmentClient(options: {
     async deleteVoice(voiceId) {
       const response = await fetchImpl(customizationUrl, {
         method: "POST",
+        // 审计修复(P2-21):enrollment 三外呼此前是本文件唯一无 abort 的 fetch——half-dead 连接
+        // 挂到 undici 默认 headers 超时(~300s)且请求持全局写锁。对齐每呼必 abort 的基线。
+        signal: AbortSignal.timeout(30_000),
         headers: {
           authorization: `Bearer ${options.apiKey}`,
           "content-type": "application/json"
@@ -1379,6 +1396,7 @@ export function createBailianEmbeddingClient(
   const fetchImpl = options.fetchImpl ?? fetch;
 
   return {
+    providerId: `dashscope:${options.model ?? "text-embedding-v3"}`,
     async embed(texts) {
       const response = await fetchImpl(`${baseUrl}/embeddings`, {
         method: "POST",

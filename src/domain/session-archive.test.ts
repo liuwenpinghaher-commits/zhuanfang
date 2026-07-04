@@ -72,6 +72,7 @@ function makeSession(id: string, title = "会话"): InterviewSession {
       opinionEvolution: [],
       statedPositions: [],
       openDebts: [],
+    decisionsToReview: [],
       blindspotCandidates: [],
       knowledgeFragments: [],
       suggestedOpening: "",

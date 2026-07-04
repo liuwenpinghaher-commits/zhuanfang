@@ -104,6 +104,11 @@ export async function registerCorpusRoutes(
 
   server.post("/api/corpus/insights", async (request, reply) => {
     const input = normalizeCorpusInput(request.body);
+    // 审计修复(P3-40):与 /api/import/documents 的 256KB 护栏对齐(此前 corpus content 无单字段
+    // 上限且 content+turns 双份入 state,粘贴 5-10MB 逐字稿直逼 28MB PUT 墙)。
+    if (input.content.length > CORPUS_CONTENT_MAX_CHARS) {
+      return reply.code(422).send({ error: `语料内容超出 ${CORPUS_CONTENT_MAX_CHARS} 字上限。` });
+    }
     if (!input.content.trim()) {
       return reply.code(422).send({ error: "Corpus content is required." });
     }
@@ -115,8 +120,9 @@ export async function registerCorpusRoutes(
       console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "corpus_insights" }));
     }
     const { insight, nextState } = await analyzeCorpus(state, input, allowLlm ? options.bailianChatClient : undefined, focus);
-    repository.replaceState(nextState);
-    return { insight, state: nextState };
+    // state 必须是 replaceState 返回的权威态(revision 已 bump),否则客户端下一次乐观 PUT 必 409。
+    const persisted = repository.replaceState(nextState);
+    return { insight, state: persisted };
   });
 }
 
@@ -147,6 +153,9 @@ function normalizeFocus(value: unknown): string | undefined {
   // material so it can't smuggle instruction-injection text.
   return sanitizeExternalMaterialText(payload.focus.trim(), payload.focus.trim());
 }
+
+// 审计修复(P3-40):与 IMPORT_CONTENT_MAX_CHARS 同量级。
+const CORPUS_CONTENT_MAX_CHARS = 256 * 1024;
 
 function normalizeCorpusInput(value: unknown): CorpusImportInput {
   const payload = normalizePayload(value);

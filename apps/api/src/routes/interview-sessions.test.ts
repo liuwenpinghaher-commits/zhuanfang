@@ -111,6 +111,18 @@ describe("interview-sessions routes", () => {
     await server.close();
   });
 
+  it("/control: 向 completed 会话追加控制轮被拒 409(审计修复 P2-19,与 /turns 对称)", async () => {
+    const server = buildApiServer({ env: {} });
+    const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "decision" } })).json();
+    const id = created.session.id as string;
+    await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/turns`, payload: { content: "我现在带的是 12 个人，最难的是放权。" } });
+    const end = await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/end` });
+    expect(end.statusCode).toBe(200);
+    const res = await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/control`, payload: { action: "sharper" } });
+    expect(res.statusCode).toBe(409);
+    await server.close();
+  });
+
   it("/record-turn: appending to a completed + offloaded session is rejected 409", async () => {
     const server = buildApiServer({ env: {} });
     const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "decision" } })).json();

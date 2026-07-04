@@ -202,7 +202,7 @@ export function mergeFinalizedState(
     nextState.memoryCandidates = [anchored, ...(nextState.memoryCandidates ?? [])];
   }
   nextState.points = [...content.points.map(p => ({ ...p, sourceSessionId: session.id })), ...nextState.points];
-  nextState.questions = [...content.questions.map(q => ({ ...q, sourceSessionId: session.id })), ...nextState.questions];
+  nextState.questions = upsertFinalizeQuestions(nextState.questions, content.questions, session.id, completedAt);
   nextState.decisions = [...content.decisions.map(d => ({ ...d, sourceSessionId: session.id })), ...nextState.decisions];
   nextState.debts = upsertFinalizeDebts(nextState.debts, content.debts, session.id, completedAt);
   nextState.themes = upsertFinalizeThemes(nextState.themes, content.themes, completedAt);
@@ -315,6 +315,43 @@ function normalizeThemeName(name: string): string {
  *  fresh theme born at 萌芽. */
 /** 审查改进(M3):按归一化 concept upsert 知识债——命中同概念则 appearances++ 并 refresh,否则新建 appearances=1。
  *  与 upsertFinalizeThemes 对称,根治"同概念债每次 finalize 重复 prepend"+ 补"反复欠的债"优先级信号。 */
+/** 审计修复(P2-11):question 此前是纯 prepend——同题跨场堆积、appearances 恒 1 却被 UI 当
+ *  「出现次数」展示、「反复出现」状态机器不可达。与 debts/themes 对称:按问题文本归一 upsert,
+ *  命中则 appearances+1 并将仍处「开放」的问题升为「反复出现」(该状态首次获得机器写入路径);
+ *  用户已置的「正在聚焦/阶段性回答」不被覆盖(与 debt 守卫同公理)。 */
+export function upsertFinalizeQuestions(
+  existingQuestions: QuestionAsset[],
+  incoming: QuestionAsset[],
+  sessionId: string,
+  completedAt: string
+): QuestionAsset[] {
+  let questions = existingQuestions;
+  for (const inc of incoming) {
+    const key = normalizeThemeName(inc.question);
+    const match = key ? questions.find((q) => normalizeThemeName(q.question) === key) : undefined;
+    if (match) {
+      questions = questions.map((q) =>
+        q.id === match.id
+          ? {
+              ...q,
+              appearances: (q.appearances ?? 1) + 1,
+              whyImportant: inc.whyImportant || q.whyImportant,
+              nextPrompt: inc.nextPrompt || q.nextPrompt,
+              // 回归审查 R5-4:合并去重(旧∪新)而非替换——一个问题可跨多主题,替换会丢历史主题链
+              // (首次[控制感]、再现命中[风险偏好]→原替换只剩[风险偏好])。与 debt upsert"保留既有"语义对齐。
+              relatedThemeIds: Array.from(new Set([...(q.relatedThemeIds ?? []), ...(inc.relatedThemeIds ?? [])])),
+              status: q.status === "开放" ? "反复出现" : q.status,
+              updatedAt: completedAt
+            }
+          : q
+      );
+    } else {
+      questions = [{ ...inc, sourceSessionId: sessionId, appearances: inc.appearances ?? 1 }, ...questions];
+    }
+  }
+  return questions;
+}
+
 export function upsertFinalizeDebts(
   existingDebts: KnowledgeDebt[],
   incoming: KnowledgeDebt[],
@@ -326,9 +363,21 @@ export function upsertFinalizeDebts(
     const key = normalizeThemeName(inc.concept);
     const match = key ? debts.find((d) => normalizeThemeName(d.concept) === key) : undefined;
     if (match) {
+      // 审计修复(P2-9):status 是知识债唯一的"用户确认"载体(无 confidence 字段)。用户显式置的
+      // 「不相关/已应用/能复述」不被 LLM 重提同概念时静默重置回「待了解」——那会让已判定不相关的
+      // 概念重回追问队列,违背"用户确认不被 AI 覆盖"公理(与 point C 守卫/decision 409 对称)。
+      // 仅当既有状态仍是初始「待了解」时才接受 incoming status;其余保留用户状态,计数照常自增。
       debts = debts.map((d) =>
         d.id === match.id
-          ? { ...d, appearances: (d.appearances ?? 1) + 1, context: inc.context, whyImportant: inc.whyImportant, nextQuestion: inc.nextQuestion, status: inc.status, updatedAt: completedAt }
+          ? {
+              ...d,
+              appearances: (d.appearances ?? 1) + 1,
+              context: inc.context,
+              whyImportant: inc.whyImportant,
+              nextQuestion: inc.nextQuestion,
+              status: d.status === "待了解" ? inc.status : d.status,
+              updatedAt: completedAt
+            }
           : d
       );
     } else {

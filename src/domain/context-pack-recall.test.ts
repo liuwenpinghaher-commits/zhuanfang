@@ -110,3 +110,36 @@ describe("P2b 审查修复", () => {
     expect(buildInterviewContextPack(s, {}).topicHint).toBe("高频主题");
   });
 });
+
+describe("buildInterviewContextPack: ragHits 消费(方案一)", () => {
+  function ragConsumeState(): ProductState {
+    const base = createInitialProductState();
+    return {
+      ...base,
+      importSources: [
+        { id: "is_1", title: "普通来源", sourceType: "text", content: "正文", status: "chunked", sensitivity: "normal", chunkIds: ["rc_1", "rc_2", "rc_mc"], createdAt: "2026-06-27T00:00:00.000Z", updatedAt: "2026-06-27T00:00:00.000Z" },
+        { id: "is_sens", title: "敏感来源", sourceType: "text", content: "私密", status: "chunked", sensitivity: "sensitive", chunkIds: ["rc_sens"], createdAt: "2026-06-27T00:00:00.000Z", updatedAt: "2026-06-27T00:00:00.000Z" }
+      ] as unknown as ProductState["importSources"],
+      ragChunks: [
+        { id: "rc_1", sourceId: "is_1", title: "块1", text: "正式资料", keywords: [], tokenEstimate: 5, usage: "interview-context", createdAt: "2026-06-27T00:00:00.000Z" },
+        { id: "rc_2", sourceId: "is_1", title: "块2", text: "第二块", keywords: [], tokenEstimate: 5, usage: "interview-context", createdAt: "2026-06-27T00:00:00.000Z" },
+        { id: "rc_mc", sourceId: "is_1", title: "候选块", text: "候选", keywords: [], tokenEstimate: 5, usage: "memory-candidate", createdAt: "2026-06-27T00:00:00.000Z" },
+        { id: "rc_sens", sourceId: "is_sens", title: "敏感块", text: "私密内容", keywords: [], tokenEstimate: 5, usage: "interview-context", createdAt: "2026-06-27T00:00:00.000Z" }
+      ] as unknown as ProductState["ragChunks"]
+    };
+  }
+  it("注入 ragHits:保留 rrf 名次序;域层重验门控(usage 不符/敏感来源滤掉,不信任注入方)", () => {
+    const s = ragConsumeState();
+    const limit = Math.max(1, s.systemConfig.search.maxSources);
+    const recall: RecallResult = { ragHits: [{ id: "rc_mc", text: "" }, { id: "rc_sens", text: "" }, { id: "rc_2", text: "" }, { id: "rc_1", text: "" }] };
+    const pack = buildInterviewContextPack(s, {}, recall);
+    expect(pack.ragChunks.map((c) => c.id)).toEqual(["rc_2", "rc_1"].slice(0, limit));
+  });
+  it("ragHits 全被门控滤空 → 回落域层排序路径(与不带 recall 完全一致,注入绝不减能力)", () => {
+    const s = ragConsumeState();
+    const gatedOut: RecallResult = { ragHits: [{ id: "rc_mc", text: "" }, { id: "rc_nonexist", text: "" }] };
+    const withRecall = buildInterviewContextPack(s, {}, gatedOut);
+    const without = buildInterviewContextPack(s, {});
+    expect(withRecall.ragChunks.map((c) => c.id)).toEqual(without.ragChunks.map((c) => c.id));
+  });
+});

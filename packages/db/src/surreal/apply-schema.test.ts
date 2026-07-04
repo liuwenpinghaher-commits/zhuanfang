@@ -16,7 +16,7 @@ describe("applySchema", () => {
   it("在空库上应用全部 migrations(返回已应用文件名)", async () => {
     const d = await freshDb();
     const applied = await applySchema(d);
-    expect(applied).toEqual(["001_nodes.surql", "002_relations.surql", "003_index.surql", "004_p1a_rest_meta.surql", "005_p3_cascade.surql"]);
+    expect(applied).toEqual(["001_nodes.surql", "002_relations.surql", "003_index.surql", "004_p1a_rest_meta.surql", "005_p3_cascade.surql", "006_p4_cascade_note_scope.surql"]);
   });
 
   it("L1:关系表 ENFORCED——RELATE 指向不存在端点节点应被引擎拒绝(DB 层引用完整性兜底)", async () => {
@@ -33,7 +33,7 @@ describe("applySchema", () => {
     expect(second).toEqual([]); // 全部已应用
     const [ledger] = await d.query<[{ name: string }[]]>("SELECT name FROM _migration;");
     const names = (ledger ?? []).map((r) => r.name).sort();
-    expect(names).toEqual(["001_nodes.surql", "002_relations.surql", "003_index.surql", "004_p1a_rest_meta.surql", "005_p3_cascade.surql"]);
+    expect(names).toEqual(["001_nodes.surql", "002_relations.surql", "003_index.surql", "004_p1a_rest_meta.surql", "005_p3_cascade.surql", "006_p4_cascade_note_scope.surql"]);
   });
 
   it("INFO FOR DB:13 节点表 + entity_kind + 8 边表齐全", async () => {
@@ -128,7 +128,7 @@ describe("applySchema", () => {
     const [partOf] = await d.query<[unknown[]]>("SELECT id FROM part_of;");
     const [derived] = await d.query<[unknown[]]>("SELECT id FROM derived_from;");
     expect((turns ?? []).length, "turn 应被级联清(string-FK 子记录)").toBe(0);
-    expect((notes ?? []).length, "note 应被级联清").toBe(0);
+    expect((notes ?? []).length, "006 级联收缩:note 生命周期归域层,session 删除不再级联清 note").toBe(1);
     expect((partOf ?? []).length, "part_of 边随 turn 节点删除自动消失").toBe(0);
     expect((derived ?? []).length, "derived_from 边随 turn 节点删除自动消失(无孤儿边)").toBe(0);
     // point 自身不属于 session,不应被删。

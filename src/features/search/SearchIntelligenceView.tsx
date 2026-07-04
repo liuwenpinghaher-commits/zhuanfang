@@ -454,7 +454,9 @@ export function SearchIntelligenceView({
                 <div className="source-list">
                   {brief.sources.slice(0, 4).map((source) => (
                     <a
-                      href={source.url}
+                      // source.url 来自联网搜索结果（不可信外部数据）：只放行 http/https，
+                      // 拦掉 javascript: 等危险 scheme（点击即执行的 XSS 注入面）。
+                      href={/^https?:\/\//i.test(source.url) ? source.url : undefined}
                       key={source.id}
                       target="_blank"
                       rel="noreferrer"

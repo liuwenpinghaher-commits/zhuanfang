@@ -8,7 +8,7 @@ import type { ProductState } from "../../../../src/domain/types";
 import { createSurrealConnection, type SurrealConnectionOptions } from "./connect";
 import { applySchema } from "./apply-schema";
 import { NODE_MAPPINGS, toRecord, fromRecord } from "./node-mapper";
-import { collectEdges, turnRecordsOf } from "./edge-mapper";
+import { collectEdges, turnRecordsOf, type EdgeSpec } from "./edge-mapper";
 import { diffById, diffEdges } from "./diff";
 
 const META_ID = "state_meta:main";
@@ -78,24 +78,75 @@ export interface SurrealRepoHandle extends ProductStateRepository {
   query<T extends unknown[]>(surql: string, vars?: Record<string, unknown>): Promise<T>;
   /** 主题聚合:指向该 theme 的所有资产 id(图入边,含曾漏 decisions)。仅 surreal。 */
   recallThemeAssets(themeId: string): Promise<{ points: string[]; decisions: string[]; questions: string[]; memories: string[] }>;
-  /** 溯源:沿 derived_from 取某资产的证据 turn。 */
-  recallProvenanceTurns(table: string, id: string): Promise<Array<{ id: string; content: string; sessionId: string; role: string }>>;
+  /** 溯源:沿 derived_from 取某资产的证据 turn。敏感纵深门控:来源资产 sensitivity='sensitive'
+   *  (memory/memory_candidate/material)默认不溯源——A4 挡住敏感记忆本体后,证据 turn 原话
+   *  不该再经溯源这条侧路泄出;includeSensitive 显式放行。point/decision 无 sensitivity 列不受影响。 */
+  recallProvenanceTurns(table: string, id: string, opts?: { includeSensitive?: boolean }): Promise<Array<{ id: string; content: string; sessionId: string; role: string }>>;
   /** 记忆混合召回(HNSW 语义 + BM25 关键词,search::rrf 倒数排名融合)。
    *  传 queryText → 叠加 BM25(补 HNSW 对专名/精确词的盲区);无/空 queryText 或 BM25 在 3.x 不可用
    *  → 退化为纯 HNSW(现状)。A4 门控始终:默认仅 confirmed+normal;includeSensitive 含 sensitive。 */
   recallMemoriesByVector(embedding: number[], k: number, opts?: { includeSensitive?: boolean; queryText?: string }): Promise<Array<{ id: string; text: string }>>;
+  /** rag_chunk 原生混合召回(HNSW+BM25+search::rrf,镜像 recallMemoriesByVector;方案一)。
+   *  usage 门控走参数绑定、只出现在纯 SELECT 的 WHERE(LET 子查询保持纯索引,P2a 教训);
+   *  无 embedding → BM25-only(无嵌入的降级摄入块也因此可达);embedding/queryText 皆缺 → []。 */
+  recallRagChunks(opts: { embedding?: number[]; queryText?: string; k: number; usage?: "interview-context" | "memory-candidate" }): Promise<Array<{ id: string; text: string }>>;
+  /** 图↔软链一致性审计(方案二):collectEdges(lastPersisted) 期望边集 vs DB 实际边集。
+   *  排除 append-only 豁免的 part_of(降冷后内存不投影但 DB 保留是 H1 契约的正确行为)。
+   *  串入 persist 队列执行(不跨半个落库事务出暂态假差异);只读、不修复、不阻断。 */
+  auditGraphConsistency(): Promise<GraphConsistencyReport>;
+}
+
+/** 方案二审计报告:missing=期望有而 DB 无(投影漏写),unexpected=DB 有而期望无(漏删/带外写入)。
+ *  样本各截前 20 条(edgeKey 形如 `belongs_to_theme|point:pt_1->theme:th_1`),计数为全量。
+ *  danglingProvenanceCount:④ 根修的对偶——内存 anchor 指向已被 A5 级联删除的 turn,持久层
+ *  按 DB 真相未投影该 derived_from(非漂移,turn 真的不存在),在此单列而不进 missing。 */
+export interface GraphConsistencyReport {
+  ok: boolean;
+  auditedEdgeTables: string[];
+  expectedCount: number;
+  actualCount: number;
+  missingCount: number;
+  unexpectedCount: number;
+  missingInDb: string[];
+  unexpectedInDb: string[];
+  danglingProvenanceCount: number;
+  /** P0-1 观测补盲(全系统审查):节点表内存↔DB 差异——此前只审 5 边表,rag_chunk 级联静默
+   *  删除这类"节点在内存、不在 DB"的发散零信号。turn 表豁免(append-only,DB 合法多于内存)。 */
+  nodeMissingCount: number;
+  nodeUnexpectedCount: number;
+  nodeMissingInDb: string[];
+  nodeUnexpectedInDb: string[];
 }
 
 export type SurrealRepoOptions = SurrealConnectionOptions;
+
+/** 瞬态 persist 冲突重试间隔(共 1+4 次尝试,累计 ~3.2s)。
+ *  定性更正(E2E 根因闭环):此前观测到的 "failed transaction" 实为悬空溯源的确定性拒绝
+ *  (H1×A5 碰撞,已由 keepOnlyLiveTurnProvenance 根修),重试对其无效也不再需要。
+ *  本阶梯保留作纯保险:万一将来出现真正的时间性引擎冲突(并发读写/HNSW 维护),写侧自恢复;
+ *  正常路径零开销(首试即成功不进阶梯)。 */
+const PERSIST_RETRY_DELAYS_MS = [100, 300, 800, 2000] as const;
+
+/** 瞬态可重试错误:嵌入式引擎乐观事务冲突的统一报文("The query was not executed due to a
+ *  failed transaction")。schema ASSERT/字段 coerce 等数据形状错误不匹配 → 不重试(重试必然
+ *  再失败,徒增延迟且掩盖真错)。导出供单测钉住判别口径。 */
+export function isTransientPersistError(err: unknown): boolean {
+  return /failed transaction/i.test(err instanceof Error ? err.message : String(err));
+}
 
 export async function createSurrealProductStateRepository(opts: SurrealRepoOptions): Promise<SurrealRepoHandle> {
   const db = await createSurrealConnection(opts);
   await applySchema(db);
 
   // 内存工作副本:同步接口的真相源。
-  let state: ProductState = await loadState(db);
+  const loaded = await loadState(db);
+  let state: ProductState = loaded.state;
   // diff 基线:上次成功落库的状态(非内存 state)。失败不更新 → 下次 diff 自动补回漏掉的增量(自愈)。
-  let lastPersisted: ProductState = state;
+  // 处女库(无 state_meta):loadState 捏造 createInitialProductState 作内存态,但 DB 里并没有它——
+  // 基线若也设成捏造态就是【基线谎言】:此后所有 diff 都以为种子实体已在库,演示资产/其边永不落库
+  // (原生 recallThemeAssets 漏召回、dual 双写发散;图审计冒烟实测抓到)。基线设空 + 下方立即
+  // enqueue 首次落库,让 DB 真实收敛到内存态。
+  let lastPersisted: ProductState = loaded.fromDb ? loaded.state : createEmptyProductState();
   let persistQueue: Promise<void> = Promise.resolve();
   // E:权威库落库健康度。成功清零、失败累积——dual-surreal 下持续写不进=静默丢数据,必须可观测。
   let persistHealth: PersistHealth = { consecutiveFailures: 0 };
@@ -103,9 +154,26 @@ export async function createSurrealProductStateRepository(opts: SurrealRepoOptio
   function enqueuePersist(snapshot: ProductState) {
     persistQueue = persistQueue
       .then(async () => {
-        await persist(db, lastPersisted, snapshot);
-        lastPersisted = snapshot;                 // 仅成功后推进基线
-        persistHealth = { consecutiveFailures: 0 };
+        // 瞬态冲突有界重试(P4 真实业务 E2E 实测):原生召回读(HNSW/BM25/图遍历)与 persist
+        // 写事务在同一嵌入式连接上并发时,surrealkv 乐观事务偶发 "failed transaction"——
+        // P4 修通生产可达性之前原生读不存在,故此前从未暴露。读绝不串行化(教训 6fca26b4:
+        // 不把任何东西塞进写串行化),写侧立即有界重试即可;非瞬态错误(schema ASSERT 等)
+        // 不重试直接 fail-loud。重试全败 → 基线不动,自愈兜底(下次写以旧基线 diff 补回)。
+        let lastErr: unknown;
+        for (let attempt = 0; attempt <= PERSIST_RETRY_DELAYS_MS.length; attempt++) {
+          try {
+            if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, PERSIST_RETRY_DELAYS_MS[attempt - 1]));
+            await persist(db, lastPersisted, snapshot);
+            lastPersisted = snapshot;                 // 仅成功后推进基线
+            persistHealth = { consecutiveFailures: 0 };
+            if (attempt > 0) console.warn(JSON.stringify({ event: "surreal_persist_retried_ok", attempt }));
+            return;
+          } catch (err) {
+            lastErr = err;
+            if (!isTransientPersistError(err)) break;
+          }
+        }
+        throw lastErr;
       })
       .catch((err) => {
         // fail-loud:基线不动,下次 persist 以旧基线 diff、补回本次漏写(自愈)。
@@ -118,10 +186,17 @@ export async function createSurrealProductStateRepository(opts: SurrealRepoOptio
         console.error(JSON.stringify({
           event: "surreal_persist_failed",
           consecutiveFailures: persistHealth.consecutiveFailures,
-          error: persistHealth.lastError
+          error: persistHealth.lastError,
+          // 诊断(E2E 实测:失败跨满整个重试阶梯=该笔 diff 形状确定性触发引擎约束,非时间性冲突;
+          // 下一笔累积 diff 即成功、自愈不丢数据)。打 diff 摘要,把"哪种形状会触发"变成可观测。
+          diff: summarizePersistDiff(lastPersisted, snapshot)
         }));
       });
   }
+
+  // 处女库首次落库:把捏造的初始态真正写进 DB(见 lastPersisted 基线注释)。经正常串行队列,
+  // 幂等(落库后 state_meta 存在,后续启动走 fromDb 分支)。
+  if (!loaded.fromDb) enqueuePersist(state);
 
   return {
     getState() { return structuredClone(state); },
@@ -161,14 +236,18 @@ export async function createSurrealProductStateRepository(opts: SurrealRepoOptio
       ]);
       return { points, decisions, questions, memories };
     },
-    async recallProvenanceTurns(table: string, id: string) {
+    async recallProvenanceTurns(table: string, id: string, provOpts?: { includeSensitive?: boolean }) {
       const from = new RecordId(table, id);
+      const includeSensitive = provOpts?.includeSensitive ?? false;
       // D 溯源门控:已放弃/已修正的观点、deprecated/deleted 的资产不再溯源——这些是用户或系统
       // 已废弃的认知,不该再把它们的证据 turn 原话喂进 LLM 引导。WHERE 作用在来源资产 $from 上,
-      // 终态则查无、返回空。(turn 层无 sensitivity 维度,敏感原话的更深门控见审计报告 P2。)
+      // 终态则查无、返回空。
+      // 敏感纵深(方案三,审计报告 P2):sensitivity='sensitive' 的来源资产(memory/material 等)
+      // 默认不溯源——A4 挡住敏感记忆本体后,其证据 turn 原话不该经溯源侧路泄出;
+      // point/decision 等无 sensitivity 列的资产取值 NONE → IS NONE 放行,行为不变。
       const [rows] = await db.query<[Array<Record<string, unknown>>]>(
-        "SELECT VALUE ->derived_from->turn.* FROM $from WHERE status NOT IN ['已放弃','已修正','deprecated','deleted'];",
-        { from }
+        "SELECT VALUE ->derived_from->turn.* FROM $from WHERE status NOT IN ['已放弃','已修正','deprecated','deleted'] AND (sensitivity IS NONE OR sensitivity = 'normal' OR $includeSensitive);",
+        { from, includeSensitive }
       );
       const turns = (rows?.[0] as unknown as Array<Record<string, unknown>> | undefined) ?? [];
       return turns.map((t) => ({
@@ -243,16 +322,237 @@ export async function createSurrealProductStateRepository(opts: SurrealRepoOptio
         return hnswOnly();
       }
     },
+    async recallRagChunks(ragOpts: { embedding?: number[]; queryText?: string; k: number; usage?: "interview-context" | "memory-candidate" }) {
+      const k = Math.max(1, Math.floor(ragOpts.k));
+      const ef = Math.max(k * 4, 40);
+      const embedding = Array.isArray(ragOpts.embedding) && ragOpts.embedding.length > 0 ? ragOpts.embedding : undefined;
+      const queryText = ragOpts.queryText?.trim();
+      // usage 门控:值走参数绑定;未指定 usage → $anyUsage 恒真放行(与 A4 `(…='normal' OR $includeSensitive)` 同型)。
+      const usageGate = "(usage = $usage OR $anyUsage)";
+      const gateVars: Record<string, unknown> = { usage: ragOpts.usage ?? "", anyUsage: !ragOpts.usage };
+      const toHits = (rows: unknown): Array<{ id: string; text: string }> =>
+        ((rows ?? []) as Array<{ id: unknown; text: unknown }>).map((h) => ({ id: recordIdToDomainId(h.id), text: String(h.text ?? "") }));
+
+      // 纯 HNSW 基线:直接 SELECT 可叠 AND 过滤(镜像 memory hnswOnly,P2a 脆弱性仅在 LET 子查询)。
+      // 无 embedding → [](调用方回落域层排序,绝不伪造)。
+      const hnswOnly = async (): Promise<Array<{ id: string; text: string }>> => {
+        if (!embedding) return [];
+        const [rows] = await db.query<[Array<Record<string, unknown>>]>(
+          `SELECT id, text FROM rag_chunk WHERE ${usageGate} AND embedding <|${k},${ef}|> $q;`,
+          { q: embedding, ...gateVars }
+        );
+        return toHits(rows);
+      };
+
+      if (!queryText) return hnswOnly();
+
+      try {
+        const tokensRes = await db.query<[string[]]>("RETURN search::analyze('zh', $t);", { t: queryText });
+        const tokens = Array.isArray(tokensRes?.[0]) ? (tokensRes[0] as unknown[]).map(String).filter(Boolean) : [];
+        if (tokens.length === 0) return hnswOnly();
+
+        const tokenVars: Record<string, unknown> = {};
+        const bmClause = tokens.map((tok, i) => { tokenVars[`t${i}`] = tok; return `text @@ $t${i}`; }).join(" OR ");
+
+        if (!embedding) {
+          // BM25-only:无向量时关键词路单独可用——无嵌入的降级摄入块(HNSW 索引不含它们)由此可达。
+          const [rows] = await db.query<[Array<Record<string, unknown>>]>(
+            `SELECT id, text FROM rag_chunk WHERE ${usageGate} AND (${bmClause}) LIMIT ${k};`,
+            { ...gateVars, ...tokenVars }
+          );
+          return toHits(rows);
+        }
+
+        // 混合:两路纯索引 LET → search::rrf 融合 → 最终 SELECT 叠 usage 门控(P2a:LET 内绝不加 AND)。
+        // 末条 RETURN 融合名次:`WHERE id IN …` 取回不保序;memory 路径有域层三因子精排兜着可容忍,
+        // rag 无精排、名次即最终序,必须按 rrf 名次在 JS 侧重排。
+        const results = await db.query<Array<unknown>>(
+          `LET $vec = (SELECT id FROM rag_chunk WHERE embedding <|${k},${ef}|> $q);
+           LET $bm  = (SELECT id FROM rag_chunk WHERE ${bmClause});
+           LET $fused = search::rrf([$vec, $bm], 60, ${k});
+           SELECT id, text FROM rag_chunk WHERE id IN $fused.map(|$r| $r.id) AND ${usageGate};
+           RETURN $fused.map(|$r| $r.id);`,
+          { q: embedding, ...gateVars, ...tokenVars }
+        );
+        const rows = toHits(results[results.length - 2]);
+        // fail-safe:融合为空 / 全被 usage 门控滤掉 → 退化纯 HNSW,绝不返空召回。
+        if (rows.length === 0) return hnswOnly();
+        const order = ((results[results.length - 1] ?? []) as unknown[]).map((rid) => recordIdToDomainId(rid));
+        const rank = new Map(order.map((rid, idx) => [rid, idx] as const));
+        return rows.sort((a, b) => (rank.get(a.id) ?? order.length) - (rank.get(b.id) ?? order.length));
+      } catch (err) {
+        // fail-safe:search::rrf / BM25 报错 → 退化纯 HNSW(有 embedding)或 [](无),记降级日志。
+        console.warn(JSON.stringify({ event: "surreal_rag_recall_degraded", error: err instanceof Error ? err.message : String(err) }));
+        return hnswOnly();
+      }
+    },
+    async auditGraphConsistency() {
+      // 串入 persist 队列:与落库事务互斥,五张边表的 SELECT 不会跨在半个 persist 中间(暂态假差异);
+      // 基线取执行时刻的 lastPersisted(队列排空后 = 最新成功落库态,persist 失败时基线不动、
+      // DB 也没动,比对依然成立)。审计只读、5 个小 SELECT 毫秒级——不构成写路径长阻塞
+      // (教训 6fca26b4:长任务绝不进写串行化;这里刻意保持极小)。
+      const run = persistQueue.then(() => runGraphAudit(db, lastPersisted));
+      persistQueue = run.then(() => undefined, () => undefined); // 审计失败不毒化落库队列
+      return run;
+    },
   };
 }
 
-/** 从 SurrealDB 读全部节点表 + state_meta,重建 ProductState(规范化)。空库 → 初始态。 */
-async function loadState(db: Surreal): Promise<ProductState> {
+/** ④ 根修:过滤 turn 端点已不存在的 derived_from 新增边(端点在本事务 upsert 集 → 必然存在,跳过;
+ *  其余批量查 DB 实存)。只在存在此类候选时多一个 ms 级 SELECT(降冷 finalize / 重引入场景),
+ *  常规流(anchor 指向活跃会话 turn)零额外开销。
+ *  P0-2:removedSessionIds = 本事务将删除的 session——其 turn 将被 A5 在同一事务内级联删除,
+ *  预查时刻仍实存,必须按 provenance.sessionId 直接判死,不能只信 DB 预查。 */
+async function keepOnlyLiveTurnProvenance(
+  db: Surreal,
+  added: EdgeSpec[],
+  nextTurnIds: Set<string>,
+  removedSessionIds: Set<string>
+): Promise<EdgeSpec[]> {
+  const candidates = added.filter((e) => e.edge === "derived_from" && e.toTable === "turn" && !nextTurnIds.has(e.toId));
+  if (candidates.length === 0) return added;
+  const doomed = (e: EdgeSpec) => {
+    const sid = e.data?.provenance?.sessionId;
+    return typeof sid === "string" && removedSessionIds.has(sid);
+  };
+  const toCheck = candidates.filter((e) => !doomed(e));
+  const ids = [...new Set(toCheck.map((e) => e.toId))];
+  const live = new Set<string>();
+  if (ids.length > 0) {
+    const [rows] = await db.query<[unknown[]]>("SELECT VALUE id FROM turn WHERE id IN $ids;", {
+      ids: ids.map((id) => new RecordId("turn", id))
+    });
+    for (const r of rows ?? []) live.add(recordIdToDomainId(r));
+  }
+  const dropped = candidates.filter((e) => doomed(e) || !live.has(e.toId));
+  if (dropped.length === 0) return added;
+  console.warn(JSON.stringify({
+    event: "surreal_dangling_provenance_dropped",
+    count: dropped.length,
+    sample: dropped.slice(0, 5).map((e) => `${e.fromTable}:${e.fromId}->turn:${e.toId}`)
+  }));
+  const droppedKeys = new Set(dropped.map((e) => `${e.fromTable}:${e.fromId}->${e.toId}`));
+  return added.filter(
+    (e) => !(e.edge === "derived_from" && e.toTable === "turn" && droppedKeys.has(`${e.fromTable}:${e.fromId}->${e.toId}`))
+  );
+}
+
+/** persist 失败诊断:该笔 diff 的形状摘要(每表 upsert/delete 计数 + 边增删)。只在失败路径调用,
+ *  正常路径零开销;计数足以定位"哪类 diff 触发引擎约束",不打内容(防敏感原话入日志)。 */
+function summarizePersistDiff(prev: ProductState, next: ProductState): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  try {
+    for (const m of NODE_MAPPINGS) {
+      const prevArr = ((prev as unknown as Record<string, unknown>)[m.stateKey] as Array<{ id: string }>) ?? [];
+      const nextArr = ((next as unknown as Record<string, unknown>)[m.stateKey] as Array<{ id: string }>) ?? [];
+      const { upsert, removeIds } = diffById(prevArr, nextArr);
+      if (upsert.length || removeIds.length) out[m.table] = `+${upsert.length}/-${removeIds.length}`;
+    }
+    const { added, removed } = diffEdges(collectEdges(prev), collectEdges(next));
+    if (added.length || removed.length) {
+      out.edges = `+${added.length}/-${removed.length}`;
+      const byKind = (list: Array<{ edge: string }>) =>
+        list.reduce<Record<string, number>>((acc, e) => { acc[e.edge] = (acc[e.edge] ?? 0) + 1; return acc; }, {});
+      if (removed.length) out.edgesRemovedByKind = byKind(removed.filter((e) => e.edge !== "part_of"));
+      if (added.length) out.edgesAddedByKind = byKind(added);
+    }
+  } catch {
+    out.summaryError = true; // 诊断自身绝不再抛
+  }
+  return out;
+}
+
+/** 方案二:参与审计的边表 = edge-mapper 投影的全部边,排除 part_of(append-only 豁免,见接口注释)。
+ *  promoted_from/corrects 是 schema 预留死表(edge-mapper 不投影、persist 不写),无审计意义。 */
+const AUDITED_EDGE_TABLES = ["belongs_to_theme", "about_theme", "derived_from", "contradicts", "evolves_into"] as const;
+const AUDIT_SAMPLE_LIMIT = 20;
+
+function edgeKeyOf(edge: string, fromTable: string, fromId: string, toTable: string, toId: string): string {
+  return `${edge}|${fromTable}:${fromId}->${toTable}:${toId}`;
+}
+
+function recordTableOf(id: unknown): string {
+  // 3.x SDK:RecordId.table 是 Table 对象,String() 得表名(本库表名均为纯 ASCII,无转义差异)。
+  if (id instanceof RecordId) return String(id.table);
+  const s = String(id);
+  return s.includes(":") ? s.slice(0, s.indexOf(":")) : s;
+}
+
+/** 图↔软链一致性核对:期望边集(collectEdges 投影,同 persist 用的同一函数 = 单一真值)
+ *  vs DB 实际边集。用 persist 之外的独立读路径核对 persist 的写结果——公理引擎的图层对偶
+ *  (A1 在应用层查 evidenceAnchors,这里在 DB 层核 derived_from 等边的完备性)。 */
+async function runGraphAudit(db: Surreal, baseline: ProductState): Promise<GraphConsistencyReport> {
+  const expected = new Set<string>();
+  for (const e of collectEdges(baseline)) {
+    if (e.edge === "part_of") continue;
+    expected.add(edgeKeyOf(e.edge, e.fromTable, e.fromId, e.toTable, e.toId));
+  }
+  const actual = new Set<string>();
+  for (const table of AUDITED_EDGE_TABLES) {
+    const [rows] = await db.query<[Array<{ in: unknown; out: unknown }>]>(`SELECT in, out FROM ${table};`);
+    for (const r of rows ?? []) {
+      actual.add(edgeKeyOf(table, recordTableOf(r.in), recordIdToDomainId(r.in), recordTableOf(r.out), recordIdToDomainId(r.out)));
+    }
+  }
+  let missingInDb = [...expected].filter((key) => !actual.has(key));
+  const unexpectedInDb = [...actual].filter((key) => !expected.has(key));
+
+  // ④ 对偶:missing 里的 derived_from|…->turn:X,若 turn:X 在 DB 已不存在(A5 级联删过),
+  // 是持久层按 DB 真相的主动丢弃(keepOnlyLiveTurnProvenance),非投影漂移 → 归 dangling 单列。
+  let danglingProvenanceCount = 0;
+  const provenanceMisses = missingInDb.filter((key) => key.startsWith("derived_from|") && key.includes("->turn:"));
+  if (provenanceMisses.length > 0) {
+    const turnIds = [...new Set(provenanceMisses.map((key) => key.slice(key.lastIndexOf("->turn:") + "->turn:".length)))];
+    const [rows] = await db.query<[unknown[]]>("SELECT VALUE id FROM turn WHERE id IN $ids;", {
+      ids: turnIds.map((id) => new RecordId("turn", id))
+    });
+    const live = new Set((rows ?? []).map((r) => recordIdToDomainId(r)));
+    const dangling = new Set(provenanceMisses.filter((key) => !live.has(key.slice(key.lastIndexOf("->turn:") + "->turn:".length))));
+    danglingProvenanceCount = dangling.size;
+    missingInDb = missingInDb.filter((key) => !dangling.has(key));
+  }
+
+  // P0-1 观测补盲:节点表核对(内存基线 vs DB 实际 id 集)。turn 豁免(append-only)。
+  const nodeMissingInDb: string[] = [];
+  const nodeUnexpectedInDb: string[] = [];
+  for (const m of NODE_MAPPINGS) {
+    const baselineIds = new Set(
+      (((baseline as unknown as Record<string, unknown>)[m.stateKey] as Array<{ id: string }>) ?? []).map((e) => e.id)
+    );
+    const [rows] = await db.query<[unknown[]]>(`SELECT VALUE id FROM ${m.table};`);
+    const dbIds = new Set((rows ?? []).map((r) => recordIdToDomainId(r)));
+    for (const id of baselineIds) if (!dbIds.has(id)) nodeMissingInDb.push(`${m.table}:${id}`);
+    for (const id of dbIds) if (!baselineIds.has(id)) nodeUnexpectedInDb.push(`${m.table}:${id}`);
+  }
+
+  return {
+    ok:
+      missingInDb.length === 0 && unexpectedInDb.length === 0 &&
+      nodeMissingInDb.length === 0 && nodeUnexpectedInDb.length === 0,
+    auditedEdgeTables: [...AUDITED_EDGE_TABLES],
+    expectedCount: expected.size,
+    actualCount: actual.size,
+    missingCount: missingInDb.length,
+    unexpectedCount: unexpectedInDb.length,
+    missingInDb: missingInDb.slice(0, AUDIT_SAMPLE_LIMIT),
+    unexpectedInDb: unexpectedInDb.slice(0, AUDIT_SAMPLE_LIMIT),
+    danglingProvenanceCount,
+    nodeMissingCount: nodeMissingInDb.length,
+    nodeUnexpectedCount: nodeUnexpectedInDb.length,
+    nodeMissingInDb: nodeMissingInDb.slice(0, AUDIT_SAMPLE_LIMIT),
+    nodeUnexpectedInDb: nodeUnexpectedInDb.slice(0, AUDIT_SAMPLE_LIMIT)
+  };
+}
+
+/** 从 SurrealDB 读全部节点表 + state_meta,重建 ProductState(规范化)。
+ *  空库(无 state_meta)→ 捏造初始态并以 fromDb:false 标记——调用方必须据此把 diff 基线设空
+ *  并立即首落库,否则初始态只存在于内存与基线、永不进 DB(基线谎言,见 createSurrealProductStateRepository)。 */
+async function loadState(db: Surreal): Promise<{ state: ProductState; fromDb: boolean }> {
   const [metaRows] = await db.query<[Array<{ revision: number; rest: Record<string, unknown> }>]>(
     `SELECT revision, rest FROM ${META_ID};`
   );
   const meta = metaRows?.[0];
-  if (!meta) return createInitialProductState();
+  if (!meta) return { state: createInitialProductState(), fromDb: false };
 
   const assembled: Record<string, unknown> = { ...(meta.rest ?? {}), revision: meta.revision };
   for (const m of NODE_MAPPINGS) {
@@ -262,7 +562,7 @@ async function loadState(db: Surreal): Promise<ProductState> {
       return fromRecord(recordIdToDomainId(id), rec);
     });
   }
-  return normalizeProductState(assembled);
+  return { state: normalizeProductState(assembled), fromDb: true };
 }
 
 /** SurrealDB 记录 id → 领域 id 字符串。
@@ -284,10 +584,15 @@ async function persist(db: Surreal, prev: ProductState, next: ProductState): Pro
   let i = 0;
 
   // 1) 节点表:diffById → UPSERT 变更 + DELETE 移除
+  // P0-2 根修配套:收集本事务将删除的 session id——它们的 turn 会被 A5 级联在**同一事务内**
+  // 删掉,新增的 derived_from 若指向这些 turn,事务前的实存预查(keepOnlyLiveTurnProvenance)
+  // 会误放行 → RELATE ENFORCED 拒 → 整事务确定性失败(审查实测)。边过滤须感知本批删除集。
+  const removedSessionIds = new Set<string>();
   for (const m of NODE_MAPPINGS) {
     const prevArr = ((prev as unknown as Record<string, unknown>)[m.stateKey] as Array<{ id: string }>) ?? [];
     const nextArr = ((next as unknown as Record<string, unknown>)[m.stateKey] as Array<{ id: string }>) ?? [];
     const { upsert, removeIds } = diffById(prevArr, nextArr);
+    if (m.table === "session") for (const id of removeIds) removedSessionIds.add(id);
     for (const entity of upsert) {
       const rv = `r${i++}`;
       vars[rv] = fillUpsertDefaults(m.table, toRecord(entity as Record<string, unknown>, m));
@@ -306,10 +611,13 @@ async function persist(db: Surreal, prev: ProductState, next: ProductState): Pro
   //    剥掉 session.turns,使 turnRecordsOf(next) 变空、diffById 把它们算进 removeIds。
   //    若执行该 DELETE,降冷会连带删掉 turn 节点 + derived_from/part_of 边 → 溯源召回失效。
   //    故 turn 永不删:只投影 upsert。`void removeIds` 显式弃用,避免 noUnusedLocals 报错。
+  const nextTurnIds = new Set<string>();
   {
+    const nextTurns = turnRecordsOf(next) as Array<Record<string, unknown> & { id: string }>;
+    for (const t of nextTurns) nextTurnIds.add(String(t.id));
     const { upsert, removeIds } = diffById(
       turnRecordsOf(prev) as Array<Record<string, unknown> & { id: string }>,
-      turnRecordsOf(next) as Array<Record<string, unknown> & { id: string }>,
+      nextTurns,
     );
     void removeIds;
     for (const t of upsert) {
@@ -322,7 +630,15 @@ async function persist(db: Surreal, prev: ProductState, next: ProductState): Pro
 
   // 3) 边:diffEdges → DELETE 移除(WHERE in/out)+ RELATE 新增
   {
-    const { added, removed } = diffEdges(collectEdges(prev), collectEdges(next));
+    const { added: addedRaw, removed } = diffEdges(collectEdges(prev), collectEdges(next));
+    // ④ 根修(H1×A5 碰撞,E2E 复现+diff 形状诊断指认):derived_from 的 turn 端点在
+    // "会话被真正删除(reset/purge,A5 级联按隐私语义删其 turn)后,其资产又被重新引入
+    // (seed/备份导入,turns 已降冷不随行)"时不存在 → RELATE ENFORCED 拒 → 整事务确定性
+    // 失败,该快照永不落库(自愈掩成'下一笔成功')。按 DB 真相过滤悬空溯源:turn 真的没了,
+    // 不投影该边不是丢数据(recallProvenanceTurns 对它本就只能返回空);响亮记数。
+    // P0-2 补盲(全系统审查实测):还须感知**本事务**将级联删除的 turn——removedSessionIds
+    // 的 turn 在预查时刻仍"实存",单靠 DB 预查必误放行。
+    const added = await keepOnlyLiveTurnProvenance(db, addedRaw, nextTurnIds, removedSessionIds);
     for (const e of removed) {
       // H1:part_of(turn→session)与 turn 同为 append-only,降冷剥 turns 时 collectEdges(next)
       //     不再投影它 → 进 removed,但不应删(turn 节点还在,part_of 是其归属事实)。跳过。

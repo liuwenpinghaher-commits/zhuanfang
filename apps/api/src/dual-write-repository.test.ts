@@ -99,4 +99,37 @@ describe("dual-write repository", () => {
     expect(() => repo.replaceState(pointState("pt_1", "标题"))).not.toThrow();
     expect(auth.getState().points[0]?.id).toBe("pt_1");
   });
+
+  it("R6-1:shadow 发散(写成功但内容偏离)计入 persistHealth——冷备落后可见,非恒绿", () => {
+    const auth = createInMemoryProductStateRepository();
+    const shadowInner = createInMemoryProductStateRepository();
+    const shadow = { ...shadowInner, replaceState: (s: ReturnType<typeof createInitialProductState>) => shadowInner.replaceState({ ...s, points: [] }) };
+    const repo = createDualWriteRepository({ authoritative: auth, shadow, onDivergence: () => {} });
+    repo.replaceState(pointState("pt_1", "标题"));
+    // 发散不抛异常,但此前只进 console → health 恒绿;R6-1 让其计入 shadowFailures/consecutiveFailures
+    expect(repo.getPersistHealth().consecutiveFailures).toBeGreaterThan(0);
+    expect(repo.getPersistHealth().shadowFailures).toBeGreaterThan(0);
+  });
+
+  it("R6-2:影子恢复一致后 consecutiveFailures 清零——一次瞬时异常不永久 degraded", () => {
+    const auth = createInMemoryProductStateRepository();
+    const shadowInner = createInMemoryProductStateRepository();
+    let corrupt = true;
+    const shadow = { ...shadowInner, replaceState: (s: ReturnType<typeof createInitialProductState>) => shadowInner.replaceState(corrupt ? { ...s, points: [] } : s) };
+    const repo = createDualWriteRepository({ authoritative: auth, shadow, onDivergence: () => {} });
+    repo.replaceState(pointState("pt_1", "标题"));                 // 发散一次
+    expect(repo.getPersistHealth().consecutiveFailures).toBeGreaterThan(0);
+    corrupt = false;
+    repo.replaceState(pointState("pt_2", "标题2"));                // 影子恢复一致
+    expect(repo.getPersistHealth().consecutiveFailures).toBe(0);   // 连续计数清零(名副其实)
+  });
+
+  it("R6-3:shadow 抛错后 persistHealth 带 lastErrorAt(此前 ?? 短路到 dual repo 恒缺失)", () => {
+    const auth = createInMemoryProductStateRepository();
+    const shadow = { ...createInMemoryProductStateRepository(), replaceState: () => { throw new Error("shadow boom"); } };
+    const repo = createDualWriteRepository({ authoritative: auth, shadow, onShadowError: () => {} });
+    repo.replaceState(pointState("pt_1", "标题"));
+    expect(repo.getPersistHealth().lastErrorAt).toBeTruthy();
+    expect(repo.getPersistHealth().lastError).toContain("shadow boom");
+  });
 });

@@ -3,7 +3,7 @@
 // dimensions, an improvement plan for our engine, and a playbook patch.
 // Replaces the keyword-template analyzer. Throws on failure so the route falls
 // back to the deterministic analyzeImportedInterview.
-import { analyzeImportedInterview, sanitizeExternalMaterialBlock, type CorpusLlmAnalysis } from "../../../../src/domain/engine";
+import { analyzeImportedInterview, sanitizeExternalMaterialBlock, type CorpusLlmAnalysis , sanitizeExternalMaterialText } from "../../../../src/domain/engine";
 import type { CorpusImportInput, CorpusInsight, ProductState } from "../../../../src/domain/types";
 import type { BailianChatClient } from "../providers/bailian";
 import { asObject, asString, asStringArray, parseJsonObjectLoose} from "./llm-json";
@@ -26,7 +26,8 @@ const SYSTEM_PROMPT = [
 export function buildCorpusUserMessage(title: string, content: string, focus?: string): string {
   const trimmedFocus = focus?.trim();
   const lines = [
-    `样本标题：${title}`,
+    // 审计修复(F3):标题与正文同口径清洗。
+    `样本标题：${sanitizeExternalMaterialText(title, "（标题已清洗）")}`,
     "",
     "=== 专访样本内容 ===",
     sanitizeExternalMaterialBlock(content, "（样本片段已清洗）").slice(0, 6000),

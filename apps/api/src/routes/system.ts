@@ -38,6 +38,8 @@ interface SystemCapability {
 
 interface SystemRouteOptions {
   stateStore: "memory" | "sqlite";
+  /** 审计修复(P3-47):真实权威库档位(dual-surreal 下 stateStore 仍报 sqlite 会误导运维)。 */
+  productStore?: string;
   env?: RuntimeEnv;
   envFilePath?: string;
   refreshProviderClients?: () => void;
@@ -415,7 +417,7 @@ export async function registerSystemRoutes(
         status: options.stateStore === "sqlite" ? "ready" : "degraded",
         active: true,
         detail: options.stateStore === "sqlite"
-          ? "SQLite 状态库已启用，数据持久化。"
+          ? `SQLite 状态库已启用，数据持久化。${options.productStore && options.productStore !== "sqlite" ? `（权威库：${options.productStore}）` : ""}`
           : "内存状态库已启用：数据不持久，重启后回到 seed 状态；导出仅为当前会话快照。",
         requiredEnv: options.stateStore === "sqlite" ? ["PRODUCT_STATE_DB_PATH"] : [],
         lastCheckedAt: generatedAt

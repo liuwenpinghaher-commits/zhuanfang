@@ -151,6 +151,9 @@ export interface KnowledgeChunk {
   text: string;
   keywords: string[];
   embedding?: number[];
+  /** 审计修复(P2-13):产生该向量的 provider 标识(如 local:bge-large-zh-v1.5)。缺省=历史数据,
+   *  provider 切换后 rebuild 据此识别陈旧空间重嵌。 */
+  embeddingProvider?: string;
   createdAt: string;
 }
 
@@ -237,6 +240,14 @@ export interface InterviewGuide {
     nextQuestion: string;
   }>;
   debtToAddress?: string;
+  /** 审计修复(P2·复盘闭环):待复盘决策——decision.status「待复盘」此前零消费(状态机死值),
+   *  复盘闭环断。决策专访的本质就是"拆选项/代价/假设与复盘点",这里把待复盘决策接进引导:
+   *  距做出越久越优先,主持人据此回访当初的假设是否成立(状态经用户在资产库改「已复盘」而流转)。 */
+  decisionsToReview: Array<{
+    title: string;
+    choice: string;
+    daysOpen: number;
+  }>;
   blindspotCandidates: Array<{
     concept: string;
     importance: "low" | "medium" | "high";
@@ -755,6 +766,11 @@ export interface QuestionAsset extends Inquiry {
 export interface DecisionAsset extends Distillation {
   id: string;
   title: string;
+  // 审计说明(更正 B 报告"幽灵值"误判):decisionKind 是【来源标记】——「候选决策」= AI 从访谈抽出、
+  // 「用户决策」= 用户原创录入。当前所有决策都来自 finalize LLM(候选决策),用户原创录入入口尚未
+  // 建,故「用户决策」暂无写入路径。L2 修复明确:确认候选(confirmDecisionCandidate)只改
+  // confirmationStatus 保留 decisionKind 来源,不把 AI 候选伪装成用户原创。所以「用户决策」不是
+  // 幽灵值,是给未来"手动录入既成决策"入口预留的合法值;与 confirmationStatus 正交(来源×确认态)。
   decisionKind: "候选决策" | "用户决策";
   confirmationStatus: "待用户确认" | "用户确认";
   choice: string;
@@ -869,6 +885,9 @@ export type MemorySourceType =
   | "corpus_import"
   | "import_source"
   | "search_brief";
+// 审计说明:`deleted` 是【软删预留值】,当前 deleteMemoryRecord 走硬删(filter 移除记录)+
+// 审计事件记录,不写此状态。保留在类型里以便将来若改软删(保留可追溯的墓碑记录)复用;
+// 现阶段无写入路径不是遗漏,是有意预留。消费侧(A3/A4 门控)只认 confirmed,deprecated 出局即可。
 export type MemoryRecordStatus = "confirmed" | "deprecated" | "deleted";
 export type MemoryCandidateStatus = "pending" | "approved" | "rejected";
 export type MemorySensitivity = "normal" | "sensitive";
@@ -887,6 +906,9 @@ export interface MemoryRecord extends Memory {
   deprecatedReason?: string;
   /** M3: 语义检索向量，由嵌入模型生成；缺省时退化为关键词检索 */
   embedding?: number[];
+  /** 审计修复(P2-13):产生该向量的 provider 标识(如 local:bge-large-zh-v1.5)。缺省=历史数据,
+   *  provider 切换后 rebuild 据此识别陈旧空间重嵌。 */
+  embeddingProvider?: string;
   /** M3: 显著性评分 1–10，消费侧缺省按 5 处理 */
   importance?: number;
   /** M3: 最近访问/确认时间，用于检索 recency 衰减。当前在确认(approve)时写入；
@@ -1072,6 +1094,9 @@ export interface RagChunk {
   createdAt: string;
   /** 语义检索向量，由嵌入模型生成；缺省时退化为关键词检索 */
   embedding?: number[];
+  /** 审计修复(P2-13):产生该向量的 provider 标识(如 local:bge-large-zh-v1.5)。缺省=历史数据,
+   *  provider 切换后 rebuild 据此识别陈旧空间重嵌。 */
+  embeddingProvider?: string;
 }
 
 export interface PodcastChapter {
@@ -1092,6 +1117,9 @@ export interface PodcastEpisode {
   title: string;
   format: "solo" | "host-guest";
   voice: string;
+  // 审计说明:`generating` 是【异步合成预留值】。当前 TTS 合成是同步的(创建写 draft、合成完写
+  // ready),不经过 generating 态。保留以便将来若 TTS 改为长任务异步渲染(轮询进度)复用;
+  // 现阶段无写入路径是有意预留,非遗漏。
   status: "draft" | "generating" | "ready";
   scriptReviewStatus: "待确认" | "用户确认";
   durationSec: number;

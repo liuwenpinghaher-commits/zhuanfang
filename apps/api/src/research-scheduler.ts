@@ -17,7 +17,9 @@
 
 import type { ProductStateRepository } from "./product-state-repository";
 import type { SearchRouteOptions } from "./routes/search";
-import { generateBriefForTopic, refreshExistingBrief } from "./routes/search";
+import { generateBriefForTopic, refreshExistingBrief, researchRunGate } from "./routes/search";
+import type { SearchBrief } from "../../../src/domain/types";
+import type { WriteGate } from "./server";
 import type { LlmBudget } from "./llm-budget";
 import { dedupeBriefSources, planResearchAgendaRun } from "../../../src/domain/research-automation";
 import type { ProductState } from "../../../src/domain/types";
@@ -30,6 +32,8 @@ export interface ResearchSchedulerOptions {
   budget?: LlmBudget;
   /** 默认调度间隔（ms）；运行时可被 systemConfig.research.scheduleIntervalMin 覆盖 */
   intervalMs: number;
+  /** 审计修复(D4):终写经全局写门与 HTTP 串行写互斥。 */
+  writeGate?: WriteGate;
 }
 
 export interface ResearchSchedulerHandle {
@@ -40,48 +44,88 @@ export function startResearchScheduler(options: ResearchSchedulerOptions): Resea
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
 
+  // 审计修复(D4):对齐端点侧的限量(P0 稳定性修复此前只落在 HTTP auto-run,调度器无 3+3 上限)。
+  const MAX_AGENDA_PER_TICK = 3;
+  const MAX_REFRESH_PER_TICK = 3;
+
   async function runOneTick() {
-    const now = new Date().toISOString();
-    const state = options.repository.getState();
-    const { agendaItems, staleTrackedBriefIds } = planResearchAgendaRun(state, now);
-
-    // LLM enrichment 经共享预算守卫：有 chatClient 且预算未耗尽才开启，否则降级（仍联网搜索）。
-    const allowLlm = !!options.clients.bailianChatClient && (options.budget?.tryConsume("research_auto_run") ?? false);
-    let runningState: ProductState = state;
-
-    for (const item of agendaItems) {
-      try {
-        const { nextState } = await generateBriefForTopic(runningState, item.query, options.clients, allowLlm);
-        runningState = nextState;
-      } catch (err) {
-        console.warn(JSON.stringify({ event: "scheduler_generate_error", query: item.query, error: String(err) }));
-      }
+    // 审计修复(P2-17):与 HTTP auto-run 共享并发旗标——两路此前互不知晓,可并发同跑重复联网并互相覆盖。
+    if (researchRunGate.inFlight) {
+      console.info(JSON.stringify({ event: "research_scheduler_tick_skipped", reason: "auto-run in flight" }));
+      return;
     }
-
-    for (const briefId of staleTrackedBriefIds) {
-      const existing = runningState.searchBriefs.find((b) => b.id === briefId);
-      if (!existing) continue;
-      try {
-        const { nextState } = await refreshExistingBrief(runningState, existing, options.clients, allowLlm, now);
-        runningState = nextState;
-      } catch (err) {
-        console.warn(JSON.stringify({ event: "scheduler_refresh_error", briefId, error: String(err) }));
+    researchRunGate.inFlight = true;
+    try {
+      const now = new Date().toISOString();
+      const state = options.repository.getState();
+      const plan = planResearchAgendaRun(state, now);
+      const agendaItems = plan.agendaItems.slice(0, MAX_AGENDA_PER_TICK);
+      const staleTrackedBriefIds = plan.staleTrackedBriefIds.slice(0, MAX_REFRESH_PER_TICK);
+      if (plan.agendaItems.length > agendaItems.length || plan.staleTrackedBriefIds.length > staleTrackedBriefIds.length) {
+        console.info(JSON.stringify({
+          event: "research_scheduler_tick_capped",
+          agendaTotal: plan.agendaItems.length,
+          refreshTotal: plan.staleTrackedBriefIds.length
+        }));
       }
+
+      // LLM enrichment 经共享预算守卫：有 chatClient 且预算未耗尽才开启，否则降级（仍联网搜索）。
+      const allowLlm = !!options.clients.bailianChatClient && (options.budget?.tryConsume("research_auto_run") ?? false);
+      let runningState: ProductState = state;
+      // 审计修复(D4):跟踪本 tick 的【产出简报】,终写只把产出按 id 合并到 latest 上——
+      // 此前用 tick 起点快照的整表覆盖 searchBriefs,tick 期间用户新建的被删、删除的被复活。
+      const produced: SearchBrief[] = [];
+
+      for (const item of agendaItems) {
+        try {
+          const { brief, nextState } = await generateBriefForTopic(runningState, item.query, options.clients, allowLlm);
+          if (brief) produced.push(brief);
+          runningState = nextState;
+        } catch (err) {
+          console.warn(JSON.stringify({ event: "scheduler_generate_error", query: item.query, error: String(err) }));
+        }
+      }
+
+      for (const briefId of staleTrackedBriefIds) {
+        const existing = runningState.searchBriefs.find((b) => b.id === briefId);
+        if (!existing) continue;
+        try {
+          const { updatedBrief, nextState } = await refreshExistingBrief(runningState, existing, options.clients, allowLlm, now);
+          produced.push(updatedBrief);
+          runningState = nextState;
+        } catch (err) {
+          console.warn(JSON.stringify({ event: "scheduler_refresh_error", briefId, error: String(err) }));
+        }
+      }
+
+      // 终写:重读 latest,仅把本 tick 产出按 id 叠加(用户期间的新建/删除/编辑全保留),
+      // 并经全局写门与在途 HTTP 写互斥(审计修复 D4:此前完全绕开串行化)。
+      const commit = () => {
+        const latest = options.repository.getState();
+        const byId = new Map(latest.searchBriefs.map((b) => [b.id, b]));
+        for (const b of produced) {
+          // 用户在 tick 期间删除的简报不复活:refresh 产出仅当该 id 仍在 latest 时回写。
+          const isNew = !state.searchBriefs.some((x) => x.id === b.id);
+          if (isNew || byId.has(b.id)) byId.set(b.id, b);
+        }
+        const { briefs } = dedupeBriefSources([...byId.values()]);
+        options.repository.replaceState({ ...latest, searchBriefs: briefs });
+      };
+      if (options.writeGate) {
+        await options.writeGate.runExclusive("research-scheduler-tick", commit);
+      } else {
+        commit();
+      }
+
+      console.info(JSON.stringify({
+        event: "research_scheduler_tick",
+        generated: agendaItems.length,
+        refreshed: staleTrackedBriefIds.length,
+        at: now
+      }));
+    } finally {
+      researchRunGate.inFlight = false;
     }
-
-    const { briefs: dedupedBriefs } = dedupeBriefSources(runningState.searchBriefs);
-    // Field-level merge: a tick can take tens of seconds across LLM calls, during which a
-    // user may have committed interview turns / asset edits. Re-read the LATEST state and
-    // write back ONLY searchBriefs, instead of overwriting the whole snapshot captured at
-    // tick start (which silently dropped concurrent edits — last-write-wins).
-    options.repository.replaceState({ ...options.repository.getState(), searchBriefs: dedupedBriefs });
-
-    console.info(JSON.stringify({
-      event: "research_scheduler_tick",
-      generated: agendaItems.length,
-      refreshed: staleTrackedBriefIds.length,
-      at: now
-    }));
   }
 
   function scheduleNext() {

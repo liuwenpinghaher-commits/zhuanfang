@@ -58,13 +58,14 @@ export async function registerImportRoutes(
       candidates,
       options.embeddingClient
     );
-    repository.replaceState(nextState);
+    // state 必须是 replaceState 返回的权威态(revision 已 bump),否则客户端下一次乐观 PUT 必 409。
+    const persisted = repository.replaceState(nextState);
     // 知识索引补点：新 importSource 的 material 块（不在持久化边界 diff 内）。
     // fire-and-forget——不 await、不阻塞响应、不抛回写路径。
     if (options.knowledgeIndexRepository) {
-      void reindexMaterial(nextState, sourceId, options.knowledgeIndexRepository, options.embeddingClient, budget);
+      void reindexMaterial(persisted, sourceId, options.knowledgeIndexRepository, options.embeddingClient, budget);
     }
-    return { sourceId, candidateCount, state: nextState };
+    return { sourceId, candidateCount, state: persisted };
   });
 }
 

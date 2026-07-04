@@ -9,6 +9,8 @@ import { withMemoryCandidateReview } from "../../../../src/domain/memoryReview";
 import { makeId, nowIso, withAuditEvent } from "../../../../src/domain/utils";
 import type { MemoryCandidate, MemoryRecord, ProductState } from "../../../../src/domain/types";
 import type { ProductStateRepository } from "../product-state-repository";
+import { createLlmBudget, type LlmBudget } from "../llm-budget";
+import { MAX_EMBED_CHARS } from "./knowledge";
 import type { BailianChatClient, BailianEmbeddingClient } from "../providers/bailian";
 
 interface RejectMemoryCandidatePayload {
@@ -22,11 +24,19 @@ interface UpdateMemoryCandidatePayload {
 // P1-05: cap a single candidate text field (same budget as a confirmed memory record).
 const MEMORY_CANDIDATE_TEXT_MAX_CHARS = 16 * 1024;
 
+// 审计修复(P1-6 + 回归审查 R3-B):consolidate 摘要循环此前绕过 LLM 预算且无上限——预算硬闸被
+// 单点击穿,且 N×60s 串行 LLM 是超写锁上限致"强放-覆盖"的确定性入口。单轮封顶到写锁上限内:
+// 4 簇 × 每簇最坏 60s(bailian 默认超时)= 240s < WRITE_SLOT_MAX_HOLD_MS(360s),确保 consolidate
+// 本身不破线被强放。超出的簇本轮不摘要(dedup 本身已完成、loser 已 deprecate,摘要是可选 HITL)。
+const MAX_SUMMARY_CLUSTERS = 4;
+
 interface MemoryCandidateRouteOptions {
   embeddingClient?: BailianEmbeddingClient;
   /** M5: when present, a consolidation pass may summarize a merged cluster into a
    * pending HITL candidate. Absent → consolidation just de-dups (offline-safe). */
   bailianChatClient?: BailianChatClient;
+  /** 审计修复(P1-6):consolidate 摘要须过共享预算(memory_consolidate 桶,滑窗恢复)。 */
+  llmBudget?: LlmBudget;
 }
 
 export async function registerMemoryCandidateRoutes(
@@ -54,9 +64,10 @@ export async function registerMemoryCandidateRoutes(
 
     const nextState = updateMemoryCandidateText(state, candidate.id, text);
     const updatedCandidate = findCandidate(nextState, candidate.id);
-    repository.replaceState(nextState);
+    // state 必须是 replaceState 返回的权威态(revision 已 bump),否则客户端下一次乐观 PUT 必 409。
+    const persisted = repository.replaceState(nextState);
 
-    return { candidate: updatedCandidate, state: nextState };
+    return { candidate: updatedCandidate, state: persisted };
   });
 
   server.post("/api/memory-candidates/:id/approve", async (request, reply) => {
@@ -77,15 +88,15 @@ export async function registerMemoryCandidateRoutes(
     // backfilled inside approveMemoryCandidate from the candidate's reviewScore.
     const embedding = await embedCandidateText(candidate.text, options.embeddingClient);
     const nextState = approveMemoryCandidate(state, candidate.id, {
-      ...(embedding ? { embedding } : {}),
+      ...(embedding ? { embedding, embeddingProvider: options.embeddingClient?.providerId } : {}),
       // Consolidation summaries carry the keeper's importance; honor it over the reviewScore band.
       ...(candidate.importance != null ? { importance: candidate.importance } : {})
     });
     const reviewedCandidate = findCandidate(nextState, candidate.id);
     const record = nextState.memoryRecords.find((item) => item.sourceCandidateId === candidate.id);
-    repository.replaceState(nextState);
+    const persisted = repository.replaceState(nextState);
 
-    return { candidate: reviewedCandidate, record, state: nextState };
+    return { candidate: reviewedCandidate, record, state: persisted };
   });
 
   server.post("/api/memory-candidates/:id/reject", async (request, reply) => {
@@ -101,9 +112,9 @@ export async function registerMemoryCandidateRoutes(
     const reviewNote = normalizeOptionalString(normalizeObject<RejectMemoryCandidatePayload>(request.body).reviewNote);
     const nextState = rejectMemoryCandidate(state, candidate.id, reviewNote);
     const reviewedCandidate = findCandidate(nextState, candidate.id);
-    repository.replaceState(nextState);
+    const persisted = repository.replaceState(nextState);
 
-    return { candidate: reviewedCandidate, state: nextState };
+    return { candidate: reviewedCandidate, state: persisted };
   });
 
   // M5: lightweight consolidation. De-dup near-identical confirmed records — the
@@ -133,8 +144,9 @@ export async function registerMemoryCandidateRoutes(
     if (deprecated > 0) {
       const reviewedAt = nowIso();
       // Optional LLM summaries — one pending candidate per merged cluster.
+      const budget = options.llmBudget ?? createLlmBudget();
       const summaryCandidates = options.bailianChatClient
-        ? await buildClusterSummaryCandidates(clusters, options.bailianChatClient, reviewedAt)
+        ? await buildClusterSummaryCandidates(clusters, options.bailianChatClient, reviewedAt, budget)
         : [];
       nextState = {
         ...nextState,
@@ -157,8 +169,8 @@ export async function registerMemoryCandidateRoutes(
       }
     }
 
-    repository.replaceState(nextState);
-    return { state: nextState, summary: { deprecated } };
+    const persisted = repository.replaceState(nextState);
+    return { state: persisted, summary: { deprecated } };
   });
 }
 
@@ -207,10 +219,21 @@ function parseConsolidationKeeperId(reason: string | undefined): string | undefi
 async function buildClusterSummaryCandidates(
   clusters: MergedCluster[],
   chatClient: BailianChatClient,
-  createdAt: string
+  createdAt: string,
+  budget: LlmBudget
 ): Promise<MemoryCandidate[]> {
   const candidates: MemoryCandidate[] = [];
-  for (const cluster of clusters) {
+  // 审计修复(P1-6):单轮封顶 + 逐 cluster 过预算——此前无 tryConsume 无上限,预算硬闸被
+  // 单点击穿,且 N×60s 串行 LLM 是超写锁持有上限的确定性入口。超出部分下轮 consolidate 再做。
+  const bounded = clusters.slice(0, MAX_SUMMARY_CLUSTERS);
+  if (clusters.length > bounded.length) {
+    console.warn(JSON.stringify({ event: "memory_consolidate_clusters_capped", total: clusters.length, processed: bounded.length }));
+  }
+  for (const cluster of bounded) {
+    if (!budget.tryConsume("memory_consolidate")) {
+      console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "memory_consolidate" }));
+      break;
+    }
     const phrasings = [cluster.keeper.text, ...cluster.losers.map((loser) => loser.text)];
     try {
       const summary = (
@@ -273,7 +296,7 @@ async function embedCandidateText(
     return undefined;
   }
   try {
-    const vectors = await embeddingClient.embed([text]);
+    const vectors = await embeddingClient.embed([text.slice(0, MAX_EMBED_CHARS)]);
     const vector = vectors[0];
     return Array.isArray(vector) && vector.length > 0 ? vector : undefined;
   } catch (error) {

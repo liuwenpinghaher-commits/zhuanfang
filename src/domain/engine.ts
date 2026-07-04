@@ -523,16 +523,9 @@ export function buildSearchBriefSourceEvidence(brief: SearchBrief) {
   return brief.sources.slice(0, 3).map((source) => `来源：${source.publisher}｜${source.title}｜${source.url}`);
 }
 
-export function resolveSearchBriefThemeIds(state: ProductState, brief: SearchBrief) {
-  const corpus = [brief.topic, brief.summary, ...brief.discussionTopics, ...brief.interviewAngles].join(" ");
-  const matched = state.themes
-    .filter((theme) => {
-      const summarySignal = theme.summary.trim().slice(0, 8);
-      return corpus.includes(theme.name) || (summarySignal.length >= 4 && corpus.includes(summarySignal));
-    })
-    .map((theme) => theme.id);
-  return matched.length > 0 ? matched.slice(0, 2) : state.themes.slice(0, 1).map((theme) => theme.id);
-}
+// 审计修复(P3-42):resolveSearchBriefThemeIds(硬挂 themes[0] 的旧版)已删——search-brief.ts
+// 有诚实留空的局部版在用,此处零调用的 barrel 导出是误用地雷。
+
 
 // ============================================================================
 // Section E & F: Interview-quality + quality-operations reports

@@ -108,4 +108,45 @@ describe.skipIf(!hasModel)("SurrealDB 真实数据层 e2e(采访闭环 → 落�
     expect(ids).toContain("me_manage");
     expect(ids).not.toContain("me_secret");
   }, 60000);
+
+  it("④ P4·原生 rag 混合召回经【生产接线】可达:BM25 拉回无嵌入块(域层 cosine 路径物理排除它)", async () => {
+    // 判别器设计:X 有 embedding 但内容与问题无关;Y 无 embedding、文本含问题关键词。
+    // 域层 buildSemanticRagContext 的 cosine 路径只在【有 embedding 的候选】里排序 → Y 恒不可达;
+    // 原生 recallRagChunks 的 BM25 路命中 Y → citations 含 Y 当且仅当原生路径真被走到。
+    // 这同时是 withKnowledgeReindex 能力透传修复的 E2E 级回归锁(此前包装吞掉能力,
+    // asNativeRecall 恒 undefined,原生召回在生产接线上从未生效)。
+    const { createLocalEmbeddingClient } = await import("../providers/local-embedding");
+    const [vLunch] = await createLocalEmbeddingClient().embed(["今天中午食堂吃什么比较好"]);
+    const ts = "2026-06-28T00:00:00.000Z";
+    repo.replaceState({
+      ...repo.getState(),
+      importSources: [{
+        id: "is_e2e", title: "E2E 资料", sourceType: "text", content: "正文", status: "chunked",
+        sensitivity: "normal", chunkIds: ["rc_x", "rc_y"], createdAt: ts, updatedAt: ts
+      }],
+      ragChunks: [
+        { id: "rc_x", sourceId: "is_e2e", title: "无关但有向量", text: "今天中午食堂吃什么比较好", keywords: [], tokenEstimate: 10, usage: "interview-context", embedding: vLunch, createdAt: ts },
+        { id: "rc_y", sourceId: "is_e2e", title: "关键词命中无向量", text: "团队正在评估区块链技术选型方案", keywords: [], tokenEstimate: 10, usage: "interview-context", createdAt: ts }
+      ]
+    });
+    await repo.flush();
+    const res = await server.inject({ method: "POST", url: "/api/rag/query", payload: { question: "区块链" } });
+    expect(res.statusCode).toBe(200);
+    const citations = (res.json().citations ?? []).map((c: any) => c.id);
+    expect(citations, "BM25 应拉回无嵌入块 rc_y(域层 cosine 排除它 → 只有原生混合召回能命中)").toContain("rc_y");
+  }, 60000);
+
+  it("⑤ P4·图↔软链一致性审计不变量:真实业务闭环后 /api/ops/graph-consistency 必须 ok", async () => {
+    // 方案二的 E2E 级消费:采访闭环(finalize 产资产/边)+ ③④ 的 replaceState 之后,
+    // collectEdges(lastPersisted) 与 surreal 5 张边表实际必须逐条一致——persist/diff/edge-mapper
+    // 全链的端到端不变量;任何投影漏写/漏删在此暴露。
+    const res = await server.inject({ method: "GET", url: "/api/ops/graph-consistency" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    // 失败时把差异样本打进断言消息,直接可定位
+    expect(body.ok, `图审计应一致: ${JSON.stringify(body.report)}`).toBe(true);
+    expect(body.report.missingCount).toBe(0);
+    expect(body.report.unexpectedCount).toBe(0);
+    console.log(`[surreal-e2e] 图审计: expected=${body.report.expectedCount} actual=${body.report.actualCount}`);
+  }, 30000);
 });

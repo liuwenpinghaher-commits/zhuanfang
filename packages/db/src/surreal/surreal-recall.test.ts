@@ -175,3 +175,298 @@ describe("surreal native recall: 混合检索(HNSW + BM25 + search::rrf,③)", (
     expect(hits.map((h) => h.id)).toContain("me_near"); // 向量召回照常,不因 BM25 空而崩
   });
 });
+
+// ── 方案一:rag_chunk 原生混合召回 ──
+function ragChunk(id: string, text: string, opts: { vec?: number[]; usage?: "interview-context" | "memory-candidate" } = {}) {
+  return {
+    id, sourceId: "is_1", title: id, text, keywords: [], tokenEstimate: 10,
+    usage: opts.usage ?? "interview-context",
+    ...(opts.vec ? { embedding: opts.vec } : {}),
+    createdAt: "2026-06-27T00:00:00.000Z"
+  };
+}
+function ragState(chunks: Array<ReturnType<typeof ragChunk>>) {
+  const base = createInitialProductState();
+  return {
+    ...base,
+    importSources: [{
+      id: "is_1", title: "资料", sourceType: "text", content: "正文", status: "chunked",
+      sensitivity: "normal", chunkIds: chunks.map((c) => c.id),
+      createdAt: "2026-06-27T00:00:00.000Z", updatedAt: "2026-06-27T00:00:00.000Z"
+    }] as unknown as typeof base.importSources,
+    ragChunks: chunks as unknown as typeof base.ragChunks
+  };
+}
+
+describe("surreal native recall: rag_chunk 混合召回(方案一)", () => {
+  it("HNSW:返回向量最近的块;usage 门控拦下 memory-candidate", async () => {
+    const repo = await makeMem();
+    repo.replaceState(ragState([
+      ragChunk("rc_near", "授权放权的资料", { vec: vec(1) }),
+      ragChunk("rc_far", "无关资料", { vec: vec(-1) }),
+      ragChunk("rc_mc", "候选块", { vec: vec(1), usage: "memory-candidate" })
+    ]));
+    await repo.flush();
+    const near = await repo.recallRagChunks({ embedding: vec(1), k: 1, usage: "interview-context" });
+    expect(near.map((h) => h.id)).toEqual(["rc_near"]);
+    const all = await repo.recallRagChunks({ embedding: vec(1), k: 10, usage: "interview-context" });
+    expect(all.map((h) => h.id)).not.toContain("rc_mc");   // usage 门控
+    expect(all.map((h) => h.id)).toEqual(expect.arrayContaining(["rc_near", "rc_far"]));
+  });
+
+  it("混合:BM25 拉回【无 embedding】的关键词块(纯 HNSW 物理不可达的降级摄入块)", async () => {
+    const repo = await makeMem();
+    repo.replaceState(ragState([
+      ragChunk("rc_vec", "授权放权的深度思考", { vec: vec(1) }),
+      ragChunk("rc_kw", "团队评估区块链技术选型")   // 无 embedding → 不在 HNSW 索引
+    ]));
+    await repo.flush();
+    const hnsw = await repo.recallRagChunks({ embedding: vec(1), k: 5, usage: "interview-context" });
+    expect(hnsw.map((h) => h.id)).not.toContain("rc_kw");  // 基线:无嵌入块 HNSW 恒不可达
+    const hybrid = await repo.recallRagChunks({ embedding: vec(1), queryText: "区块链", k: 5, usage: "interview-context" });
+    expect(hybrid.map((h) => h.id)).toEqual(expect.arrayContaining(["rc_kw", "rc_vec"]));
+  });
+
+  it("BM25-only:无 embedding 仍可关键词召回;embedding/queryText 皆缺 → []", async () => {
+    const repo = await makeMem();
+    repo.replaceState(ragState([
+      ragChunk("rc_kw", "团队评估区块链技术选型"),
+      ragChunk("rc_other", "完全无关的内容", { vec: vec(1) })
+    ]));
+    await repo.flush();
+    const bm = await repo.recallRagChunks({ queryText: "区块链", k: 5, usage: "interview-context" });
+    expect(bm.map((h) => h.id)).toEqual(["rc_kw"]);
+    expect(await repo.recallRagChunks({ k: 5, usage: "interview-context" })).toEqual([]);
+    expect(await repo.recallRagChunks({ queryText: "   ", k: 5 })).toEqual([]);
+  });
+
+  it("混合路径 usage 门控在最终 SELECT:BM25 命中但 usage 不符 → 不进结果", async () => {
+    const repo = await makeMem();
+    repo.replaceState(ragState([
+      ragChunk("rc_ic", "区块链正式资料", { vec: vec(1) }),
+      ragChunk("rc_mc", "区块链候选块", { vec: vec(1), usage: "memory-candidate" })
+    ]));
+    await repo.flush();
+    const hits = await repo.recallRagChunks({ embedding: vec(1), queryText: "区块链", k: 10, usage: "interview-context" });
+    expect(hits.map((h) => h.id)).toEqual(["rc_ic"]);
+  });
+});
+
+// ── 方案三:溯源敏感纵深门控 ──
+describe("surreal native recall: 溯源敏感纵深门控(方案三)", () => {
+  function sensitiveMemoryState() {
+    const s = linkedState();
+    return {
+      ...s,
+      memoryRecords: s.memoryRecords.map((m) => ({
+        ...m, sensitivity: "sensitive" as const,
+        evidenceAnchors: [{ sessionId: "se_1", turnId: "tu_1" }]
+      }))
+    };
+  }
+  it("敏感来源资产默认不溯源(证据原话不经侧路泄出);includeSensitive 显式放行", async () => {
+    const repo = await makeMem();
+    repo.replaceState(sensitiveMemoryState());
+    await repo.flush();
+    expect(await repo.recallProvenanceTurns("memory", "me_1")).toHaveLength(0);
+    const opened = await repo.recallProvenanceTurns("memory", "me_1", { includeSensitive: true });
+    expect(opened.map((t) => t.id)).toContain("tu_1");
+  });
+  it("无 sensitivity 列的资产(point)不受影响(NONE 放行,现状行为不变)", async () => {
+    const repo = await makeMem();
+    repo.replaceState(linkedState());
+    await repo.flush();
+    const turns = await repo.recallProvenanceTurns("point", "pt_1");
+    expect(turns.map((t) => t.id)).toContain("tu_1");
+  });
+});
+
+// ── P4 真实业务 E2E 实测修复:persist 瞬态冲突有界重试 ──
+describe("persist 瞬态冲突重试(原生召回读×写并发)", () => {
+  it("isTransientPersistError:只认嵌入式引擎事务冲突报文,schema 数据错误不重试", async () => {
+    const { isTransientPersistError } = await import("./surreal-product-state-repository");
+    expect(isTransientPersistError(new Error("QueryError: The query was not executed due to a failed transaction"))).toBe(true);
+    expect(isTransientPersistError("The query was not executed due to a failed transaction")).toBe(true);
+    expect(isTransientPersistError(new Error("Found '不存在枚举' for field `status`, with record `point:x`"))).toBe(false);
+    expect(isTransientPersistError(new Error("Expected a object but found NONE"))).toBe(false);
+  });
+
+  it("并发原生召回读 × 连续快写:persist 最终收敛,health 无残留失败,图审计一致", async () => {
+    const repo = await makeMem();
+    repo.replaceState(ragState([
+      ragChunk("rc_a", "授权放权的资料", { vec: vec(1) }),
+      ragChunk("rc_b", "团队评估区块链技术选型", { vec: vec(-1) })
+    ]));
+    await repo.flush();
+    // 读写混跑:10 轮快写(每轮改 memoryRecords)与并行原生召回(HNSW/BM25/rrf + 图遍历)交错,
+    // 模拟真实业务下 create-session 预召回撞上异步 persist 的窗口。
+    const ts = "2026-06-28T00:00:00.000Z";
+    const readers: Array<Promise<unknown>> = [];
+    for (let i = 0; i < 10; i++) {
+      const s = repo.getState();
+      repo.replaceState({ ...s, memoryRecords: [
+        { id: `me_${i}`, text: `记忆${i}`, status: "confirmed", sourceType: "profile", sourceId: "p",
+          evidenceQuote: "", sensitivity: "normal", embedding: vec(i + 1), createdAt: ts, updatedAt: ts } as never
+      ]});
+      readers.push(repo.recallRagChunks({ embedding: vec(1), queryText: "区块链", k: 3, usage: "interview-context" }));
+      readers.push(repo.recallMemoriesByVector(vec(1), 3));
+    }
+    await Promise.all(readers);   // 读全程不抛
+    await repo.flush();           // 写队列(含重试)排空
+    expect(repo.getPersistHealth().consecutiveFailures).toBe(0); // 无残留失败(冲突要么没发生要么被重试吸收)
+    const audit = await repo.auditGraphConsistency();
+    expect(audit.ok, `读写混跑后图审计应一致: ${JSON.stringify(audit)}`).toBe(true);
+  }, 30000);
+});
+
+// ── 方案二:图↔软链双表示一致性审计 ──
+describe("surreal graph consistency audit(方案二)", () => {
+  it("一致状态:ok=true,期望/实际边数相等,part_of 被 append-only 豁免不参审", async () => {
+    const repo = await makeMem();
+    repo.replaceState(linkedState());
+    await repo.flush();
+    const r = await repo.auditGraphConsistency();
+    expect(r.ok).toBe(true);
+    expect(r.missingCount).toBe(0);
+    expect(r.unexpectedCount).toBe(0);
+    expect(r.expectedCount).toBeGreaterThan(0);
+    expect(r.expectedCount).toBe(r.actualCount);
+    expect(r.auditedEdgeTables).not.toContain("part_of");
+  });
+  it("漂移检出:带外删边 → missing(投影漏写类);带外加边 → unexpected(漏删/带外写入类)", async () => {
+    const repo = await makeMem();
+    repo.replaceState(linkedState());
+    await repo.flush();
+    await repo.query("DELETE belongs_to_theme WHERE in = point:pt_1;");
+    await repo.query("RELATE question:qu_1->about_theme->theme:th_1;");
+    const r = await repo.auditGraphConsistency();
+    expect(r.ok).toBe(false);
+    expect(r.missingCount).toBe(1);
+    expect(r.missingInDb[0]).toBe("belongs_to_theme|point:pt_1->theme:th_1");
+    expect(r.unexpectedCount).toBe(1);
+    expect(r.unexpectedInDb[0]).toBe("about_theme|question:qu_1->theme:th_1");
+  });
+});
+
+// ── P0 家族根修回归(全系统审查实测三形态) ──
+describe("P0 persist 确定性失败家族根修", () => {
+  it("P0-1a(note×级联收缩): 移除 session 保留 note → note 在 hot 与 DB 双侧存活,审计一致", async () => {
+    const repo = await makeMem();
+    repo.replaceState(linkedState());
+    await repo.flush();
+    // 造 note 挂在 se_1 上
+    const s = repo.getState();
+    repo.replaceState({ ...s, notes: [{ id: "no_1", sessionId: "se_1", title: "笔记", summary: "s", keyQuote: "", saidTrack: [], learnedTrack: [], createdAt: "2026-06-27T00:00:00.000Z" } as never] });
+    await repo.flush();
+    // 移除 session、保留 note(006 级联收缩后:DB 不再静默删 note)
+    const s2 = repo.getState();
+    repo.replaceState({ ...s2, sessions: [] });
+    await repo.flush();
+    expect(repo.getPersistHealth().consecutiveFailures).toBe(0);
+    expect(repo.getState().notes.map((n) => n.id)).toContain("no_1");   // hot 保留
+    const [rows] = await repo.query<[Array<{ id: unknown }>]>("SELECT id FROM note;");
+    expect((rows ?? []).length).toBe(1);                                 // DB 同样保留(不再发散)
+    const audit = await repo.auditGraphConsistency();
+    expect(audit.ok, JSON.stringify(audit)).toBe(true);
+    // 隐私核心不回退:session 的 turn 仍被级联清掉
+    const [turns] = await repo.query<[Array<{ id: unknown }>]>("SELECT id FROM turn;");
+    expect((turns ?? []).length).toBe(0);
+  });
+
+  it("P0-1b(chunk 修剪): 悬空 rag_chunk(来源不存在)被 normalize 修剪,hot/DB 一致", async () => {
+    const repo = await makeMem();
+    const base = createInitialProductState();
+    repo.replaceState({
+      ...base,
+      importSources: [],
+      ragChunks: [{ id: "rc_orphan", sourceId: "is_gone", title: "孤儿", text: "t", keywords: [], tokenEstimate: 1, usage: "interview-context", createdAt: "2026-06-27T00:00:00.000Z" }] as never
+    });
+    await repo.flush();
+    expect(repo.getState().ragChunks.map((c) => c.id)).not.toContain("rc_orphan"); // 域层修剪
+    expect(repo.getPersistHealth().consecutiveFailures).toBe(0);
+    const audit = await repo.auditGraphConsistency();
+    expect(audit.ok, JSON.stringify(audit)).toBe(true);
+  });
+
+  it("P0-2(同事务级联感知): 移除 session + 新增 point(anchor→该 session 的 turn)→ persist 成功,悬空边被判死", async () => {
+    const repo = await makeMem();
+    repo.replaceState(linkedState());
+    await repo.flush();
+    const s = repo.getState();
+    const newPoint = { ...s.points[0], id: "pt_new", title: "全新观点", evidenceAnchors: [{ sessionId: "se_1", turnId: "tu_1" }] };
+    repo.replaceState({ ...s, sessions: [], points: [...s.points, newPoint] });
+    await repo.flush();
+    expect(repo.getPersistHealth().consecutiveFailures).toBe(0);       // 修复前:确定性失败 wedge
+    const [pts] = await repo.query<[Array<{ id: unknown }>]>("SELECT id FROM point;");
+    expect((pts ?? []).length).toBe(2);                                 // 资产真实落库
+    const audit = await repo.auditGraphConsistency();
+    expect(audit.ok, JSON.stringify(audit)).toBe(true);
+  });
+
+  it("P0-3b(必填 string 兜底): 缺 content 的 point 被 normalize 补空串,persist 不被 coerce 拒", async () => {
+    const repo = await makeMem();
+    const s = linkedState();
+    // 手工/坏 import 缺必填 string content 的 point(真实业务 E2E 实测触发)。
+    const badPoint = { id: "pt_nocontent", title: "无正文", status: "稳定观点", confidence: "用户确认", evidence: [], relatedThemeIds: [], important: false, updatedAt: "2026-06-27T00:00:00.000Z" };
+    repo.replaceState({ ...s, points: [...s.points, badPoint as never] });
+    await repo.flush();
+    expect(repo.getPersistHealth().consecutiveFailures).toBe(0);   // 修复前:coerce 失败 wedge
+    const [pts] = await repo.query<[Array<{ id: unknown }>]>("SELECT id FROM point;");
+    expect((pts ?? []).length).toBe(2);
+    expect(repo.getState().points.find((p) => p.id === "pt_nocontent")?.content).toBe("");  // fail-closed 兜空串
+  });
+
+  it("P0-3(枚举钳制): 非法 point.status 被 normalize 钳制为合法值,persist 不再被 ASSERT 拒", async () => {
+    const repo = await makeMem();
+    const s = linkedState();
+    repo.replaceState({ ...s, points: s.points.map((p) => ({ ...p, status: "已废弃" as never })) });
+    await repo.flush();
+    expect(repo.getPersistHealth().consecutiveFailures).toBe(0);
+    expect(repo.getState().points[0].status).toBe("临时想法");          // fail-closed 钳制
+    const [pts] = await repo.query<[Array<{ id: unknown }>]>("SELECT id FROM point;");
+    expect((pts ?? []).length).toBe(1);
+  });
+});
+
+// ── ④ 根修:H1×A5 碰撞(reset/purge 级联删 turn 后,重引入带 anchor 的资产) ──
+describe("④根修:悬空溯源不再拒整事务(reset→重引入形状,E2E 复现根因)", () => {
+  it("完整会话落库→reset(A5 级联删 turn)→同 id 资产重引入(turns 已降冷)→persist 零失败,资产真实落库,悬空溯源按 DB 真相丢弃,审计一致", async () => {
+    const repo = await makeMem();
+    repo.replaceState(linkedState());       // session+turn tu_1 + point(anchor→tu_1) 全落库
+    await repo.flush();
+    repo.resetState();                       // 删 session → A5 EVENT 级联删其 turn 行
+    await repo.flush();
+    const [turnsAfterReset] = await repo.query<[Array<{ id: unknown }>]>("SELECT id FROM turn;");
+    expect((turnsAfterReset ?? []).length).toBe(0);  // 前提确认:turn 已被级联删除
+
+    // 重引入同一批资产,但会话 turns 已降冷(为空)——anchor 悬空指向已删除的 tu_1。
+    // 修复前:derived_from RELATE ENFORCED 拒 → 整事务确定性失败(consecutiveFailures>0,
+    // 资产永不落库=E2E 实测的 12 次 persist_failed 形状);修复后:悬空边被过滤,其余全部落库。
+    const seed = linkedState();
+    repo.replaceState({ ...seed, sessions: seed.sessions.map((s) => ({ ...s, turns: [] })) });
+    await repo.flush();
+
+    expect(repo.getPersistHealth().consecutiveFailures).toBe(0);
+    const [points] = await repo.query<[Array<{ id: unknown }>]>("SELECT id FROM point;");
+    expect((points ?? []).length).toBe(1);           // 资产真实落库(修复前整事务被拒为 0)
+    const [df] = await repo.query<[Array<Record<string, unknown>>]>("SELECT * FROM derived_from;");
+    expect((df ?? []).length).toBe(0);               // 悬空溯源不投影(turn 真的不存在)
+    const audit = await repo.auditGraphConsistency();
+    expect(audit.ok, `悬空溯源应归 dangling 而非漂移: ${JSON.stringify(audit)}`).toBe(true);
+    expect(audit.danglingProvenanceCount).toBe(1);   // 单列可观测
+    expect(audit.missingCount).toBe(0);
+  });
+
+  it("H1 降冷不受影响:会话未删除、turns 剥离 → 溯源边保留(端点仍在 DB)", async () => {
+    const repo = await makeMem();
+    repo.replaceState(linkedState());
+    await repo.flush();
+    // 降冷形状:同一会话保留、turns 清空(offloadCompletedSession 语义),不经过 reset。
+    const s = repo.getState();
+    repo.replaceState({ ...s, sessions: s.sessions.map((x) => ({ ...x, turns: [] })) });
+    await repo.flush();
+    expect(repo.getPersistHealth().consecutiveFailures).toBe(0);
+    const turns = await repo.recallProvenanceTurns("point", "pt_1");
+    expect(turns.map((t: { id: string }) => t.id)).toContain("tu_1");  // 溯源照常(P2c H1 契约不回归)
+  });
+});

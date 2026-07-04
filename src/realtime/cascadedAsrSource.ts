@@ -70,6 +70,12 @@ export interface CreateBrowserAsrSourceOptions {
    * Injectable for tests (set to 0 for instant retries).
    */
   baseReconnectDelayMs?: number;
+  /**
+   * 审计修复(P2-22):连接建立(settled)之后的中途断连/服务端错误此前完全静默——UI 呈"在听"
+   * 假象、麦克风帧被丢弃、无任何信号。此回调在会话中途链路死亡时触发一次,调用方据此提示
+   * 用户并收尾(启动期失败仍走原 reject+重试路径,不经此回调)。
+   */
+  onConnectionLost?: (err: Error) => void;
 }
 
 export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): AsrSource {
@@ -80,7 +86,16 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
     instructions = "",
     maxReconnectAttempts = 2,
     baseReconnectDelayMs = 500,
+    onConnectionLost,
   } = opts;
+
+  // P2-22:中途断连只上报一次(onerror 与 onclose 常成对触发)。
+  let connectionLostNotified = false;
+  function notifyConnectionLost(err: Error) {
+    if (connectionLostNotified || closed) return;
+    connectionLostNotified = true;
+    try { onConnectionLost?.(err); } catch { /* 上报回调自身绝不破坏收尾 */ }
+  }
 
   let handlers: AsrEventHandlers | null = null;
   let ws: WebSocket | null = null;
@@ -341,6 +356,8 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
             if (!settled && !closed) {
               settled = true;
               reject(new Error("ASR WebSocket error"));
+            } else if (settled) {
+              notifyConnectionLost(new Error("ASR 连接错误(会话中途)"));
             }
           };
 
@@ -352,6 +369,9 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
             if (!settled && !closed) {
               settled = true;
               reject(new Error("ASR WebSocket closed before ready"));
+            } else if (settled) {
+              // 审计修复(P2-22):会话中途断连不再静默——语音输入已死,必须让用户知道。
+              notifyConnectionLost(new Error("语音识别连接已断开"));
             }
           };
         });

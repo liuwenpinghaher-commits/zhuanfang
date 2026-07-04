@@ -837,6 +837,39 @@ describe("product state storage", () => {
     });
   });
 
+  describe("R1-F2:DEFAULT '' string 列 + array<string> 列畸形值钳制(P0-3 wedge 防御)", () => {
+    it("note 的 keyQuote(null)/saidTrack(非数组)/learnedTrack(含非string)被钳成 SurrealDB 可持久值", () => {
+      const state = createInitialProductState();
+      // 这些列 SCHEMAFULL 为 TYPE string / array<string> 且 DEFAULT '';畸形值(null/数字/非数组)
+      // 此前 clampPersistableEnums 的 str() 只兜"无 DEFAULT 必填 string",漏了它们 → 直落权威库 coerce
+      // 失败 → persist wedge(基线冻结,所有后续写永不落库)。R1-F2 扩展 str/strArr 兜底覆盖。
+      const dirty = {
+        ...state,
+        notes: [{
+          id: "n1", sessionId: "se_x", title: "标题", summary: "概要",
+          keyQuote: null,
+          saidTrack: "不是数组",
+          learnedTrack: [1, 2, "真话"],
+          nextQuestions: [],
+          createdAt: "2026-06-27T00:00:00.000Z"
+        }]
+      };
+      const n = normalizeProductState(dirty as never).notes.find((x) => x.id === "n1");
+      expect(n).toBeDefined();
+      expect(n?.keyQuote).toBe("");           // null → '' (TYPE string 可持久)
+      expect(n?.saidTrack).toEqual([]);       // 非数组 → []
+      expect(n?.learnedTrack).toEqual(["真话"]);  // 过滤非 string 元素
+    });
+
+    it("theme 的 summary(数字)/representativeQuote(null)被钳成 '' (DEFAULT '' string 列)", () => {
+      const state = createInitialProductState();
+      const themes = state.themes.map((t, i) => (i === 0 ? { ...t, summary: 123, representativeQuote: null } : t));
+      const t0 = normalizeProductState({ ...state, themes: themes as never }).themes[0];
+      expect(t0.summary).toBe("");
+      expect(t0.representativeQuote).toBe("");
+    });
+  });
+
   describe("MemoryRecord migration (M3 data)", () => {
     it("normalizes legacy MemoryRecord without new fields, no crash", () => {
       const legacy = {

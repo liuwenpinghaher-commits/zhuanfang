@@ -1,4 +1,4 @@
-import { CheckCircle2, ChevronDown, ClipboardList, FileAudio2, Info, LoaderCircle, Plus, Sparkles, Trash2, Upload, X } from "lucide-react";
+import { CheckCircle2, ChevronDown, ClipboardList, FileAudio2, Info, LoaderCircle, Plus, Sparkles, Trash2, Undo2, Upload, X } from "lucide-react";
 import { useRef, useState } from "react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { CorpusImportInput, PlaybookPatch, ProductState } from "../../domain/types";
@@ -28,6 +28,7 @@ interface CorpusLearningViewProps {
   onTranscribeAudio: () => void;
   onAnalyze: () => void;
   onApprovePatch: (patchId: string, rules: string[]) => void;
+  onRevertPatch: (patchId: string) => void;
   onDeleteInsight: (insightId: string) => void;
 }
 
@@ -51,6 +52,7 @@ export function CorpusLearningView({
   onTranscribeAudio,
   onAnalyze,
   onApprovePatch,
+  onRevertPatch,
   onDeleteInsight
 }: CorpusLearningViewProps) {
   const importById = new Map(state.corpusImports.map((item) => [item.id, item]));
@@ -331,7 +333,7 @@ export function CorpusLearningView({
             </div>
             <div className="patch-list">
               {insight.recommendedPatches.map((patch) => (
-                <EditablePatchCard key={patch.id} patch={patch} onApprovePatch={onApprovePatch} />
+                <EditablePatchCard key={patch.id} patch={patch} onApprovePatch={onApprovePatch} onRevertPatch={onRevertPatch} />
               ))}
             </div>
           </article>
@@ -352,10 +354,16 @@ function formatBytes(bytes: number): string {
 interface EditablePatchCardProps {
   patch: PlaybookPatch;
   onApprovePatch: (patchId: string, rules: string[]) => void;
+  onRevertPatch: (patchId: string) => void;
 }
 
-function EditablePatchCard({ patch, onApprovePatch }: EditablePatchCardProps) {
+function EditablePatchCard({ patch, onApprovePatch, onRevertPatch }: EditablePatchCardProps) {
   const applied = patch.status === "applied";
+  // 回归审查 R7-F1:只有 proposed(未处置)才可编辑+应用。applied/reverted 都是终态——此前只判
+  // applied,导致撤销应用后(status='reverted')卡片落回编辑器分支且"确认影响引擎"按钮启用,但
+  // approvePlaybookPatch 守卫 status!=='proposed' 直接 return(无变化)、前端却报成功+跳转=死循环+
+  // 假成功。终态一律只读展示规则、隐藏编辑器与应用按钮;仅 applied 提供"撤销应用"。
+  const editable = patch.status === "proposed";
   // Local draft rules — initialized from the recommended patch. The user can edit,
   // delete or add rules here, then "确认影响引擎" applies the EDITED set.
   const [draftRules, setDraftRules] = useState<string[]>(() => [...patch.rules]);
@@ -373,19 +381,27 @@ function EditablePatchCard({ patch, onApprovePatch }: EditablePatchCardProps) {
   }
 
   const cleanedRules = draftRules.map((rule) => rule.trim()).filter(Boolean);
-  const canApply = !applied && cleanedRules.length > 0;
+  const canApply = editable && cleanedRules.length > 0;
 
   return (
     <div className="patch-card">
       <span className="status-pill">{patch.status}</span>
       <h3>{patch.title}</h3>
       <p>{patch.description}</p>
-      {applied ? (
-        <ul>
-          {patch.rules.map((rule, ruleIdx) => (
-            <li key={`${patch.id}-rule-${ruleIdx}`}>{rule}</li>
-          ))}
-        </ul>
+      {!editable ? (
+        <>
+          <ul>
+            {patch.rules.map((rule, ruleIdx) => (
+              <li key={`${patch.id}-rule-${ruleIdx}`}>{rule}</li>
+            ))}
+          </ul>
+          {/* 仅 applied 可撤销;reverted 是终态,无操作。 */}
+          {applied && (
+            <button className="link-button" type="button" onClick={() => onRevertPatch(patch.id)}>
+              <Undo2 size={14} />撤销应用
+            </button>
+          )}
+        </>
       ) : (
         <div className="patch-rule-editor">
           <span className="patch-rule-editor-label">推荐规则（可编辑后再应用）</span>
@@ -411,16 +427,17 @@ function EditablePatchCard({ patch, onApprovePatch }: EditablePatchCardProps) {
           <button className="link-button" type="button" onClick={addRule}>
             <Plus size={14} />加一条规则
           </button>
+          {/* R7-F1:应用按钮仅在可编辑(proposed)时渲染,终态不再出现"确认影响引擎"→杜绝对 reverted 假成功。 */}
+          <button
+            className="secondary-action"
+            type="button"
+            onClick={() => onApprovePatch(patch.id, cleanedRules)}
+            disabled={!canApply}
+          >
+            <CheckCircle2 size={16} />确认影响引擎
+          </button>
         </div>
       )}
-      <button
-        className="secondary-action"
-        type="button"
-        onClick={() => onApprovePatch(patch.id, cleanedRules)}
-        disabled={!canApply}
-      >
-        <CheckCircle2 size={16} />确认影响引擎
-      </button>
     </div>
   );
 }

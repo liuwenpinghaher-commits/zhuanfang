@@ -45,7 +45,7 @@ const defaultOnShadowError: NonNullable<DualWriteOptions["onShadowError"]> = (er
   console.error(JSON.stringify({ event: "dual_write_shadow_error", op, error: String(err) }));
 
 /** 双写仓库:读走 authoritative,写双落 + 影子读等价比对。shadow 的错误/发散绝不破坏主写。 */
-export function createDualWriteRepository(opts: DualWriteOptions): ProductStateRepository & { getAuthoritative(): ProductStateRepository } {
+export function createDualWriteRepository(opts: DualWriteOptions): ProductStateRepository & { getAuthoritative(): ProductStateRepository; getPersistHealth(): { consecutiveFailures: number; lastError?: string; lastErrorAt?: string; shadowFailures?: number } } {
   const { authoritative, shadow } = opts;
   const onDivergence = opts.onDivergence ?? defaultOnDivergence;
   const onShadowError = opts.onShadowError ?? defaultOnShadowError;
@@ -54,8 +54,22 @@ export function createDualWriteRepository(opts: DualWriteOptions): ProductStateR
   const reportDivergence = (info: Parameters<NonNullable<DualWriteOptions["onDivergence"]>>[0]) => {
     try { onDivergence(info); } catch { /* 注入回调抛错也不破坏主写 */ }
   };
-  const reportShadowError = (err: unknown, op: string) => {
-    try { onShadowError(err, op); } catch { /* 同上 */ }
+  // 审计修复(P3-35 + 回归审查 R6-1/R6-2/R6-3):影子库(dual-surreal 下 sqlite 冷备,回退路径)不健康
+  // 此前只进 console,/api/health 全绿 → 真需回退时才发现冷备落后。经 getPersistHealth 暴露。
+  // R6-2:改累计为**连续**计数——每次影子写成功且无发散即清零,一次瞬时异常(SQLITE_BUSY)不再永久
+  //       degraded(与权威侧 consecutiveFailures 语义对齐,名副其实)。
+  // R6-1:发散(影子写成功但内容偏离权威=冷备落后,fix 注释点名的主场景)也计入,不只数抛错异常。
+  // R6-3:记 lastShadowErrorAt。
+  let shadowConsecutiveFailures = 0;
+  let lastShadowError: string | undefined;
+  let lastShadowErrorAt: string | undefined;
+  const recordShadowUnhealthy = (msg: string, err?: unknown, op?: string) => {
+    shadowConsecutiveFailures += 1;
+    lastShadowError = msg;
+    lastShadowErrorAt = new Date().toISOString();
+    if (err !== undefined && op !== undefined) {
+      try { onShadowError(err, op); } catch { /* 注入回调抛错也不破坏主写 */ }
+    }
   };
 
   function mirrorAndCompare(op: "reset" | "replace", next: ProductState) {
@@ -64,29 +78,49 @@ export function createDualWriteRepository(opts: DualWriteOptions): ProductStateR
       if (op === "reset") shadow.resetState();
       else shadow.replaceState(next);
     } catch (err) {
-      reportShadowError(err, op);
+      recordShadowUnhealthy(`${op}: ${err instanceof Error ? err.message : String(err)}`, err, op);
       return;
     }
     try {
       const authState = authoritative.getState();
       const shadowState = shadow.getState();
       if (contentDigest(authState) !== contentDigest(shadowState)) {
+        // R6-1:发散计入不健康(影子写进了但内容≠权威 → 冷备已漂移)。
+        const firstDiffKey = firstDivergentKey(authState, shadowState);
+        recordShadowUnhealthy(`${op}:divergence firstDiffKey=${firstDiffKey}`);
         reportDivergence({
           op,
           authDigest: contentDigest(authState),
           shadowDigest: contentDigest(shadowState),
-          firstDiffKey: firstDivergentKey(authState, shadowState)
+          firstDiffKey
         });
+        return;
       }
     } catch (err) {
-      reportShadowError(err, `${op}:compare`);
+      recordShadowUnhealthy(`${op}:compare: ${err instanceof Error ? err.message : String(err)}`, err, `${op}:compare`);
+      return;
     }
+    // R6-2:影子写成功 且 内容与权威一致 → 影子健康,连续失败清零。
+    shadowConsecutiveFailures = 0;
   }
 
   return {
     getState: () => authoritative.getState(),
     /** P2b:暴露权威库供原生召回能力探测(asNativeRecall);只读,不影响双写语义。 */
     getAuthoritative: () => authoritative,
+    /** 审计修复(P3-35 + R6):落库健康度 = 权威库自身(若为 surreal 有 getPersistHealth)+ 影子连续
+     *  失败(写异常+发散)。server 的 probePersistHealth 经此拿到影子腐化信号,/api/health 得以暴露。 */
+    getPersistHealth() {
+      const authHealth = (authoritative as { getPersistHealth?: () => { consecutiveFailures: number; lastError?: string; lastErrorAt?: string } }).getPersistHealth?.();
+      const authFailures = authHealth?.consecutiveFailures ?? 0;
+      return {
+        consecutiveFailures: authFailures + shadowConsecutiveFailures,
+        ...(authHealth?.lastError || lastShadowError ? { lastError: authHealth?.lastError ?? lastShadowError } : {}),
+        // R6-3:补回 lastErrorAt(此前 dual repo 有 getPersistHealth 后 ?? 短路到它却不带该字段,health 恒缺失)。
+        ...(authHealth?.lastErrorAt || lastShadowErrorAt ? { lastErrorAt: authHealth?.lastErrorAt ?? lastShadowErrorAt } : {}),
+        ...(shadowConsecutiveFailures > 0 ? { shadowFailures: shadowConsecutiveFailures } : {})
+      };
+    },
     getInterviewSession: (id) => authoritative.getInterviewSession(id),
     resetState() {
       const result = authoritative.resetState();

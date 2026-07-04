@@ -383,7 +383,7 @@ await repo.close(); process.exit(0);
         { sessionCount?: number; turnCount?: number; noteCount?: number; partOfCount?: number; derivedCount?: number; pointCount?: number };
       expect(out.sessionCount, "session 已删").toBe(0);
       expect(out.turnCount, "turn 被 EVENT 级联清(无孤儿)").toBe(0);
-      expect(out.noteCount, "note 被 EVENT 级联清(无孤儿)").toBe(0);
+      expect(out.noteCount, "006 级联收缩:note 生命周期归域层,不随 session 级联删").toBe(1);
       expect(out.partOfCount, "part_of 边随 turn 节点删除自动消失").toBe(0);
       expect(out.derivedCount, "derived_from 边随 turn 节点删除自动消失(无孤儿边)").toBe(0);
       expect(out.pointCount, "point 不归属 session,保留").toBe(1);

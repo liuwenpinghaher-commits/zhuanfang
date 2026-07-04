@@ -62,5 +62,14 @@ test.describe("真实业务·文本访谈全链路(UI→真后端)", () => {
     expect(assets, "finalize 应抽取认知资产(point/decision/debt)").toBeGreaterThan(0);
     expect((st.memoryCandidates ?? []).length, "finalize 应产记忆候选").toBeGreaterThan(0);
     expect(pointsThemed, "至少一个观点应挂到主题(embedding 归属修复在真实业务下生效)").toBeGreaterThan(0);
+
+    // P4·方案二:真实 LLM finalize 后,图↔软链双表示必须逐条一致(dual-surreal 权威上
+    // persist/diff/edge-mapper 全链不变量;pointsThemed>0 保证至少有 belongs_to_theme 边参审)。
+    const auditRes = await page.request.get(`${API}/api/ops/graph-consistency`);
+    expect(auditRes.status(), "图审计端点应可达(dual-surreal 权威档位)").toBe(200);
+    const audit = await auditRes.json();
+    console.log(`[real-interview] 图审计: expected=${audit.report?.expectedCount} actual=${audit.report?.actualCount} missing=${audit.report?.missingCount} unexpected=${audit.report?.unexpectedCount}`);
+    expect(audit.ok, `图↔软链一致性应通过: ${JSON.stringify(audit.report ?? audit)}`).toBe(true);
+    expect(audit.report.expectedCount, "真实 finalize 后应存在图边(主题归属/溯源)").toBeGreaterThan(0);
   });
 });

@@ -408,10 +408,10 @@ export function ProfileView({
 
       <section className="danger-zone">
         <div>
-          <strong>清空示例，开始我的记录</strong>
-          <p>移除内置示例的访谈、资产和记忆，开始记录你自己的真实内容。</p>
+          <strong>清空全部数据，从头开始</strong>
+          <p>移除当前全部访谈、资产、记忆与逐字稿（包括你自己的真实记录，不只是示例），从空白状态重新开始，且无法撤销。</p>
         </div>
-        <button className="danger-button" type="button" onClick={onReset}><Trash2 size={16} />清空示例，开始我的记录</button>
+        <button className="danger-button" type="button" onClick={onReset}><Trash2 size={16} />清空全部数据，从头开始</button>
       </section>
     </section>
   );

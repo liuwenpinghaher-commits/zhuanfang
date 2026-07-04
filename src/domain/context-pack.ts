@@ -1,4 +1,5 @@
 import type {
+  DecisionAsset,
   InterviewCard,
   InterviewContextPack,
   InterviewGuide,
@@ -312,9 +313,16 @@ export function buildInterviewContextPack(state: ProductState, options: Intervie
   // M3c: 路由层有 embeddingClient 时会算出 queryEmbedding 并穿入，导入资料语义召回走 cosine；
   // 无 embeddingClient 时回退到关键词召回（topicHint 较短，关键词足够）。专用资料问答端点
   // POST /api/rag/query 走同一条 buildSemanticRagContext cosine 路径。
+  // 方案一:server 预召回的原生 rag 命中(recall.ragHits,HNSW+BM25+rrf)优先——域层重验
+  // usage/来源 policy 门控后为空(或无注入)→ 回落现状排序路径,行为与此前完全一致。
+  const nativeRagContext = !linkedImportSource && recall?.ragHits?.length
+    ? buildSemanticRagContextFromRecall(state, recall.ragHits, contextSourceLimit)
+    : undefined;
   const semanticRagContext = linkedImportSource
     ? emptySemanticRagContext()
-    : buildSemanticRagContext(state, topicHint, contextSourceLimit, options.queryEmbedding);
+    : nativeRagContext && nativeRagContext.chunks.length > 0
+      ? nativeRagContext
+      : buildSemanticRagContext(state, topicHint, contextSourceLimit, options.queryEmbedding);
   const ragChunks = linkedImportSource ? linkedRagChunks : semanticRagContext.chunks;
   const sourceHighlights = [...searchSourceHighlights, ...semanticRagContext.sourceHighlights].slice(0, sourceHighlightLimit);
   const activeRecords = state.memoryRecords.filter(
@@ -434,6 +442,34 @@ export function buildInterviewGuide(state: ProductState, options: InterviewGuide
       nextQuestion: debt.nextQuestion
     }));
   const debtToAddress = openDebts[0]?.concept;
+  // 审计修复(P2·复盘闭环 + 回归审查 R5-1/R5-2):收集待复盘决策,让 decision.status 真实驱动引导。
+  // R5-2:门控须三条齐备——status「待复盘」+ confirmationStatus「用户确认」(未确认的 AI 候选不催,
+  //       同场刚抽出的决策还没被用户拍板、更没时间检验假设)+ reviewAt 到期(到复盘日才提醒;
+  //       reviewAt 空视为已到期,兜底催)。根治"未确认候选/未到复盘日即被催"。
+  // R5-1:daysOpen 用**决策做出时刻**——优先取来源会话 completedAt(session 完成=决策做出),回退
+  //       reviewAt-30d(finalize 默认视界),最后才 updatedAt。避免 confirm/改状态刷新 updatedAt 后
+  //       "已做出 N 天"归零失真、最该复盘的老决策被近期确认后沉底。
+  const sessionCompletedAt = new Map(state.sessions.map((s) => [s.id, s.completedAt] as const));
+  const now = nowIso();
+  const decisionMadeAt = (decision: DecisionAsset): string => {
+    const fromSession = decision.sourceSessionId ? sessionCompletedAt.get(decision.sourceSessionId) : undefined;
+    if (fromSession) return fromSession;
+    if (decision.reviewAt) return new Date(Date.parse(decision.reviewAt) - 30 * 86400000).toISOString();
+    return decision.updatedAt;
+  };
+  const decisionsToReview = state.decisions
+    .filter(
+      (decision) =>
+        decision.status === "待复盘" &&
+        decision.confirmationStatus === "用户确认" &&
+        (!decision.reviewAt || Date.parse(decision.reviewAt) <= Date.parse(now))
+    )
+    .map((decision) => ({
+      title: decision.title,
+      choice: decision.choice,
+      daysOpen: daysBetween(decisionMadeAt(decision), now)
+    }))
+    .sort((a, b) => b.daysOpen - a.daysOpen);
   const topicHint = resolveInterviewTopicHint(state, options);
   const contextPack = buildInterviewContextPack(state, {
     topicHint,
@@ -454,7 +490,13 @@ export function buildInterviewGuide(state: ProductState, options: InterviewGuide
     nowIso(),
     recall
   );
-  const statedPositions = state.points.slice(0, 4).map((point) => `${point.title}：${point.content}`);
+  // 审计修复(P2-10) + 回归审查 R5-3(注释因果修正):「已放弃/已修正」是用户/推理已废弃的立场——
+  // 此前不筛状态,直接 slice 前 4 条(数组序,非 updatedAt 排序),主持人 prompt 把用户亲手废弃的观点
+  // 当"过去的立场"对质,而同一资产的溯源门控又拒绝它——口径分裂。与溯源门控对齐:终态(已放弃/已修正)出局。
+  const statedPositions = state.points
+    .filter((point) => point.status !== "已放弃" && point.status !== "已修正")
+    .slice(0, 4)
+    .map((point) => `${point.title}：${point.content}`);
   const openingQuestion = searchBrief
     ? explicitTopicHint
       ? `我们先拿这条联网讨论主题做外部参照：${ensureSentenceEnd(explicitTopicHint)}它和你最近反复说的“${topTheme?.name ?? "这个问题"}”有什么真实关系？`
@@ -491,12 +533,14 @@ export function buildInterviewGuide(state: ProductState, options: InterviewGuide
     statedPositions,
     openDebts,
     debtToAddress,
+    decisionsToReview,
     blindspotCandidates: buildBlindspotCandidates(missingPerspectives, topicHint),
     knowledgeFragments: buildKnowledgeFragments(state, searchBrief, contextPack.ragChunks),
     suggestedOpening: openingQuestion,
     strategyChecklist: buildStrategyChecklist(state, {
       openingQuestion,
       debtToAddress,
+      decisionToReview: decisionsToReview[0],
       recommendedPerspectives,
       agendaContext
     })
@@ -754,11 +798,49 @@ function buildSemanticRagSourceHighlight(source: ImportSource, chunk: RagChunk, 
     usage: "interview-context"
   };
 }
+/** 方案一:消费 server 预召回的原生 rag 命中(RecallResult.ragHits / 路由直查)。
+ *  域层不信任注入方的 SQL 门控,在此以与 buildSemanticRagContext 完全相同的口径重验:
+ *  usage='interview-context' + 来源 policy(isImportSourceAllowedInContext)。
+ *  保留原生 rrf 融合名次序(hits 顺序即名次),去重、截断到 limit;全被门控滤空 → 空上下文,
+ *  由调用方回落域层排序路径(buildSemanticRagContext),绝不因注入而丢现状能力。 */
+export function buildSemanticRagContextFromRecall(
+  state: ProductState,
+  hits: Array<{ id: string }>,
+  limit: number
+): SemanticRagContext {
+  if (hits.length === 0 || state.ragChunks.length === 0) {
+    return emptySemanticRagContext();
+  }
+  const sourcesById = new Map(state.importSources.map((source) => [source.id, source]));
+  const chunksById = new Map(state.ragChunks.map((chunk) => [chunk.id, chunk]));
+  const matches: Array<{ chunk: RagChunk; source: ImportSource }> = [];
+  const seen = new Set<string>();
+  for (const hit of hits) {
+    if (matches.length >= limit) break;
+    if (seen.has(hit.id)) continue;
+    seen.add(hit.id);
+    const chunk = chunksById.get(hit.id);
+    if (!chunk || chunk.usage !== "interview-context") continue;
+    const source = sourcesById.get(chunk.sourceId);
+    if (!source || !isImportSourceAllowedInContext(source, state.systemConfig.memory)) continue;
+    matches.push({ chunk, source });
+  }
+  if (matches.length === 0) {
+    return emptySemanticRagContext();
+  }
+  const importSources = Array.from(new Map(matches.map((match) => [match.source.id, match.source])).values());
+  return {
+    chunks: matches.map((match) => match.chunk),
+    sourceHighlights: matches.map((match, index) => buildSemanticRagSourceHighlight(match.source, match.chunk, 10 - index, index)),
+    importSources
+  };
+}
 function buildStrategyChecklist(
   state: ProductState,
   input: {
     openingQuestion: string;
     debtToAddress?: string;
+    decisionToReview?: { title: string; choice: string; daysOpen: number };
     recommendedPerspectives: string[];
     agendaContext?: string;
   }
@@ -769,6 +851,10 @@ function buildStrategyChecklist(
     ...collectAppliedPlaybookRules(state).slice(0, 2).map((rule) => `已应用样本技法：${rule}`),
     // 轻量推理(欠账②)消费:存在同主题对立观点时,提示主持人安排一次复盘。
     ...buildContradictionReviewHints(state),
+    // 审计修复(P2·复盘闭环):有待复盘决策时提示回访其当初假设,让 decision.status「待复盘」真实驱动引导。
+    ...(input.decisionToReview
+      ? [`回顾决策「${input.decisionToReview.title}」(已做出 ${input.decisionToReview.daysOpen} 天)：当初选「${input.decisionToReview.choice}」的假设成立了吗？`]
+      : []),
     input.debtToAddress ? `第 2-3 轮回访知识债：${input.debtToAddress}` : "若用户出现新概念，生成知识债候选。",
     `中段至少引入两个视角：${input.recommendedPerspectives.slice(0, 2).join(" / ")}`,
     "所有外部素材必须作为追问线索，不直接替用户下结论。"

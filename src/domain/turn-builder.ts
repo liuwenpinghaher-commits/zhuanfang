@@ -266,6 +266,7 @@ export function createInterviewSession(input: CreateInterviewSessionInput): Inte
     opinionEvolution: [],
     statedPositions: [],
     openDebts: [],
+    decisionsToReview: [],
     blindspotCandidates: [],
     knowledgeFragments: [],
     suggestedOpening: "",

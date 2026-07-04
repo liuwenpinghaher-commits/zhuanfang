@@ -19,6 +19,7 @@ import { FormEvent, MutableRefObject, useEffect, useMemo, useRef, useState } fro
 import {
   analyzeImportedInterview,
   approvePlaybookPatch,
+  revertPlaybookPatch,
   buildCognitiveRadar,
   buildInterviewCard,
   buildInterviewResumeCard,
@@ -53,7 +54,7 @@ import { addAnnotation, removeAnnotation } from "./domain/raw-material";
 import { deleteImportSource } from "./domain/material";
 import { executeSearchProvider } from "./capabilities/search";
 import { createIdleCapabilityTask, failCapabilityTask, startCapabilityTask } from "./capabilities/task";
-import { productApiClient, getProductApiBaseUrl, isNetworkError, ApiError, type ReviewsResponse } from "./api/productApi";
+import { productApiClient, isNetworkError, ApiError, type ReviewsResponse } from "./api/productApi";
 import type { RealtimeVoiceSessionResponse, SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigUpdateRequest, VoiceInfo } from "./api/productApi";
 // WebRTC omni client is incomplete (no callbacks/turn recording); the connect path is
 // downlined to WebSocket in startVoiceSession. Type kept for the connection union only.
@@ -237,6 +238,9 @@ export default function App() {
   }, [productState]);
 
   const lastSavedContentRef = useRef<string>("");
+  // 连续 autosave 失败计数：成功清零；首次跨过阈值(2)时弹一次警告，避免每 300ms 刷屏，
+  // 也避免"改动早已没在保存、用户毫不知情"的零信号静默丢失。
+  const autosaveFailuresRef = useRef(0);
   useEffect(() => {
     if (!apiPersistenceEnabled) {
       return;
@@ -250,6 +254,7 @@ export default function App() {
       productApiClient
         .saveState(productState)
         .then(({ state: server, conflicted }) => {
+          autosaveFailuresRef.current = 0;
           if (conflicted) {
             // Another writer advanced the server — adopt its newer content wholesale,
             // and tell the user so a silently-dropped local edit isn't mistaken for saved.
@@ -264,9 +269,25 @@ export default function App() {
             setProductState((prev) => (prev.revision === server.revision ? prev : { ...prev, revision: server.revision }));
           }
         })
-        .catch(() => {
+        .catch((err) => {
           // Transient error: skip this cycle; the next content change retries. Do NOT
-          // permanently disable persistence on a network blip.
+          // permanently disable persistence on a network blip — but never fail silently:
+          // log every failure, and surface a notice once per failure streak.
+          autosaveFailuresRef.current += 1;
+          console.warn(
+            JSON.stringify({
+              event: "autosave_failed",
+              consecutiveFailures: autosaveFailuresRef.current,
+              error: String(err)
+            })
+          );
+          if (autosaveFailuresRef.current === 2) {
+            setNotice(
+              err instanceof ApiError && err.status === 413
+                ? buildNotice("warning", "本地改动尚未同步到服务器", "数据体积超出服务器限制，最近的改动无法保存。")
+                : buildNotice("warning", "本地改动尚未同步到服务器", "连续保存失败，请检查后端是否在运行；页面保持打开，恢复后会自动重试。")
+            );
+          }
         });
     }, 300);
     return () => clearTimeout(timer);
@@ -403,6 +424,19 @@ export default function App() {
     setProductState(next);
   }
 
+  // 语音路径（omni/livekit）record-turn 落库失败：保留本地 fork 保证对话连续性，
+  // 但绝不静默——服务端会话已缺了这一轮，归档会缺内容，日志与用户提示都要有信号。
+  function recordTurnFailedFallback(text: string, err: unknown) {
+    console.warn(
+      JSON.stringify({
+        event: "record_turn_failed",
+        error: err instanceof Error ? err.message : String(err)
+      })
+    );
+    setNotice(buildNotice("warning", "这一轮未写入服务端记录", "归档时可能缺失该轮内容。"));
+    setSession((prev) => (prev ? receiveUserTurn(prev, text) : prev));
+  }
+
   // 引用跳源（最小实现）：切到该来源类型对应的视图，并用通知给出定位提示。
   // 不强求精确滚动高亮——把用户带到正确的视图，提示来源标题即可。
   function handleCitationClick(citation: ChatCitation) {
@@ -468,6 +502,16 @@ export default function App() {
     // 删除一条已确认长期记忆不可撤销，必须二次确认，避免误点单击即永久丢失。
     if (!window.confirm("确定永久删除这条长期记忆吗？此操作不可撤销。")) return;
     return withMemoryAction(() => productApiClient.deleteMemoryRecord(id));
+  };
+  const editMemoryRecord = async (recordId: string, text: string) => {
+    // 修正后端会自动重算 embedding。用 adoptServerState 采纳权威态，避免冗余 PUT。
+    try {
+      const next = await productApiClient.updateMemoryRecordText(recordId, text);
+      adoptServerState(next);
+      setNotice(buildNotice("success", "记忆已更新", "已保存修正并重新计算语义索引。"));
+    } catch {
+      setNotice(buildNotice("warning", "记忆修改未保存", "请稍后重试。"));
+    }
   };
   const consolidateMemory = () => {
     // 整理会自动合并并删除被判定为近重复的记忆条目，不可撤销，需显式确认。
@@ -575,7 +619,20 @@ export default function App() {
   async function deleteVoice(voiceId: string) {
     // 删除复刻音色不可恢复（需重新上传录音复刻），二次确认避免误删。
     if (!window.confirm(`确定删除音色「${voiceId}」吗？删除后需重新上传录音复刻，无法恢复。`)) return;
-    await productApiClient.deleteVoice(voiceId);
+    try {
+      await productApiClient.deleteVoice(voiceId);
+    } catch (err) {
+      // 删除未生效（网络或服务端错误）：绝不从本地列表移除，否则就是假成功。
+      console.warn(
+        JSON.stringify({
+          event: "delete_voice_failed",
+          voiceId,
+          error: err instanceof Error ? err.message : String(err)
+        })
+      );
+      setNotice(buildNotice("warning", "删除音色失败", "请稍后重试。"));
+      return;
+    }
     setVoices((prev) => prev.filter((v) => v.voice !== voiceId));
     setNotice(buildNotice("warning", "音色已删除", `音色 "${voiceId}" 已移除。`));
   }
@@ -861,14 +918,31 @@ export default function App() {
       adoptServerState(response.state);
       setApiPersistenceEnabled(true);
       setNotice(buildNotice("success", tracked ? "已标记为持续追踪" : "已取消持续追踪", tracked ? "该主题将持续追踪，可随时刷新获取最新研究。" : "已取消持续追踪标记。"));
-    } catch {
-      // Optimistic local update when API unavailable
-      setApiPersistenceEnabled(false);
-      setProductState((current) => ({
-        ...current,
-        searchBriefs: current.searchBriefs.map((b) => (b.id === briefId ? { ...b, tracked } : b))
-      }));
-      setNotice(buildNotice("success", tracked ? "已标记为持续追踪（本地）" : "已取消持续追踪（本地）", "后端不可用，已在本地更新状态。"));
+    } catch (err) {
+      if (isNetworkError(err)) {
+        // 后端不可达：保留本地乐观更新，但如实告知"尚未同步"，不能伪装成成功。
+        setApiPersistenceEnabled(false);
+        setProductState((current) => ({
+          ...current,
+          searchBriefs: current.searchBriefs.map((b) => (b.id === briefId ? { ...b, tracked } : b))
+        }));
+        setNotice(
+          buildNotice(
+            "warning",
+            tracked ? "已在本地标记（尚未同步）" : "已在本地取消追踪（尚未同步）",
+            "后端不可用，改动暂存在本地，恢复后会自动保存。"
+          )
+        );
+      } else {
+        // 服务端在线但返回 4xx/5xx：不是"后端不可用"，绝不关掉持久化、也不本地 fork
+        // tracked 状态（那会与服务端真相分叉）。提示失败并采纳服务端当前状态。
+        setNotice(buildNotice("warning", "标记失败", "服务返回错误，请稍后重试。"));
+        try {
+          adoptServerState(await productApiClient.getState());
+        } catch {
+          // 拉取服务端状态也失败：保持现状，用户可重试。
+        }
+      }
     } finally {
       setTrackingBriefId(null);
     }
@@ -1107,9 +1181,22 @@ export default function App() {
   }
 
   function applyPlaybookPatch(patchId: string, overrideRules?: string[]) {
-    setProductState(approvePlaybookPatch(productState, patchId, overrideRules));
+    // 回归审查 R7-F1 纵深防御:approvePlaybookPatch 对非 proposed 补丁返回同一 state(无变化)。此前
+    // 无条件报 success + 跳转 → 对已撤销/已应用补丁"假成功"。UI 已隐藏终态的应用按钮,这里再兜一层:
+    // 无变化不报成功、不跳转,如实提示。
+    const next = approvePlaybookPatch(productState, patchId, overrideRules);
+    if (next === productState) {
+      setNotice(buildNotice("warning", "无法应用", "该补丁已处置(已应用或已撤销),不能重复应用。"));
+      return;
+    }
+    setProductState(next);
     setNotice(buildNotice("success", "PlaybookPatch 已应用", "系统配置已记录新的访谈策略版本。"));
     setView("config");
+  }
+
+  function revertPatch(patchId: string) {
+    setProductState(revertPlaybookPatch(productState, patchId));
+    setNotice(buildNotice("info", "已撤销应用", "该访谈策略补丁已回退，后续访谈不再套用它。"));
   }
 
   function cleanupGeneratedArtifacts() {
@@ -1228,17 +1315,27 @@ export default function App() {
       // tears down the mic tracks (MediaRecorder needs the live stream to flush its
       // final chunk), then upload. Best-effort — a failed upload only warns; it must
       // not block ending the interview. On the text path the ref is null → skipped.
+      // 「本场不保存」(doNotSave) 的会话：两路音频（受访者麦克风 + 主持人 TTS）一律
+      // 不上传——用户明确要求不落盘，录音仍需 stop 以释放 MediaRecorder，但直接丢弃。
+      const skipAudioUpload = session.doNotSave === true;
+      if (skipAudioUpload) {
+        console.info(JSON.stringify({ event: "audio_upload_skipped_do_not_save", sessionId: endedSessionId }));
+      }
       const recorder = audioRecorderRef.current;
       audioRecorderRef.current = null;
       if (recorder) {
-        void recorder
-          .stop()
-          .then(({ blob, durationMs, recordingStartedAt }) =>
-            productApiClient.uploadSessionAudio(endedSessionId, blob, durationMs, recordingStartedAt)
-          )
-          .catch(() =>
-            setNotice(buildNotice("warning", "录音未保存", "本场语音录音上传失败，不影响笔记与资产。"))
-          );
+        if (skipAudioUpload) {
+          void recorder.stop().catch(() => { /* discarded */ });
+        } else {
+          void recorder
+            .stop()
+            .then(({ blob, durationMs, recordingStartedAt }) =>
+              productApiClient.uploadSessionAudio(endedSessionId, blob, durationMs, recordingStartedAt)
+            )
+            .catch(() =>
+              setNotice(buildNotice("warning", "录音未保存", "本场语音录音上传失败，不影响笔记与资产。"))
+            );
+        }
       }
       // Host (interviewer) TTS audio: drain the sink's side-channel PCM tap, wrap
       // as WAV, upload as role=interviewer. Best-effort and non-blocking — a
@@ -1247,7 +1344,7 @@ export default function App() {
       // doesn't apply (the viewer plays it as one continuous track). The sink ref
       // is cleared by closeRealtimeVoiceSession() below; read it before that.
       const ttsSink = ttsSinkRef.current;
-      if (ttsSink?.getRecordedPcm) {
+      if (!skipAudioUpload && ttsSink?.getRecordedPcm) {
         const rec = ttsSink.getRecordedPcm();
         if (rec && rec.pcm.length > 0) {
           const wav = pcmS16leMonoToWav(rec.pcm, rec.sampleRate);
@@ -1382,7 +1479,8 @@ export default function App() {
   }
 
   async function resetData() {
-    if (typeof window !== "undefined" && !window.confirm("确定清空示例数据，开始你自己的真实记录吗？这会移除内置示例的访谈、资产和记忆，且无法撤销。")) {
+    // 文案必须如实：reset 清空的是全部数据（含用户自己的真实记录），不只是内置示例。
+    if (typeof window !== "undefined" && !window.confirm("确定清空全部数据吗？这会删除所有访谈、资产、记忆与逐字稿（包括你自己的真实记录，不只是示例），且无法撤销。")) {
       return;
     }
     let nextState: ProductState;
@@ -1410,7 +1508,7 @@ export default function App() {
     setCorpusSourceUrl("");
     setCorpusAudioBase64("");
     setCorpusAudioFileName("");
-    setNotice(buildNotice("warning", "示例数据已清空", "可以开始记录你自己的真实访谈了。"));
+    setNotice(buildNotice("warning", "全部数据已清空", "可以开始记录你自己的真实访谈了。"));
     setView("home");
   }
 
@@ -1444,6 +1542,12 @@ export default function App() {
             const asr = createBrowserAsrSource({
               asrWsUrl,
               instructions: voiceSession.sessionUpdate.session.instructions,
+              // 审计修复(P2-22):中途断连如实上报并收尾——此前 UI 停在"聆听"假象,用户
+              // 继续说话被静默丢帧,只能自己困惑几十秒后手动重开。
+              onConnectionLost: () => {
+                setNotice(buildNotice("warning", "语音连接已断开", "语音识别中断,请重新点击录音继续。文字输入不受影响。"));
+                closeRealtimeVoiceSession();
+              },
               // Tee the live mic into a whole-session recorder. Best-effort: guard
               // construction so a recorder failure never breaks ASR start. The
               // recording is uploaded at /end (see finishInterview).
@@ -1549,13 +1653,9 @@ export default function App() {
             setVoiceStatus("connecting");
             const sessionId = voiceSession.sessionId;
             const interviewId = session?.id ?? "";
-            const tokenResp = await fetch(
-              `${getProductApiBaseUrl()}/api/realtime-voice/livekit-token?sessionId=${sessionId}&interviewSessionId=${interviewId}`
-            );
-            if (!tokenResp.ok) {
-              throw new Error(`Token endpoint returned ${tokenResp.status}`);
-            }
-            const { token, serverUrl } = await tokenResp.json();
+            // 走 productApi 的 authedFetch（getLivekitToken）：production bearer 鉴权下
+            // 裸 fetch 不带 Authorization 恒 401。失败仍抛错 → 下方 catch 提示连接失败。
+            const { token, serverUrl } = await productApiClient.getLivekitToken(sessionId, interviewId);
 
             const livekitSession = await createLivekitVoiceSession({
               serverUrl: serverUrl ?? "ws://127.0.0.1:7880",
@@ -1573,7 +1673,7 @@ export default function App() {
                   productApiClient
                     .recordInterviewTurn(interviewId, { role: "user", content: text })
                     .then((r) => setSession(r.session))
-                    .catch(() => setSession((prev) => (prev ? receiveUserTurn(prev, text) : prev)));
+                    .catch((err) => recordTurnFailedFallback(text, err));
                   // Phase 8: regenerate pre_signals for the next turn (voice path).
                   if (interviewId) {
                     productApiClient
@@ -1681,7 +1781,7 @@ export default function App() {
                     productApiClient
                       .recordInterviewTurn(voiceSid, { role: "user", content: text })
                       .then((r) => setSession(r.session))
-                      .catch(() => setSession((prev) => (prev ? receiveUserTurn(prev, text) : prev)));
+                      .catch((err) => recordTurnFailedFallback(text, err));
                   } else {
                     setSession((prev) => (prev ? receiveUserTurn(prev, text) : prev));
                   }
@@ -1905,6 +2005,7 @@ export default function App() {
             onTranscribeAudio={transcribeCorpusAudio}
             onAnalyze={analyzeCorpus}
             onApprovePatch={applyPlaybookPatch}
+            onRevertPatch={revertPatch}
             onDeleteInsight={removeCorpusInsight}
           />
         )}
@@ -2030,6 +2131,7 @@ export default function App() {
             onEditCandidate={editCandidate}
             onDeprecate={deprecateRecord}
             onDeleteRecord={deleteRecord}
+            onEditRecord={editMemoryRecord}
             onConsolidate={consolidateMemory}
             onAddAnnotation={addInterviewAnnotation}
             onRemoveAnnotation={removeInterviewAnnotation}

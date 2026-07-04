@@ -139,10 +139,14 @@ export async function registerInterviewSessionRoutes(
     // critical path for responsiveness. The diary still uses real LLM at /end.
     const nextState = upsertSession(state, session);
 
-    repository.replaceState(nextState);
-    return { session, state: nextState };
+    // state 必须是 replaceState 返回的权威态(revision 已 bump):回传入参会让前端 adoptServerState
+    // 记下过期 revision,finalize/创建后的第一次编辑 PUT 必 409、被"改动已被其他更新覆盖"丢弃(真实业务 E2E 实测)。
+    const persisted = repository.replaceState(nextState);
+    return { session, state: persisted };
   });
 
+  // 端点定位(审计说明):单会话查询 API。前端整取走 GET /api/state,故此端点前端未调用,但保留作
+  // RESTful 完整性 + 外部集成/调试入口(按 id 精确取单会话,无维护成本)。非死代码。
   server.get("/api/interview-sessions/:id", async (request, reply) => {
     const session = findSession(repository.getState(), getSessionId(request.params));
     if (!session) {
@@ -249,8 +253,8 @@ export async function registerInterviewSessionRoutes(
         }
       : baseNextState;
 
-    repository.replaceState(nextState);
-    return { session: nextSession, state: nextState, ...(preSignals ? { preSignals } : {}) };
+    const persisted = repository.replaceState(nextState);
+    return { session: nextSession, state: persisted, ...(preSignals ? { preSignals } : {}) };
     })
   );
 
@@ -265,12 +269,18 @@ export async function registerInterviewSessionRoutes(
     if (!action) {
       return reply.code(422).send({ error: "Valid control action is required." });
     }
+    // 审计修复(P2-19):与 /turns、/record-turn 对齐的归档守卫。写串行化的排队语义使
+    // "end 在前、control 在后"成为网络时序常态——向 completed 会话 push 控制轮会让热层 turns
+    // 重新非空、与已降冷冷层副本分叉。已结束会话拒绝追加。
+    if (session.status === "completed") {
+      return reply.code(409).send({ error: "会话已结束并归档，无法追加轮次。" });
+    }
 
     const updatedSession = updateInterviewControl(session, action);
     const nextState = upsertSession(state, updatedSession);
 
-    repository.replaceState(nextState);
-    return { session: updatedSession, state: nextState };
+    const persisted = repository.replaceState(nextState);
+    return { session: updatedSession, state: persisted };
   });
 
   server.post("/api/interview-sessions/:id/end", async (request, reply) => {
@@ -352,13 +362,16 @@ export async function registerInterviewSessionRoutes(
     // not the heavy completedSession from finalizedState.
     const persistedSession = stateToPersist.sessions.find((item) => item.id === session.id) ?? completedSession;
 
-    repository.replaceState(stateToPersist);
+    // state 必须是 replaceState 返回的权威态(revision 已 bump):此前回传 stateToPersist(过期
+    // revision),前端 /end 后 adoptServerState 记下旧 revision → finalize 后第一次编辑(如"标记
+    // 重要")的去抖 PUT 必 409 → 本地编辑被"改动已被其他更新覆盖"丢弃(真实业务 E2E 用例2 实测)。
+    const persisted = repository.replaceState(stateToPersist);
     // 知识索引补点：该会话降冷后的 transcript 块（逐字稿冷层，不在持久化边界 diff 内）。
     // note 块已由包装后的 replaceState 自动增量（note 在 diffIndexableSources 内）。
     // fire-and-forget——不 await、不阻塞响应、不抛回写路径。
     if (options.knowledgeIndexRepository && offloadedTurns) {
       void reindexTranscript(
-        stateToPersist,
+        persisted,
         session.id,
         offloadedTurns,
         options.knowledgeIndexRepository,
@@ -367,7 +380,7 @@ export async function registerInterviewSessionRoutes(
       );
     }
     budget.reset(session.id);
-    return { session: persistedSession, note: result.note, state: stateToPersist };
+    return { session: persistedSession, note: result.note, state: persisted };
   });
 
   // Voice path: generate interaction pre_signals for the next turn on demand
@@ -452,8 +465,9 @@ export async function registerInterviewSessionRoutes(
     }
     const result = await classifyTurnComplete(session, transcript, options.bailianChatClient);
     console.info(JSON.stringify({
+      // 审计修复(P3-51):私密日记场景,用户原话不入日志——只记长度用于诊断。
       event: "cascade_turn_complete", sessionId: session.id,
-      done: result.done, reason: result.reason, transcript: transcript.slice(0, 80)
+      done: result.done, reason: result.reason, transcriptChars: transcript.length
     }));
     return result;
   });
@@ -530,8 +544,8 @@ export async function registerInterviewSessionRoutes(
     };
     const nextSession = { ...session, turns: [...session.turns, turn] };
     const nextState = upsertSession(state, nextSession);
-    repository.replaceState(nextState);
-    return { session: nextSession, state: nextState };
+    const persisted = repository.replaceState(nextState);
+    return { session: nextSession, state: persisted };
   });
 
   // 🔴-1: omni (bailian WS/WebRTC) voice path — refresh the realtime model's

@@ -304,3 +304,59 @@ describe("finalize 证据锚点扩展 (Phase 1 收尾)", () => {
     expect(cand.evidenceAnchors).toEqual([{ sessionId: s.id, turnId: userTurnId(s, "不再被需要") }]);
   });
 });
+
+describe("审计修复:知识债状态守卫 + 问题 upsert", () => {
+  it("upsertFinalizeDebts:用户置「不相关」不被 LLM 的「待了解」覆盖,appearances 仍+1", async () => {
+    const { upsertFinalizeDebts } = await import("./finalize");
+    const existing = [{ id: "d1", concept: "向量数据库", context: "", whyImportant: "", nextQuestion: "", status: "不相关" as const, appearances: 1, updatedAt: "2026-06-27T00:00:00.000Z" }];
+    const incoming = [{ id: "d2", concept: "向量数据库", context: "c", whyImportant: "w", nextQuestion: "n", status: "待了解" as const, appearances: 1, updatedAt: "2026-06-28T00:00:00.000Z" }];
+    const out = upsertFinalizeDebts(existing, incoming, "se_x", "2026-06-28T00:00:00.000Z");
+    expect(out).toHaveLength(1);
+    expect(out[0].status).toBe("不相关");        // 用户状态保留
+    expect(out[0].appearances).toBe(2);          // 计数仍自增
+  });
+
+  it("upsertFinalizeDebts:既有为「待了解」时接受 incoming status", async () => {
+    const { upsertFinalizeDebts } = await import("./finalize");
+    const existing = [{ id: "d1", concept: "RAG", context: "", whyImportant: "", nextQuestion: "", status: "待了解" as const, appearances: 1, updatedAt: "2026-06-27T00:00:00.000Z" }];
+    const incoming = [{ id: "d2", concept: "RAG", context: "c", whyImportant: "w", nextQuestion: "n", status: "待了解" as const, appearances: 1, updatedAt: "2026-06-28T00:00:00.000Z" }];
+    const out = upsertFinalizeDebts(existing, incoming, "se_x", "2026-06-28T00:00:00.000Z");
+    expect(out[0].appearances).toBe(2);
+  });
+
+  it("upsertFinalizeQuestions:同问题两次 upsert → appearances=2 且「开放」升「反复出现」", async () => {
+    const { upsertFinalizeQuestions } = await import("./finalize");
+    const q = (id: string) => ({ id, question: "如何平衡放权与质量", whyImportant: "", status: "开放" as const, appearances: 1, relatedThemeIds: [], nextPrompt: "", important: false, updatedAt: "2026-06-27T00:00:00.000Z" });
+    let out = upsertFinalizeQuestions([], [q("q1")], "se_1", "2026-06-27T00:00:00.000Z");
+    out = upsertFinalizeQuestions(out, [q("q2")], "se_2", "2026-06-28T00:00:00.000Z");
+    expect(out).toHaveLength(1);
+    expect(out[0].appearances).toBe(2);
+    expect(out[0].status).toBe("反复出现");       // 机器首次可达该状态
+  });
+
+  it("upsertFinalizeQuestions:用户置「正在聚焦」不被复现覆盖", async () => {
+    const { upsertFinalizeQuestions } = await import("./finalize");
+    const existing = [{ id: "q1", question: "核心问题", whyImportant: "", status: "正在聚焦" as const, appearances: 2, relatedThemeIds: [], nextPrompt: "", important: false, updatedAt: "2026-06-27T00:00:00.000Z" }];
+    const incoming = [{ id: "q2", question: "核心问题", whyImportant: "", status: "开放" as const, appearances: 1, relatedThemeIds: [], nextPrompt: "", important: false, updatedAt: "2026-06-28T00:00:00.000Z" }];
+    const out = upsertFinalizeQuestions(existing, incoming, "se_2", "2026-06-28T00:00:00.000Z");
+    expect(out[0].status).toBe("正在聚焦");
+    expect(out[0].appearances).toBe(3);
+  });
+
+  it("R5-4:relatedThemeIds 复现时合并去重(旧∪新),不丢历史主题链", async () => {
+    const { upsertFinalizeQuestions } = await import("./finalize");
+    const existing = [{ id: "q1", question: "你如何权衡?", whyImportant: "", status: "开放" as const, appearances: 1, relatedThemeIds: ["th_control", "th_shared"], nextPrompt: "", important: false, updatedAt: "2026-06-27T00:00:00.000Z" }];
+    const incoming = [{ id: "q2", question: "你如何权衡?", whyImportant: "", status: "开放" as const, appearances: 1, relatedThemeIds: ["th_risk", "th_shared"], nextPrompt: "", important: false, updatedAt: "2026-06-28T00:00:00.000Z" }];
+    const out = upsertFinalizeQuestions(existing, incoming, "se_2", "2026-06-28T00:00:00.000Z");
+    // 旧[control,shared] ∪ 新[risk,shared] = [control,shared,risk]:历史 th_control 不被替换丢弃,th_shared 不重复
+    expect(out[0].relatedThemeIds).toEqual(["th_control", "th_shared", "th_risk"]);
+  });
+
+  it("R5-4:incoming 无主题时保留既有主题链(不被空数组清空)", async () => {
+    const { upsertFinalizeQuestions } = await import("./finalize");
+    const existing = [{ id: "q1", question: "你如何权衡?", whyImportant: "", status: "开放" as const, appearances: 1, relatedThemeIds: ["th_keep"], nextPrompt: "", important: false, updatedAt: "2026-06-27T00:00:00.000Z" }];
+    const incoming = [{ id: "q2", question: "你如何权衡?", whyImportant: "", status: "开放" as const, appearances: 1, relatedThemeIds: [], nextPrompt: "", important: false, updatedAt: "2026-06-28T00:00:00.000Z" }];
+    const out = upsertFinalizeQuestions(existing, incoming, "se_2", "2026-06-28T00:00:00.000Z");
+    expect(out[0].relatedThemeIds).toEqual(["th_keep"]);
+  });
+});

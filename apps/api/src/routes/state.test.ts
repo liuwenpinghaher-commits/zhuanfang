@@ -310,6 +310,38 @@ describe("state routes", () => {
       await freshServer.close();
       await server.close();
     });
+
+    it("R4-1:import 含非法 rawMaterial(缺 turns)→ 422 且旧冷层不丢(build-then-swap 先校验后交换)", async () => {
+      const rawRepo = createInMemoryRawMaterialRepository();
+      rawRepo.put(sampleMaterial("existing-cold"));
+      const server = buildApiServer({ rawMaterialRepository: rawRepo });
+      const cur = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      // 非法包:一条 rawMaterial 缺 turns(node:sqlite put 会抛)。若"先 deleteAll 再逐条 put",中途抛错则
+      // 旧冷层已清空未恢复=数据丢失(比不清更糟)。build-then-swap 必须在 deleteAll 前 422 挡住坏数据。
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/import",
+        payload: {
+          confirm: "REPLACE_ALL_STATE",
+          state: cur,
+          rawMaterials: [{ sessionId: "bad", createdAt: "2026-06-27T00:00:00.000Z" }]
+        }
+      });
+      expect(res.statusCode).toBe(422);
+      expect(rawRepo.get("existing-cold")?.turns.length).toBe(2);   // 旧冷层数据完好,未被清空
+      await server.close();
+    });
+
+    it("R4-2:reset 清冷层 raw material(重置即三库同清,索引/冷层不残留可召回私密)", async () => {
+      const rawRepo = createInMemoryRawMaterialRepository();
+      rawRepo.put(sampleMaterial("reset-cold"));
+      expect(rawRepo.get("reset-cold")).toBeDefined();
+      const server = buildApiServer({ rawMaterialRepository: rawRepo });
+      const res = await server.inject({ method: "POST", url: "/api/state/reset" });
+      expect(res.statusCode).toBe(200);
+      expect(rawRepo.get("reset-cold")).toBeUndefined();   // 冷层被清
+      await server.close();
+    });
   });
 
   describe("audio in export/purge (Task 4 — 隐私闭环)", () => {

@@ -357,7 +357,9 @@ function mapToFinalizeContent(
     id: makeId("question"),
     question: question.question,
     whyImportant: question.whyImportant || "这个问题值得在后续专访中继续追问。",
-    status: "正在聚焦",
+    // 审计修复(P2-11):出生态统一为「开放」(与简报路径一致;此前 LLM 路硬编码「正在聚焦」造成
+    // 出生口径分裂)。「正在聚焦」由 note-feedback 的用户动作晋升,「反复出现」由 upsert 复现晋升。
+    status: "开放",
     appearances: 1,
     relatedThemeIds: resolveOrAttribute(question.themeRefs, `${question.question} ${question.whyImportant ?? ""}`),
     nextPrompt: question.nextPrompt || question.question,

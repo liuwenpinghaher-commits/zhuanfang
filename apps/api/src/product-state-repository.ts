@@ -1,4 +1,5 @@
 import { createInitialProductState, createEmptyProductState } from "../../../src/domain/engine";
+import { normalizeProductState } from "../../../src/domain/storage";
 import { cloneState } from "../../../src/domain/utils";
 import type { ProductState, InterviewSession } from "../../../src/domain/types";
 
@@ -24,6 +25,12 @@ export interface ReplaceStateOptions {
    * can refuse a lost-update. Omit to keep the existing last-write-wins behaviour.
    */
   expectedRevision?: number;
+  /**
+   * 回归审查 R4-3:跳过 withKnowledgeReindex 的增量重索引。用于 import/purge——它们随后会
+   * 显式全量 rebuild/清空(含冷层逐字稿),包装层的增量 reindex 是重复嵌入(浪费预算,收敛一致但冗余)。
+   * 仅 withKnowledgeReindex 读取;底层 sqlite/surreal/dual repo 忽略此字段。
+   */
+  skipReindex?: boolean;
 }
 
 export interface ProductStateRepository {
@@ -55,7 +62,9 @@ export function createInMemoryProductStateRepository(initialState: ProductState 
         throw new StateRevisionConflictError(opts.expectedRevision, currentRevision);
       }
       // Server-authoritative: bump from the stored revision, not the incoming state's revision.
-      const next = { ...nextState, revision: currentRevision + 1 };
+      // 审计修复(P3-49):写路径过 normalize,与 sqlite/surreal 生产仓库对齐——此前 in-memory
+      // 原样存取,测试基底与生产行为分叉(枚举钳制/滚动窗/死键清理只在生产生效)。
+      const next = normalizeProductState({ ...nextState, revision: currentRevision + 1 });
       state = next;
       return cloneState(state);
     },

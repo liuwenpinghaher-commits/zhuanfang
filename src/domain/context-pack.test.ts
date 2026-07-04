@@ -609,3 +609,66 @@ describe("buildOpinionEvolution（做实:从 supersededByPointId 链产真实演
     expect(guide.strategyChecklist.some((line) => line.includes("对立看法"))).toBe(false);
   });
 });
+
+describe("审计修复(P2-10):statedPositions 排除终态观点", () => {
+  it("guide.statedPositions 不含「已放弃」「已修正」,含「稳定观点」", () => {
+    const state = createInitialProductState();
+    const mkPoint = (id: string, title: string, status: PointAsset["status"]): PointAsset => ({
+      id, title, content: `${title}的内容`, status, confidence: "用户确认",
+      evidence: [], relatedThemeIds: [], important: false, updatedAt: "2026-06-27T00:00:00.000Z"
+    });
+    state.points = [
+      mkPoint("p_live", "在世观点", "稳定观点"),
+      mkPoint("p_abandoned", "已放弃观点", "已放弃"),
+      mkPoint("p_revised", "已修正观点", "已修正")
+    ];
+    const guide = buildInterviewGuide(state, {});
+    const joined = guide.statedPositions.join(" | ");
+    expect(joined).toContain("在世观点");
+    expect(joined).not.toContain("已放弃观点");
+    expect(joined).not.toContain("已修正观点");
+  });
+});
+
+describe("审计修复(P2·复盘闭环):decision.status「待复盘」驱动引导", () => {
+  it("guide.decisionsToReview 收集【已确认+到复盘日】的待复盘决策(按距做出天数降序),已复盘不含", () => {
+    const state = createInitialProductState();
+    const past = new Date(Date.now() - 86400000).toISOString();   // reviewAt 已到期
+    const mkDecision = (id: string, title: string, status: "待复盘" | "已复盘", updatedAt: string) => ({
+      id, title, decisionKind: "候选决策" as const, confirmationStatus: "用户确认" as const,
+      choice: `${title}的选择`, tradeOff: "", riskHypothesis: "", reviewAt: past, status,
+      relatedThemeIds: [], nextPrompt: "", important: false, updatedAt
+    });
+    state.decisions = [
+      mkDecision("d_old", "早决策", "待复盘", "2026-06-01T00:00:00.000Z"),
+      mkDecision("d_new", "近决策", "待复盘", "2026-06-27T00:00:00.000Z"),
+      mkDecision("d_done", "已复盘决策", "已复盘", "2026-06-10T00:00:00.000Z")
+    ];
+    const guide = buildInterviewGuide(state, {});
+    const titles = guide.decisionsToReview.map((d) => d.title);
+    expect(titles).toEqual(["早决策", "近决策"]);   // 待复盘且按 daysOpen 降序(早决策更久)
+    expect(titles).not.toContain("已复盘决策");
+    expect(guide.strategyChecklist.some((item) => item.includes("回顾决策") && item.includes("早决策"))).toBe(true);
+  });
+
+  it("R5-2:未确认(AI候选)/未到复盘日的待复盘决策不催复盘", () => {
+    const state = createInitialProductState();
+    const future = new Date(Date.now() + 30 * 86400000).toISOString();
+    const base = { decisionKind: "候选决策" as const, choice: "选择", tradeOff: "", riskHypothesis: "", relatedThemeIds: [], nextPrompt: "", important: false, updatedAt: "2026-06-01T00:00:00.000Z", status: "待复盘" as const };
+    state.decisions = [
+      { ...base, id: "d_unconf", title: "未确认候选", confirmationStatus: "待用户确认", reviewAt: "" },        // 未确认→不催
+      { ...base, id: "d_future", title: "未到复盘日", confirmationStatus: "用户确认", reviewAt: future }        // reviewAt 未到→不催
+    ];
+    const guide = buildInterviewGuide(state, {});
+    expect(guide.decisionsToReview.map((d) => d.title)).toEqual([]);   // 两条都被门控挡住
+    expect(guide.strategyChecklist.some((item) => item.includes("回顾决策"))).toBe(false);
+  });
+
+  it("无待复盘决策时 decisionsToReview 为空,checklist 不含复盘提示", () => {
+    const state = createInitialProductState();
+    state.decisions = [];   // 清掉 demo 种子的待复盘决策
+    const guide = buildInterviewGuide(state, {});
+    expect(guide.decisionsToReview).toEqual([]);
+    expect(guide.strategyChecklist.some((item) => item.includes("回顾决策"))).toBe(false);
+  });
+});

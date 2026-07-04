@@ -29,11 +29,17 @@ export async function prefetchRecall(
   queryEmbedding: number[] | undefined,
   opts: { includeSensitive: boolean; topN: number }
 ): Promise<RecallResult> {
-  // 与域内 resolveInterviewTopicHint 的主题归属对齐:优先名字匹配,否则出现次数最高的主题。
-  const theme = state.themes.find((t) => t.name === topicHint) ?? [...state.themes].sort((a, b) => b.appearances - a.appearances)[0];
+  // 审计修复(P3-43):与域内 resolveInterviewTopicHint 对齐——仅【名字匹配】的主题参与图召回。
+  // 此前名字不匹配即回退"出现次数最高的旧主题",导致显式新话题会话被无关旧主题资产污染
+  // (原生分支只排序不过滤)。新话题无匹配主题 → themeId undefined → 该路召回自然为空,正确。
+  const theme = state.themes.find((t) => t.name === topicHint);
   const themeId = theme?.id;
 
-  const [themeAssets, memoryHits] = await Promise.all([
+  // 方案一:rag_chunk 原生混合召回是可选能力(仅 surreal 权威档位),typeof 探测 + bind 后使用。
+  const recallRag = typeof port.recallRagChunks === "function" ? port.recallRagChunks.bind(port) : undefined;
+  const trimmedHint = topicHint.trim();
+
+  const [themeAssets, memoryHits, ragHits] = await Promise.all([
     themeId ? safe("themeAssets", () => port.recallThemeAssets(themeId)) : Promise.resolve(undefined),
     queryEmbedding && queryEmbedding.length > 0
       ? safe("memoryHits", () =>
@@ -43,6 +49,19 @@ export async function prefetchRecall(
           port.recallMemoriesByVector(queryEmbedding, Math.max(opts.topN, 5) * 4, {
             includeSensitive: opts.includeSensitive,
             ...(topicHint ? { queryText: topicHint } : {})
+          })
+        )
+      : Promise.resolve(undefined),
+    // 方案一:rag_chunk 混合召回(HNSW+BM25+rrf)。有 embedding 走混合;只有 topicHint 走 BM25-only;
+    // 皆缺/无能力 → undefined。过取一档(topN*2):域层 buildSemanticRagContextFromRecall 还要按
+    // usage/来源 policy 重验门控后截断到 contextSourceLimit(= topN 同源的 maxSources)。
+    recallRag && ((queryEmbedding && queryEmbedding.length > 0) || trimmedHint.length > 0)
+      ? safe("ragHits", () =>
+          recallRag({
+            ...(queryEmbedding && queryEmbedding.length > 0 ? { embedding: queryEmbedding } : {}),
+            ...(trimmedHint ? { queryText: trimmedHint } : {}),
+            k: Math.max(opts.topN, 1) * 2,
+            usage: "interview-context"
           })
         )
       : Promise.resolve(undefined)
@@ -57,7 +76,8 @@ export async function prefetchRecall(
     ].slice(0, PROVENANCE_MAX_ASSETS);
     const entries = await Promise.all(
       targets.map(async (t) => {
-        const turns = (await safe("provenance", () => port.recallProvenanceTurns(t.table, t.id))) ?? [];
+        // 方案三:includeSensitive 透传敏感纵深门控(敏感来源资产默认不溯源,与记忆召回口径一致)。
+        const turns = (await safe("provenance", () => port.recallProvenanceTurns(t.table, t.id, { includeSensitive: opts.includeSensitive }))) ?? [];
         return turns.length > 0 ? { assetTable: t.table, assetId: t.id, turns: turns.slice(0, PROVENANCE_MAX_TURNS) } : undefined;
       })
     );
@@ -68,6 +88,7 @@ export async function prefetchRecall(
   return {
     ...(themeAssets ? { themeAssets } : {}),
     ...(memoryHits ? { memoryHits } : {}),
-    ...(provenance ? { provenance } : {})
+    ...(provenance ? { provenance } : {}),
+    ...(ragHits && ragHits.length > 0 ? { ragHits } : {})
   };
 }

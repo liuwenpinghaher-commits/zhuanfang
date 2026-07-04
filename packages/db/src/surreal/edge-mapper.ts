@@ -55,7 +55,9 @@ export function collectEdges(state: ProductState): EdgeSpec[] {
   // 会丢掉 derived_from 投影 → diff 判为 removed → 溯源边被删 → recallProvenanceTurns 失效。
   // 改为从资产 anchor 无条件投影:资产在则边在(资产删则其 anchor 没了 → 边自然进 removed,正确)。
   // 协同 L1 ENFORCED(002 关系表 TYPE RELATION ENFORCED):anchor 来自 resolveEvidenceAnchors
-  // 的真实 turn,且 turn append-only 保证写过的 turn 仍在,故 RELATE 不会因端点缺失被拒。
+  // 的真实 turn,turn append-only 通常保证端点在——**唯一例外是 A5 级联**(会话被真正删除时
+  // turn 随之删除,而 reset/备份导入可再引入带旧 anchor 的资产)。该悬空由持久层
+  // keepOnlyLiveTurnProvenance 按 DB 真相过滤(④ 根修),这里保持无条件投影不变。
   // ⑤ provenance.origin 按资产确认状态【真区分】(不再写死 llm_extracted),让公理 A3
   //    (origin='llm_extracted' 未经 user_confirmed 不得当事实)在 derived_from 边上有判别力。
   //    用户确认过的资产(point.confidence/decision.confirmationStatus='用户确认'、memory.status='confirmed')

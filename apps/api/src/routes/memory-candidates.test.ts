@@ -94,6 +94,19 @@ describe("memory-candidates approve (M3c embedding enrichment)", () => {
     await server.close();
   });
 
+  it("R6-5:approve 的 embed 输入截断到 MAX_EMBED_CHARS(2000)——与 PATCH 重嵌同口径,向量空间一致", async () => {
+    const embed = vi.fn(async (texts: string[]) => texts.map(() => [0.1]));
+    const repo = createInMemoryProductStateRepository(seedPendingCandidate({ text: "记".repeat(5000) }));
+    const server = Fastify({ logger: false });
+    await registerMemoryCandidateRoutes(server, repo, { embeddingClient: { embed } });
+    const res = await server.inject({ method: "POST", url: "/api/memory-candidates/mc-approve-001/approve" });
+    expect(res.statusCode).toBe(200);
+    expect(embed).toHaveBeenCalledTimes(1);
+    // 此前 approve 全文 embed、PATCH 截断 2000 → 同一记忆两次向量漂移;R6-5 统一到 MAX_EMBED_CHARS。
+    expect(embed.mock.calls[0][0][0].length).toBe(2000);
+    await server.close();
+  });
+
   it("embedding failure degrades to no embedding (record still created)", async () => {
     const embed = vi.fn(async () => {
       throw new Error("embedding service down");
