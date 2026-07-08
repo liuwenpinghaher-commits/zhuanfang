@@ -41,7 +41,11 @@ describe("product api client", () => {
 
     const result = await client.resetState();
 
-    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:8787/api/state/reset", { method: "POST" });
+    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:8787/api/state/reset", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirm: "RESET_ALL_DATA" })
+    });
     expect(result.profile.name).toBe("Mia");
   });
 

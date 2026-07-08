@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createInitialProductState } from "../../../src/domain/engine";
 import { buildApiServer, isDirectCliExecution } from "./server";
 
@@ -21,6 +21,7 @@ describe("Product API", () => {
   }
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     while (tempDirs.length > 0) {
       rmSync(tempDirs.pop()!, { recursive: true, force: true });
     }
@@ -263,6 +264,64 @@ describe("Product API", () => {
     );
   });
 
+  it("uses refreshed AnySearch provider client in search routes after runtime config PATCH", async () => {
+    const envFilePath = createEnvPath();
+    writeFileSync(envFilePath, "# local runtime config\n");
+    const env: Record<string, string | undefined> = {};
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      code: 0,
+      data: {
+        results: [
+          {
+            title: "Runtime AnySearch Source",
+            url: "https://news.example/runtime-anysearch",
+            snippet: "Runtime AnySearch snippet",
+            content: "Runtime AnySearch content proves the refreshed client was used."
+          }
+        ],
+        metadata: { request_id: "runtime-anysearch-test" }
+      }
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchImpl);
+
+    const server = buildApiServer({ envFilePath, env });
+    const configRes = await server.inject({
+      method: "PATCH",
+      url: "/api/system/config",
+      payload: {
+        updates: {
+          ANYSEARCH_ALLOW_ANONYMOUS: "true",
+          ANYSEARCH_BASE_URL: "https://mock-anysearch.example"
+        }
+      }
+    });
+    const capabilities = (await server.inject({ method: "GET", url: "/api/system/capabilities" })).json().capabilities;
+    const anysearch = capabilities.find((capability: { id: string }) => capability.id === "anysearch");
+
+    const searchRes = await server.inject({
+      method: "POST",
+      url: "/api/search/briefs",
+      payload: {
+        topic: "runtime provider refresh",
+        providerId: "anysearch",
+        maxSources: 1,
+        recencyDays: 7
+      }
+    });
+    const body = searchRes.json();
+
+    expect(configRes.statusCode).toBe(200);
+    expect(anysearch).toMatchObject({ status: "ready" });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://mock-anysearch.example/v1/search",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(searchRes.statusCode).toBe(200);
+    expect(body.task).toMatchObject({ status: "succeeded", providerId: "anysearch" });
+    expect(body.brief.sources[0].url).toBe("https://news.example/runtime-anysearch");
+    await server.close();
+  });
+
   it("marks realtime voice as needing endpoint when the API key exists but WebRTC endpoint is missing", async () => {
     const server = buildApiServer({
       env: {
@@ -295,7 +354,7 @@ describe("Product API", () => {
 
   it("resets the demo state", async () => {
     const server = buildApiServer();
-    const response = await server.inject({ method: "POST", url: "/api/state/reset" });
+    const response = await server.inject({ method: "POST", url: "/api/state/reset", payload: { confirm: "RESET_ALL_DATA" } });
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({

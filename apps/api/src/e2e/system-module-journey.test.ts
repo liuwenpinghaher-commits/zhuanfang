@@ -28,7 +28,7 @@ describe("System journey A: config → research auto-run → interview → asset
     const server = buildApiServer({ env });
 
     // --- 前置：清空到空状态 ---
-    const reset = await server.inject({ method: "POST", url: "/api/state/reset" });
+    const reset = await server.inject({ method: "POST", url: "/api/state/reset", payload: { confirm: "RESET_ALL_DATA" } });
     expect(reset.statusCode).toBe(200);
     const baseRevision = reset.json().revision as number;
 
@@ -313,7 +313,7 @@ describe("System journey A: config → research auto-run → interview → asset
 describe("System journey B: corpus learning patch propagates to engine policy AND realtime voice instructions", () => {
   it("applies a corpus-derived playbook patch and the rule reaches a new session's engine policy + agent-context instructions", async () => {
     const server = buildApiServer({ env: {} });
-    await server.inject({ method: "POST", url: "/api/state/reset" });
+    await server.inject({ method: "POST", url: "/api/state/reset", payload: { confirm: "RESET_ALL_DATA" } });
 
     // --- 1. 语料分析：导入一段含"具体时刻 + 机制反转"技法的优秀样本 ---
     const insightsRes = await server.inject({
@@ -427,7 +427,7 @@ describe("System journey B: corpus learning patch propagates to engine policy AN
     };
 
     const server = buildApiServer({ env: {}, bailianChatClient: mockChatClient as any });
-    await server.inject({ method: "POST", url: "/api/state/reset" });
+    await server.inject({ method: "POST", url: "/api/state/reset", payload: { confirm: "RESET_ALL_DATA" } });
 
     const insightsRes = await server.inject({
       method: "POST",

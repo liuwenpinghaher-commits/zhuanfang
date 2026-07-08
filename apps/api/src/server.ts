@@ -118,6 +118,22 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   const providerClients: ProviderClients = {};
   const refreshProviderClients = () => refreshRuntimeProviderClients(providerClients, runtimeEnv, options);
   refreshProviderClients();
+  const withLiveProviderClients = <T extends object>(extra: T): T & ProviderClients => {
+    const target = { ...extra } as T & ProviderClients;
+    Object.defineProperties(target, {
+      bailianSearchClient: { enumerable: true, get: () => providerClients.bailianSearchClient },
+      anySearchClient: { enumerable: true, get: () => providerClients.anySearchClient },
+      bailianPodcastAudioClient: { enumerable: true, get: () => providerClients.bailianPodcastAudioClient },
+      bailianInterviewClient: { enumerable: true, get: () => providerClients.bailianInterviewClient },
+      bailianChatClient: { enumerable: true, get: () => providerClients.bailianChatClient },
+      bailianRealtimeVoiceClient: { enumerable: true, get: () => providerClients.bailianRealtimeVoiceClient },
+      voiceEnrollmentClient: { enumerable: true, get: () => providerClients.voiceEnrollmentClient },
+      bailianTranscriptionClient: { enumerable: true, get: () => providerClients.bailianTranscriptionClient },
+      streamingTtsClient: { enumerable: true, get: () => providerClients.streamingTtsClient },
+      embeddingClient: { enumerable: true, get: () => providerClients.embeddingClient }
+    });
+    return target;
+  };
   const effectiveDbPath = options.productStateDbPath ?? runtimeEnv.PRODUCT_STATE_DB_PATH;
   const stateStore: "memory" | "sqlite" =
     effectiveDbPath && !isInMemoryDbPath(effectiveDbPath) ? "sqlite" : "memory";
@@ -224,22 +240,20 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     });
   });
   void server.register(async (registeredServer) => {
-    await registerStateRoutes(registeredServer, productStateRepository, {
+    await registerStateRoutes(registeredServer, productStateRepository, withLiveProviderClients({
       env: runtimeEnv,
       rawMaterialRepository,
       audioRepository,
       knowledgeIndexRepository,
-      embeddingClient: providerClients.embeddingClient,
       llmBudget: sharedBudget
-    });
+    }));
   });
   void server.register(async (registeredServer) => {
-    await registerInterviewSessionRoutes(registeredServer, productStateRepository, {
-      ...providerClients,
+    await registerInterviewSessionRoutes(registeredServer, productStateRepository, withLiveProviderClients({
       rawMaterialRepository,
       knowledgeIndexRepository,
       llmBudget: sharedBudget
-    });
+    }));
   });
   void server.register(async (registeredServer) => {
     await registerRawMaterialRoutes(registeredServer, rawMaterialRepository, productStateRepository);
@@ -248,65 +262,53 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     await registerAudioRoutes(registeredServer, audioRepository, productStateRepository);
   });
   void server.register(async (registeredServer) => {
-    await registerSearchRoutes(registeredServer, productStateRepository, {
-      ...providerClients,
+    await registerSearchRoutes(registeredServer, productStateRepository, withLiveProviderClients({
       llmBudget: sharedBudget,
       writeGate
-    });
+    }));
   });
   void server.register(async (registeredServer) => {
-    await registerPodcastRoutes(registeredServer, productStateRepository, {
-      ...providerClients,
+    await registerPodcastRoutes(registeredServer, productStateRepository, withLiveProviderClients({
       llmBudget: sharedBudget
-    });
+    }));
   });
   void server.register(async (registeredServer) => {
-    await registerRealtimeVoiceRoutes(registeredServer, {
-      bailianRealtimeVoiceClient: providerClients.bailianRealtimeVoiceClient,
-      voiceEnrollmentClient: providerClients.voiceEnrollmentClient,
+    await registerRealtimeVoiceRoutes(registeredServer, withLiveProviderClients({
       stateRepo: productStateRepository,
-      embeddingClient: providerClients.embeddingClient,
-      streamingTtsClient: providerClients.streamingTtsClient,
       env: runtimeEnv
-    });
+    }));
   });
   void server.register(async (registeredServer) => {
-    await registerCorpusRoutes(registeredServer, productStateRepository, {
-      ...providerClients,
+    await registerCorpusRoutes(registeredServer, productStateRepository, withLiveProviderClients({
       llmBudget: sharedBudget
-    });
+    }));
   });
   void server.register(async (registeredServer) => {
-    await registerReviewRoutes(registeredServer, productStateRepository, {
-      ...providerClients,
+    await registerReviewRoutes(registeredServer, productStateRepository, withLiveProviderClients({
       llmBudget: sharedBudget
-    });
+    }));
   });
   void server.register(async (registeredServer) => {
-    await registerImportRoutes(registeredServer, productStateRepository, {
-      ...providerClients,
+    await registerImportRoutes(registeredServer, productStateRepository, withLiveProviderClients({
       knowledgeIndexRepository,
       llmBudget: sharedBudget
-    });
+    }));
   });
   void server.register(async (registeredServer) => {
-    await registerMemoryRecordRoutes(registeredServer, productStateRepository, {
+    await registerMemoryRecordRoutes(registeredServer, productStateRepository, withLiveProviderClients({
       // 审计修复(P2-12):编辑记忆文本重嵌所需(与 approve 同源 client)。
-      embeddingClient: providerClients.embeddingClient,
       // 回归审查 R6-6:PATCH 豁免全局写锁后,handler 用 writeGate 把同步 RMW 串行化(embed 在锁外)。
       writeGate
-    });
+    }));
   });
   void server.register(async (registeredServer) => {
     // M3c: candidate approval embeds the new long-term record (semantic recall).
     // M5: consolidation (POST /api/memory/consolidate) reuses the chat client to
     // optionally summarize merged clusters into pending HITL candidates.
-    await registerMemoryCandidateRoutes(registeredServer, productStateRepository, {
-      embeddingClient: providerClients.embeddingClient,
-      bailianChatClient: providerClients.bailianChatClient,
+    await registerMemoryCandidateRoutes(registeredServer, productStateRepository, withLiveProviderClients({
       // 审计修复(P1-6):补上全库 13 个 LLM 调用点中唯一漏网的预算接线。
       llmBudget: sharedBudget
-    });
+    }));
   });
   void server.register(async (registeredServer) => {
     await registerAssetRoutes(registeredServer, productStateRepository);
@@ -315,10 +317,9 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     await registerPlaybookPatchRoutes(registeredServer, productStateRepository);
   });
   void server.register(async (registeredServer) => {
-    await registerRagRoutes(registeredServer, productStateRepository, {
-      ...providerClients,
+    await registerRagRoutes(registeredServer, productStateRepository, withLiveProviderClients({
       llmBudget: sharedBudget
-    });
+    }));
   });
   void server.register(async (registeredServer) => {
     await registerKnowledgeRoutes(
@@ -326,19 +327,16 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
       productStateRepository,
       rawMaterialRepository,
       knowledgeIndexRepository,
-      {
-        embeddingClient: providerClients.embeddingClient,
+      withLiveProviderClients({
         llmBudget: sharedBudget,
         writeGate
-      }
+      })
     );
   });
   void server.register(async (registeredServer) => {
-    await registerChatRoutes(registeredServer, productStateRepository, knowledgeIndexRepository, {
-      embeddingClient: providerClients.embeddingClient,
-      bailianChatClient: providerClients.bailianChatClient,
+    await registerChatRoutes(registeredServer, productStateRepository, knowledgeIndexRepository, withLiveProviderClients({
       llmBudget: sharedBudget
-    });
+    }));
   });
 
   // Static file serving: when PRODUCT_STATIC_DIR is set (production Docker image),

@@ -28,7 +28,7 @@ describe("Journey 1: full interview → diary → reviews lifecycle", () => {
     const server = buildApiServer({ env: {} });
 
     // Step 1: Reset to empty state
-    const resetRes = await server.inject({ method: "POST", url: "/api/state/reset" });
+    const resetRes = await server.inject({ method: "POST", url: "/api/state/reset", payload: { confirm: "RESET_ALL_DATA" } });
     expect(resetRes.statusCode).toBe(200);
     const resetState = resetRes.json();
     expect(resetState.notes).toHaveLength(0);
@@ -332,7 +332,7 @@ describe("Journey 5: state integrity / optimistic concurrency", () => {
     const server = buildApiServer({ env: {} });
 
     // Reset to known state
-    await server.inject({ method: "POST", url: "/api/state/reset" });
+    await server.inject({ method: "POST", url: "/api/state/reset", payload: { confirm: "RESET_ALL_DATA" } });
 
     // Step 1: GET current state, capture revision R
     const getRes = await server.inject({ method: "GET", url: "/api/state" });
@@ -385,7 +385,7 @@ describe("Journey 5: state integrity / optimistic concurrency", () => {
     expect(forgedRes.statusCode).toBe(409);
 
     // Step 5: POST /api/state/reset → empty state
-    const resetRes = await server.inject({ method: "POST", url: "/api/state/reset" });
+    const resetRes = await server.inject({ method: "POST", url: "/api/state/reset", payload: { confirm: "RESET_ALL_DATA" } });
     expect(resetRes.statusCode).toBe(200);
     const resetState = resetRes.json();
     expect(resetState.notes).toHaveLength(0);
@@ -486,7 +486,7 @@ describe("Journey 7: full graceful degradation on no-key server", () => {
     expect(stateRes.statusCode).toBeLessThan(500);
 
     // Reset state
-    const resetRes = await server.inject({ method: "POST", url: "/api/state/reset" });
+    const resetRes = await server.inject({ method: "POST", url: "/api/state/reset", payload: { confirm: "RESET_ALL_DATA" } });
     expect(resetRes.statusCode).toBeLessThan(500);
 
     // Create search brief (local-demo)

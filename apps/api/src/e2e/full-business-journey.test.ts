@@ -24,7 +24,7 @@ describe("Full cross-feature business journey: 团队授权与控制感", () => 
     // =========================================================================
     // 前置：重置到空状态，保证本旅程数据完全可追踪
     // =========================================================================
-    const resetRes = await server.inject({ method: "POST", url: "/api/state/reset" });
+    const resetRes = await server.inject({ method: "POST", url: "/api/state/reset", payload: { confirm: "RESET_ALL_DATA" } });
     expect(resetRes.statusCode).toBe(200);
     const resetState = resetRes.json();
     expect(resetState.notes).toHaveLength(0);
@@ -510,7 +510,7 @@ describe("Full cross-feature business journey: 团队授权与控制感", () => 
     const server = buildApiServer({ env: {}, bailianPodcastAudioClient: failingTtsClient });
 
     // 重置并创建一个 session + note
-    await server.inject({ method: "POST", url: "/api/state/reset" });
+    await server.inject({ method: "POST", url: "/api/state/reset", payload: { confirm: "RESET_ALL_DATA" } });
     const sessionRes = await server.inject({
       method: "POST",
       url: "/api/interview-sessions",
@@ -565,7 +565,7 @@ describe("Full cross-feature business journey: 团队授权与控制感", () => 
     const env: Record<string, string | undefined> = {};
     const server = buildApiServer({ env });
 
-    await server.inject({ method: "POST", url: "/api/state/reset" });
+    await server.inject({ method: "POST", url: "/api/state/reset", payload: { confirm: "RESET_ALL_DATA" } });
 
     // -----------------------------------------------------------------------
     // A. 配置保存（env）— 写入生效 + 复核

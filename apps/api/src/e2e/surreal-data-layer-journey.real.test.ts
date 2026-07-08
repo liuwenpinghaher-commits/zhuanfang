@@ -33,7 +33,7 @@ describe.skipIf(!hasModel)("SurrealDB 真实数据层 e2e(采访闭环 → 落�
     repo = await makeSurrealRepo();
     server = buildApiServer({ env: { EMBEDDING_PROVIDER: "local" }, productStateRepository: repo });
 
-    await server.inject({ method: "POST", url: "/api/state/reset" });
+    await server.inject({ method: "POST", url: "/api/state/reset", payload: { confirm: "RESET_ALL_DATA" } });
     const createRes = await server.inject({
       method: "POST", url: "/api/interview-sessions",
       payload: { mode: "daily", strength: "standard" }

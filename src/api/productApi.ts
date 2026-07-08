@@ -617,7 +617,13 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
       return { state: normalizeProductState(await response.json()), conflicted: false };
     },
     async resetState() {
-      return normalizeProductState(await requestJson("/api/state/reset", { method: "POST" }));
+      return normalizeProductState(
+        await requestJson("/api/state/reset", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ confirm: "RESET_ALL_DATA" })
+        })
+      );
     },
     async createSearchBrief(input) {
       const response = (await requestJson("/api/search/briefs", {

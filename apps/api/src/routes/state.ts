@@ -63,7 +63,13 @@ export async function registerStateRoutes(
     }
     return repository.replaceState(normalizeProductState(request.body));
   });
-  server.post("/api/state/reset", async () => {
+  server.post("/api/state/reset", async (request, reply) => {
+    const body = request.body as { confirm?: unknown } | undefined;
+    if (body?.confirm !== "RESET_ALL_DATA") {
+      return reply.code(422).send({
+        error: "Reset requires explicit confirmation: send confirm=\"RESET_ALL_DATA\"."
+      });
+    }
     const next = repository.resetState();
     // 审计修复(P1-1):reset 此前只清热态,冷层逐字稿/录音/派生知识索引全部残留——
     // 实测 25/26 份冷层材料为跨 reset 孤儿,且 chat 继续召回"已清空"的私人内容。
@@ -203,9 +209,6 @@ export async function registerStateRoutes(
       entityId: "local-product-state",
       createdAt: new Date().toISOString()
     });
-    // 回归审查 R4-3:跳过包装层增量重索引——下方 rebuildKnowledgeIndex 全量重建(含冷层逐字稿),
-    // 增量与全量并跑是重复嵌入(浪费预算)。由显式 rebuild 负责索引一致性。
-    const replaced = repository.replaceState(imported, { skipReindex: true });
     // 审计修复(P2-15 + 回归审查 R4-1):import 语义是"整体替换",热态 overwrite 而冷层此前是 upsert
     // 合并——上一世代逐字稿/录音会残留并随下次导出打进"新备份"。改为先清后恢复,三库口径一致。
     // ⚠️ R4-1 数据丢失窗口根治:此前"先 deleteAll 后逐条 put",若某 put 中途抛错(畸形/异构/截断包
@@ -252,7 +255,11 @@ export async function registerStateRoutes(
       restoredAudios = built;
     }
 
-    // 全部条目已校验/构建完毕(上面任何非法都已 422 返回),现在才动既有冷层——clear+put 无中途失败风险。
+    // 全部条目已校验/构建完毕(上面任何非法都已 422 返回),现在才提交热态与冷层。
+    // F-01:热态 replace 必须在 raw/audio 校验之后,否则 422 拒绝坏包时热态已被覆盖。
+    // 回归审查 R4-3:跳过包装层增量重索引——下方 rebuildKnowledgeIndex 全量重建(含冷层逐字稿),
+    // 增量与全量并跑是重复嵌入(浪费预算)。由显式 rebuild 负责索引一致性。
+    const replaced = repository.replaceState(imported, { skipReindex: true });
     if (restoredRawMaterials) {
       rawMaterialRepository!.deleteAll();
       for (const material of restoredRawMaterials) rawMaterialRepository!.put(material);
@@ -321,9 +328,6 @@ export async function registerStateRoutes(
           createdAt: new Date().toISOString()
         });
       }
-      // 回归审查 R4-3:跳过增量重索引——下方 knowledgeIndexRepository.deleteAll() 直接清空整个索引,
-      // 包装层的增量重索引纯属白做(且与 deleteAll 竞态,靠 R8-1 epoch 守卫才不残留)。
-      const nextState = repository.replaceState(purged, { skipReindex: true });
       // Cold layer (raw-material store) holds the verbatim interview transcripts. A full wipe
       // must clear it too, otherwise the original Q&A survives the "complete" purge (Task 13).
       rawMaterialRepository?.deleteAll();
@@ -334,6 +338,10 @@ export async function registerStateRoutes(
       // rebuildable, so a full wipe clears it too — otherwise indexed personal text survives
       // the "complete" purge (Task 12).
       knowledgeIndexRepository?.deleteAll();
+      // F-04:冷层清理成功后才提交热态。若任一冷层 deleteAll 抛错,请求会失败且热态保持不变,
+      // 避免“500 但热态已清空”的假失败/部分提交。
+      // 回归审查 R4-3:跳过增量重索引——上方 knowledgeIndexRepository.deleteAll() 已直接清空整个索引。
+      const nextState = repository.replaceState(purged, { skipReindex: true });
       return { ...nextState, artifactPurge, deletedScope: "all" as PurgeScope, deletedCount };
     }
 

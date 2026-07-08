@@ -181,6 +181,54 @@ describe("realtime-voice /interrupt route", () => {
     expect(instructions).toContain("专访主持人");
     expect(instructions).toMatch(/开场|不寒暄|跟踪点|最近怎么样/);
   });
+
+  it("uses injected runtime env for /config and session creation instead of process.env", async () => {
+    const keys = [
+      "DASHSCOPE_API_KEY",
+      "BAILIAN_API_KEY",
+      "BAILIAN_REALTIME_TRANSPORT",
+      "BAILIAN_REALTIME_WEBRTC_ENDPOINT",
+      "BAILIAN_REALTIME_MODEL",
+      "BAILIAN_REALTIME_VOICE"
+    ];
+    const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    for (const key of keys) delete process.env[key];
+
+    const envApp = Fastify();
+    try {
+      await registerRealtimeVoiceRoutes(envApp, {
+        env: {
+          DASHSCOPE_API_KEY: "dummy-key",
+          BAILIAN_REALTIME_TRANSPORT: "websocket",
+          BAILIAN_REALTIME_VOICE: "Cherry"
+        }
+      });
+      await envApp.ready();
+
+      const configRes = await envApp.inject({ method: "GET", url: "/api/realtime-voice/config" });
+      const sessionRes = await envApp.inject({
+        method: "POST",
+        url: "/api/realtime-voice/sessions",
+        payload: {}
+      });
+      const config = configRes.json();
+      const session = sessionRes.json();
+
+      expect(config).toMatchObject({
+        apiKeyConfigured: true,
+        configured: true,
+        transport: "websocket"
+      });
+      expect(session.status).toBe("ready");
+      expect(session.sessionUpdate.session.voice).toBe("Cherry");
+    } finally {
+      await envApp.close();
+      for (const key of keys) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
+    }
+  });
 });
 
 describe("realtime-voice /agent-context route", () => {

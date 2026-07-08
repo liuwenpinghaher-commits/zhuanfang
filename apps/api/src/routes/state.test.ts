@@ -170,6 +170,19 @@ describe("state routes", () => {
       await server.close();
     });
 
+    it("POST /api/state/reset without confirm returns 422 and does NOT mutate state", async () => {
+      const server = buildApiServer();
+      const before = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      const res = await server.inject({ method: "POST", url: "/api/state/reset" });
+      expect(res.statusCode).toBe(422);
+      expect(res.json().error).toContain("RESET_ALL_DATA");
+      const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      expect(after.profile.name).toBe(before.profile.name);
+      expect(after.points.length).toBe(before.points.length);
+      expect(after.notes.length).toBe(before.notes.length);
+      await server.close();
+    });
+
     it("POST /api/state/purge with scope=profile clears only the profile and reports deletedScope+deletedCount", async () => {
       const server = buildApiServer();
       const before = (await server.inject({ method: "GET", url: "/api/state" })).json();
@@ -323,12 +336,14 @@ describe("state routes", () => {
         url: "/api/state/import",
         payload: {
           confirm: "REPLACE_ALL_STATE",
-          state: cur,
+          state: { ...cur, profile: { ...cur.profile, name: "SHOULD_NOT_APPLY_AFTER_422" } },
           rawMaterials: [{ sessionId: "bad", createdAt: "2026-06-27T00:00:00.000Z" }]
         }
       });
       expect(res.statusCode).toBe(422);
       expect(rawRepo.get("existing-cold")?.turns.length).toBe(2);   // 旧冷层数据完好,未被清空
+      const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      expect(after.profile.name).toBe(cur.profile.name);
       await server.close();
     });
 
@@ -337,9 +352,35 @@ describe("state routes", () => {
       rawRepo.put(sampleMaterial("reset-cold"));
       expect(rawRepo.get("reset-cold")).toBeDefined();
       const server = buildApiServer({ rawMaterialRepository: rawRepo });
-      const res = await server.inject({ method: "POST", url: "/api/state/reset" });
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/reset",
+        payload: { confirm: "RESET_ALL_DATA" }
+      });
       expect(res.statusCode).toBe(200);
       expect(rawRepo.get("reset-cold")).toBeUndefined();   // 冷层被清
+      await server.close();
+    });
+
+    it("purge(all) 若冷层清理失败则不清热态，避免 500 后热态已被删除", async () => {
+      const rawRepo = {
+        ...createInMemoryRawMaterialRepository(),
+        deleteAll: () => {
+          throw new Error("simulated raw delete failure");
+        }
+      };
+      const server = buildApiServer({ rawMaterialRepository: rawRepo });
+      const before = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/purge",
+        payload: { confirm: "PURGE_PERSONAL_DATA" }
+      });
+      expect(res.statusCode).toBe(500);
+      const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      expect(after.profile.name).toBe(before.profile.name);
+      expect(after.points.length).toBe(before.points.length);
+      expect(after.notes.length).toBe(before.notes.length);
       await server.close();
     });
   });

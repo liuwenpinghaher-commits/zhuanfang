@@ -121,6 +121,7 @@ async function embedRecallQuery(
 
 export async function registerRealtimeVoiceRoutes(server: FastifyInstance, options: RealtimeVoiceRouteOptions = {}) {
   const sessions = new Map<string, RealtimeVoiceSessionRecord>();
+  const runtimeEnv = options.env ?? process.env;
 
   // 过期会话清理:记录带 expiresAt(10 分钟)但此前无人读取/无清理 → Map 单调增长且过期会话仍可被
   // WS 升级命中(expiresAt 形同虚设)。lazy 校验 + 创建时清扫,界定内存并让过期凭据失效。
@@ -212,10 +213,15 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     }
   });
 
-  server.get("/api/realtime-voice/config", async () => buildRealtimeVoiceConfig());
+  server.get("/api/realtime-voice/config", async () => buildRealtimeVoiceConfig(runtimeEnv));
   server.post("/api/realtime-voice/sessions", async (request) => {
     pruneExpiredSessions();
-    const record = createRealtimeVoiceSession(normalizeObject<RealtimeVoiceSessionPayload>(request.body), options.bailianRealtimeVoiceClient, options.stateRepo);
+    const record = createRealtimeVoiceSession(
+      normalizeObject<RealtimeVoiceSessionPayload>(request.body),
+      options.bailianRealtimeVoiceClient,
+      options.stateRepo,
+      runtimeEnv
+    );
     sessions.set(record.sessionId, record);
     return record;
   });
@@ -416,17 +422,16 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       ? `interview-${interviewSessionId}`
       : `session-${sessionId ?? randomUUID()}`;
 
-    const env = options.env ?? process.env;
     // In production, refuse to sign with the well-known dev defaults — anyone could forge
     // an equivalent token. Local/dev keeps the devkey fallback for zero-config.
-    if (isAuthGuardActive(env) && (!env.LIVEKIT_API_KEY || !env.LIVEKIT_API_SECRET)) {
+    if (isAuthGuardActive(runtimeEnv) && (!runtimeEnv.LIVEKIT_API_KEY || !runtimeEnv.LIVEKIT_API_SECRET)) {
       return reply.code(503).send({ error: "LiveKit credentials not configured." });
     }
 
     const { AccessToken } = await import("livekit-server-sdk");
     const token = new AccessToken(
-      env.LIVEKIT_API_KEY ?? "devkey",
-      env.LIVEKIT_API_SECRET ?? "secret",
+      runtimeEnv.LIVEKIT_API_KEY ?? "devkey",
+      runtimeEnv.LIVEKIT_API_SECRET ?? "secret",
       {
         identity: `user-${randomUUID().slice(0, 8)}`,
         name: "Interview User",
@@ -441,7 +446,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
 
     return {
       token: await token.toJwt(),
-      serverUrl: process.env.LIVEKIT_URL ?? "ws://127.0.0.1:7880",
+      serverUrl: runtimeEnv.LIVEKIT_URL ?? "ws://127.0.0.1:7880",
       room: roomName,
     };
   });
@@ -487,7 +492,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     // Origin (non-browser clients: the Python agent, server-to-server, tests) is allowed —
     // CSWSH is a browser-only threat and the bearer check below still gates production.
     const origin = request.headers.origin;
-    if (origin && !isAllowedWsOrigin(origin, options.env ?? process.env)) {
+    if (origin && !isAllowedWsOrigin(origin, runtimeEnv)) {
       socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
       socket.destroy();
       return;
@@ -496,7 +501,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     // This raw Node upgrade handler runs OUTSIDE Fastify's onRequest auth hook, so the WS
     // path would otherwise bypass production bearer auth entirely. Apply the same check here.
     // Browsers can't set WS headers, so a ?token= query value is also accepted.
-    if (!isAuthorized(options.env ?? process.env, {
+    if (!isAuthorized(runtimeEnv, {
       authHeader: request.headers.authorization,
       tokenQuery: url.searchParams.get("token") ?? undefined
     })) {
@@ -535,7 +540,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       ttsWss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
         // Resolve TTS client: prefer injected (tests / server.ts wires one)
         // then fall back to constructing from env at upgrade time.
-        const apiKey = process.env.DASHSCOPE_API_KEY ?? process.env.BAILIAN_API_KEY;
+        const apiKey = runtimeEnv.DASHSCOPE_API_KEY ?? runtimeEnv.BAILIAN_API_KEY;
         const ttsClient: BailianStreamingTtsClient | undefined =
           options.streamingTtsClient ??
           (apiKey ? createBailianStreamingTtsClient({ apiKey }) : undefined);
@@ -638,7 +643,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     }
 
     wss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
-      const apiKey = process.env.DASHSCOPE_API_KEY ?? process.env.BAILIAN_API_KEY;
+      const apiKey = runtimeEnv.DASHSCOPE_API_KEY ?? runtimeEnv.BAILIAN_API_KEY;
       if (!apiKey) {
         ws.close(4001, "API key not configured");
         return;
@@ -711,19 +716,19 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
   });
 }
 
-function buildRealtimeVoiceConfig(): RealtimeVoiceConfig {
-  const apiKeyConfigured = Boolean(process.env.DASHSCOPE_API_KEY ?? process.env.BAILIAN_API_KEY);
-  const webrtcEndpointConfigured = Boolean(process.env.BAILIAN_REALTIME_WEBRTC_ENDPOINT);
-  const transport = normalizeTransport(process.env.BAILIAN_REALTIME_TRANSPORT);
+function buildRealtimeVoiceConfig(env: Record<string, string | undefined>): RealtimeVoiceConfig {
+  const apiKeyConfigured = Boolean(env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY);
+  const webrtcEndpointConfigured = Boolean(env.BAILIAN_REALTIME_WEBRTC_ENDPOINT);
+  const transport = normalizeTransport(env.BAILIAN_REALTIME_TRANSPORT);
   const configured = apiKeyConfigured && (transport === "websocket" || webrtcEndpointConfigured);
   return {
     provider: "bailian",
-    model: process.env.BAILIAN_REALTIME_MODEL ?? "qwen3.5-omni-plus-realtime",
-    fallbackModel: process.env.BAILIAN_REALTIME_FALLBACK_MODEL ?? "qwen3.5-omni-flash-realtime",
+    model: env.BAILIAN_REALTIME_MODEL ?? "qwen3.5-omni-plus-realtime",
+    fallbackModel: env.BAILIAN_REALTIME_FALLBACK_MODEL ?? "qwen3.5-omni-flash-realtime",
     transport,
     fallbackTransport: "websocket",
-    vad: normalizeVad(process.env.BAILIAN_REALTIME_VAD),
-    enableSearch: process.env.BAILIAN_REALTIME_ENABLE_SEARCH === "true",
+    vad: normalizeVad(env.BAILIAN_REALTIME_VAD),
+    enableSearch: env.BAILIAN_REALTIME_ENABLE_SEARCH === "true",
     configured,
     apiKeyConfigured,
     webrtcEndpointConfigured,
@@ -803,9 +808,10 @@ function resolveEnginePolicy(
 function createRealtimeVoiceSession(
   payload: RealtimeVoiceSessionPayload,
   realtimeClient: BailianRealtimeVoiceClient | undefined,
-  stateRepo?: { getState(): ProductState; getInterviewSession(id: string): InterviewSession | null }
+  stateRepo: { getState(): ProductState; getInterviewSession(id: string): InterviewSession | null } | undefined,
+  env: Record<string, string | undefined>
 ): RealtimeVoiceSessionRecord {
-  const config = buildRealtimeVoiceConfig();
+  const config = buildRealtimeVoiceConfig(env);
   const sessionId = `rtv-${randomUUID()}`;
   const signalingPath = `/api/realtime-voice/sessions/${sessionId}/webrtc/answer`;
   const instructions = normalizeInstructions(payload.instructions);
@@ -829,7 +835,7 @@ function createRealtimeVoiceSession(
       type: "session.update",
       session: {
         modalities: ["text", "audio"],
-        voice: normalizeOptionalString(payload.voice) ?? process.env.BAILIAN_REALTIME_VOICE ?? "Ethan",
+        voice: normalizeOptionalString(payload.voice) ?? env.BAILIAN_REALTIME_VOICE ?? "Ethan",
         input_audio_format: "pcm",
         output_audio_format: "pcm",
         instructions,
