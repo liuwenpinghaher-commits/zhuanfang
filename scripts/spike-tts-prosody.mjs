@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import WebSocket from "ws";
+// F-07:key 前缀无验证价值却增加凭据识别面,日志只回答"配置了没有"
+import { describeKeyStatus } from "./lib/redact.mjs";
 function loadEnv(url){const e={};try{for(const l of readFileSync(url,"utf8").split(/\r?\n/)){const m=l.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);if(m&&!l.trim().startsWith("#"))e[m[1]]=m[2];}}catch{}return e;}
 const env=loadEnv(new URL("../.env.local",import.meta.url));const KEY=env.DASHSCOPE_API_KEY;
 const URL_WS="wss://dashscope.aliyuncs.com/api-ws/v1/inference";
@@ -24,6 +26,6 @@ const cases=[
   {label:"volume=20",                extra:{volume:20}},
   {label:"instruction(单) 温和缓慢", extra:{instruction:"语气温和亲切，语速偏慢"}},
 ];
-console.log(`\n=== CosyVoice prosody params spike (key ${String(KEY).slice(0,6)}…) ===\n`);
+console.log(`\n=== CosyVoice prosody params spike (key ${describeKeyStatus(KEY)}) ===\n`);
 for(let i=0;i<cases.length;i++){const r=await synth(cases[i],i);const icon=r.verdict==="OK"?"✅":"❌";console.log(`${icon} ${r.label.padEnd(26)} → ${r.verdict} (${r.detail})`);}
 console.log("\n(rate 改变时长→字节数应不同；pitch/volume 不改时长→字节数可能相同但音色已变)\n");

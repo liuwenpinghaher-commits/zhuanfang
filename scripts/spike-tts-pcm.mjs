@@ -2,6 +2,8 @@
 // Run: node scripts/spike-tts-pcm.mjs  — reads DASHSCOPE_API_KEY from .env.local.
 import { readFileSync } from "node:fs";
 import WebSocket from "ws";
+// F-07:key 前缀无验证价值却增加凭据识别面,日志只回答"配置了没有"
+import { describeKeyStatus } from "./lib/redact.mjs";
 
 function loadEnv(url) {
   const env = {};
@@ -48,7 +50,7 @@ function synth(format) {
   });
 }
 
-console.log(`\n=== CosyVoice 流式格式 spike（key ${String(KEY).slice(0,6)}…）===\n`);
+console.log(`\n=== CosyVoice 流式格式 spike（key ${describeKeyStatus(KEY)}）===\n`);
 for (const f of ["mp3", "pcm"]) {
   const r = await synth(f);
   const icon = r.verdict === "OK" ? "✅" : "❌";

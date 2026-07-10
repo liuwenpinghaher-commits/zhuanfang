@@ -68,6 +68,8 @@ npm run test:e2e
 
 `npm run test:e2e` 会自动启动 `Product API` 和前端 dev server；测试中的 API 使用 `PRODUCT_STATE_DB_PATH=memory`，不会写入默认的 `.data/product-state.sqlite`。
 
+`*.real.test.ts` 是外部 provider smoke（从 `.env.local` 读真实 key，会真调 DashScope / AnySearch）。在持有真实 key 的机器上跑全量 vitest 而不想触发外部调用时，设 `REAL_PROVIDER_SMOKE=off`（也接受 `0`/`false`，大小写不敏感）即可让这些用例全部按"未配置 key"跳过。
+
 ## 关键配置
 
 可在 `.env.local` 或系统配置页维护。密钥只在 Product API 服务端使用，不下发到浏览器。

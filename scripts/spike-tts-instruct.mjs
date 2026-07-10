@@ -3,6 +3,8 @@
 // 标签)与 SSML(enable_ssml / text_type=SSML)是否被系统音色接受。OK=出音频,FAILED=报错码。
 import { readFileSync } from "node:fs";
 import WebSocket from "ws";
+// F-07:key 前缀无验证价值却增加凭据识别面,日志只回答"配置了没有"
+import { describeKeyStatus } from "./lib/redact.mjs";
 function loadEnv(url){const e={};try{for(const l of readFileSync(url,"utf8").split(/\r?\n/)){const m=l.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);if(m&&!l.trim().startsWith("#"))e[m[1]]=m[2];}}catch{}return e;}
 const env=loadEnv(new URL("../.env.local",import.meta.url));const KEY=env.DASHSCOPE_API_KEY;
 const URL_WS="wss://dashscope.aliyuncs.com/api-ws/v1/inference";
@@ -29,7 +31,7 @@ const cases=[
   {label:"官方模板 场景+情感(新闻neutral)",          extra:{instruction:"你正在进行新闻播报,你说话的情感是neutral。"}},
   {label:"官方模板 happy + rate/pitch(组合)",        extra:{instruction:"你说话的情感是happy。", rate:1.1, pitch:1.05}},
 ];
-console.log(`\n=== CosyVoice instruct/SSML spike · longanyang (key ${String(KEY).slice(0,6)}…) ===\n`);
+console.log(`\n=== CosyVoice instruct/SSML spike · longanyang (key ${describeKeyStatus(KEY)}) ===\n`);
 for(let i=0;i<cases.length;i++){const r=await synth(cases[i],i);const icon=r.verdict==="OK"?"✅":(r.verdict==="FAILED"?"❌":"⚠️ ");console.log(`${icon} ${r.label.padEnd(28)} → ${r.verdict} (${r.detail})`);}
 console.log("\n(OK=系统音色接受该参数并出音频；FAILED+错误码=不支持。对比 baseline 字节数判断是否真生效)\n");
 process.exit(0);

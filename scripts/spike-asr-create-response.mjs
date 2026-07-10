@@ -3,6 +3,8 @@
 // Reads DASHSCOPE_API_KEY from .env.local. Safe to delete after.
 import { readFileSync } from "node:fs";
 import WebSocket from "ws";
+// F-07:key 前缀无验证价值却增加凭据识别面,日志只回答"配置了没有"
+import { describeKeyStatus } from "./lib/redact.mjs";
 
 function loadEnv(url) {
   const env = {};
@@ -65,7 +67,7 @@ const cases = [
   ["B. 加 create_response:false", { type: "session.update", session: { ...base, turn_detection: { ...base.turn_detection, create_response: false } } }]
 ];
 
-console.log(`\n=== omni ASR session 配置 spike（key ${String(KEY).slice(0,6)}…）===\n`);
+console.log(`\n=== omni ASR session 配置 spike（key ${describeKeyStatus(KEY)}）===\n`);
 for (const [label, su] of cases) {
   const r = await trySession(label, su);
   const icon = r.verdict === "ACCEPTED" ? "✅" : r.verdict === "REJECTED" ? "❌" : "⚠️";

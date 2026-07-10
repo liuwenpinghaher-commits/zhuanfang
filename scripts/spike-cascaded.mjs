@@ -8,6 +8,8 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
+// F-07:key 前缀无验证价值却增加凭据识别面,日志只回答"配置了没有"
+import { describeKeyStatus } from "./lib/redact.mjs";
 
 // ── env loader (mirrors verify-providers.mjs) ───────────────────────────────
 function loadEnv(url) {
@@ -27,7 +29,7 @@ if (!KEY) {
   console.error("❌  DASHSCOPE_API_KEY not found in .env.local");
   process.exit(1);
 }
-console.log(`\nKey prefix: ${KEY.slice(0, 8)}…\n`);
+console.log(`\nDASHSCOPE_API_KEY ${describeKeyStatus(KEY)}\n`);
 
 // ── helper: send JSON over WS ────────────────────────────────────────────────
 function sendJson(ws, obj) {

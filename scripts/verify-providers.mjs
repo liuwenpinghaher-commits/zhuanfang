@@ -3,6 +3,8 @@
 // Reads keys from .env.local. Prints a model x reality table. Safe to delete after.
 import { readFileSync } from "node:fs";
 import WebSocket from "ws";
+// F-07:key 前缀无验证价值却增加凭据识别面,日志只回答"配置了没有"
+import { describeKeyStatus } from "./lib/redact.mjs";
 
 function loadEnv(url) {
   const env = {};
@@ -117,7 +119,7 @@ function realtimeWs(model) {
   });
 }
 
-console.log(`\n=== Provider 实测（key 前缀 ${String(KEY).slice(0, 6)}… / anysearch ${String(ANY_KEY).slice(0, 8)}…）===\n`);
+console.log(`\n=== Provider 实测（dashscope key ${describeKeyStatus(KEY)} / anysearch key ${describeKeyStatus(ANY_KEY)}）===\n`);
 console.log("— 文字 chat completions（北京 compatible-mode）—");
 for (const m of ["qwen-plus-character", "qwen-plus", "qwen3.7-plus", "qwen-max", "qwen3.5-omni-plus"]) {
   const r = await chat(BJ, m);
