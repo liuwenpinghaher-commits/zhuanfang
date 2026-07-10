@@ -556,6 +556,40 @@ describe("product api client", () => {
     expect(result.schemaVersion).toBe(1);
     expect(result.strategy).toBe("json-export-import-rehearsal");
     expect(result.package.privacyReportIncluded).toBe(true);
+    expect(result.bundleDigest).toBe("abc123");
+    expect(result.completeness).toMatchObject({ status: "complete", complete: true });
+    expect(result.audioOmittedSessions).toEqual([]);
+  });
+
+  it("F-06: importState 分离返回规范化 state 与 restored/skipped/missing receipt", async () => {
+    const state = createInitialProductState();
+    const receipt = {
+      partial: true,
+      restored: { rawMaterials: 2, audios: 1 },
+      skipped: { rawMaterials: [], audios: [] },
+      missing: { audioSessions: ["audio-omitted"] },
+      knowledgeIndex: "rebuilt" as const
+    };
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ ...state, importReceipt: receipt }), { status: 200 })
+    );
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+
+    const result = await client.importState({
+      state,
+      rawMaterials: [],
+      audios: [],
+      audioOmittedSessions: ["audio-omitted"]
+    });
+
+    expect(result.state.profile.name).toBe("Mia");
+    expect(result.receipt).toEqual(receipt);
+    expect("importReceipt" in result.state).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:8787/api/state/import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: expect.stringContaining('"confirm":"REPLACE_ALL_STATE"')
+    });
   });
 
   it("fetches privacy report from the API", async () => {

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { buildBackupRestoreRehearsalReport } from "../../../../src/domain/backup";
+import { assessStateExportCompleteness, buildBackupRestoreRehearsalReport } from "../../../../src/domain/backup";
+import { buildStableDigest } from "../../../../src/domain/stateDigest";
 import { buildPrivacyReport, createPurgedProductState, createScopedPurge, type PurgeScope } from "../../../../src/domain/privacy";
 import { normalizeProductState } from "../../../../src/domain/storage";
 import { withAuditEvent } from "../../../../src/domain/utils";
@@ -177,23 +178,44 @@ export async function registerStateRoutes(
       }
       audios.push(entry);
     }
-    const bundle = { ...report, rawMaterials, audioSessions, audios, audioOmittedSessions };
+    const bundleCore = { ...report, rawMaterials, audioSessions, audios, audioOmittedSessions };
+    // F-06:摘要覆盖热态 + 冷层清单 + 实际打包音频,不只沿用 report.package.stateDigest
+    // (后者只证明 ProductState,无法发现冷层/音频导出损坏)。compat/completeness 是摘要的
+    // 派生元数据,为避免自引用不纳入 digest。
+    const bundleWithDigest = { ...bundleCore, bundleDigest: buildStableDigest(bundleCore) };
     // 审计修复(P1-8 对偶):导出侧如实预警包体积与导入体限的兼容性——"备份成功恢复失败"
     // 必须在备份时就可见,而不是恢复时才 413。
     // 回归审查 R4-5:大对象只序列化一次。此前 JSON.stringify(bundle) 算字节 + return 对象让 Fastify
     // 再序列化整包一次 → 导出包(可达 ~28MB,含音频 base64)双序列化=瞬时内存峰值翻倍。改为手动序列化
     // bundle 一次、复用该字符串,只额外序列化极小的 importCompatibility 尾并拼接(bundle 由对象字面量
     // 构成,其 JSON 必以 } 结尾,slice(0,-1) 去尾后拼入兼容性字段安全)。
-    const bundleStr = JSON.stringify(bundle);
-    const bundleBytes = Buffer.byteLength(bundleStr);
-    const compatStr = JSON.stringify({
-      bytes: bundleBytes,
-      importBodyLimitBytes: IMPORT_BODY_LIMIT_BYTES,
-      exceedsImportLimit: bundleBytes > IMPORT_BODY_LIMIT_BYTES
-    });
-    return reply
-      .type("application/json")
-      .send(`${bundleStr.slice(0, -1)},"importCompatibility":${compatStr}}`);
+    const bundleStr = JSON.stringify(bundleWithDigest);
+    const prefix = bundleStr.slice(0, -1);
+    let finalBytes = Buffer.byteLength(bundleStr);
+    let finalPayload = bundleStr;
+    // bytes 字段包含在最终 JSON 内,其十进制位数又会影响最终字节数。只迭代极小的尾部
+    // 元数据,不重复序列化可达数十 MB 的 bundle 主体；通常 2 次即稳定。
+    for (let i = 0; i < 8; i += 1) {
+      const importCompatibility = {
+        bytes: finalBytes,
+        importBodyLimitBytes: IMPORT_BODY_LIMIT_BYTES,
+        exceedsImportLimit: finalBytes > IMPORT_BODY_LIMIT_BYTES
+      };
+      const completeness = assessStateExportCompleteness({
+        audioSessions,
+        audios,
+        audioOmittedSessions,
+        importCompatibility,
+        checks: report.checks
+      });
+      const tail = `,"importCompatibility":${JSON.stringify(importCompatibility)},"completeness":${JSON.stringify(completeness)}}`;
+      const candidate = `${prefix}${tail}`;
+      const candidateBytes = Buffer.byteLength(candidate);
+      finalPayload = candidate;
+      if (candidateBytes === finalBytes) break;
+      finalBytes = candidateBytes;
+    }
+    return reply.type("application/json").send(finalPayload);
   });
 
   // P0-2b: Import — restore a previously exported package (or a raw ProductState).
@@ -209,6 +231,8 @@ export async function registerStateRoutes(
           confirm?: unknown;
           rawMaterials?: unknown;
           audios?: unknown;
+          audioSessions?: unknown;
+          audioOmittedSessions?: unknown;
           coldLayerMode?: unknown;
         }
       | undefined;
@@ -446,12 +470,38 @@ export async function registerStateRoutes(
     // F-04:成功回执(与 purge/reset 的装饰键 spread 模式一致,前端 productApi 会剥离)。
     const importReceipt = {
       ...(coldLayerMode ? { coldLayerMode } : {}),
+      partial: false,
       restored: {
         rawMaterials: restoredRawMaterials?.length ?? 0,
         audios: restoredAudios?.length ?? 0
       },
+      skipped: {
+        rawMaterials:
+          hasRawArray && !rawMaterialRepository
+            ? (body!.rawMaterials as unknown[]).map((_, index) => ({ index, reason: "raw-material store not configured" }))
+            : [],
+        audios:
+          hasAudioArray && !audioRepository
+            ? (body!.audios as unknown[]).map((_, index) => ({ index, reason: "audio store not configured" }))
+            : []
+      },
+      missing: {
+        audioSessions: [...new Set([
+          ...(Array.isArray(body?.audioOmittedSessions)
+            ? body.audioOmittedSessions.filter((id): id is string => typeof id === "string")
+            : []),
+          ...(Array.isArray(body?.audioSessions)
+            ? body.audioSessions.filter((id): id is string => typeof id === "string")
+            : []).filter((id) => !new Set((restoredAudios ?? []).map((audio) => audio.sessionId)).has(id))
+        ])]
+      },
       knowledgeIndex: knowledgeIndexOutcome
     };
+    importReceipt.partial =
+      importReceipt.skipped.rawMaterials.length > 0 ||
+      importReceipt.skipped.audios.length > 0 ||
+      importReceipt.missing.audioSessions.length > 0 ||
+      knowledgeIndexOutcome === "failed";
     return { ...replaced!, importReceipt };
   });
 

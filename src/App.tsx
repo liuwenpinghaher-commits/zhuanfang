@@ -55,7 +55,7 @@ import { deleteImportSource } from "./domain/material";
 import { executeSearchProvider } from "./capabilities/search";
 import { createIdleCapabilityTask, failCapabilityTask, startCapabilityTask } from "./capabilities/task";
 import { productApiClient, isNetworkError, ApiError, type ResetReceipt, type ReviewsResponse } from "./api/productApi";
-import type { RealtimeVoiceSessionResponse, SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigUpdateRequest, VoiceInfo } from "./api/productApi";
+import type { ColdLayerMode, RealtimeVoiceSessionResponse, StateImportResult, SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigUpdateRequest, VoiceInfo } from "./api/productApi";
 // WebRTC omni client is incomplete (no callbacks/turn recording); the connect path is
 // downlined to WebSocket in startVoiceSession. Type kept for the connection union only.
 import type { BailianRealtimeWebrtcConnection } from "./realtime/realtimeTypes";
@@ -1785,14 +1785,25 @@ export default function App() {
     return productApiClient.exportState();
   }
 
-  async function importData(payload: unknown) {
-    const nextState = await productApiClient.importState(payload);
-    setApiPersistenceEnabled(true);
-    saveProductState(nextState);
+  async function importData(payload: unknown, coldLayerMode?: ColdLayerMode): Promise<StateImportResult> {
+    const result = await productApiClient.importState(payload, coldLayerMode);
+    acceptAuthoritativeState(result.state);
     setSession(null);
     closeRealtimeVoiceSession();
-    setNotice(buildNotice("success", "数据已从备份恢复", "已用导入的备份覆盖当前全部数据。"));
-    return nextState;
+    if (!result.receipt) {
+      setNotice(buildNotice("warning", "备份已导入，但完整性未知", "服务端未返回恢复清单；请先核对逐字稿与录音，再执行清空操作。"));
+    } else if (result.receipt.partial) {
+      setNotice(
+        buildNotice(
+          "warning",
+          "备份已部分恢复",
+          `已恢复 ${result.receipt.restored.rawMaterials} 份逐字稿、${result.receipt.restored.audios} 段录音；仍有 ${result.receipt.missing.audioSessions.length} 段录音缺失。`
+        )
+      );
+    } else {
+      setNotice(buildNotice("success", "数据已从备份完整恢复", "热态、逐字稿、录音与知识索引恢复清单均已确认。"));
+    }
+    return result;
   }
 
   async function showPrivacyReport() {

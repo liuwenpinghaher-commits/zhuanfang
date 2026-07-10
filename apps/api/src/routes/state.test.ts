@@ -102,6 +102,15 @@ describe("state routes", () => {
       expect(body.package).toBeDefined();
       expect(body.privacyReport).toBeDefined();
       expect(Array.isArray(body.checks)).toBe(true);
+      // F-06:真实 StateExportBundle 必须在 API 层自证完整性与最终响应字节数。
+      expect(body.bundleDigest).toMatch(/^fnv1a-[a-f0-9]{8}$/);
+      expect(body.completeness).toMatchObject({
+        status: "complete",
+        complete: true,
+        directlyImportable: true,
+        omittedAudioSessions: 0
+      });
+      expect(body.importCompatibility.bytes).toBe(Buffer.byteLength(res.body));
       await server.close();
     });
 
@@ -718,6 +727,14 @@ describe("state routes", () => {
       expect(body.audioOmittedSessions).toContain("big-2");
       // audioSessions still lists every audio-bearing session
       expect(body.audioSessions).toEqual(expect.arrayContaining(["big-1", "big-2"]));
+      // F-06:遗漏不能只藏在 JSON 的技术字段里，正式 completeness 直接标 partial。
+      expect(body.completeness).toMatchObject({
+        status: "partial",
+        complete: false,
+        directlyImportable: true,
+        omittedAudioSessions: 1
+      });
+      expect(body.completeness.reasons.join(" ")).toContain("1 段录音");
       await server.close();
     });
   });
@@ -1056,6 +1073,32 @@ describe("state routes", () => {
       expect(rawRepo.get("previous-gen")).toBeUndefined();
       expect(rawRepo.list().map((m) => m.sessionId).sort()).toEqual(["new-raw-1", "new-raw-2"]);
       expect(audioRepo.has("new-audio")).toBe(true);
+      await server.close();
+    });
+
+    it("导入含 audioOmittedSessions 的部分备份 → 200 但 importReceipt 明确 missing/partial", async () => {
+      const server = buildApiServer();
+      const cur = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/import",
+        payload: {
+          confirm: "REPLACE_ALL_STATE",
+          state: cur,
+          rawMaterials: [],
+          audios: [audioImportEntry("included-audio")],
+          audioSessions: ["included-audio", "omitted-audio"],
+          audioOmittedSessions: ["omitted-audio"]
+        }
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().importReceipt).toMatchObject({
+        partial: true,
+        restored: { rawMaterials: 0, audios: 1 },
+        skipped: { rawMaterials: [], audios: [] },
+        missing: { audioSessions: ["omitted-audio"] }
+      });
       await server.close();
     });
   });

@@ -2,7 +2,7 @@ import { buildProductStateMigrationManifest, type ProductStateMigrationManifest 
 import { buildPrivacyReport, type PrivacyReport } from "./privacy";
 import { buildStableDigest, measureUtf8Bytes, stableStringify } from "./stateDigest";
 import { normalizeProductState } from "./storage";
-import type { ProductState } from "./types";
+import type { InterviewAudioRole, InterviewRawMaterial, ProductState } from "./types";
 
 export type BackupRehearsalStatus = "passed" | "warning" | "failed";
 
@@ -50,6 +50,107 @@ export interface ProductStateExportPackage {
   product: "interview-product-mvp";
   privacyReport: PrivacyReport;
   state: ProductState;
+}
+
+export interface StateExportAudioEntry {
+  sessionId: string;
+  role: InterviewAudioRole;
+  mime: string;
+  durationMs?: number;
+  recordingStartedAt?: string;
+  audioBase64: string;
+}
+
+export interface StateImportCompatibility {
+  /** 最终 JSON 响应的 UTF-8 字节数。 */
+  bytes: number;
+  importBodyLimitBytes: number;
+  exceedsImportLimit: boolean;
+}
+
+export type StateExportCompletenessStatus = "complete" | "partial" | "not-directly-importable";
+
+export interface StateExportCompleteness {
+  status: StateExportCompletenessStatus;
+  complete: boolean;
+  directlyImportable: boolean;
+  reasons: string[];
+  audioSessions: number;
+  includedAudioSessions: number;
+  omittedAudioSessions: number;
+  failedChecks: number;
+  externalArtifactWarnings: number;
+}
+
+/** Product API `/api/state/export` 的真实响应，而非仅含热态的演练报告窄类型。 */
+export interface StateExportBundle extends BackupRestoreRehearsalReport {
+  rawMaterials: InterviewRawMaterial[];
+  /** 所有拥有录音的 session，包含因导出预算而未打包音频字节的 session。 */
+  audioSessions: string[];
+  audios: StateExportAudioEntry[];
+  audioOmittedSessions: string[];
+  /** 除 bundleDigest / importCompatibility / completeness 外主体的稳定摘要。 */
+  bundleDigest: string;
+  importCompatibility: StateImportCompatibility;
+  completeness: StateExportCompleteness;
+}
+
+export function assessStateExportCompleteness(input: {
+  audioSessions: string[];
+  audios: Array<{ sessionId: string }>;
+  audioOmittedSessions: string[];
+  importCompatibility: StateImportCompatibility;
+  checks?: BackupRehearsalCheck[];
+}): StateExportCompleteness {
+  const declaredAudioIds = new Set(input.audioSessions);
+  const includedAudioIds = new Set(input.audios.map((audio) => audio.sessionId));
+  const explicitlyOmittedIds = new Set(input.audioOmittedSessions);
+  const unaccountedAudioIds = [...declaredAudioIds].filter(
+    (id) => !includedAudioIds.has(id) && !explicitlyOmittedIds.has(id)
+  );
+  const omittedAudioIds = new Set([...explicitlyOmittedIds, ...unaccountedAudioIds]);
+  const audioSessions = declaredAudioIds.size;
+  const includedAudioSessions = includedAudioIds.size;
+  const omittedAudioSessions = omittedAudioIds.size;
+  const checks = input.checks ?? [];
+  const failed = checks.filter((check) => check.status === "failed");
+  const externalArtifactWarnings = checks.filter(
+    (check) => check.id === "local-object-artifacts" && check.status !== "passed"
+  );
+  const reasons: string[] = [];
+  if (explicitlyOmittedIds.size > 0) {
+    reasons.push(`有 ${explicitlyOmittedIds.size} 段录音因导出预算未写入 JSON 包。`);
+  }
+  if (unaccountedAudioIds.length > 0) {
+    reasons.push(`有 ${unaccountedAudioIds.length} 个录音会话已声明但音频未打包、也未记录省略原因。`);
+  }
+  if (input.importCompatibility.exceedsImportLimit) {
+    reasons.push(
+      `包体 ${input.importCompatibility.bytes} bytes 超过直接导入上限 ${input.importCompatibility.importBodyLimitBytes} bytes。`
+    );
+  }
+  for (const check of externalArtifactWarnings) {
+    reasons.push(`${check.label}：${check.detail}`);
+  }
+  for (const check of failed) {
+    reasons.push(`备份演练失败（${check.label}）：${check.detail}`);
+  }
+  const status: StateExportCompletenessStatus = input.importCompatibility.exceedsImportLimit || failed.length > 0
+    ? "not-directly-importable"
+    : omittedAudioSessions > 0 || externalArtifactWarnings.length > 0
+      ? "partial"
+      : "complete";
+  return {
+    status,
+    complete: status === "complete",
+    directlyImportable: !input.importCompatibility.exceedsImportLimit,
+    reasons,
+    audioSessions,
+    includedAudioSessions,
+    omittedAudioSessions,
+    failedChecks: failed.length,
+    externalArtifactWarnings: externalArtifactWarnings.length
+  };
 }
 
 export function buildBackupRestoreRehearsalReport(

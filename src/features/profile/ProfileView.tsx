@@ -2,7 +2,8 @@ import { Brain, Download, FileText, PenLine, Settings, ShieldCheck, Trash2, Uplo
 import { useState, type ChangeEvent } from "react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { PrivacyReport } from "../../domain/privacy";
-import type { BackupRestoreRehearsalReport } from "../../domain/backup";
+import type { StateExportBundle } from "../../domain/backup";
+import type { ColdLayerMode, ImportReceipt, StateImportResult } from "../../api/productApi";
 import type { InterviewStrength, ProductState } from "../../domain/types";
 import { updateProfile, addExplicitBoundary, removeExplicitBoundary, approveProfileSuggestion, rejectProfileSuggestion } from "../../domain/profile";
 
@@ -12,14 +13,20 @@ interface ProfileViewProps {
   onCorrectionText: (value: string) => void;
   onAddCorrection: () => void;
   onReset: () => void;
-  onExport: () => Promise<BackupRestoreRehearsalReport>;
-  onImport: (payload: unknown) => Promise<ProductState>;
+  onExport: () => Promise<StateExportBundle>;
+  onImport: (payload: unknown, coldLayerMode?: ColdLayerMode) => Promise<StateImportResult>;
   onPrivacyReport: () => Promise<PrivacyReport>;
   onPurge: () => Promise<ProductState>;
   onSetProductState: (state: ProductState) => void;
 }
 
 type GovernanceAction = "export" | "import" | "privacy" | "purge";
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 export function ProfileView({
   state,
@@ -70,10 +77,13 @@ export function ProfileView({
 
   const [loadingAction, setLoadingAction] = useState<GovernanceAction | null>(null);
   const [exportSuccess, setExportSuccess] = useState(false);
+  const [exportBundle, setExportBundle] = useState<StateExportBundle | null>(null);
   const [purgeSuccess, setPurgeSuccess] = useState(false);
   const [privacyReport, setPrivacyReport] = useState<PrivacyReport | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const [importSuccess, setImportSuccess] = useState(false);
+  const [importReceipt, setImportReceipt] = useState<ImportReceipt | null>(null);
+  const [legacyColdLayerMode, setLegacyColdLayerMode] = useState<ColdLayerMode>("preserve-cold");
   const [importError, setImportError] = useState<string | null>(null);
   const [privacyError, setPrivacyError] = useState<string | null>(null);
   const [purgeError, setPurgeError] = useState<string | null>(null);
@@ -81,10 +91,24 @@ export function ProfileView({
   async function handleExport() {
     setLoadingAction("export");
     setExportSuccess(false);
+    setExportBundle(null);
     setExportError(null);
     try {
-      const report = await onExport();
-      const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
+      const bundle = await onExport();
+      setExportBundle(bundle);
+      if (!bundle.completeness.complete) {
+        const confirmed = window.confirm(
+          `${bundle.completeness.status === "not-directly-importable" ? "此备份无法通过当前接口直接导入。" : "此备份不完整。"}\n` +
+          `${bundle.completeness.reasons.join("\n")}\n\n仍要下载吗？下载后请勿把它作为清空数据前的唯一恢复保障。`
+        );
+        if (!confirmed) {
+          setExportError("已取消下载；完整性检查结果保留在下方。请先处理遗漏项。 ");
+          return;
+        }
+      }
+      // 使用紧凑 JSON，确保下载文件字节数与服务端 importCompatibility.bytes 的口径一致；
+      // pretty-print 会把大包膨胀到导入上限之外，制造“页面说可导入、实际 413”的新假象。
+      const blob = new Blob([JSON.stringify(bundle)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       const dateStr = new Date().toISOString().slice(0, 10);
@@ -110,11 +134,15 @@ export function ProfileView({
     if (!confirmed) return;
     setLoadingAction("import");
     setImportSuccess(false);
+    setImportReceipt(null);
     setImportError(null);
     try {
       const payload = JSON.parse(await file.text());
-      const nextState = await onImport(payload);
-      onSetProductState(nextState);
+      const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : null;
+      const isFullBundle = Boolean(record && Array.isArray(record.rawMaterials) && Array.isArray(record.audios));
+      const result = await onImport(payload, isFullBundle ? undefined : legacyColdLayerMode);
+      onSetProductState(result.state);
+      setImportReceipt(result.receipt);
       setImportSuccess(true);
     } catch (err) {
       setImportError(err instanceof Error ? err.message : "导入失败，请确认文件是有效的导出包。");
@@ -338,7 +366,12 @@ export function ProfileView({
               {loadingAction === "export" ? <span className="spinner" aria-hidden="true" /> : <Download size={16} />}
               导出数据
             </button>
-            {exportSuccess && <span style={{ color: "var(--color-success, #22c55e)", fontSize: "0.875rem" }}>已下载 JSON 备份包</span>}
+            {exportSuccess && exportBundle?.completeness.complete && (
+              <span style={{ color: "var(--color-success, #22c55e)", fontSize: "0.875rem" }}>已下载完整 JSON 备份包</span>
+            )}
+            {exportSuccess && exportBundle && !exportBundle.completeness.complete && (
+              <span style={{ color: "#b45309", fontSize: "0.875rem" }}>已下载，但该备份不是完整恢复保障</span>
+            )}
             {exportError && <span style={{ color: "var(--action-danger)", fontSize: "0.875rem" }}>{exportError}</span>}
             <label
               className={"secondary-action" + (loadingAction === "import" ? " btn-loading" : "")}
@@ -348,9 +381,95 @@ export function ProfileView({
               导入数据
               <input type="file" accept="application/json,.json" hidden disabled={loadingAction !== null} onChange={handleImportFile} />
             </label>
-            {importSuccess && <span style={{ color: "var(--color-success, #22c55e)", fontSize: "0.875rem" }}>已从备份恢复</span>}
+            {importSuccess && importReceipt && !importReceipt.partial && (
+              <span style={{ color: "var(--color-success, #22c55e)", fontSize: "0.875rem" }}>已完整恢复并核对清单</span>
+            )}
+            {importSuccess && (!importReceipt || importReceipt.partial) && (
+              <span style={{ color: "#b45309", fontSize: "0.875rem" }}>
+                {importReceipt ? "已部分恢复，请核对缺失项" : "已恢复，但服务端未返回完整性清单"}
+              </span>
+            )}
             {importError && <span style={{ color: "var(--action-danger)", fontSize: "0.875rem" }}>{importError}</span>}
           </div>
+
+          <label className="backup-mode-control">
+            <span>
+              <strong>旧格式备份的冷层处理</strong>
+              <small>仅在文件不含 rawMaterials / audios 清单时生效</small>
+            </span>
+            <select
+              value={legacyColdLayerMode}
+              disabled={loadingAction !== null}
+              onChange={(event) => setLegacyColdLayerMode(event.target.value as ColdLayerMode)}
+            >
+              <option value="preserve-cold">保留现有逐字稿与录音</option>
+              <option value="replace-all">同时清空现有逐字稿与录音</option>
+            </select>
+          </label>
+
+          {exportBundle && (
+            <section
+              className={`backup-integrity-card ${exportBundle.completeness.status}`}
+              aria-live="polite"
+              aria-label="导出备份完整性"
+            >
+              <div className="backup-integrity-head">
+                <strong>
+                  {exportBundle.completeness.status === "complete"
+                    ? "完整备份"
+                    : exportBundle.completeness.status === "partial"
+                      ? "部分备份"
+                      : "不可直接导入"}
+                </strong>
+                <span>{formatBytes(exportBundle.importCompatibility.bytes)}</span>
+              </div>
+              <div className="backup-integrity-metrics">
+                <span>逐字稿 {exportBundle.rawMaterials.length} 份</span>
+                <span>录音 {exportBundle.completeness.includedAudioSessions}/{exportBundle.completeness.audioSessions} 个会话</span>
+                <span>摘要 {exportBundle.bundleDigest}</span>
+              </div>
+              {exportBundle.completeness.reasons.length > 0 ? (
+                <ul>
+                  {exportBundle.completeness.reasons.map((reason) => <li key={reason}>{reason}</li>)}
+                </ul>
+              ) : (
+                <p>热态、逐字稿与已登记录音均已纳入，包体可通过当前导入接口直接恢复。</p>
+              )}
+            </section>
+          )}
+
+          {importSuccess && (
+            <section
+              className={`backup-integrity-card ${importReceipt?.partial === false ? "complete" : "partial"}`}
+              aria-live="polite"
+              aria-label="导入恢复清单"
+            >
+              <div className="backup-integrity-head">
+                <strong>{importReceipt?.partial === false ? "恢复清单已核对" : "恢复清单需要处理"}</strong>
+                <span>{importReceipt ? (importReceipt.partial ? "部分恢复" : "完整恢复") : "完整性未知"}</span>
+              </div>
+              {importReceipt ? (
+                <>
+                  <div className="backup-integrity-metrics">
+                    <span>逐字稿 {importReceipt.restored.rawMaterials} 份</span>
+                    <span>录音 {importReceipt.restored.audios} 段</span>
+                    <span>知识索引 {importReceipt.knowledgeIndex}</span>
+                  </div>
+                  {(importReceipt.missing.audioSessions.length > 0 || importReceipt.skipped.rawMaterials.length > 0 || importReceipt.skipped.audios.length > 0) && (
+                    <ul>
+                      {importReceipt.missing.audioSessions.length > 0 && (
+                        <li>缺少录音会话：{importReceipt.missing.audioSessions.join("、")}</li>
+                      )}
+                      {importReceipt.skipped.rawMaterials.length > 0 && <li>跳过逐字稿 {importReceipt.skipped.rawMaterials.length} 项</li>}
+                      {importReceipt.skipped.audios.length > 0 && <li>跳过录音 {importReceipt.skipped.audios.length} 项</li>}
+                    </ul>
+                  )}
+                </>
+              ) : (
+                <p>当前服务端没有返回 restored / skipped / missing 清单，请勿据此直接执行永久清空。</p>
+              )}
+            </section>
+          )}
 
           {/* Privacy Report */}
           <div style={{ display: "flex", alignItems: "flex-start", gap: "1rem", flexWrap: "wrap" }}>

@@ -329,6 +329,100 @@ select:focus-visible {
   gap: 10px;
 }
 
+.backup-mode-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-raised) 86%, transparent);
+}
+
+.backup-mode-control > span {
+  display: grid;
+  gap: 3px;
+}
+
+.backup-mode-control small {
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.backup-mode-control select {
+  min-width: min(100%, 260px);
+}
+
+.backup-integrity-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+}
+
+.backup-integrity-card.complete {
+  border-color: rgba(34, 197, 94, 0.35);
+  background: rgba(34, 197, 94, 0.07);
+}
+
+.backup-integrity-card.partial {
+  border-color: rgba(245, 158, 11, 0.4);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.backup-integrity-card.not-directly-importable {
+  border-color: rgba(239, 68, 68, 0.38);
+  background: rgba(239, 68, 68, 0.07);
+}
+
+.backup-integrity-head,
+.backup-integrity-metrics {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.backup-integrity-head > span,
+.backup-integrity-metrics {
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+}
+
+.backup-integrity-metrics {
+  justify-content: flex-start;
+}
+
+.backup-integrity-metrics span {
+  padding-right: 12px;
+  border-right: 1px solid var(--border-soft);
+}
+
+.backup-integrity-metrics span:last-child {
+  max-width: 100%;
+  overflow: hidden;
+  border-right: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backup-integrity-card p,
+.backup-integrity-card ul {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+  line-height: 1.55;
+}
+
+.backup-integrity-card ul {
+  padding-left: 18px;
+}
+
 .notice strong {
   flex: 0 0 auto;
 }
@@ -2624,6 +2718,15 @@ select:focus-visible {
   .sync-conflict-actions {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .backup-mode-control {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .backup-mode-control select {
+    width: 100%;
   }
 }
 

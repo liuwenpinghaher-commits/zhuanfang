@@ -1,5 +1,5 @@
 import { normalizeProductState } from "../domain/storage";
-import type { BackupRestoreRehearsalReport } from "../domain/backup";
+import { assessStateExportCompleteness, type StateExportBundle } from "../domain/backup";
 import type { PrivacyReport } from "../domain/privacy";
 import type { CapabilityTask } from "../capabilities/task";
 import type {
@@ -28,10 +28,16 @@ import type {
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface ProductApiClient {
-  exportState(): Promise<BackupRestoreRehearsalReport>;
-  importState(payload: unknown): Promise<ProductState>;
+  exportState(): Promise<StateExportBundle>;
+  /**
+   * 审计修复 F-04:legacy 包(无 rawMaterials/audios 数组的裸 state)服务端要求显式
+   * coldLayerMode,否则 422;完整导出包不需要。成功返回 state + 独立 receipt；执行失败
+   * 抛 ApiError(500, body 含结构化 journal:failedStep/rolledBack/steps)。
+   */
+  importState(payload: unknown, coldLayerMode?: ColdLayerMode): Promise<StateImportResult>;
   getPrivacyReport(): Promise<PrivacyReport>;
-  purgeState(): Promise<ProductState>;
+  /** F-04:成功时附带服务端逐库清理回执;部分失败抛 ApiError(500, body 含 state+purgeReceipt)。 */
+  purgeState(): Promise<ProductState & { purgeReceipt?: PurgeReceipt }>;
   getSystemCapabilities(): Promise<SystemCapabilitiesResponse>;
   getSystemConfig(): Promise<SystemConfigResponse>;
   updateSystemConfig(updates: SystemConfigUpdateRequest): Promise<SystemConfigUpdateResponse>;
@@ -435,6 +441,40 @@ export interface ResetReceipt {
   stores: Record<string, ResetStoreOutcome>;
 }
 
+/**
+ * 审计修复 F-04:legacy import(包内无 rawMaterials/audios 数组)的冷层去向,必须显式二选一:
+ * - "preserve-cold":只替换热态,现有冷层(逐字稿/录音)原样保留;
+ * - "replace-all":热态替换且旧冷层一并清空(热态与冷层同世代)。
+ */
+export type ColdLayerMode = "preserve-cold" | "replace-all";
+
+/** F-04:POST /api/state/import 成功回执(冷层恢复数量 + 知识索引重建结果)。 */
+export interface ImportReceipt {
+  coldLayerMode?: ColdLayerMode;
+  partial: boolean;
+  restored: { rawMaterials: number; audios: number };
+  skipped: {
+    rawMaterials: Array<{ index: number; reason: string }>;
+    audios: Array<{ index: number; reason: string }>;
+  };
+  missing: { audioSessions: string[] };
+  knowledgeIndex: "rebuilt" | "failed" | "skipped";
+}
+
+export interface StateImportResult {
+  state: ProductState;
+  /** 旧服务端可能没有回执；新服务端成功响应恒有。null 时 UI 不得声称“完整恢复已验证”。 */
+  receipt: ImportReceipt | null;
+}
+
+/** F-04:POST /api/state/purge 的逐库清理回执(三态口径与 reset 一致)。 */
+export interface PurgeReceipt {
+  partialFailure: boolean;
+  /** purge 的热态无论冷层成败都提交(隐私删除最大化);500 时前端据此采纳 body.state。 */
+  hotStateCommitted?: boolean;
+  stores: Record<string, ResetStoreOutcome>;
+}
+
 /** True when the error means the server was unreachable (fetch threw), not a 4xx/5xx. */
 export function isNetworkError(err: unknown): boolean {
   return !(err instanceof ApiError);
@@ -496,22 +536,65 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
 
   return {
     async exportState() {
-      return (await requestJson("/api/state/export", { method: "GET" })) as BackupRestoreRehearsalReport;
+      const raw = (await requestJson("/api/state/export", { method: "GET" })) as StateExportBundle;
+      // 兼容尚未热重启的新旧后端组合：正式类型要求这些字段，新服务端会原样给出；旧服务端
+      // 缺字段时客户端保守补齐并重新判定，UI 仍不会把未知/遗漏备份误报成“完整”。
+      const audioSessions = Array.isArray(raw.audioSessions) ? raw.audioSessions : [];
+      const audios = Array.isArray(raw.audios) ? raw.audios : [];
+      const audioOmittedSessions = Array.isArray(raw.audioOmittedSessions) ? raw.audioOmittedSessions : [];
+      const fallbackImportLimit = 64 * 1024 * 1024;
+      const fallbackBytes = new TextEncoder().encode(JSON.stringify(raw)).byteLength;
+      const importCompatibility = raw.importCompatibility ?? {
+        bytes: fallbackBytes,
+        importBodyLimitBytes: fallbackImportLimit,
+        exceedsImportLimit: fallbackBytes > fallbackImportLimit
+      };
+      return {
+        ...raw,
+        rawMaterials: Array.isArray(raw.rawMaterials) ? raw.rawMaterials : [],
+        audioSessions,
+        audios,
+        audioOmittedSessions,
+        bundleDigest: raw.bundleDigest ?? raw.package.stateDigest,
+        importCompatibility,
+        completeness:
+          raw.completeness ??
+          assessStateExportCompleteness({
+            audioSessions,
+            audios,
+            audioOmittedSessions,
+            importCompatibility,
+            checks: raw.checks
+          })
+      };
     },
-    async importState(payload) {
+    async importState(payload, coldLayerMode) {
       // The /import endpoint requires an explicit confirm token (REPLACE_ALL_STATE);
       // calling importState IS the intent to replace, so we attach it here.
-      const body =
+      // F-04:coldLayerMode 透传给后端(legacy 裸 state 包必须显式声明冷层去向,否则 422;
+      // UI 接线是 C2 的事,这里先把通道打通)。
+      const base =
         payload && typeof payload === "object"
-          ? { ...(payload as Record<string, unknown>), confirm: "REPLACE_ALL_STATE" }
-          : { state: payload, confirm: "REPLACE_ALL_STATE" };
-      return normalizeProductState(
-        await requestJson("/api/state/import", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body)
-        })
-      );
+          ? { ...(payload as Record<string, unknown>) }
+          : { state: payload };
+      const body = { ...base, confirm: "REPLACE_ALL_STATE", ...(coldLayerMode ? { coldLayerMode } : {}) };
+      const raw = await requestJson("/api/state/import", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      // F-04:服务端把 importReceipt(装饰键)spread 进了 state 响应体,与 purge/reset 同口径
+      // normalize 前先剥离,防止被 autosave 原样 PUT 回服务器寄生在持久化数据里。
+      let importReceipt: ImportReceipt | undefined;
+      if (raw && typeof raw === "object") {
+        const record = raw as Record<string, unknown>;
+        if (record.importReceipt && typeof record.importReceipt === "object") {
+          importReceipt = record.importReceipt as ImportReceipt;
+        }
+        delete record.importReceipt;
+      }
+      const state = normalizeProductState(raw);
+      return { state, receipt: importReceipt ?? null };
     },
     async getPrivacyReport() {
       return (await requestJson("/api/state/privacy-report", { method: "GET" })) as PrivacyReport;
@@ -522,16 +605,27 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ confirm: "PURGE_PERSONAL_DATA" })
       });
-      // 服务端把执行回执（artifactPurge/deletedScope/deletedCount）spread 进了 state
-      // 响应体。这些装饰键不属于 ProductState，一旦进了 state 会被 autosave 原样 PUT
+      // 服务端把执行回执（artifactPurge/deletedScope/deletedCount/purgeReceipt）spread 进了
+      // state 响应体。这些装饰键不属于 ProductState，一旦进了 state 会被 autosave 原样 PUT
       // 回服务器、寄生在持久化数据里——normalize 前先剥掉。
+      let purgeReceipt: PurgeReceipt | undefined;
       if (payload && typeof payload === "object") {
         const record = payload as Record<string, unknown>;
         delete record.artifactPurge;
         delete record.deletedScope;
         delete record.deletedCount;
+        // F-04:purgeReceipt 剥离后透出(方式同 importState:App.purgeData 目前整对象
+        // saveProductState,用不可枚举属性防 autosave 寄生,C2 接线直接读属性)。
+        if (record.purgeReceipt && typeof record.purgeReceipt === "object") {
+          purgeReceipt = record.purgeReceipt as PurgeReceipt;
+        }
+        delete record.purgeReceipt;
       }
-      return normalizeProductState(payload);
+      const state = normalizeProductState(payload) as ProductState & { purgeReceipt?: PurgeReceipt };
+      if (purgeReceipt) {
+        Object.defineProperty(state, "purgeReceipt", { value: purgeReceipt, enumerable: false, configurable: true });
+      }
+      return state;
     },
     async getSystemCapabilities() {
       return (await requestJson("/api/system/capabilities", { method: "GET" })) as SystemCapabilitiesResponse;
