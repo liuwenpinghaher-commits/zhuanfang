@@ -4,6 +4,7 @@ import type { ProductStateRepository, ReplaceStateOptions } from "../../../../ap
 import { StateRevisionConflictError } from "../../../../apps/api/src/product-state-repository";
 import { createInitialProductState, createEmptyProductState } from "../../../../src/domain/engine";
 import { normalizeProductState } from "../../../../src/domain/storage";
+import { stableStringify } from "../../../../src/domain/stateDigest";
 import type { ProductState } from "../../../../src/domain/types";
 import { createSurrealConnection, type SurrealConnectionOptions } from "./connect";
 import { applySchema } from "./apply-schema";
@@ -33,6 +34,16 @@ export const DATETIME_DEFAULT_COLS: Record<string, readonly string[]> = {
   material: ["createdAt"],
   rag_chunk: ["createdAt"],
   search_brief: ["createdAt"],
+  // R1a:blob 实体真表化(007_r1a_entities.surql)的 DEFAULT datetime 列。
+  profile_suggestion: ["createdAt"],
+  interview_annotation: ["createdAt"],
+  chat_session: ["createdAt", "updatedAt"],
+  memory_correction: ["createdAt"],
+  podcast_episode: ["createdAt"],
+  corpus_import: ["createdAt"],
+  corpus_insight: ["createdAt"],
+  playbook_patch: ["createdAt"],
+  config_version: ["createdAt"],
 };
 
 /** 把记录补成"可被 UPSERT CONTENT 全量覆盖"的形态:
@@ -51,13 +62,48 @@ function fillUpsertDefaults(table: string, rec: Record<string, unknown>): Record
 }
 
 /** 运维尾巴:不进节点表、整体存 state_meta.rest 的 ProductState 键。
- *  导出供分区完整性守卫测试用(防将来新增 ProductState 数组未映射被静默丢弃)。 */
+ *  导出供分区完整性守卫测试用(防将来新增 ProductState 数组未映射被静默丢弃)。
+ *  R1a 收缩:11 类实体已真表化(9 数组进 NODE_MAPPINGS,profile/systemConfig 进 SINGLETON_TABLES),
+ *  只剩 4 类流水(R1b 真表化)+ schemaVersion。 */
 export const META_KEYS = [
-  "profile","profileSuggestions","interviewAnnotations","chatSessions","memoryCorrections",
-  "podcastEpisodes","corpusImports","corpusInsights","playbookPatches",
-  "configVersions","auditEvents","aiRunEvents","workflowRuns","operationalChecks",
-  "systemConfig","schemaVersion"
+  "auditEvents","aiRunEvents","workflowRuns","operationalChecks","schemaVersion"
 ] as const;
+
+/** R1a:单例实体 ↔ 单记录表(<table>:main,内容整体存 data FLEXIBLE)。
+ *  persist 走 digest 变更才写的专门 UPSERT 路径(同 state_meta 模式,非 diffById);
+ *  loadState 以表数据为准、忽略旧 state_meta.rest 的 blob 残留。导出供分区守卫测试用。 */
+export const SINGLETON_TABLES: ReadonlyArray<{ stateKey: "profile" | "systemConfig"; table: string }> = [
+  { stateKey: "profile", table: "profile" },
+  { stateKey: "systemConfig", table: "system_config" },
+];
+
+/** R1a:单例是否变更——persist"变更才写"与 summarizePersistDiff 诊断共用同一判据(防口径漂移)。 */
+function singletonChanged(prev: ProductState, next: ProductState, stateKey: string): boolean {
+  return stableStringify((prev as unknown as Record<string, unknown>)[stateKey])
+    !== stableStringify((next as unknown as Record<string, unknown>)[stateKey]);
+}
+
+/** R1a 重载序:9 类数组实体的域层写入点**全部是 prepend(newest-first)**——已逐一核对:
+ *  profile.ts:125(profileSuggestions)/raw-material.ts:113(interviewAnnotations)/
+ *  knowledge.ts:205(chatSessions)/note-feedback.ts:53(memoryCorrections)/
+ *  podcast.ts:100,212,331,443(podcastEpisodes)/corpus.ts:179-193(corpusImports/Insights/
+ *  playbookPatches)/engine.ts:616(configVersions)。blob 时代整体序列化天然保序;真表化后
+ *  SELECT 无 ORDER BY 按 record id 升序返回 → 重启即反序(用户可见列表倒挂)+ dual 启动
+ *  digest 每次重启报一次漂移噪声。故 loadState 对这 9 表按 createdAt DESC 重排(id DESC
+ *  决胜同毫秒,尽力确定性),与 prepend 语义一致。
+ *  既有 12 表(memoryRecords/searchBriefs 等)的同类重载序问题**预先存在**,本阶段刻意不动
+ *  (改动面控制),记档待下阶段统一治理。 */
+const R1A_PREPEND_TABLES = new Set([
+  "profile_suggestion","interview_annotation","chat_session","memory_correction",
+  "podcast_episode","corpus_import","corpus_insight","playbook_patch","config_version"
+]);
+
+function sortNewestFirst(entities: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  return entities.sort((a, b) => {
+    const byCreated = String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? ""));
+    return byCreated !== 0 ? byCreated : String(b.id ?? "").localeCompare(String(a.id ?? ""));
+  });
+}
 
 /** E:权威库异步落库健康度。dual-surreal 下 surreal 是权威库,持续 persist 失败=静默丢数据,
  *  须经此暴露给 /api/health。consecutiveFailures>0 即上次落库未成功(基线未推进,正自愈重试)。 */
@@ -127,11 +173,14 @@ export type SurrealRepoOptions = SurrealConnectionOptions;
  *  正常路径零开销(首试即成功不进阶梯)。 */
 const PERSIST_RETRY_DELAYS_MS = [100, 300, 800, 2000] as const;
 
-/** 瞬态可重试错误:嵌入式引擎乐观事务冲突的统一报文("The query was not executed due to a
- *  failed transaction")。schema ASSERT/字段 coerce 等数据形状错误不匹配 → 不重试(重试必然
- *  再失败,徒增延迟且掩盖真错)。导出供单测钉住判别口径。 */
+/** 瞬态可重试错误:嵌入式引擎乐观事务冲突报文。schema ASSERT/字段 coerce 等数据形状错误
+ *  不匹配 → 不重试(重试必然再失败,徒增延迟且掩盖真错)。导出供单测钉住判别口径。
+ *  R0-S3 实测(2026-07-10,P8 修复):真实写写冲突抛的是 InternalError,message 为
+ *  "Query not executed: Transaction conflict: Transaction write conflict. This transaction can be retried"
+ *  ——旧匹配 /failed transaction/i 对它完全失效,重试阶梯从未对真冲突生效。三段式并联:
+ *  failed transaction(历史报文)| transaction conflict | can be retried(引擎自述可重试)。 */
 export function isTransientPersistError(err: unknown): boolean {
-  return /failed transaction/i.test(err instanceof Error ? err.message : String(err));
+  return /failed transaction|transaction conflict|can be retried/i.test(err instanceof Error ? err.message : String(err));
 }
 
 export async function createSurrealProductStateRepository(opts: SurrealRepoOptions): Promise<SurrealRepoHandle> {
@@ -448,6 +497,10 @@ function summarizePersistDiff(prev: ProductState, next: ProductState): Record<st
       const { upsert, removeIds } = diffById(prevArr, nextArr);
       if (upsert.length || removeIds.length) out[m.table] = `+${upsert.length}/-${removeIds.length}`;
     }
+    // R1a:单例变更也进诊断(singletonChanged = 与 persist 完全同一判据)
+    for (const s of SINGLETON_TABLES) {
+      if (singletonChanged(prev, next, s.stateKey)) out[s.table] = "changed";
+    }
     const { added, removed } = diffEdges(collectEdges(prev), collectEdges(next));
     if (added.length || removed.length) {
       out.edges = `+${added.length}/-${removed.length}`;
@@ -555,12 +608,23 @@ async function loadState(db: Surreal): Promise<{ state: ProductState; fromDb: bo
   if (!meta) return { state: createInitialProductState(), fromDb: false };
 
   const assembled: Record<string, unknown> = { ...(meta.rest ?? {}), revision: meta.revision };
+  // R1a 旧库新代码防错乱:单例键的 blob 残留一律先删、以单例表为准(历史数据按用户决策不迁移,
+  // 残留是 007 之前写入的死数据;表无记录 → normalize 回退确定性默认值,与"从未写过单例"语义一致)。
+  // 9 类数组实体无需显式删残留:下方 NODE_MAPPINGS 循环无条件以表数据覆盖(空表 → [],残留同样失效)。
+  for (const s of SINGLETON_TABLES) {
+    delete assembled[s.stateKey];
+    const [rows] = await db.query<[Array<{ data?: Record<string, unknown> }>]>(`SELECT data FROM ${s.table}:main;`);
+    const data = rows?.[0]?.data;
+    if (data && typeof data === "object") assembled[s.stateKey] = data;
+  }
   for (const m of NODE_MAPPINGS) {
     const [rows] = await db.query<[Array<Record<string, unknown>>]>(`SELECT * FROM ${m.table};`);
-    assembled[m.stateKey] = (rows ?? []).map((r) => {
+    const entities = (rows ?? []).map((r) => {
       const { id, ...rec } = r;
       return fromRecord(recordIdToDomainId(id), rec);
     });
+    // R1a:9 类 prepend 数组按 createdAt DESC 重排,与内存态(newest-first)一致(见 R1A_PREPEND_TABLES)。
+    assembled[m.stateKey] = R1A_PREPEND_TABLES.has(m.table) ? sortNewestFirst(entities) : entities;
   }
   return { state: normalizeProductState(assembled), fromDb: true };
 }
@@ -660,7 +724,18 @@ async function persist(db: Surreal, prev: ProductState, next: ProductState): Pro
     }
   }
 
-  // 4) state_meta:revision 每写必变,总是 UPSERT
+  // 4) R1a 单例表:profile:main / system_config:main。digest 变更才写(免每笔写放大);
+  //    内容整体作 data FLEXIBLE object(ISO 字符串原样存,同 rest blob 语义,无 datetime coerce 问题)。
+  for (const s of SINGLETON_TABLES) {
+    if (singletonChanged(prev, next, s.stateKey)) {
+      const sv = `s${i++}`;
+      vars[sv] = { data: (next as unknown as Record<string, unknown>)[s.stateKey] ?? {} };
+      surql += `UPSERT ${s.table}:main CONTENT $${sv};\n`;
+    }
+  }
+
+  // 5) state_meta:revision 每写必变,总是 UPSERT(R1a 后 rest 只剩 4 类流水 + schemaVersion;
+  //    旧库里 rest 残留的 11 个真表化键会被本次全量覆盖顺带清除)
   const meta: Record<string, unknown> = {};
   for (const k of META_KEYS) meta[k] = (next as unknown as Record<string, unknown>)[k];
   vars.meta = meta;

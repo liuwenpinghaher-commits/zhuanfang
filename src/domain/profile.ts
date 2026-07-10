@@ -134,6 +134,9 @@ export function addProfileSuggestions(
   });
 }
 
+/** R1a 白名单:approve 允许写入的画像字段,与 ProfileSuggestionField 类型逐一对齐。 */
+const PROFILE_SUGGESTION_FIELDS: readonly ProfileSuggestionField[] = ["currentFocus", "longTermGoal"];
+
 /** Approve a pending suggestion: apply suggestedValue to the profile field and mark it approved. */
 export function approveProfileSuggestion(state: ProductState, suggestionId: string): ProductState {
   const suggestion = state.profileSuggestions.find((s) => s.id === suggestionId);
@@ -141,6 +144,25 @@ export function approveProfileSuggestion(state: ProductState, suggestionId: stri
     return state;
   }
   const reviewedAt = nowIso();
+  // R1a 防 fail-open:field 是外来数据(旧备份/手工 PUT/坏 import 经 normalize str() 兜底后可为
+  // 任意 string),下方 `[suggestion.field]: value` 是无白名单的动态键写入——超出枚举的 field 会
+  // 污染任意画像列(如 explicitBoundaries: string[] 被写成 string,消费点 .map/.join 会炸)。
+  // 非法 field 的建议在 approve 时按拒绝处理:画像不动、状态置 rejected 清出待审队列、留警示审计。
+  if (!PROFILE_SUGGESTION_FIELDS.includes(suggestion.field)) {
+    const rejected = cloneState(state);
+    rejected.profileSuggestions = rejected.profileSuggestions.map((s) =>
+      s.id === suggestionId ? { ...s, status: "rejected", reviewedAt } : s
+    );
+    return withAuditEvent(rejected, {
+      type: "profile_suggestion_rejected",
+      label: "档案更新建议已拒绝（非法字段）",
+      detail: `非法建议字段「${String(suggestion.field)}」，画像未被修改`,
+      severity: "warning",
+      entityType: "user_profile",
+      entityId: "local-user-profile",
+      createdAt: reviewedAt
+    });
+  }
   const next = cloneState(state);
   next.profile = { ...next.profile, [suggestion.field]: suggestion.suggestedValue };
   next.profileSuggestions = next.profileSuggestions.map((s) =>

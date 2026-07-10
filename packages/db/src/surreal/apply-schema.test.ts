@@ -16,7 +16,7 @@ describe("applySchema", () => {
   it("在空库上应用全部 migrations(返回已应用文件名)", async () => {
     const d = await freshDb();
     const applied = await applySchema(d);
-    expect(applied).toEqual(["001_nodes.surql", "002_relations.surql", "003_index.surql", "004_p1a_rest_meta.surql", "005_p3_cascade.surql", "006_p4_cascade_note_scope.surql"]);
+    expect(applied).toEqual(["001_nodes.surql", "002_relations.surql", "003_index.surql", "004_p1a_rest_meta.surql", "005_p3_cascade.surql", "006_p4_cascade_note_scope.surql", "007_r1a_entities.surql"]);
   });
 
   it("L1:关系表 ENFORCED——RELATE 指向不存在端点节点应被引擎拒绝(DB 层引用完整性兜底)", async () => {
@@ -33,10 +33,10 @@ describe("applySchema", () => {
     expect(second).toEqual([]); // 全部已应用
     const [ledger] = await d.query<[{ name: string }[]]>("SELECT name FROM _migration;");
     const names = (ledger ?? []).map((r) => r.name).sort();
-    expect(names).toEqual(["001_nodes.surql", "002_relations.surql", "003_index.surql", "004_p1a_rest_meta.surql", "005_p3_cascade.surql", "006_p4_cascade_note_scope.surql"]);
+    expect(names).toEqual(["001_nodes.surql", "002_relations.surql", "003_index.surql", "004_p1a_rest_meta.surql", "005_p3_cascade.surql", "006_p4_cascade_note_scope.surql", "007_r1a_entities.surql"]);
   });
 
-  it("INFO FOR DB:13 节点表 + entity_kind + 8 边表齐全", async () => {
+  it("INFO FOR DB:13 节点表 + entity_kind + 8 边表 + R1a 11 实体表齐全", async () => {
     const d = await freshDb();
     await applySchema(d);
     const [info] = await d.query<[{ tables: Record<string, unknown> }]>("INFO FOR DB;");
@@ -46,6 +46,9 @@ describe("applySchema", () => {
       "theme","memory","memory_candidate","material","rag_chunk","search_brief",
       "derived_from","belongs_to_theme","about_theme","promoted_from","part_of",
       "corrects","contradicts","evolves_into",
+      // R1a:007_r1a_entities.surql(2 单例 + 9 数组实体)
+      "profile","system_config","profile_suggestion","interview_annotation","chat_session",
+      "memory_correction","podcast_episode","corpus_import","corpus_insight","playbook_patch","config_version",
     ]) {
       expect(tables, `缺表 ${t}`).toContain(t);
     }

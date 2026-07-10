@@ -163,6 +163,15 @@ const CANDIDATE_STATUSES = ["pending", "approved", "rejected"] as const;
 const MATERIAL_SOURCE_TYPES = ["text", "webpage"] as const;
 const RAG_USAGES = ["interview-context", "memory-candidate"] as const;
 const BRIEF_STATUSES = ["ready", "needs-review"] as const;
+// R1a(blob 实体真表化):以下白名单与 007_r1a_entities.surql 的 ASSERT 逐一对齐(fail-closed 一致)。
+const SUGGESTION_STATUSES = ["pending", "approved", "rejected"] as const;
+const PODCAST_FORMATS = ["solo", "host-guest"] as const;
+const PODCAST_STATUSES = ["draft", "generating", "ready"] as const;
+const SCRIPT_REVIEW_STATUSES = ["待确认", "用户确认"] as const;
+const CORPUS_MEDIA_TYPES = ["text", "audio"] as const;
+const PATCH_STATUSES = ["proposed", "applied", "reverted"] as const;
+const PATCH_IMPACTS = ["low", "medium", "high"] as const;
+const CONFIG_CHANGED_BY = ["user", "system"] as const;
 
 /** 必填 string 兜底(真实业务 E2E 实测补全 P0 家族):SurrealDB SCHEMAFULL 的 `TYPE string` 列
  *  收到非 string(null/数字/缺失)时 persist coerce 失败 → wedge。坏数据(手工 PUT/坏 import/LLM
@@ -178,6 +187,13 @@ function str(value: unknown): string {
  *  string 元素→只留 string。⚠️ 与 001_nodes.surql 的 array<string> 列(saidTrack/learnedTrack/keywords)同步。 */
 function strArr(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((x): x is string => typeof x === "string") : [];
+}
+
+/** 可选 string 兜底(R1a):SurrealDB `TYPE option<string>` 列接受 NONE(缺失)但不接受
+ *  null/数字等非 string 值——坏值统一规整为 undefined(toRecord 会跳过 undefined 不落列)。
+ *  精确沿用 normalizeImportSources 对 searchBriefId 的既有处理口径。 */
+function optStr(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
 }
 
 function clampPersistableEnums(state: ProductState): ProductState {
@@ -268,6 +284,69 @@ function clampPersistableEnums(state: ProductState): ProductState {
       summary: str(b.summary),   // R1-F2:DEFAULT '' 兜底
       provider: (str(b.provider) || "local-demo") as SearchProviderId,
       status: clampEnum(b.status, BRIEF_STATUSES, "needs-review")
+    })),
+    // ── R1a:blob 实体真表化后的钳制(与 007_r1a_entities.surql 核心列/ASSERT 对齐)───────
+    profileSuggestions: state.profileSuggestions.map((s) => ({
+      ...s,
+      // field 刻意不钳到合法画像列(钳到真列是 fail-open:坏建议 approve 会写错画像字段),
+      // 只保证是 string 可落库(schema 侧 TYPE string 无 ASSERT);非法 field 由域层
+      // approveProfileSuggestion 白名单守卫真拒绝(置 rejected + 警示审计,画像不动)。
+      field: str(s.field) as typeof s.field,
+      currentValue: str(s.currentValue),
+      suggestedValue: str(s.suggestedValue),
+      sourceSessionId: str(s.sourceSessionId),
+      status: clampEnum(s.status, SUGGESTION_STATUSES, "pending")
+    })),
+    interviewAnnotations: state.interviewAnnotations.map((a) => ({
+      ...a,
+      sessionId: str(a.sessionId),
+      turnId: str(a.turnId),
+      text: str(a.text)
+    })),
+    chatSessions: state.chatSessions.map((c) => ({ ...c, title: str(c.title) })),
+    memoryCorrections: state.memoryCorrections.map((c) => ({ ...c, text: str(c.text) })),
+    podcastEpisodes: state.podcastEpisodes.map((p) => ({
+      ...p,
+      noteId: str(p.noteId),
+      title: str(p.title),
+      voice: str(p.voice),
+      format: clampEnum(p.format, PODCAST_FORMATS, "solo"),
+      // status 坏值 fail-closed 到 draft(绝不冒充 ready 展示不存在的音频);
+      // scriptReviewStatus 坏值绝不冒充「用户确认」(镜像 decision confirmationStatus 口径)。
+      status: clampEnum(p.status, PODCAST_STATUSES, "draft"),
+      scriptReviewStatus: clampEnum(p.scriptReviewStatus, SCRIPT_REVIEW_STATUSES, "待确认"),
+      sourceType: optStr(p.sourceType) as typeof p.sourceType,
+      sourceId: optStr(p.sourceId)
+    })),
+    corpusImports: state.corpusImports.map((c) => ({
+      ...c,
+      title: str(c.title),
+      content: str(c.content),
+      mediaType: clampEnum(c.mediaType, CORPUS_MEDIA_TYPES, "text"),
+      sourceUrl: optStr(c.sourceUrl),
+      status: "analyzed" as const
+    })),
+    corpusInsights: state.corpusInsights.map((c) => ({
+      ...c,
+      importId: str(c.importId),
+      title: str(c.title)
+    })),
+    playbookPatches: state.playbookPatches.map((p) => ({
+      ...p,
+      title: str(p.title),
+      sourceInsightId: str(p.sourceInsightId),
+      sourceImportId: optStr(p.sourceImportId),
+      // status 坏值绝不冒充 applied(会让未生效补丁参与策略路由);impact 坏值按最低档。
+      status: clampEnum(p.status, PATCH_STATUSES, "proposed"),
+      impact: clampEnum(p.impact, PATCH_IMPACTS, "low")
+    })),
+    configVersions: state.configVersions.map((v) => ({
+      ...v,
+      version: str(v.version),
+      reason: str(v.reason),
+      // changedBy 坏值绝不冒充 user(A3 精神:坏数据不得伪装用户行为);active 非严格 true 一律 false。
+      changedBy: clampEnum(v.changedBy, CONFIG_CHANGED_BY, "system"),
+      active: v.active === true
     }))
   };
 }

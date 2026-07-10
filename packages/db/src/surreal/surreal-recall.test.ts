@@ -287,6 +287,14 @@ describe("persist 瞬态冲突重试(原生召回读×写并发)", () => {
     const { isTransientPersistError } = await import("./surreal-product-state-repository");
     expect(isTransientPersistError(new Error("QueryError: The query was not executed due to a failed transaction"))).toBe(true);
     expect(isTransientPersistError("The query was not executed due to a failed transaction")).toBe(true);
+    // P8 修复(R0-S3 实测 2026-07-10):真实写写冲突是 InternalError,报文如下——旧匹配
+    // /failed transaction/i 对它失效,重试阶梯从未对真冲突生效。钉住新口径。
+    expect(isTransientPersistError(new Error(
+      "Query not executed: Transaction conflict: Transaction write conflict. This transaction can be retried"
+    ))).toBe(true);
+    // 三段式判别的第三支独立生效:报文只含"can be retried"片段(无 conflict 字样)也应命中——
+    // 引擎自述可重试即可重试,防未来报文措辞微调再次让重试失效。
+    expect(isTransientPersistError(new Error("This transaction can be retried"))).toBe(true);
     expect(isTransientPersistError(new Error("Found '不存在枚举' for field `status`, with record `point:x`"))).toBe(false);
     expect(isTransientPersistError(new Error("Expected a object but found NONE"))).toBe(false);
   });

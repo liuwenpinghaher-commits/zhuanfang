@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { NODE_MAPPINGS, toRecord, fromRecord, mappingFor } from "./node-mapper";
-import { META_KEYS, DATETIME_DEFAULT_COLS } from "./surreal-product-state-repository";
+import { META_KEYS, SINGLETON_TABLES, DATETIME_DEFAULT_COLS } from "./surreal-product-state-repository";
 import { createInitialProductState } from "../../../../src/domain/engine";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -41,17 +41,21 @@ describe("node-mapper", () => {
     expect(b3.embedding).toEqual([0.1, 0.2]);
   });
 
-  it("覆盖全部 12 本体映射", () => {
+  it("覆盖全部 21 本体映射(12 认知本体 + R1a 9 类 blob 实体)", () => {
     expect(NODE_MAPPINGS.map((x) => x.stateKey).sort()).toEqual(
-      ["debts","decisions","importSources","memoryCandidates","memoryRecords","notes","points","questions","ragChunks","searchBriefs","sessions","themes"].sort()
+      ["debts","decisions","importSources","memoryCandidates","memoryRecords","notes","points","questions","ragChunks","searchBriefs","sessions","themes",
+       // R1a
+       "profileSuggestions","interviewAnnotations","chatSessions","memoryCorrections",
+       "podcastEpisodes","corpusImports","corpusInsights","playbookPatches","configVersions"].sort()
     );
   });
 
-  // 分区完整性守卫:ProductState 每个键必须落在 节点表(NODE_MAPPINGS) 或 运维尾巴(META_KEYS) 或 revision。
-  // 否则将来新增数组会在 SurrealStore 落库时被静默丢弃(真数据丢失)。
+  // 分区完整性守卫:ProductState 每个键必须落在 节点表(NODE_MAPPINGS) 或 单例表(SINGLETON_TABLES)
+  // 或 运维尾巴(META_KEYS) 或 revision。否则将来新增数组会在 SurrealStore 落库时被静默丢弃(真数据丢失)。
   it("ProductState 全键被持久化分区覆盖(防新增数组静默丢弃)", () => {
     const covered = new Set<string>([
       ...NODE_MAPPINGS.map((m) => m.stateKey as string),
+      ...SINGLETON_TABLES.map((s) => s.stateKey as string),
       ...META_KEYS,
       "revision"
     ]);

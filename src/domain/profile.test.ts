@@ -55,6 +55,28 @@ describe("profile self-learning suggestions (P0b — HITL)", () => {
     expect(rejected.profileSuggestions[0].status).toBe("rejected");
   });
 
+  // R1a 白名单守卫:field 是外来数据,超出枚举的 string 不得经动态键写入污染任意画像列
+  // (如 explicitBoundaries: string[] 被写成 string)。approve 非法 field → 画像不动 + 置 rejected。
+  it("approveProfileSuggestion 拒绝非法 field:画像不被污染,建议置 rejected 并留警示审计", () => {
+    const state = createInitialProductState();
+    const withSug = addProfileSuggestions(state, [suggestion], "s1", "t");
+    const id = withSug.profileSuggestions[0].id;
+    // 模拟坏数据:field 被篡改为非枚举值(经 normalize str() 兜底后仍是任意 string)。
+    const tampered = {
+      ...withSug,
+      profileSuggestions: withSug.profileSuggestions.map((s) =>
+        s.id === id ? { ...s, field: "explicitBoundaries" as unknown as typeof s.field } : s
+      )
+    };
+    const after = approveProfileSuggestion(tampered, id);
+    // 画像未被污染:explicitBoundaries 仍是数组且内容不变,其余字段也未动。
+    expect(after.profile).toEqual(state.profile);
+    expect(Array.isArray(after.profile.explicitBoundaries)).toBe(true);
+    // 建议被清出待审队列(rejected),不会永远卡在 pending。
+    expect(after.profileSuggestions.find((s) => s.id === id)?.status).toBe("rejected");
+    expect(after.auditEvents.some((e) => e.type === "profile_suggestion_rejected" && e.severity === "warning")).toBe(true);
+  });
+
   it("approve/reject are no-ops on a missing or already-reviewed id", () => {
     const state = createInitialProductState();
     expect(approveProfileSuggestion(state, "nope")).toBe(state);

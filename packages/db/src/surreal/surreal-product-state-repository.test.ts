@@ -1,10 +1,10 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
 import { runProductStateRepositoryContract } from "../repository-contract";
 import { createSurrealProductStateRepository, type SurrealRepoHandle } from "./surreal-product-state-repository";
+import { runScript } from "./child-process-test-utils";
 import type { InterviewSession } from "../../../../src/domain/types";
 
 /** 最小合规 InterviewSession fixture:满足 SCHEMAFULL session 表的必填字段。 */
@@ -32,19 +32,8 @@ describe("contract: surreal (mem://)", () => {
   );
 });
 
-/**
- * Run a .mts script as a child process via tsx.
- * Returns { stdout, stderr, status }.
- * NOTE: @surrealdb/node HNSW native thread holds the surrealkv exclusive file lock
- * in the same process even after db.close(), so all surrealkv I/O in the durability
- * test must happen in separate child processes.
- */
-function runScript(src: string, scriptPath: string): { stdout: string; stderr: string; status: number | null } {
-  writeFileSync(scriptPath, src);
-  const tsxBin = join(process.cwd(), "node_modules/.bin/tsx");
-  const result = spawnSync(tsxBin, [scriptPath], { encoding: "utf8", timeout: 30000 });
-  return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", status: result.status };
-}
+// runScript(tsx 子进程跑 .mts;surrealkv 文件锁约束)已提炼到 child-process-test-utils.ts,
+// 与 r1a-entities.test.ts 共用。
 
 describe("surreal persistence (surrealkv://)", () => {
   it("replaceState→flush→重开,资产无损重建 (子进程验证,跨进程持久化)", { timeout: 60000 }, () => {
