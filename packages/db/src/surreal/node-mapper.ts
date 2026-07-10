@@ -1,3 +1,4 @@
+import { MAX_EVENT_LOG } from "../../../../src/domain/storage";
 import type { ProductState } from "../../../../src/domain/types";
 
 /** state 数组键 ↔ 节点表 + 核心字段(落 typed 列,与 001/004 DEFINE FIELD 对齐;日期不入核心)。
@@ -10,13 +11,21 @@ import type { ProductState } from "../../../../src/domain/types";
  *     DATETIME_DEFAULT_COLS(UPSERT CONTENT 不重跑 DEFAULT);若曾在 META_KEYS,从中摘除;
  *  ④ src/domain/storage.ts clampPersistableEnums:必填 string 列 str() / array<string> 列
  *     strArr() / 枚举列 clampEnum(白名单与 ① ASSERT 逐一对齐,fail-closed);
- *  ⑤ 若域层写入是 prepend(newest-first),登记 R1A_PREPEND_TABLES(loadState 重排,防重启反序)。 */
+ *  ⑤ 若域层写入是 prepend(newest-first),登记 R1A_PREPEND_TABLES(loadState 重排,防重启反序)。
+ *
+ *  ⚠️ R1b 补充——若新实体是**流水**(append-only 事件流,只增不改删、走滚动窗钳制),
+ *  不进 NODE_MAPPINGS,改走 STREAM_MAPPINGS,额外步骤:
+ *  ⑥ 复合记录 id:`<table>:[<tsField ISO>, <领域 id>]`——tsField 必须**不可变**(变了同一实体
+ *     会裂成两条记录),并在 STREAM_MAPPINGS 登记 tsField;
+ *  ⑦ window 登记内存滚动窗(storage.ts 的钳制常量,引用同一常量勿硬编码;无钳制则 undefined
+ *     ——loadState 全量读、任何移除都按治理清除处理);
+ *  ⑧ persist 的流水段自动生效(滑出不删/治理清除/prune),无需逐表写代码。 */
 export interface NodeMapping {
   stateKey: Extract<keyof ProductState,
     "points"|"decisions"|"debts"|"questions"|"themes"|"notes"
     |"memoryRecords"|"memoryCandidates"|"importSources"|"ragChunks"|"searchBriefs"|"sessions"
     // R1a:9 类原 state_meta.rest blob 数组实体真表化(单例 profile/systemConfig 走 repository 专门路径,
-    // 流水 4 类 auditEvents/aiRunEvents/workflowRuns/operationalChecks 留待 R1b)
+    // 流水 4 类 auditEvents/aiRunEvents/workflowRuns/operationalChecks 已在 R1b 走 STREAM_MAPPINGS)
     |"profileSuggestions"|"interviewAnnotations"|"chatSessions"|"memoryCorrections"
     |"podcastEpisodes"|"corpusImports"|"corpusInsights"|"playbookPatches"|"configVersions">;
   table: string;
@@ -52,8 +61,32 @@ export const NODE_MAPPINGS: NodeMapping[] = [
 const BY_KEY = new Map(NODE_MAPPINGS.map((m) => [m.stateKey, m] as const));
 export function mappingFor(stateKey: string): NodeMapping | undefined { return BY_KEY.get(stateKey as NodeMapping["stateKey"]); }
 
-/** 实体 → 记录:核心字段(存在的才落)作 typed 列,其余进 rest;id 不作字段(→ 记录 id)。 */
-export function toRecord(entity: Record<string, unknown>, m: NodeMapping): Record<string, unknown> {
+/** R1b:流水实体 ↔ append-only 事件流表(008_r1b_event_streams.surql)。
+ *  与 NODE_MAPPINGS 的三点不同:① 记录 id 是复合数组 [tsField, 领域id](range 扫描/保留期清理);
+ *  ② persist 只 UPSERT、窗口滑出绝不 DELETE(照 turn/H1 模式;治理清除例外,见 persist 流水段);
+ *  ③ loadState 按记录 id 降序(= tsField DESC + 领域 id 决胜)取窗口条数,与内存 newest-first
+ *  prepend 序一致(withAuditEvent/withAiRunEvent/engine.ts:203 均队首插入)。 */
+export interface StreamMapping {
+  stateKey: Extract<keyof ProductState, "auditEvents" | "aiRunEvents" | "workflowRuns" | "operationalChecks">;
+  table: string;
+  core: string[];
+  /** 复合记录 id 的时间戳字段(必须不可变,否则同一实体裂成两条记录;persist 有防御性删旧)。 */
+  tsField: string;
+  /** 内存滚动窗(storage.ts 钳制常量;undefined=无钳制:loadState 全量读、移除恒按治理清除)。 */
+  window: number | undefined;
+}
+
+export const STREAM_MAPPINGS: StreamMapping[] = [
+  { stateKey: "auditEvents",       table: "audit_event",       core: ["type","label","detail","severity","entityType","entityId"],                                    tsField: "createdAt", window: MAX_EVENT_LOG },
+  { stateKey: "aiRunEvents",       table: "ai_run_event",      core: ["workflow","providerId","status","entityType","entityId","inputSummary","outputSummary"],       tsField: "createdAt", window: MAX_EVENT_LOG },
+  { stateKey: "workflowRuns",      table: "workflow_run",      core: ["workflow","status","providerId","entityType","entityId","inputSummary","outputSummary","traceId"], tsField: "startedAt", window: MAX_EVENT_LOG },
+  // operationalChecks:storage.ts 无 slice 钳制(当前也无代码产出),window=undefined。
+  { stateKey: "operationalChecks", table: "operational_check", core: ["kind","label","status","detail"],                                                              tsField: "checkedAt", window: undefined },
+];
+
+/** 实体 → 记录:核心字段(存在的才落)作 typed 列,其余进 rest;id 不作字段(→ 记录 id)。
+ *  R1b:流水表复用(StreamMapping 结构兼容,故参数只取 core)。 */
+export function toRecord(entity: Record<string, unknown>, m: Pick<NodeMapping, "core">): Record<string, unknown> {
   const rec: Record<string, unknown> = {};
   const rest: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(entity)) {

@@ -8,7 +8,7 @@ import { stableStringify } from "../../../../src/domain/stateDigest";
 import type { ProductState } from "../../../../src/domain/types";
 import { createSurrealConnection, type SurrealConnectionOptions } from "./connect";
 import { applySchema } from "./apply-schema";
-import { NODE_MAPPINGS, toRecord, fromRecord } from "./node-mapper";
+import { NODE_MAPPINGS, STREAM_MAPPINGS, toRecord, fromRecord, type StreamMapping } from "./node-mapper";
 import { collectEdges, turnRecordsOf, type EdgeSpec } from "./edge-mapper";
 import { diffById, diffEdges } from "./diff";
 
@@ -44,6 +44,11 @@ export const DATETIME_DEFAULT_COLS: Record<string, readonly string[]> = {
   corpus_insight: ["createdAt"],
   playbook_patch: ["createdAt"],
   config_version: ["createdAt"],
+  // R1b:流水表(008_r1b_event_streams.surql)的 DEFAULT datetime 列(即各自的 tsField)。
+  audit_event: ["createdAt"],
+  ai_run_event: ["createdAt"],
+  workflow_run: ["startedAt"],
+  operational_check: ["checkedAt"],
 };
 
 /** 把记录补成"可被 UPSERT CONTENT 全量覆盖"的形态:
@@ -63,11 +68,40 @@ function fillUpsertDefaults(table: string, rec: Record<string, unknown>): Record
 
 /** 运维尾巴:不进节点表、整体存 state_meta.rest 的 ProductState 键。
  *  导出供分区完整性守卫测试用(防将来新增 ProductState 数组未映射被静默丢弃)。
- *  R1a 收缩:11 类实体已真表化(9 数组进 NODE_MAPPINGS,profile/systemConfig 进 SINGLETON_TABLES),
- *  只剩 4 类流水(R1b 真表化)+ schemaVersion。 */
-export const META_KEYS = [
-  "auditEvents","aiRunEvents","workflowRuns","operationalChecks","schemaVersion"
-] as const;
+ *  R1b 收官:4 类流水也真表化(STREAM_MAPPINGS,append-only 事件流表),
+ *  rest blob 只剩 schemaVersion——state_meta 从"实体仓库"降格为纯元数据行,P3 → 0。 */
+export const META_KEYS = ["schemaVersion"] as const;
+
+/** R1b:流水表保留期(天)。DB 保全史(窗口滑出不删)、内存只保滚动窗(MAX_EVENT_LOG=1000),
+ *  保留期清理防 DB 无限增长:启动时(loadState 后)以此常量清一次 cutoff 之前的条目。
+ *  刻意不接调度器(YAGNI:单用户本地产品,进程重启频度足够;后续阶段需要再加)。
+ *  导出理由:保留期是运维口径,未来 ops 端点/隐私报告需引用同一数字(勿散落硬编码)。 */
+export const EVENT_STREAM_RETENTION_DAYS = 90;
+
+/** 流水复合记录 id 的时间戳段:必须确定性(同一实体永远算出同一 id,否则 UPSERT 裂成多条)。
+ *  坏值(非 string/空,理论上已被 normalize 的 str 钳制挡住)统一钉到 epoch。
+ *  ⚠️ 成立前提:全库流水时间戳须同为**毫秒精度 toISOString() 产物**——str() 只保 string 不保
+ *  格式;复合 id 的字典序=时间序、isSlideOut 的 <= 比较、prune 的 range 边界三处都依赖这一
+ *  统一格式(混入秒精度/带时区偏移的 ISO 变体,字典序即偏离时间序)。域层写入点全部走
+ *  new Date().toISOString(),故当前安全;新增写入点勿引入其他时间格式。 */
+function streamTs(entity: Record<string, unknown>, m: StreamMapping): string {
+  const v = entity[m.tsField];
+  return typeof v === "string" && v ? v : "1970-01-01T00:00:00.000Z";
+}
+
+/** 流水复合记录 id:`<table>:[<tsField ISO>, <领域 id>]`(R0 后继实测:RecordId 传数组可直接
+ *  作 UPSERT/DELETE 目标参数;range 语法 `table:[$a]..[$b]` 边界数组内可用参数)。
+ *  时间戳段格式前提见 streamTs 注释(毫秒精度 toISOString 统一格式)。 */
+function streamRecordIdOf(m: StreamMapping, entity: Record<string, unknown> & { id: string }): RecordId {
+  return new RecordId(m.table, [streamTs(entity, m), entity.id]);
+}
+
+/** 复合数组 record id → 领域 id(第二段)。⚠️ 不能走 recordIdToDomainId:String(数组) 会把
+ *  两段拼成 "ts,id"。 */
+function streamDomainIdOf(id: unknown): string {
+  if (id instanceof RecordId && Array.isArray(id.id)) return String(id.id[1] ?? "");
+  return recordIdToDomainId(id);
+}
 
 /** R1a:单例实体 ↔ 单记录表(<table>:main,内容整体存 data FLEXIBLE)。
  *  persist 走 digest 变更才写的专门 UPSERT 路径(同 state_meta 模式,非 diffById);
@@ -140,6 +174,10 @@ export interface SurrealRepoHandle extends ProductStateRepository {
    *  排除 append-only 豁免的 part_of(降冷后内存不投影但 DB 保留是 H1 契约的正确行为)。
    *  串入 persist 队列执行(不跨半个落库事务出暂态假差异);只读、不修复、不阻断。 */
   auditGraphConsistency(): Promise<GraphConsistencyReport>;
+  /** R1b:流水表保留期清理——range 删除各流水表 cutoff(ISO)之前的历史条目;仍在内存窗口内的
+   *  行绝不删(见 pruneStreamsBefore)。启动时自动以 EVENT_STREAM_RETENTION_DAYS 调一次;
+   *  此方法供测试/运维手动触发。串入 persist 队列(写操作,与落库事务互斥)。 */
+  pruneEventStreams(cutoffIso: string): Promise<void>;
 }
 
 /** 方案二审计报告:missing=期望有而 DB 无(投影漏写),unexpected=DB 有而期望无(漏删/带外写入)。
@@ -246,6 +284,18 @@ export async function createSurrealProductStateRepository(opts: SurrealRepoOptio
   // 处女库首次落库:把捏造的初始态真正写进 DB(见 lastPersisted 基线注释)。经正常串行队列,
   // 幂等(落库后 state_meta 存在,后续启动走 fromDb 分支)。
   if (!loaded.fromDb) enqueuePersist(state);
+
+  // R1b 保留期清理(启动时一次):DB 保全史、内存只窗口 1000(MAX_EVENT_LOG),保留期防 DB
+  // 无限增长。串行队列内执行(与首次落库/后续 persist 互斥);失败只告警不毒化队列——清理是
+  // 卫生工作,不该阻塞业务写。不接调度器(YAGNI,见 EVENT_STREAM_RETENTION_DAYS 注释)。
+  {
+    const cutoff = new Date(Date.now() - EVENT_STREAM_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    persistQueue = persistQueue
+      .then(() => pruneStreamsBefore(db, cutoff, state))
+      .catch((err) => {
+        console.warn(JSON.stringify({ event: "surreal_event_stream_prune_failed", error: String(err) }));
+      });
+  }
 
   return {
     getState() { return structuredClone(state); },
@@ -444,6 +494,12 @@ export async function createSurrealProductStateRepository(opts: SurrealRepoOptio
       persistQueue = run.then(() => undefined, () => undefined); // 审计失败不毒化落库队列
       return run;
     },
+    async pruneEventStreams(cutoffIso: string) {
+      // 串入 persist 队列(写操作);memState 取执行时刻的内存态,保证不删窗口内条目。
+      const run = persistQueue.then(() => pruneStreamsBefore(db, cutoffIso, state));
+      persistQueue = run.then(() => undefined, () => undefined); // 清理失败不毒化落库队列
+      await run;
+    },
   };
 }
 
@@ -500,6 +556,13 @@ function summarizePersistDiff(prev: ProductState, next: ProductState): Record<st
     // R1a:单例变更也进诊断(singletonChanged = 与 persist 完全同一判据)
     for (const s of SINGLETON_TABLES) {
       if (singletonChanged(prev, next, s.stateKey)) out[s.table] = "changed";
+    }
+    // R1b:流水表也进诊断(注意 "-" 计数含窗口滑出,实际是否 DELETE 见 persist 治理清除判定)
+    for (const m of STREAM_MAPPINGS) {
+      const prevArr = ((prev as unknown as Record<string, unknown>)[m.stateKey] as Array<{ id: string }>) ?? [];
+      const nextArr = ((next as unknown as Record<string, unknown>)[m.stateKey] as Array<{ id: string }>) ?? [];
+      const { upsert, removeIds } = diffById(prevArr, nextArr);
+      if (upsert.length || removeIds.length) out[m.table] = `+${upsert.length}/-${removeIds.length}`;
     }
     const { added, removed } = diffEdges(collectEdges(prev), collectEdges(next));
     if (added.length || removed.length) {
@@ -565,7 +628,8 @@ async function runGraphAudit(db: Surreal, baseline: ProductState): Promise<Graph
     missingInDb = missingInDb.filter((key) => !dangling.has(key));
   }
 
-  // P0-1 观测补盲:节点表核对(内存基线 vs DB 实际 id 集)。turn 豁免(append-only)。
+  // P0-1 观测补盲:节点表核对(内存基线 vs DB 实际 id 集)。turn 豁免(append-only);
+  // R1b 流水表同理豁免(不在 NODE_MAPPINGS,DB 保全史合法多于内存窗口,核对必假阳性)。
   const nodeMissingInDb: string[] = [];
   const nodeUnexpectedInDb: string[] = [];
   for (const m of NODE_MAPPINGS) {
@@ -625,6 +689,22 @@ async function loadState(db: Surreal): Promise<{ state: ProductState; fromDb: bo
     });
     // R1a:9 类 prepend 数组按 createdAt DESC 重排,与内存态(newest-first)一致(见 R1A_PREPEND_TABLES)。
     assembled[m.stateKey] = R1A_PREPEND_TABLES.has(m.table) ? sortNewestFirst(entities) : entities;
+  }
+  // R1b:流水表只取内存滚动窗条数(窗口=storage.ts 钳制常量,超窗口的历史行留在 DB 不进内存,
+  // roundtrip digest 与钳制后的内存态一致)。ORDER BY id DESC = 复合 id [tsField, 领域id] 的
+  // (时间 DESC, id DESC) 序,与内存 newest-first prepend 语义一致(同 R1A_PREPEND_TABLES 的
+  // "id 决胜同毫秒,尽力确定性"口径)。⚠️ 3.0.2 坑:ORDER BY 的字段必须出现在投影里
+  // (SELECT id ... ORDER BY createdAt 报 "Missing order idiom"),SELECT * 天然满足。
+  // 旧库 state_meta.rest 的流水键残留无需显式删:下方无条件以表数据覆盖(空表 → [])。
+  for (const m of STREAM_MAPPINGS) {
+    const limit = m.window !== undefined ? ` LIMIT ${m.window}` : "";
+    const [rows] = await db.query<[Array<Record<string, unknown>>]>(
+      `SELECT * FROM ${m.table} ORDER BY id DESC${limit};`
+    );
+    assembled[m.stateKey] = (rows ?? []).map((r) => {
+      const { id, ...rec } = r;
+      return fromRecord(streamDomainIdOf(id), rec);
+    });
   }
   return { state: normalizeProductState(assembled), fromDb: true };
 }
@@ -734,8 +814,57 @@ async function persist(db: Surreal, prev: ProductState, next: ProductState): Pro
     }
   }
 
-  // 5) state_meta:revision 每写必变,总是 UPSERT(R1a 后 rest 只剩 4 类流水 + schemaVersion;
-  //    旧库里 rest 残留的 11 个真表化键会被本次全量覆盖顺带清除)
+  // 5) R1b 流水表:append-only 事件流(复合 id [tsField, 领域id])。
+  //    · 常规路径只 UPSERT 新增/变更(事件语义上不可变,changed 理应恒空,出现了照常覆盖);
+  //    · **窗口滑出绝不 DELETE**(照 turn/H1 模式):内存滚动窗(MAX_EVENT_LOG)把最旧条目挤出
+  //      数组 → diffById 算进 removeIds,但那是内存瘦身不是用户删除,DB 保全史;
+  //    · **治理清除例外**(reset/purge/import 整状态替换):隐私优先于保全史——与 turn 在
+  //      reset/purge 下被 A5 级联清除同口径。判定:被移除条目不满足"滑出形态"(next 满窗且
+  //      被移除者不新于窗口内最旧保留条目)即治理移除 → 全表 `DELETE WHERE id NOT IN keep`
+  //      (须全表清扫而非按 id 删:diff 基线只见窗口内 1000 条,窗口外的历史行基线不知道,
+  //      逐 id 删会留下窗口外残留 → purge(all) 后个人痕迹残留=隐私事故)。keep 用 NOT IN
+  //      而非"先全删再重建",规避 3.x 同事务删建同 id 失败的坑(import 保留既有 id 时会踩)。
+  for (const m of STREAM_MAPPINGS) {
+    const prevArr = ((prev as unknown as Record<string, unknown>)[m.stateKey] as Array<Record<string, unknown> & { id: string }>) ?? [];
+    const nextArr = ((next as unknown as Record<string, unknown>)[m.stateKey] as Array<Record<string, unknown> & { id: string }>) ?? [];
+    const { upsert, removeIds } = diffById(prevArr, nextArr);
+    const prevById = new Map(prevArr.map((e) => [e.id, e] as const));
+    // 滑出形态:窗口存在且 next 满窗,且被移除条目不新于窗口内最旧保留条目(newest-first 数组
+    // 的队尾)。operationalChecks 无窗口(window=undefined)→ 任何移除都是治理清除。
+    // 判别缺口 #6(已知,记档不扩修):import 的备份恰满窗(≥1000 条)且全部新于活库窗口时,
+    // removeIds 被误判为滑出 → 不触发全表清扫,prev 窗口行残留 DB 至 90d 保留期。这是纯 diff
+    // 判别的固有信息论歧义(该形态的 prev→next diff 与真滑出逐字节相同);生产方向少见(常见
+    // "旧备份盖新活库"不满足"全部新于",清扫正确)、scoped purge 不触碰流水数组不可达此路径;
+    // 根治需 replaceState 携带显式治理信号,留待 R3 实体命令阶段。
+    const oldestKeptTs = nextArr.length > 0 ? streamTs(nextArr[nextArr.length - 1], m) : "";
+    const isSlideOut = (id: string): boolean => {
+      if (m.window === undefined || nextArr.length < m.window) return false;
+      const e = prevById.get(id);
+      return e !== undefined && streamTs(e, m) <= oldestKeptTs;
+    };
+    if (removeIds.some((id) => !isSlideOut(id))) {
+      const kv = `keep_${m.table}`;
+      vars[kv] = nextArr.map((e) => streamRecordIdOf(m, e));
+      surql += `DELETE ${m.table} WHERE id NOT IN $${kv};\n`;
+    }
+    for (const entity of upsert) {
+      const before = prevById.get(entity.id);
+      if (before && streamTs(before, m) !== streamTs(entity, m)) {
+        // 防御:tsField 理应不可变(workflow_run.startedAt 等);若上游违约变了,复合 id 随之
+        // 漂移,同一实体会裂成两条记录 → 先删旧 id,保证领域 id 在表内唯一。
+        const dv = `sx${i++}`;
+        vars[dv] = streamRecordIdOf(m, before);
+        surql += `DELETE $${dv};\n`;
+      }
+      const sv = `se${i++}`;
+      vars[sv] = fillUpsertDefaults(m.table, toRecord(entity, m));
+      vars[`${sv}_id`] = streamRecordIdOf(m, entity);
+      surql += `UPSERT $${sv}_id CONTENT $${sv};\n`;
+    }
+  }
+
+  // 6) state_meta:revision 每写必变,总是 UPSERT(R1b 后 rest 只剩 schemaVersion;
+  //    旧库里 rest 残留的 15 个真表化键会被本次全量覆盖顺带清除)
   const meta: Record<string, unknown> = {};
   for (const k of META_KEYS) meta[k] = (next as unknown as Record<string, unknown>)[k];
   vars.meta = meta;
@@ -744,4 +873,23 @@ async function persist(db: Surreal, prev: ProductState, next: ProductState): Pro
   surql += "COMMIT TRANSACTION;";
 
   await db.query(surql, vars);
+}
+
+/** R1b 保留期清理:删除各流水表 cutoff 之前的历史条目(复合 id range 删除,零索引)。
+ *  每表的有效 cutoff 取 min(保留期 cutoff, 内存窗口内最旧条目)——绝不删仍在内存窗口内的行,
+ *  否则重启后窗口凭空缩水 + dual 影子每次启动报发散噪声。`table:..[$c]` 开区间尾:
+ *  只删 ts 严格早于 cutoff 的行(1 元素边界数组按前缀序小于任何 [同 ts, id],实测 3.0.2 可用)。 */
+async function pruneStreamsBefore(db: Surreal, cutoffIso: string, memState: ProductState): Promise<void> {
+  // 坏格式 cutoff 早退(no-op + 警告):非法字符串在字典序比较下不可预期(可能大于一切合法 ISO,
+  // 使内存窗口守卫失效、误扫全部窗口外历史)——运维手滑不该变成数据事故。
+  if (Number.isNaN(Date.parse(cutoffIso))) {
+    console.warn(JSON.stringify({ event: "surreal_event_stream_prune_invalid_cutoff", cutoffIso }));
+    return;
+  }
+  for (const m of STREAM_MAPPINGS) {
+    const arr = ((memState as unknown as Record<string, unknown>)[m.stateKey] as Array<Record<string, unknown> & { id: string }>) ?? [];
+    const memOldest = arr.length > 0 ? streamTs(arr[arr.length - 1], m) : undefined;
+    const effective = memOldest !== undefined && memOldest < cutoffIso ? memOldest : cutoffIso;
+    await db.query(`DELETE ${m.table}:..[$c];`, { c: effective });
+  }
 }

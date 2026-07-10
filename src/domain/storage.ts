@@ -7,7 +7,9 @@ const STORAGE_KEY = "interview-product-state-v1";
 const MAX_REVIEWED_CANDIDATES = 200;
 // ponytail: rolling window for audit/aiRun event logs (newest-first). Bounds the largest
 // unbounded growth source so the full-state-PUT model can't grow past the 28MB body limit.
-const MAX_EVENT_LOG = 1000;
+// R1b:导出供持久层流水表(STREAM_MAPPINGS)复用同一窗口常量——loadState 取窗口条数、
+// persist 判定"窗口滑出 vs 治理清除"都以此为准,勿在别处硬编码 1000。
+export const MAX_EVENT_LOG = 1000;
 // ponytail: 有界常量 — normalize 时保留的最大旁注数
 const MAX_ANNOTATIONS = 500;
 const MAX_CHAT_SESSIONS = 50;
@@ -172,6 +174,13 @@ const CORPUS_MEDIA_TYPES = ["text", "audio"] as const;
 const PATCH_STATUSES = ["proposed", "applied", "reverted"] as const;
 const PATCH_IMPACTS = ["low", "medium", "high"] as const;
 const CONFIG_CHANGED_BY = ["user", "system"] as const;
+// R1b(流水实体真表化):以下白名单与 008_r1b_event_streams.surql 的 ASSERT 逐一对齐。
+// type/entityType/workflow/providerId/kind 等宽面高频演进枚举刻意只 str() 不 clampEnum
+// (schema 侧对应不 ASSERT,见 008 头注),防"每加一个事件类型都要 schema 迁移"。
+const AUDIT_SEVERITIES = ["info", "warning", "critical"] as const;
+const AI_RUN_STATUSES = ["succeeded", "degraded", "failed"] as const;
+const WORKFLOW_RUN_STATUSES = ["queued", "running", "succeeded", "degraded", "failed"] as const;
+const OP_CHECK_STATUSES = ["passed", "failed", "skipped"] as const;
 
 /** 必填 string 兜底(真实业务 E2E 实测补全 P0 家族):SurrealDB SCHEMAFULL 的 `TYPE string` 列
  *  收到非 string(null/数字/缺失)时 persist coerce 失败 → wedge。坏数据(手工 PUT/坏 import/LLM
@@ -347,6 +356,49 @@ function clampPersistableEnums(state: ProductState): ProductState {
       // changedBy 坏值绝不冒充 user(A3 精神:坏数据不得伪装用户行为);active 非严格 true 一律 false。
       changedBy: clampEnum(v.changedBy, CONFIG_CHANGED_BY, "system"),
       active: v.active === true
+    })),
+    // ── R1b:流水实体真表化后的钳制(与 008_r1b_event_streams.surql 核心列/ASSERT 对齐)────
+    auditEvents: state.auditEvents.map((e) => ({
+      ...e,
+      // type/entityType 宽面枚举只保证 string 可落库(schema 不 ASSERT,见 008 头注)。
+      type: str(e.type) as typeof e.type,
+      label: str(e.label),
+      detail: str(e.detail),
+      // severity 坏值钳到 warning:既不虚报 critical(假警报)也不降为 info(掩盖问题)。
+      severity: clampEnum(e.severity, AUDIT_SEVERITIES, "warning"),
+      entityType: str(e.entityType) as typeof e.entityType,
+      entityId: str(e.entityId)
+    })),
+    aiRunEvents: state.aiRunEvents.map((e) => ({
+      ...e,
+      workflow: str(e.workflow) as typeof e.workflow,
+      providerId: str(e.providerId),
+      // status 坏值绝不冒充 succeeded(质量报告/健康统计会误读)。
+      status: clampEnum(e.status, AI_RUN_STATUSES, "failed"),
+      entityType: str(e.entityType) as typeof e.entityType,
+      entityId: str(e.entityId),
+      inputSummary: str(e.inputSummary),
+      outputSummary: str(e.outputSummary)
+    })),
+    workflowRuns: state.workflowRuns.map((r) => ({
+      ...r,
+      workflow: str(r.workflow) as typeof r.workflow,
+      status: clampEnum(r.status, WORKFLOW_RUN_STATUSES, "failed"),
+      // providerId 类型是单值字面量;legacy 值已由 migrateWorkflowRuns 先行迁移,坏值兜到唯一合法值。
+      providerId: (typeof r.providerId === "string" && r.providerId ? r.providerId : "local-workflow-runtime") as typeof r.providerId,
+      entityType: str(r.entityType) as typeof r.entityType,
+      entityId: str(r.entityId),
+      inputSummary: str(r.inputSummary),
+      outputSummary: str(r.outputSummary),
+      traceId: str(r.traceId)
+    })),
+    operationalChecks: state.operationalChecks.map((c) => ({
+      ...c,
+      kind: str(c.kind) as typeof c.kind,
+      label: str(c.label),
+      // status 坏值绝不冒充 passed。
+      status: clampEnum(c.status, OP_CHECK_STATUSES, "failed"),
+      detail: str(c.detail)
     }))
   };
 }

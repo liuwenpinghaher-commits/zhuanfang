@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { NODE_MAPPINGS, toRecord, fromRecord, mappingFor } from "./node-mapper";
+import { NODE_MAPPINGS, STREAM_MAPPINGS, toRecord, fromRecord, mappingFor } from "./node-mapper";
 import { META_KEYS, SINGLETON_TABLES, DATETIME_DEFAULT_COLS } from "./surreal-product-state-repository";
 import { createInitialProductState } from "../../../../src/domain/engine";
 import { readFileSync, readdirSync } from "node:fs";
@@ -50,11 +50,13 @@ describe("node-mapper", () => {
     );
   });
 
-  // 分区完整性守卫:ProductState 每个键必须落在 节点表(NODE_MAPPINGS) 或 单例表(SINGLETON_TABLES)
-  // 或 运维尾巴(META_KEYS) 或 revision。否则将来新增数组会在 SurrealStore 落库时被静默丢弃(真数据丢失)。
+  // 分区完整性守卫:ProductState 每个键必须落在 节点表(NODE_MAPPINGS) 或 流水表(STREAM_MAPPINGS,R1b)
+  // 或 单例表(SINGLETON_TABLES) 或 运维尾巴(META_KEYS) 或 revision。
+  // 否则将来新增数组会在 SurrealStore 落库时被静默丢弃(真数据丢失)。
   it("ProductState 全键被持久化分区覆盖(防新增数组静默丢弃)", () => {
     const covered = new Set<string>([
       ...NODE_MAPPINGS.map((m) => m.stateKey as string),
+      ...STREAM_MAPPINGS.map((m) => m.stateKey as string),
       ...SINGLETON_TABLES.map((s) => s.stateKey as string),
       ...META_KEYS,
       "revision"
