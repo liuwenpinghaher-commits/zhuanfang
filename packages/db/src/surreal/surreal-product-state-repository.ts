@@ -1,16 +1,25 @@
 import { RecordId } from "surrealdb";
 import type { Surreal } from "surrealdb";
 import type { ProductStateRepository, ReplaceStateOptions } from "../../../../apps/api/src/product-state-repository";
-import { StateRevisionConflictError } from "../../../../apps/api/src/product-state-repository";
+import { GovernanceInFlightError, StateRevisionConflictError } from "../../../../apps/api/src/product-state-repository";
 import { createInitialProductState, createEmptyProductState } from "../../../../src/domain/engine";
 import { normalizeProductState } from "../../../../src/domain/storage";
 import { stableStringify } from "../../../../src/domain/stateDigest";
-import type { ProductState } from "../../../../src/domain/types";
+import type { InterviewAudio, InterviewRawMaterial, ProductState } from "../../../../src/domain/types";
 import { createSurrealConnection, type SurrealConnectionOptions } from "./connect";
 import { applySchema } from "./apply-schema";
 import { NODE_MAPPINGS, STREAM_MAPPINGS, toRecord, fromRecord, type StreamMapping } from "./node-mapper";
 import { collectEdges, turnRecordsOf, type EdgeSpec } from "./edge-mapper";
 import { diffById, diffEdges } from "./diff";
+import {
+  audioContentOf,
+  audioRecordId,
+  AUDIO_TABLE,
+  KNOWLEDGE_CHUNK_TABLE,
+  rawMaterialContentOf,
+  rawMaterialRecordId,
+  RAW_MATERIAL_TABLE,
+} from "./cold-shapes";
 
 const META_ID = "state_meta:main";
 
@@ -153,9 +162,35 @@ export interface PersistHealth {
   lastErrorAt?: string;
 }
 
+/** R2b 治理事务:热态整状态如何得到下一态。
+ *  - reset:createEmptyProductState()(revision 0),与 resetState() 完全同语义。
+ *  - replace:normalizeProductState({...next, revision: current+1}),与 replaceState() 完全同语义
+ *    (含可选 expectedRevision 乐观锁;治理路由目前不传,保留供对称)。 */
+export type GovernanceHotSpec =
+  | { kind: "reset" }
+  | { kind: "replace"; next: ProductState; expectedRevision?: number };
+
+/** R2b 治理事务:冷层三库的目标操作。字段缺省 = 该库不在本事务内触碰(preserve)。
+ *  - wipe:清空该库(reset/purge)。
+ *  - replace:整库替换为给定集合(import 恢复;materials/audios 为 [] 即等价清空)。
+ *  knowledge 仅支持 wipe(import 的知识重建走提交后 best-effort,不入本事务)。 */
+export interface GovernanceColdSpec {
+  rawMaterial?: { action: "wipe" } | { action: "replace"; materials: InterviewRawMaterial[] };
+  audio?: { action: "wipe" } | { action: "replace"; audios: InterviewAudio[] };
+  knowledgeIndex?: { action: "wipe" };
+}
+
 export interface SurrealRepoHandle extends ProductStateRepository {
   /** 等待所有挂起的异步落库完成(测试/优雅关闭用)。 */
   flush(): Promise<void>;
+  /** R2b · 治理事务(reset/purge/import):热态整状态替换 + 冷层三库删/写在**单个 BEGIN...COMMIT**
+   *  内原子完成。任一步失败 → 整体回滚(无部分提交):DB、内存热态 state、diff 基线 lastPersisted
+   *  全部保持事务前原样,向调用方抛错(路由据此返回 500 + 回执标注整体回滚)。成功 → 同时推进
+   *  state 与 lastPersisted 到新态(否则下一笔 persist 会以旧基线 diff、复活已删数据——最大陷阱)。
+   *  仅当 createSurrealStores 装配(冷热共用一个嵌入式连接)时暴露;standalone / 非 surreal 档为
+   *  undefined,路由回落既有 journal/best-effort。串入 persist 队列(不与 persist 交错)。
+   *  local-object 文件删除留在事务外(文件系统无法入事务),由路由在事务前后处理。 */
+  runGovernanceTransaction?(hot: GovernanceHotSpec, cold: GovernanceColdSpec): Promise<ProductState>;
   /** E:权威库落库健康度(连续失败计数/最后错误)。/api/health 用以感知 dual-surreal 静默丢数据。 */
   getPersistHealth(): PersistHealth;
   /** 关闭底层连接(测试/关闭用)。 */
@@ -262,7 +297,13 @@ export async function createSurrealProductStateRepository(opts: SurrealRepoOptio
  *  standalone 的 createSurrealProductStateRepository 走 ownsConnection=true,close() 自关(向后兼容)。 */
 export async function buildSurrealProductStateRepositoryOnConnection(
   db: Surreal,
-  cfg: { ownsConnection: boolean }
+  cfg: {
+    ownsConnection: boolean;
+    /** R2b:仅 createSurrealStores 装配(冷热同连接)时提供 → 暴露 runGovernanceTransaction。
+     *  onKnowledgeIndexWiped:治理事务用一条 SQL 直清知识表(不经仓库 deleteAll),提交成功后回调
+     *  此钩子递增知识索引 epoch,让 R8-1 竞态守卫丢弃"清空前构建、清空后落库"的陈旧后台嵌入。 */
+    governance?: { onKnowledgeIndexWiped: () => void };
+  }
 ): Promise<SurrealRepoHandle> {
 
   // 内存工作副本:同步接口的真相源。
@@ -277,6 +318,11 @@ export async function buildSurrealProductStateRepositoryOnConnection(
   let persistQueue: Promise<void> = Promise.resolve();
   // E:权威库落库健康度。成功清零、失败累积——dual-surreal 下持续写不进=静默丢数据,必须可观测。
   let persistHealth: PersistHealth = { consecutiveFailures: 0 };
+  // R2b(M1 修复):治理事务在途计数(计数而非 boolean——两个治理调用嵌套时 boolean 会被先完成者提前
+  // 清零)。runGovernanceTransaction 在**函数体内同步** ++(不在 .then 里,否则 counter 迟于并发写读到
+  // 旧 state 才升起、护栏失效),executeGovernanceTransaction 结算的 finally 里 --。replaceState/resetState
+  // 见到 >0 即抛 GovernanceInFlightError,拒绝并发整状态写抢在治理提交前后写回旧快照(数据复活)。
+  let governanceInFlightCount = 0;
 
   function enqueuePersist(snapshot: ProductState) {
     persistQueue = persistQueue
@@ -328,23 +374,113 @@ export async function buildSurrealProductStateRepositoryOnConnection(
       });
   }
 
+  // 下一态计算(单一真值):resetState / replaceState / R2b 治理事务共用,杜绝 revision/normalize
+  // 语义在治理路径漂移。这两个纯函数只算下一态、不落库、不改内存 state(由调用点决定何时应用)。
+  function computeResetNextState(): ProductState {
+    return createEmptyProductState();   // revision 0,与 resetState 完全同语义
+  }
+  function computeReplaceNextState(next: ProductState, opts?: ReplaceStateOptions): ProductState {
+    const currentRevision = state.revision ?? 0;
+    if (opts?.expectedRevision !== undefined && opts.expectedRevision !== currentRevision) {
+      throw new StateRevisionConflictError(opts.expectedRevision, currentRevision);
+    }
+    return normalizeProductState({ ...next, revision: currentRevision + 1 });
+  }
+
+  /** R2b 治理事务执行体(已在 persist 队列内串行,读执行时刻的 lastPersisted)。
+   *  单事务 = 热态 diff 语句(复用 buildPersistStatements,不复制第二份 diff)+ 冷层三库删/写。
+   *  成功:推进 state 与 lastPersisted 到 nextHot(基线推进正确性是最大陷阱,测试钉死)。
+   *  失败:抛错,state / lastPersisted 一律不动(DB 也已整体回滚 → 三者仍一致,下笔 persist 基线正确)。 */
+  async function executeGovernanceTransaction(hot: GovernanceHotSpec, cold: GovernanceColdSpec): Promise<ProductState> {
+    const nextHot = hot.kind === "reset" ? computeResetNextState() : computeReplaceNextState(hot.next, { ...(hot.expectedRevision !== undefined ? { expectedRevision: hot.expectedRevision } : {}) });
+
+    // ① 热态 diff 语句(相对执行时刻的 lastPersisted 基线;含 keepOnlyLiveTurnProvenance 的 async 预查)。
+    const { surql: hotSurql, vars } = await buildPersistStatements(db, lastPersisted, nextHot);
+
+    // ② 冷层语句(cold_ 前缀避免与热态 vars 撞名)。DELETE 全表 = wipe;replace = 全删 + 逐条 UPSERT。
+    let coldSurql = "";
+    let knowledgeWiped = false;
+    let ci = 0;
+    if (cold.rawMaterial) {
+      coldSurql += `DELETE ${RAW_MATERIAL_TABLE};\n`;
+      if (cold.rawMaterial.action === "replace") {
+        for (const m of cold.rawMaterial.materials) {
+          const idV = `cold_rm_id${ci}`, cV = `cold_rm${ci}`; ci += 1;
+          vars[idV] = rawMaterialRecordId(m.sessionId);
+          vars[cV] = rawMaterialContentOf(m);
+          coldSurql += `UPSERT $${idV} CONTENT $${cV};\n`;
+        }
+      }
+    }
+    if (cold.audio) {
+      coldSurql += `DELETE ${AUDIO_TABLE};\n`;
+      if (cold.audio.action === "replace") {
+        for (const a of cold.audio.audios) {
+          const { role, content } = audioContentOf(a);
+          const idV = `cold_au_id${ci}`, cV = `cold_au${ci}`; ci += 1;
+          vars[idV] = audioRecordId(a.sessionId, role);
+          vars[cV] = content;
+          coldSurql += `UPSERT $${idV} CONTENT $${cV};\n`;
+        }
+      }
+    }
+    if (cold.knowledgeIndex?.action === "wipe") {
+      coldSurql += `DELETE ${KNOWLEDGE_CHUNK_TABLE};\n`;
+      knowledgeWiped = true;
+    }
+
+    // ③ 单事务提交(热态在前、冷层在后;同一原子 BEGIN...COMMIT,内部顺序不影响最终态)。
+    //   S2:走 runWithTransientRetry(与 persist / 冷层写同一阶梯)——治理与队列外的后台冷写
+    //   (deleteBySource/put,各自带重试)在同一嵌入式连接上可撞真瞬态写写冲突,重试自恢复;
+    //   isTransientPersistError 对 schema ASSERT/维度错等确定性错误返回 false → 立即抛(fail-fast
+    //   不受影响),只对真瞬态冲突重试。语句已在上方生成一次,重试只重发同一 tx(每次都整体回滚,
+    //   基线不动,幂等安全)。
+    await runWithTransientRetry(() => db.query("BEGIN TRANSACTION;\n" + hotSurql + coldSurql + "COMMIT TRANSACTION;", vars) as Promise<unknown>);
+
+    // ④ 仅提交成功后推进内存态与基线(顺序无关,同步赋值,无 await 窗口 → 不可能被观测到半推进)。
+    state = nextHot;
+    lastPersisted = nextHot;
+    persistHealth = { consecutiveFailures: 0 };   // 成功的写:清零健康度(与 persist 成功路径一致)
+    if (knowledgeWiped) cfg.governance?.onKnowledgeIndexWiped();   // 递增知识 epoch(R8-1 竞态守卫)
+    return structuredClone(state);
+  }
+
   return {
     getState() { return structuredClone(state); },
     getPersistHealth() { return { ...persistHealth }; },
     resetState() {
-      state = createEmptyProductState();
+      // M1:治理事务在途 → 拒绝并发整状态写(否则读旧 state、排到治理之后、以新基线复活个人数据)。
+      if (governanceInFlightCount > 0) throw new GovernanceInFlightError();
+      state = computeResetNextState();
       enqueuePersist(state);
       return structuredClone(state);
     },
     replaceState(next: ProductState, replaceOpts?: ReplaceStateOptions) {
-      const currentRevision = state.revision ?? 0;
-      if (replaceOpts?.expectedRevision !== undefined && replaceOpts.expectedRevision !== currentRevision) {
-        throw new StateRevisionConflictError(replaceOpts.expectedRevision, currentRevision);
-      }
-      state = normalizeProductState({ ...next, revision: currentRevision + 1 });
+      // M1:同上——治理在途拒绝并发整状态写。执行处 GovernanceInFlightError.statusCode=409 → HTTP 409。
+      if (governanceInFlightCount > 0) throw new GovernanceInFlightError();
+      state = computeReplaceNextState(next, replaceOpts);
       enqueuePersist(state);
       return structuredClone(state);
     },
+    // R2b:仅 governance 配置就位(createSurrealStores 装配)时暴露治理事务;standalone 为 undefined。
+    ...(cfg.governance
+      ? {
+          runGovernanceTransaction(hot: GovernanceHotSpec, cold: GovernanceColdSpec): Promise<ProductState> {
+            // M1:**同步**升起在途计数(函数体内,非 .then)——从治理被请求那刻起、贯穿整个 await 期间,
+            // 并发 replaceState/resetState 一律被拒;executeGovernanceTransaction 结算(成功已推进基线 /
+            // 失败已回滚)后在 finally 里落下计数。executeGovernanceTransaction 自身走 db.query 不调
+            // replaceState,故不自我拒绝。
+            governanceInFlightCount += 1;
+            // 串入 persist 队列:治理事务绝不与挂起的 persist 交错(否则热态 diff 基线在半途被改)。
+            // 失败不毒化队列尾(tail 吞掉),但把失败原样传给调用方(返回 run,非 tail)。
+            const run = persistQueue
+              .then(() => executeGovernanceTransaction(hot, cold))
+              .finally(() => { governanceInFlightCount -= 1; });
+            persistQueue = run.then(() => undefined, () => undefined);
+            return run;
+          },
+        }
+      : {}),
     getInterviewSession(id: string) {
       return state.sessions.find((s) => s.id === id) ?? null;
     },
@@ -756,7 +892,16 @@ function recordIdToDomainId(id: unknown): string {
  *  prev = lastPersisted(上次成功落库态);最终 DB 态与全量覆盖等价,但写放大降到 O(变更)。
  *  ⚠️ UPSERT CONTENT 不重跑列 DEFAULT,故 upsert 记录先过 fillUpsertDefaults(同 P1b)。 */
 async function persist(db: Surreal, prev: ProductState, next: ProductState): Promise<void> {
-  let surql = "BEGIN TRANSACTION;\n";
+  // R2b:diff 语句生成与事务执行拆分——治理事务(runGovernanceTransaction)复用 buildPersistStatements
+  // 把"热态整状态替换"的同一批 diff 语句拼进跨冷热的单事务,不复制第二份 diff 代码。
+  const { surql, vars } = await buildPersistStatements(db, prev, next);
+  await db.query("BEGIN TRANSACTION;\n" + surql + "COMMIT TRANSACTION;", vars);
+}
+
+/** R2b:生成 prev→next 的热态 diff 语句(不含 BEGIN/COMMIT),供 persist 与治理事务共用。
+ *  返回的 surql 是若干以 `;\n` 结尾的语句;vars 为其绑定参数。调用方自行包裹事务边界。 */
+async function buildPersistStatements(db: Surreal, prev: ProductState, next: ProductState): Promise<{ surql: string; vars: Record<string, unknown> }> {
+  let surql = "";
   const vars: Record<string, unknown> = {};
   let i = 0;
 
@@ -903,9 +1048,8 @@ async function persist(db: Surreal, prev: ProductState, next: ProductState): Pro
   vars.meta = meta;
   vars.rev = next.revision ?? 0;
   surql += `UPSERT ${META_ID} SET revision = $rev, rest = $meta;\n`;
-  surql += "COMMIT TRANSACTION;";
 
-  await db.query(surql, vars);
+  return { surql, vars };
 }
 
 /** R1b 保留期清理:删除各流水表 cutoff 之前的历史条目(复合 id range 删除,零索引)。

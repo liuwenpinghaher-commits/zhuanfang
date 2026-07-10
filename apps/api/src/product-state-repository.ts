@@ -17,6 +17,21 @@ export class StateRevisionConflictError extends Error {
   }
 }
 
+/**
+ * R2b(M1 修复):治理事务(reset/purge/import)在途时,任何并发整状态写(replaceState/resetState)
+ * 被拒——防止并发写读到"尚未清空的旧 state"、快照后排到治理之后、以治理推进的新基线把个人行 UPSERT
+ * 回权威库(purge/reset 后数据复活)。`statusCode = 409` 让 server.ts 全局错误处理器自动映射成 409
+ * (HTTP 写方前端已有 409 重试;后台写方 scheduler/knowledge-reembed 已有 try/catch → 记日志跳过、
+ * 下一 tick 自愈)。仅 Surreal 治理档会抛(内存/sqlite 档无治理事务,无此并发面)。
+ */
+export class GovernanceInFlightError extends Error {
+  readonly statusCode = 409;
+  constructor() {
+    super("A governance operation (reset/purge/import) is in progress; retry this write after it settles.");
+    this.name = "GovernanceInFlightError";
+  }
+}
+
 export interface ReplaceStateOptions {
   /**
    * P1-14: optimistic-concurrency guard. When provided, replaceState throws

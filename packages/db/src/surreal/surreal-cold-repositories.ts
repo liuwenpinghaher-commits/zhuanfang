@@ -17,6 +17,13 @@ import {
   runWithTransientRetry,
   type SurrealRepoHandle,
 } from "./surreal-product-state-repository";
+import {
+  audioContentOf,
+  audioRecordId,
+  KNOWLEDGE_CHUNK_TABLE,
+  rawMaterialContentOf,
+  rawMaterialRecordId,
+} from "./cold-shapes";
 
 /**
  * R2a · 三冷层(raw-material / audio / knowledge-index)的 SurrealDB 实现(009_r2a_cold.surql)。
@@ -68,7 +75,7 @@ function toBytes(v: unknown): Uint8Array {
 // ─────────────────────────────── raw_material ───────────────────────────────
 
 export function createSurrealRawMaterialRepository(db: Surreal): RawMaterialRepository {
-  const idOf = (sessionId: string) => new RecordId("raw_material", sessionId);
+  const idOf = (sessionId: string) => rawMaterialRecordId(sessionId);   // R2b:与治理事务共用 cold-shapes
   const mapRow = (row: Record<string, unknown>): InterviewRawMaterial => ({
     sessionId: domainIdOf(row.id),
     turns: (Array.isArray(row.turns) ? row.turns : []) as InterviewRawMaterial["turns"],
@@ -87,13 +94,10 @@ export function createSurrealRawMaterialRepository(db: Surreal): RawMaterialRepo
     },
     async put(material) {
       await runWithTransientRetry(async () => {
+        // R2b:载荷形状由 cold-shapes 单一真值提供(治理事务复用同一形状)。
         await db.query("UPSERT $rid CONTENT $c;", {
           rid: idOf(material.sessionId),
-          c: {
-            turns: material.turns ?? [],
-            strategyTrace: material.strategyTrace ?? [],
-            createdAt: new Date(material.createdAt),
-          },
+          c: rawMaterialContentOf(material),
         });
       });
     },
@@ -109,7 +113,7 @@ export function createSurrealRawMaterialRepository(db: Surreal): RawMaterialRepo
 // ─────────────────────────────────── audio ──────────────────────────────────
 
 export function createSurrealAudioRepository(db: Surreal): AudioRepository {
-  const idOf = (sessionId: string, role: InterviewAudioRole) => new RecordId("audio", [sessionId, role]);
+  const idOf = (sessionId: string, role: InterviewAudioRole) => audioRecordId(sessionId, role);   // R2b:与治理事务共用 cold-shapes
   const mapRow = (row: Record<string, unknown>): InterviewAudio => {
     const result: InterviewAudio = {
       sessionId: String(row.sessionId ?? ""),
@@ -136,18 +140,9 @@ export function createSurrealAudioRepository(db: Surreal): AudioRepository {
       return (rows?.length ?? 0) > 0;
     },
     async put(a) {
-      const role = a.role ?? DEFAULT_ROLE;
       // 大对象(MB 级 bytes)直接落库,绝不缓存内存(见文件头注释)。
-      const content: Record<string, unknown> = {
-        sessionId: a.sessionId,
-        role,
-        data: a.audio,
-        mime: a.mime,
-        byteSize: a.byteSize ?? a.audio.byteLength,
-        createdAt: new Date(a.createdAt),
-      };
-      if (a.durationMs !== undefined) content.durationMs = a.durationMs;
-      if (a.recordingStartedAt !== undefined) content.recordingStartedAt = new Date(a.recordingStartedAt);
+      // R2b:载荷形状由 cold-shapes 单一真值提供(治理事务复用同一形状)。
+      const { role, content } = audioContentOf(a);
       await runWithTransientRetry(async () => { await db.query("UPSERT $rid CONTENT $c;", { rid: idOf(a.sessionId, role), c: content }); });
     },
     async delete(sessionId, role) {
@@ -173,10 +168,17 @@ export function createSurrealAudioRepository(db: Surreal): AudioRepository {
 
 // ────────────────────────────── knowledge_chunk ─────────────────────────────
 
-export function createSurrealKnowledgeIndexRepository(db: Surreal): KnowledgeIndexRepository {
+/** R2b:Surreal 知识索引仓库额外暴露 bumpEpoch——治理事务用一条 SQL 直接 `DELETE knowledge_chunk`
+ *  清空(不经仓库 deleteAll),故 epoch 不会自增;提交成功后须显式 bump,让 R8-1 竞态守卫
+ *  (knowledge.ts:epochAtEmbed)照常丢弃"清空前构建、清空后才落库"的陈旧后台嵌入。 */
+export interface SurrealKnowledgeIndexRepository extends KnowledgeIndexRepository {
+  bumpEpoch(): void;
+}
+
+export function createSurrealKnowledgeIndexRepository(db: Surreal): SurrealKnowledgeIndexRepository {
   // epoch 照搬 sqlite/in-memory:进程内单调计数,deleteAll 递增(不持久化)。
   let epoch = 0;
-  const idOf = (chunkId: string) => new RecordId("knowledge_chunk", chunkId);
+  const idOf = (chunkId: string) => new RecordId(KNOWLEDGE_CHUNK_TABLE, chunkId);
   const mapRow = (row: Record<string, unknown>): KnowledgeChunk => {
     const chunk: KnowledgeChunk = {
       id: domainIdOf(row.id),
@@ -248,6 +250,7 @@ export function createSurrealKnowledgeIndexRepository(db: Surreal): KnowledgeInd
       return (rows ?? []).map(mapRow);
     },
     async epoch() { return epoch; },
+    bumpEpoch() { epoch += 1; },   // R2b:治理事务清空知识表后调用(SQL 直清不经 deleteAll,须显式代际递增)
   };
 }
 
@@ -271,13 +274,25 @@ export interface SurrealStores {
 export async function createSurrealStores(opts: SurrealConnectionOptions): Promise<SurrealStores> {
   const db = await createSurrealConnection(opts);
   await applySchema(db);
+  // 冷层三库(与热态同连接;R2b 治理事务要跨冷热单事务)。knowledgeIndex 先建,好把 bumpEpoch
+  // 交给治理事务(SQL 直清知识表后须显式代际递增,见 SurrealKnowledgeIndexRepository)。
+  const rawMaterial = createSurrealRawMaterialRepository(db);
+  const audio = createSurrealAudioRepository(db);
+  const knowledgeIndex = createSurrealKnowledgeIndexRepository(db);
   // 热态仓库不拥有连接(ownsConnection=false),由本工厂 close() 统一关一次。
-  const productState = await buildSurrealProductStateRepositoryOnConnection(db, { ownsConnection: false });
+  // R2b:传入 governance 配置 → 热态 handle 暴露 runGovernanceTransaction(治理事务能力)。
+  // 只有 createSurrealStores 这条装配路径(冷热共用一个嵌入式连接)才配得治理事务能力;
+  // standalone 的 createSurrealProductStateRepository(dual-surreal 走它、冷层却是 sqlite)不传,
+  // 故其 handle 无此方法 → asGovernanceTx 探测不到 → 路由回落既有 journal/best-effort 路径。
+  const productState = await buildSurrealProductStateRepositoryOnConnection(db, {
+    ownsConnection: false,
+    governance: { onKnowledgeIndexWiped: () => knowledgeIndex.bumpEpoch() },
+  });
   return {
     productState,
-    rawMaterial: createSurrealRawMaterialRepository(db),
-    audio: createSurrealAudioRepository(db),
-    knowledgeIndex: createSurrealKnowledgeIndexRepository(db),
+    rawMaterial,
+    audio,
+    knowledgeIndex,
     async close() {
       await productState.flush();   // 排空 persist 队列后再关连接
       await db.close();

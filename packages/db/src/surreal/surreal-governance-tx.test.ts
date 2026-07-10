@@ -1,0 +1,279 @@
+import { describe, it, expect, afterEach } from "vitest";
+import { createSurrealStores, type SurrealStores } from "./surreal-cold-repositories";
+import { createSurrealProductStateRepository, type SurrealRepoHandle } from "./surreal-product-state-repository";
+import { GovernanceInFlightError } from "../../../../apps/api/src/product-state-repository";
+import type { InterviewAudio, InterviewRawMaterial, KnowledgeChunk, ProductState } from "../../../../src/domain/types";
+
+/** R2b · 治理事务(reset/purge/import 真 ACID)的仓库层测试。
+ *  全用 mem://(同进程、HNSW 可用;surrealkv 同进程持文件锁,close 后无法同进程重开——既有 r1a/r1b
+ *  的持久化断言都走跨进程 tsx 子进程,治理事务的原子性与 mem:// 上逐字节等价,故不重复跨进程装配)。
+ *  故障注入走真实坏数据(role 越枚举 / embedding 维度错)→ 触发真 SurrealDB 事务失败,断言整体回滚
+ *  (DB + 内存热态 + diff 基线均回到事务前);不 mock db.query,证明的是真 ACID 而非代码分支。 */
+
+const openStores = new Set<SurrealStores>();
+const openRepos = new Set<SurrealRepoHandle>();
+async function makeStores(): Promise<SurrealStores> {
+  const s = await createSurrealStores({ url: "mem://" });
+  openStores.add(s);
+  return s;
+}
+async function makeStandalone(): Promise<SurrealRepoHandle> {
+  const r = await createSurrealProductStateRepository({ url: "mem://" });
+  openRepos.add(r);
+  return r;
+}
+afterEach(async () => {
+  for (const s of openStores) await s.close();
+  for (const r of openRepos) await r.close();
+  openStores.clear();
+  openRepos.clear();
+});
+
+const raw = (id: string): InterviewRawMaterial => ({ sessionId: id, turns: [], strategyTrace: [], createdAt: "2026-06-21T00:00:00.000Z" });
+const aud = (id: string): InterviewAudio => ({ sessionId: id, role: "interviewee", audio: new Uint8Array([1, 2, 3]), mime: "audio/webm", byteSize: 3, createdAt: "2026-06-21T00:00:00.000Z" });
+const chunk = (id: string): KnowledgeChunk => ({ id, sourceType: "note", sourceId: "s1", title: "t", text: "x", keywords: [], createdAt: "2026-06-22T00:00:00.000Z" });
+// 越枚举 role → audio.role 的 schema ASSERT 拒绝 → 冷层 UPSERT 在事务内抛(真 SurrealDB 失败,非 mock)。
+const badAudio = (id: string): InterviewAudio => ({ ...aud(id), role: "bogus" as InterviewAudio["role"] });
+// 维度错(3 ≠ HNSW 1024)→ memory 节点 UPSERT 在事务内抛(热态写失败)。
+const badMemory = () => ({ id: "m_bad", subjectId: "self", text: "坏记忆", category: "fact", status: "confirmed", sensitivity: "normal", confidence: 0.9, embedding: [1, 2, 3], createdAt: "2026-07-10T00:00:00.000Z", updatedAt: "2026-07-10T00:00:00.000Z" });
+
+const wipeAll = { rawMaterial: { action: "wipe" as const }, audio: { action: "wipe" as const }, knowledgeIndex: { action: "wipe" as const } };
+const noteIds = async (repo: SurrealRepoHandle): Promise<string[]> => {
+  const [ids] = await repo.query<[unknown[]]>("SELECT VALUE id FROM note;");
+  return (ids ?? []).map(String);
+};
+
+describe("R2b 治理事务 · 能力探测", () => {
+  it("createSurrealStores 的 productState 暴露 runGovernanceTransaction(冷热同连接)", async () => {
+    const s = await makeStores();
+    expect(typeof s.productState.runGovernanceTransaction).toBe("function");
+  });
+
+  it("standalone createSurrealProductStateRepository 不暴露(冷层非同连接 → 回落 journal)", async () => {
+    const r = await makeStandalone();
+    expect(r.runGovernanceTransaction).toBeUndefined();
+  });
+});
+
+describe("R2b 治理事务 · 成功路径(mem://)", () => {
+  it("reset:热态清空 + 冷层三库清空 + 知识 epoch 递增", async () => {
+    const s = await makeStores();
+    await s.productState.flush();
+    await s.rawMaterial.put(raw("s1"));
+    await s.audio.put(aud("s1"));
+    await s.knowledgeIndex.put(chunk("c1"));
+    const e0 = await s.knowledgeIndex.epoch();
+
+    const next = await s.productState.runGovernanceTransaction!({ kind: "reset" }, wipeAll);
+
+    expect(next.notes.length).toBe(0);
+    expect(next.sessions.length).toBe(0);
+    expect(next.revision).toBe(0); // 与 resetState 同语义:createEmptyProductState → revision 0
+    expect(s.productState.getState().notes.length).toBe(0);
+    expect(await s.rawMaterial.list()).toHaveLength(0);
+    expect(await s.audio.listAll()).toHaveLength(0);
+    expect(await s.knowledgeIndex.listAll()).toHaveLength(0);
+    expect(await s.knowledgeIndex.epoch()).toBe(e0 + 1); // 知识表 SQL 直清,epoch 须被治理事务显式递增
+    expect(await noteIds(s.productState)).toHaveLength(0); // 热态 note 表在 DB 里也真被删
+  });
+
+  it("★基线推进正确:reset 后重新写入同 id 的实体确实落库(基线未推进则会被 diff 当'无变化'而丢失)", async () => {
+    const s = await makeStores();
+    await s.productState.flush();
+    const demoNote = s.productState.getState().notes[0]; // note-seed-1(reset 前存在)
+    expect(demoNote).toBeDefined();
+
+    await s.productState.runGovernanceTransaction!({ kind: "reset" }, wipeAll);
+    // 用与 demo 完全相同的 note(含同 id)重新写入。若治理事务未把 lastPersisted 推进到 empty,
+    // 下一笔 persist 会以旧基线(仍含 note-seed-1)diff → 判为"无变化"→ 不 UPSERT → DB 里永远缺失。
+    const st = s.productState.getState();
+    st.notes = [demoNote];
+    s.productState.replaceState(st);
+    await s.productState.flush();
+
+    expect((await noteIds(s.productState)).some((id) => id.includes("note-seed-1"))).toBe(true);
+    expect(s.productState.getPersistHealth().consecutiveFailures).toBe(0);
+  });
+
+  it("purge:热态 replace(revision+1)+ 冷层清空原子提交", async () => {
+    const s = await makeStores();
+    await s.productState.flush();
+    await s.rawMaterial.put(raw("s1"));
+    const before = s.productState.getState();
+    const purged = { ...before, notes: [], sessions: [], points: [], questions: [], decisions: [], debts: [] } as ProductState;
+
+    const next = await s.productState.runGovernanceTransaction!({ kind: "replace", next: purged }, wipeAll);
+
+    expect(next.revision).toBe((before.revision ?? 0) + 1); // 与 replaceState 同语义
+    expect(next.notes.length).toBe(0);
+    expect(await s.rawMaterial.list()).toHaveLength(0);
+    expect(await noteIds(s.productState)).toHaveLength(0);
+  });
+
+  it("import(replace):热态替换 + 冷层 raw/audio replace(知识不入事务,preserve)", async () => {
+    const s = await makeStores();
+    await s.productState.flush();
+    await s.knowledgeIndex.put(chunk("c_keep")); // 知识不在冷层规格里 → 应保留
+    const imported = { ...s.productState.getState(), notes: [] } as ProductState;
+
+    await s.productState.runGovernanceTransaction!(
+      { kind: "replace", next: imported },
+      { rawMaterial: { action: "replace", materials: [raw("r1"), raw("r2")] }, audio: { action: "replace", audios: [aud("a1")] } }
+    );
+
+    expect((await s.rawMaterial.list()).map((m) => m.sessionId).sort()).toEqual(["r1", "r2"]);
+    expect(await s.audio.has("a1")).toBe(true);
+    expect(await s.knowledgeIndex.listAll()).toHaveLength(1); // preserve:知识索引未被触碰
+  });
+
+  it("import(preserve-cold):冷层规格缺省 → 只替换热态,冷层原样保留", async () => {
+    const s = await makeStores();
+    await s.productState.flush();
+    await s.rawMaterial.put(raw("keep"));
+    await s.audio.put(aud("keep"));
+    const imported = { ...s.productState.getState(), notes: [] } as ProductState;
+
+    await s.productState.runGovernanceTransaction!({ kind: "replace", next: imported }, {}); // 冷层全缺省
+
+    expect((await s.rawMaterial.list()).map((m) => m.sessionId)).toEqual(["keep"]);
+    expect(await s.audio.has("keep")).toBe(true);
+  });
+
+  it("S1:多条 MB 级 audio bytes 的 import 单事务提交(大 bytes 入同一 BEGIN...COMMIT 不撞上限)", async () => {
+    // 冒烟守卫:治理把全部 audio bytes 拼进单事务 vars(旧 journal 逐条 autocommit,峰值仅单条)。
+    // 此处 3×4MB=12MB 验证多条 MB 级 bytes 同事务提交 + 逐字节回读正确;更大体量(48MB→108ms、
+    // 峰值 RSS 数倍于载荷)另由一次性 spike 实测,64MB 上限内单用户路径可接受(见报告 S1)。
+    const s = await makeStores();
+    await s.productState.flush();
+    const mkAudio = (id: string, mb: number): InterviewAudio => {
+      const bytes = new Uint8Array(mb * 1024 * 1024);
+      for (let i = 0; i < bytes.length; i += 4096) bytes[i] = (i >> 12) & 0xff; // 稀疏标记,验证不是全零
+      return { sessionId: id, role: "interviewee", audio: bytes, mime: "audio/webm", byteSize: bytes.byteLength, createdAt: "2026-06-21T00:00:00.000Z" };
+    };
+    const audios = [mkAudio("big0", 4), mkAudio("big1", 4), mkAudio("big2", 4)];
+    const imported = { ...s.productState.getState(), notes: [] } as ProductState;
+
+    await s.productState.runGovernanceTransaction!(
+      { kind: "replace", next: imported },
+      { audio: { action: "replace", audios }, rawMaterial: { action: "replace", materials: [raw("r1")] } }
+    );
+
+    const rows = await s.audio.listAll();
+    expect(rows).toHaveLength(3);
+    expect(rows.every((r) => r.audio.byteLength === 4 * 1024 * 1024)).toBe(true); // 逐条 bytes 完整回读
+    expect((await s.rawMaterial.list()).map((m) => m.sessionId)).toEqual(["r1"]);
+  });
+});
+
+describe("R2b 治理事务 · 整体回滚(mem://,真 SurrealDB 事务失败)", () => {
+  it("冷层写失败(audio role 越枚举)→ 整体回滚:热态 + 冷层 + 基线均未变", async () => {
+    const s = await makeStores();
+    await s.productState.flush();
+    await s.rawMaterial.put(raw("keep"));
+    await s.audio.put(aud("keep"));
+    const before = s.productState.getState();
+    const beforeNoteIds = await noteIds(s.productState);
+    expect(beforeNoteIds.length).toBeGreaterThan(0); // demo 有 note
+
+    // import 恢复一条越枚举 audio → 冷层 UPSERT 在事务内抛。热态本应清空 notes,但整体回滚后 notes 仍在。
+    const imported = { ...before, notes: [] } as ProductState;
+    await expect(
+      s.productState.runGovernanceTransaction!({ kind: "replace", next: imported }, { audio: { action: "replace", audios: [badAudio("bad")] } })
+    ).rejects.toThrow();
+
+    // 内存热态未推进(revision/notes 均为事务前值)——证明 state 与 lastPersisted 都没动。
+    expect(s.productState.getState().revision).toBe(before.revision);
+    expect(s.productState.getState().notes.length).toBe(before.notes.length);
+    // DB 整体回滚:note 表未被清空、旧 audio(keep)仍在、坏 audio 未落库。
+    expect(await noteIds(s.productState)).toEqual(beforeNoteIds);
+    expect(await s.audio.has("keep")).toBe(true);
+    expect(await s.audio.has("bad")).toBe(false);
+    expect((await s.rawMaterial.list()).map((m) => m.sessionId)).toEqual(["keep"]);
+  });
+
+  it("热态写失败(memory embedding 维度错)→ 整体回滚:冷层未被清空", async () => {
+    const s = await makeStores();
+    await s.productState.flush();
+    await s.rawMaterial.put(raw("keep"));
+    await s.audio.put(aud("keep"));
+    await s.knowledgeIndex.put(chunk("c_keep"));
+    const before = s.productState.getState();
+
+    // 治理 replace 的热态含维度错 memory → 热态节点 UPSERT 在事务内抛;冷层本应被 wipe,整体回滚后仍在。
+    const badState = { ...before, memoryRecords: [badMemory()] } as unknown as ProductState;
+    await expect(
+      s.productState.runGovernanceTransaction!({ kind: "replace", next: badState }, wipeAll)
+    ).rejects.toThrow();
+
+    expect(s.productState.getState().revision).toBe(before.revision); // 基线/内存未推进
+    expect(await s.rawMaterial.list()).toHaveLength(1); // 冷层未被清(回滚)
+    expect(await s.audio.has("keep")).toBe(true);
+    expect(await s.knowledgeIndex.listAll()).toHaveLength(1);
+  });
+
+  it("★回滚后基线仍为事务前:后续普通 replaceState 以正确基线增量落库(不复活、不漏写)", async () => {
+    const s = await makeStores();
+    await s.productState.flush();
+    const before = s.productState.getState();
+    const beforeNoteIds = await noteIds(s.productState);
+
+    // 一次失败的治理事务(不推进基线)。
+    await expect(
+      s.productState.runGovernanceTransaction!({ kind: "replace", next: { ...before, memoryRecords: [badMemory()] } as unknown as ProductState }, wipeAll)
+    ).rejects.toThrow();
+
+    // 随后正常 replaceState 删掉 demo note:以正确基线(=事务前)diff → DELETE note-seed-1。
+    const st = s.productState.getState();
+    st.notes = [];
+    s.productState.replaceState(st);
+    await s.productState.flush();
+
+    expect(await noteIds(s.productState)).toHaveLength(0); // 若基线被错误推进,这里可能删不掉/漏删
+    expect(s.productState.getPersistHealth().consecutiveFailures).toBe(0); // 后续写健康
+    void beforeNoteIds;
+  });
+});
+
+describe("R2b 治理事务 · M1 并发写护栏(治理在途拒绝并发整状态写,防复活)", () => {
+  it("★治理在途 → 并发 replaceState/resetState 抛 GovernanceInFlightError;结算后 DB+内存 note 同为空(不复活)", async () => {
+    const s = await makeStores();
+    await s.productState.flush();
+    const demoNote = s.productState.getState().notes[0];
+    expect(demoNote).toBeDefined();
+    expect(await noteIds(s.productState)).not.toHaveLength(0); // 复现前提:治理前 DB 有个人 note
+
+    // 启动治理 reset(不 await)——in-flight 计数在函数体内同步升起。
+    const gov = s.productState.runGovernanceTransaction!({ kind: "reset" }, wipeAll);
+    // 同 tick 并发整状态写(模拟写槽被强放后抢到的 PUT / 后台终写):此刻 getState 仍是"未清空的旧
+    // state",若放行会以旧快照排到治理之后、以治理推进的新基线把个人 note UPSERT 回权威库(复活)。
+    // 护栏必须同步拒绝。
+    expect(() => s.productState.replaceState({ ...s.productState.getState(), notes: [demoNote] })).toThrow(GovernanceInFlightError);
+    expect(() => s.productState.resetState()).toThrow(GovernanceInFlightError);
+
+    await gov; // 治理提交、基线推进、计数落下
+    await s.productState.flush();
+    // 关键断言:getState 与 DB note 表**同为空**——racing 写被拒,个人数据没被复活。
+    expect(s.productState.getState().notes).toHaveLength(0);
+    expect(await noteIds(s.productState)).toHaveLength(0);
+  });
+
+  it("in-flight 计数贯穿'已排队未执行'窗口:治理排在挂起 persist 之后时,并发写同样被拒", async () => {
+    const s = await makeStores();
+    await s.productState.flush();
+    // 先制造一笔挂起的 persist(replaceState 同步入队、异步落库),治理随即排到它之后——此刻治理尚未
+    // 执行,但 in-flight 计数已在 runGovernanceTransaction 函数体同步升起。
+    s.productState.replaceState(s.productState.getState());
+    const gov = s.productState.runGovernanceTransaction!({ kind: "reset" }, wipeAll);
+    expect(() => s.productState.replaceState(s.productState.getState())).toThrow(GovernanceInFlightError);
+    await gov;
+    await s.productState.flush();
+    // 结算后护栏解除:普通写恢复,不再抛。
+    expect(() => s.productState.replaceState(s.productState.getState())).not.toThrow();
+  });
+
+  it("standalone(无治理能力)不装护栏:replaceState 从不因治理被拒", async () => {
+    const r = await makeStandalone();
+    expect(() => r.replaceState(r.getState())).not.toThrow();
+    expect(() => r.resetState()).not.toThrow();
+  });
+});

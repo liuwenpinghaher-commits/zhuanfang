@@ -17,6 +17,7 @@
   "include": ["src"],
   "exclude": [
     "node_modules", "../../node_modules", "../../zhuanfang", "../../dist",
-    "src/e2e/surreal-data-layer-journey.real.test.ts"
+    "src/e2e/surreal-data-layer-journey.real.test.ts",
+    "src/routes/state.governance.real.test.ts"
   ]
 }

@@ -5,6 +5,7 @@ import { buildPrivacyReport, createPurgedProductState, createScopedPurge, type P
 import { normalizeProductState } from "../../../../src/domain/storage";
 import { withAuditEvent } from "../../../../src/domain/utils";
 import { purgeLocalObjectArtifactsForState } from "../local-object-artifacts";
+import { asGovernanceTx, type GovernanceColdSpec } from "../governance/governance-tx-capability";
 import type { ProductStateRepository } from "../product-state-repository";
 import type { RawMaterialRepository } from "../raw-material-repository";
 import type { AudioRepository } from "../audio-repository";
@@ -53,6 +54,26 @@ export async function registerStateRoutes(
   const rawMaterialRepository = options.rawMaterialRepository;
   const audioRepository = options.audioRepository;
   const knowledgeIndexRepository = options.knowledgeIndexRepository;
+
+  // ═══ R2b · 治理事务(真 ACID)共用小工具 ══════════════════════════════════════════════
+  // "清空三冷层"的治理冷层规格 + 成功回执 stores(与既有 best-effort 三态口径一致:配置了的库标
+  // cleared、未注入的标 not-configured)。治理事务只对已注入的冷层库发 wipe——surreal 档三库恒注入,
+  // 但仍按 presence 构建,保持契约与回落路径逐字一致。
+  const buildWipeColdSpec = (): { cold: GovernanceColdSpec; stores: Record<string, string> } => {
+    const cold: GovernanceColdSpec = {};
+    const stores: Record<string, string> = {};
+    if (rawMaterialRepository) { cold.rawMaterial = { action: "wipe" }; stores["raw-material"] = "cleared"; } else stores["raw-material"] = "not-configured";
+    if (audioRepository) { cold.audio = { action: "wipe" }; stores["audio"] = "cleared"; } else stores["audio"] = "not-configured";
+    if (knowledgeIndexRepository) { cold.knowledgeIndex = { action: "wipe" }; stores["knowledge-index"] = "cleared"; } else stores["knowledge-index"] = "not-configured";
+    return { cold, stores };
+  };
+  // 整体回滚回执的 stores:配置了的库标 rolled-back(而非 cleared/failed),未注入标 not-configured。
+  const rolledBackStores = (): Record<string, string> => ({
+    "raw-material": rawMaterialRepository ? "rolled-back" : "not-configured",
+    audio: audioRepository ? "rolled-back" : "not-configured",
+    "knowledge-index": knowledgeIndexRepository ? "rolled-back" : "not-configured",
+  });
+
   server.get("/api/state", async () => repository.getState());
   server.put("/api/state", async (request, reply) => {
     const stored = repository.getState();
@@ -71,6 +92,30 @@ export async function registerStateRoutes(
         error: "Reset requires explicit confirmation: send confirm=\"RESET_ALL_DATA\"."
       });
     }
+
+    // ═══ R2b · 真事务路径(surreal 档:热态 + 三冷层同连接)═══════════════════════════════
+    // 探到治理事务能力 → 热态清空 + 冷层清空在单个 BEGIN...COMMIT 内原子完成。成功=全清并推进基线;
+    // 失败=整体回滚(DB/内存/基线全不动),500 + resetReceipt 标注 rolled-back(无部分提交)。
+    // 回落档(memory/sqlite/dual)探不到能力,走下方既有 best-effort 逐库路径(行为完全不变)。
+    const resetGov = asGovernanceTx(repository);
+    if (resetGov) {
+      const { cold, stores } = buildWipeColdSpec();
+      try {
+        const next = await resetGov.runGovernanceTransaction({ kind: "reset" }, cold);
+        return { ...next, resetReceipt: { partialFailure: false, stores } };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(JSON.stringify({ event: "reset_governance_tx_rolled_back", error: message }));
+        // 整体回滚:不带 state(热态未提交,绝不让前端采纳"已清空"的假象)。前端 500 分支因缺
+        // body.state 不触发"采纳已清热态",按硬错误如实展示"清空失败",本地状态与服务端(均未变)一致。
+        return reply.code(500).send({
+          error: `reset failed (rolled back, no partial commit): ${message}`,
+          rolledBack: true,
+          resetReceipt: { partialFailure: false, rolledBack: true, hotStateCommitted: false, stores: rolledBackStores() },
+        });
+      }
+    }
+
     // 顺序:先清热态、后清冷层。热态 resetState() 是原子必选步骤,失败让异常自然冒泡成 500
     // (此时冷层未动,用户重试即可整体重来);冷层随后逐库"尽力而为"清(隐私删除要最大化,
     // 一库 IO 故障不该挡住其余库),清理结果逐库如实记入 resetReceipt 返回给前端。
@@ -383,6 +428,38 @@ export async function registerStateRoutes(
       if (audioRepository) restoredAudios = [];
     }
 
+    // replaced:两条执行路径(R2b 真事务 / 回落 journal)共同产出的"落库后热态",供阶段三消费。
+    let replaced: ProductState | undefined;
+
+    // ═══ R2b · 真事务路径(surreal 档:热态替换 + 冷层 raw/audio 单事务)═════════════════════
+    // 探到治理事务能力 → imported 热态 + 冷层 raw/audio(replace 或 preserve-cold 时不触碰)在单个
+    // BEGIN...COMMIT 原子完成。知识索引不入事务(与回落 journal 一致:提交后阶段三 best-effort 全量
+    // 重建)。失败=整体回滚(DB/内存/基线全不动),500 + rolledBack;成功后落到阶段三,与 journal 汇流。
+    const importGov = asGovernanceTx(repository);
+    if (importGov) {
+      const cold: GovernanceColdSpec = {};
+      if (restoredRawMaterials !== undefined) cold.rawMaterial = { action: "replace", materials: restoredRawMaterials };
+      if (restoredAudios !== undefined) cold.audio = { action: "replace", audios: restoredAudios };
+      try {
+        replaced = await importGov.runGovernanceTransaction({ kind: "replace", next: imported }, cold);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(JSON.stringify({ event: "import_governance_tx_rolled_back", error: message }));
+        // 整体回滚:steps 全 rolled-back,不带 state(热态未提交,绝不让前端采纳半截恢复)。
+        // 出口形状与既有 journal 500 一致(failedStep/rolledBack/steps),productApi/ProfileView 照旧消费。
+        const steps: Array<{ store: string; status: string }> = [];
+        if (restoredRawMaterials !== undefined) steps.push({ store: "raw-material", status: "rolled-back" });
+        if (restoredAudios !== undefined) steps.push({ store: "audio", status: "rolled-back" });
+        steps.push({ store: "hot-state", status: "rolled-back" });
+        return reply.code(500).send({
+          error: `import failed (rolled back, no partial commit): ${message}`,
+          failedStep: "transaction",
+          rolledBack: true,
+          steps,
+        });
+      }
+    } else {
+
     // ═══ F-04 阶段二:执行协议(journal + 补偿)═══════════════════════════════════
     // 执行前对将被改写的冷层做全量内存快照:import 体限 64MB,快照峰值与包体同量级,一次性
     // 恢复操作可接受——用这份内存开销换"任一步失败都不丢旧数据"的确定性。
@@ -402,7 +479,7 @@ export async function registerStateRoutes(
       /** 逆序补偿:把快照放回去。hot-state 最后一步失败即未提交,无需(也无法)补偿。 */
       compensate?: () => void | Promise<void>;
     }
-    let replaced: ProductState | undefined;
+    // 注:replaced 已在 R2b 分支上方 hoist(两路共用),此处不再声明。
     const steps: ImportStep[] = [];
     if (rawSnapshot !== undefined) {
       steps.push({
@@ -481,6 +558,7 @@ export async function registerStateRoutes(
         });
       }
     }
+    } // ← R2b:回落 journal 路径(else)结束;两路在此汇流到阶段三
 
     // ═══ F-04 阶段三:post-commit 装饰(尽力而为,不影响已成功的恢复本身)═══════════
     // 审计修复(P3-39,保留):恢复后自动重建知识索引——material/transcript 块此前只在 import
@@ -619,6 +697,30 @@ export async function registerStateRoutes(
           createdAt: new Date().toISOString()
         });
       }
+      // ═══ R2b · 真事务路径(surreal 档:热态 purge + 冷层三库单事务)═══════════════════════
+      // 探到治理事务能力 → 热态 purged + 冷层三库清空在单个 BEGIN...COMMIT 原子完成。
+      // local-object 文件删除(artifactPurge)已在上方执行,属**文件层、非事务**(文件系统无法入
+      // 事务):保持现状。回滚时热态/冷层整体回退,但文件已删(隐私删除方向,过删不过留);receipt
+      // 如实带 artifactPurge。成功回执与既有 200 逐字一致(partialFailure:false/hotStateCommitted/stores)。
+      const purgeGovAll = asGovernanceTx(repository);
+      if (purgeGovAll) {
+        const { cold, stores } = buildWipeColdSpec();
+        try {
+          const nextState = await purgeGovAll.runGovernanceTransaction({ kind: "replace", next: purged }, cold);
+          return { ...nextState, artifactPurge, deletedScope: "all" as PurgeScope, deletedCount, purgeReceipt: { partialFailure: false, hotStateCommitted: true, stores } };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(JSON.stringify({ event: "purge_governance_tx_rolled_back", scope: "all", error: message }));
+          // 整体回滚(热态/冷层未提交):不带 state。带 artifactPurge(文件层非事务,已删)。
+          return reply.code(500).send({
+            error: `purge failed (rolled back, no partial commit): ${message}`,
+            rolledBack: true,
+            artifactPurge,
+            purgeReceipt: { partialFailure: false, rolledBack: true, hotStateCommitted: false, stores: rolledBackStores() },
+          });
+        }
+      }
+
       // Cold layer (raw transcripts / recorded audio / derived knowledge index) must go with a
       // full wipe, otherwise the original Q&A / voice / indexed personal text survives the
       // "complete" purge (Task 13 / Task 4 / Task 12)。F-04:逐库尽力而为,一库失败不挡其余库。
@@ -639,6 +741,28 @@ export async function registerStateRoutes(
         });
       }
       return { ...nextState, artifactPurge, deletedScope: "all" as PurgeScope, deletedCount, purgeReceipt };
+    }
+
+    // ═══ R2b · 真事务路径(surreal 档,interviews:热态 scoped-purge + 冷层三库单事务)═══════
+    // interviews 清空全部会话,其冷层逐字稿/录音/派生知识按会话键关联,须随之清空。探到治理事务能力
+    // → 热态 + 冷层三库单事务原子完成;失败=整体回滚,500 + rolledBack。profile/assets 档不涉及冷层
+    // 事务(assets 的索引一致性由下方 rebuild 负责),永远走通用路径。
+    const purgeGovInterviews = scope === "interviews" ? asGovernanceTx(repository) : undefined;
+    if (purgeGovInterviews) {
+      const { nextState: iScopedState, deletedScope: iScope, deletedCount: iCount } = createScopedPurge(state, scope);
+      const { cold, stores } = buildWipeColdSpec();
+      try {
+        const nextState = await purgeGovInterviews.runGovernanceTransaction({ kind: "replace", next: iScopedState }, cold);
+        return { ...nextState, deletedScope: iScope, deletedCount: iCount, purgeReceipt: { partialFailure: false, hotStateCommitted: true, stores } };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(JSON.stringify({ event: "purge_governance_tx_rolled_back", scope: "interviews", error: message }));
+        return reply.code(500).send({
+          error: `purge failed (rolled back, no partial commit): ${message}`,
+          rolledBack: true,
+          purgeReceipt: { partialFailure: false, rolledBack: true, hotStateCommitted: false, stores: rolledBackStores() },
+        });
+      }
     }
 
     const { nextState: scopedState, deletedScope, deletedCount } = createScopedPurge(state, scope);
