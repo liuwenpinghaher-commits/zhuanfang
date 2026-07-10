@@ -470,7 +470,11 @@ export interface StateImportResult {
 /** F-04:POST /api/state/purge 的逐库清理回执(三态口径与 reset 一致)。 */
 export interface PurgeReceipt {
   partialFailure: boolean;
-  /** purge 的热态无论冷层成败都提交(隐私删除最大化);500 时前端据此采纳 body.state。 */
+  /**
+   * purge 的热态无论冷层成败都提交(隐私删除最大化)。B2 审查:部分失败(500)时后端把
+   * 已清空的热态随 body{state, purgeReceipt} 带回,App.purgeData 据此采纳 body.state
+   * (走 acceptAuthoritativeState)并如实列出未删除的库——见 src/App.tsx purgeData。
+   */
   hotStateCommitted?: boolean;
   stores: Record<string, ResetStoreOutcome>;
 }
@@ -614,8 +618,9 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         delete record.artifactPurge;
         delete record.deletedScope;
         delete record.deletedCount;
-        // F-04:purgeReceipt 剥离后透出(方式同 importState:App.purgeData 目前整对象
-        // saveProductState,用不可枚举属性防 autosave 寄生,C2 接线直接读属性)。
+        // F-04/B2:purgeReceipt 剥离后以不可枚举属性透出(App.purgeData 整对象
+        // saveProductState/JSON 序列化时不会寄生);App.purgeData 读该属性做 200 时的
+        // partialFailure 防御检查,500 部分失败则走 ApiError.body 路径(见 PurgeReceipt 注释)。
         if (record.purgeReceipt && typeof record.purgeReceipt === "object") {
           purgeReceipt = record.purgeReceipt as PurgeReceipt;
         }

@@ -816,6 +816,54 @@ describe("state routes", () => {
       await server.close();
     });
 
+    it("B2#5:完整包第一步失败(raw-material put 抛)→ 500 + journal:raw 快照恢复,audio 未动,热态未变", async () => {
+      // 与既有的 middle(audio)/last(hot-state)/补偿失败用例对称,补齐首步故障注入:
+      // raw-material 是 journal 第一步,deleteAll 成功后 put 新条目抛错——失败步骤自身可能已
+      // 部分执行,补偿必须把 raw 快照放回;后续步骤(audio/hot-state)必须保持 pending 未执行。
+      const rawBase = createInMemoryRawMaterialRepository();
+      rawBase.put(sampleMaterial("old-raw"));
+      // 故障注入:仅对导入的新条目抛错——补偿路径 put 回旧快照必须仍然可用。
+      const rawRepo = {
+        ...rawBase,
+        put: (m: InterviewRawMaterial) => {
+          if (m.sessionId === "new-raw") throw new Error("simulated raw put failure");
+          rawBase.put(m);
+        }
+      };
+      const audioRepo = createInMemoryAudioRepository();
+      audioRepo.put(seededAudio("old-audio"));
+      const server = buildApiServer({ rawMaterialRepository: rawRepo, audioRepository: audioRepo });
+      const cur = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/import",
+        payload: {
+          confirm: "REPLACE_ALL_STATE",
+          state: { ...cur, profile: { ...cur.profile, name: "SHOULD_NOT_COMMIT" } },
+          rawMaterials: [sampleMaterial("new-raw")],
+          audios: [audioImportEntry("new-audio")]
+        }
+      });
+      expect(res.statusCode).toBe(500);
+      const body = res.json();
+      expect(body.failedStep).toBe("raw-material");
+      expect(body.rolledBack).toBe(true);
+      expect(body.steps).toEqual([
+        { store: "raw-material", status: "failed" },
+        { store: "audio", status: "pending" },
+        { store: "hot-state", status: "pending" }
+      ]);
+      // raw 快照已恢复:旧世代在,新世代不在;audio 库根本没被执行,旧数据原样。
+      expect(rawBase.get("old-raw")).toBeDefined();
+      expect(rawBase.get("new-raw")).toBeUndefined();
+      expect(audioRepo.has("old-audio")).toBe(true);
+      expect(audioRepo.has("new-audio")).toBe(false);
+      // 热态排在最后一步,首步失败时尚未写入——GET 复核未变。
+      const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      expect(after.profile.name).toBe(cur.profile.name);
+      await server.close();
+    });
+
     it("最后一步热态 replaceState 失败 → 冷层已全部补偿恢复,journal 标 hot-state failed", async () => {
       const rawRepo = createInMemoryRawMaterialRepository();
       rawRepo.put(sampleMaterial("old-raw"));

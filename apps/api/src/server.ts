@@ -885,6 +885,13 @@ export async function startServer() {
     // 默认:sqlite(不变;未知 PRODUCT_STORE 值已在 resolveProductStoreSelection 归一为 sqlite)。
     repository = createSqliteProductStateRepository({ dbPath: productStateDbPath });
   }
+  // F-02 事故收口(2026-07-10):Playwright 定向实跑中,navigation.spec 的陈旧 mock 未拦截,
+  // PATCH /api/system/config 打到 webServer 起的真实 API——buildApiServer 默认 envFilePath 是
+  // join(process.cwd(), ".env.local"),writeEnvFileUpdates 把仓库根 .env.local 里的真实
+  // DASHSCOPE_API_KEY 覆盖成了测试占位值(已人工恢复)。mock 修好只是测试侧防线;产品级
+  // 防线在这里:允许用 PRODUCT_ENV_FILE 把"运行时配置写盘路径"指到隔离文件,测试/托管环境
+  // 的 config 写永远落不到仓库根 .env.local(playwright.config.ts 的 webServer env 已设)。
+  const productEnvFile = (process.env.PRODUCT_ENV_FILE ?? "").trim();
   // enableResearchScheduler: only the persistent process runs the background scheduler.
   // It self-gates per tick on systemConfig.research.autoScheduleEnabled (default off),
   // so users can toggle it on at runtime without a restart.
@@ -893,7 +900,8 @@ export async function startServer() {
     productStateRepository: repository,
     // F-02/A2:把实际生效档位透出到 /api/system/capabilities,供 E2E globalSetup 校验隔离。
     productStoreMode: productStore,
-    enableResearchScheduler: true
+    enableResearchScheduler: true,
+    ...(productEnvFile ? { envFilePath: productEnvFile } : {})
   });
   const port = Number(process.env.PORT ?? 3210);
   const host = process.env.HOST ?? "127.0.0.1";

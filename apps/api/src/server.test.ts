@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -276,6 +276,36 @@ describe("Product API", () => {
         expect.objectContaining({ id: "anysearch", status: "ready" })
       ])
     );
+  });
+
+  it("F-02 事故收口:传入 envFilePath 后 PATCH config 只写该文件,绝不碰 cwd 的 .env.local", async () => {
+    // 事故背景(2026-07-10):Playwright 实跑中陈旧 mock 未拦截,PATCH /api/system/config 打到
+    // webServer 起的真实 API,writeEnvFileUpdates 按默认 join(process.cwd(), ".env.local") 把
+    // 仓库根 .env.local 的真实 DASHSCOPE_API_KEY 覆盖成测试占位值。本测试钉死产品级防线:
+    // buildApiServer 显式传入 envFilePath(startServer 经 PRODUCT_ENV_FILE 注入)时,config
+    // 写盘只落隔离文件,cwd 的 .env.local 字节不变。
+    const isolatedEnvFilePath = createEnvPath();
+    writeFileSync(isolatedEnvFilePath, "# isolated runtime config\n");
+    const cwdEnvFilePath = join(process.cwd(), ".env.local");
+    const cwdEnvBefore = existsSync(cwdEnvFilePath) ? readFileSync(cwdEnvFilePath, "utf8") : null;
+    const server = buildApiServer({ envFilePath: isolatedEnvFilePath, env: {} });
+
+    const response = await server.inject({
+      method: "PATCH",
+      url: "/api/system/config",
+      payload: { updates: { BAILIAN_SEARCH_MODEL: "isolated-env-file-marker" } }
+    });
+
+    expect(response.statusCode).toBe(200);
+    // 更新落在隔离文件里。
+    expect(readFileSync(isolatedEnvFilePath, "utf8")).toContain("BAILIAN_SEARCH_MODEL=isolated-env-file-marker");
+    // cwd 的 .env.local 原样:不新建、不改写、一个字节都不动。
+    const cwdEnvAfter = existsSync(cwdEnvFilePath) ? readFileSync(cwdEnvFilePath, "utf8") : null;
+    expect(cwdEnvAfter).toBe(cwdEnvBefore);
+    if (cwdEnvAfter !== null) {
+      expect(cwdEnvAfter).not.toContain("isolated-env-file-marker");
+    }
+    await server.close();
   });
 
   it("uses refreshed AnySearch provider client in search routes after runtime config PATCH", async () => {

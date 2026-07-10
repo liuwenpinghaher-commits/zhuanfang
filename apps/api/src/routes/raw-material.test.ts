@@ -65,7 +65,9 @@ describe("POST /api/admin/offload-completed", () => {
     const imp = await server.inject({
       method: "POST",
       url: "/api/state/import",
-      payload: { confirm: "REPLACE_ALL_STATE", state: injected }
+      // F-04:裸 state(无 rawMaterials/audios)的 legacy 导入现在必须显式声明冷层模式。
+      // 本测试随后要把 turns 降冷进全新的冷层,replace-all(清空冷层)正是干净起点语义。
+      payload: { confirm: "REPLACE_ALL_STATE", state: injected, coldLayerMode: "replace-all" }
     });
     expect(imp.statusCode).toBe(200);
 

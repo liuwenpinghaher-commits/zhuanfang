@@ -561,6 +561,77 @@ describe("product api client", () => {
     expect(result.audioOmittedSessions).toEqual([]);
   });
 
+  it("C2#10:旧服务端响应缺 completeness/bundleDigest/importCompatibility 时本地补齐,且演练 failed 不误报 complete", async () => {
+    // 旧服务端形状:只有演练报告主体,没有新契约的 rawMaterials/audios/audioSessions/
+    // audioOmittedSessions/bundleDigest/importCompatibility/completeness。exportState 的
+    // fallback 分支必须:①补齐数组与摘要(bundleDigest 回落 package.stateDigest);②用
+    // assessStateExportCompleteness 本地重判——checks 里有 failed 时绝不能把这份备份
+    // 报成"完整可直接导入"。
+    const legacyReport = {
+      schemaVersion: 1,
+      generatedAt: "2026-06-19T00:00:00.000Z",
+      strategy: "json-export-import-rehearsal",
+      summary: { passed: 4, warning: 0, failed: 1 },
+      package: {
+        product: "interview-product-mvp",
+        format: "product-state-json",
+        exportedAt: "2026-06-19T00:00:00.000Z",
+        stateBytes: 12345,
+        stateDigest: "legacy-digest",
+        restoredDigest: "legacy-digest",
+        privacyReportIncluded: true,
+        providerSecretsExcluded: false
+      },
+      privacyReport: {
+        generatedAt: "2026-06-19T00:00:00.000Z",
+        totalRecords: 10,
+        hasPersonalData: true,
+        inventory: [],
+        operations: {
+          exportAvailable: true,
+          importAvailable: true,
+          purgeAvailable: true,
+          resetToDemoAvailable: true,
+          providerSecretsExcluded: false,
+          runtimeEnvPreservedOnPurge: true
+        },
+        retentionNotes: []
+      },
+      migrationManifest: { checks: [], runbook: [] },
+      checks: [
+        {
+          id: "provider-secrets",
+          label: "Provider 密钥排除",
+          status: "failed",
+          detail: "导出包疑似包含 provider secret 标记。",
+          recommendation: "移除 secret 后重新导出。"
+        }
+      ],
+      runbook: []
+    };
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify(legacyReport), { status: 200 }));
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+
+    const result = await client.exportState();
+
+    // 补齐:缺失字段全部有值,UI 不会因 undefined 崩,摘要回落 package.stateDigest。
+    expect(result.rawMaterials).toEqual([]);
+    expect(result.audioSessions).toEqual([]);
+    expect(result.audios).toEqual([]);
+    expect(result.audioOmittedSessions).toEqual([]);
+    expect(result.bundleDigest).toBe("legacy-digest");
+    expect(result.importCompatibility.importBodyLimitBytes).toBe(64 * 1024 * 1024);
+    expect(result.importCompatibility.bytes).toBeGreaterThan(0);
+    expect(result.importCompatibility.exceedsImportLimit).toBe(false);
+    // 不误报:演练 failed → 本地重判为 not-directly-importable(complete=false,
+    // directlyImportable 与 status 同源为 false),理由里带上失败的检查。
+    expect(result.completeness.status).toBe("not-directly-importable");
+    expect(result.completeness.complete).toBe(false);
+    expect(result.completeness.directlyImportable).toBe(false);
+    expect(result.completeness.failedChecks).toBe(1);
+    expect(result.completeness.reasons.join(" ")).toContain("Provider 密钥排除");
+  });
+
   it("F-06: importState 分离返回规范化 state 与 restored/skipped/missing receipt", async () => {
     const state = createInitialProductState();
     const receipt = {

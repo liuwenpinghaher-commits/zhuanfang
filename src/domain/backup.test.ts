@@ -142,6 +142,9 @@ describe("backup", () => {
       }]
     });
     expect(failed.status).toBe("not-directly-importable");
+    // C2#3:directlyImportable 必须与 status 同源——演练 failed 时不得再出现
+    // status=not-directly-importable 而 boolean=true 的自相矛盾。
+    expect(failed.directlyImportable).toBe(false);
     expect(failed.failedChecks).toBe(1);
     expect(failed.reasons.join(" ")).toContain("Provider 密钥排除");
   });

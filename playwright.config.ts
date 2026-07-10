@@ -1,4 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -26,6 +28,11 @@ export default defineConfig({
         // 显式 PRODUCT_STORE=memory 掐断继承;dbPath sentinel 保留,两者任一都足以进内存档位。
         PRODUCT_STORE: "memory",
         PRODUCT_STATE_DB_PATH: "memory",
+        // F-02 事故收口(2026-07-10):陈旧 mock 未拦截时,PATCH /api/system/config 曾打到这个
+        // 真实 API 并把仓库根 .env.local 的真实 DASHSCOPE_API_KEY 覆盖成测试占位值。
+        // PRODUCT_ENV_FILE 把 config 写盘路径隔离到 tmp——即使将来再有 mock 漏拦,写坏的也
+        // 只是一次性测试文件,永远不是仓库根 .env.local。
+        PRODUCT_ENV_FILE: join(tmpdir(), "zhuanfang-e2e.env.local"),
         DASHSCOPE_API_KEY: "",
         BAILIAN_API_KEY: "",
         ANYSEARCH_API_KEY: "",

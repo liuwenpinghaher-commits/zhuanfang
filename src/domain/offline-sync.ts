@@ -198,19 +198,22 @@ export function mergeProductStates(base: ProductState, local: ProductState, remo
   return { state, conflicts: merged.conflicts };
 }
 
-function conflictIdentity(conflict: OfflineSyncConflict): string {
-  return JSON.stringify(canonicalize(conflict));
-}
-
 /**
  * 将持久 outbox 与当前远端态重放。outbox.conflicts 表示用户尚未裁决的历史冲突：
  * 即便本轮三方比较不再产出新冲突，也必须继续阻断自动 PUT，直到用户显式选边。
+ *
+ * F-05 补审查 M-1：冲突按 path 去重、local 取最新。此前冲突身份把 local 值也算进去，
+ * 冲突未决期间用户继续编辑同一字段会让同一 path 累积多条记录、UI 冲突计数虚高。
+ * 同一 path 在语义上只有一个待裁决问题——后到的条目（携带最新 local）覆盖先到的。
  */
 export function reconcileOfflineOutbox(outbox: OfflineOutbox, remote: ProductState): OfflineOutboxReconciliation {
   const merged = mergeProductStates(outbox.baseState, outbox.localState, remote);
-  const conflicts = [...(outbox.conflicts ?? []), ...merged.conflicts].filter(
-    (conflict, index, all) => all.findIndex((candidate) => conflictIdentity(candidate) === conflictIdentity(conflict)) === index
-  );
+  const conflictsByPath = new Map<string, OfflineSyncConflict>();
+  for (const conflict of [...(outbox.conflicts ?? []), ...merged.conflicts]) {
+    // 历史冲突在前、本轮新算的在后：Map 后写覆盖 → 同 path 自然取最新一轮的 local。
+    conflictsByPath.set(conflict.path, conflict);
+  }
+  const conflicts = [...conflictsByPath.values()];
   return {
     state: merged.state,
     conflicts,
@@ -306,35 +309,16 @@ export function hasUnsyncedLocalChanges(): boolean {
   }
 }
 
-/** 置位未同步标志（存时间戳便于人工排查"从什么时候开始没同步"）。 */
-export function markUnsyncedLocalChanges(): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-  try {
-    window.localStorage.setItem(UNSYNCED_FLAG_KEY, new Date().toISOString());
-  } catch {
-    // 隐私模式 / 配额超限：标志写不进去只影响重连保护的触发，绝不能炸掉保存流程。
-  }
-}
-
-/** 清除未同步标志（本地内容已确认写入服务端时调用）。 */
-export function clearUnsyncedLocalChanges(): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-  try {
-    window.localStorage.removeItem(UNSYNCED_FLAG_KEY);
-  } catch {
-    // 同上：失败静默，最多导致下次多做一次无害的"内容相同→清标志"。
-  }
-}
+// F-05 补审查 I-3：markUnsyncedLocalChanges / clearUnsyncedLocalChanges / decideInitialSync
+// 三个导出已删除——全仓 grep 确认零消费（旧 v1 标志的写/清已由 writeOfflineOutbox /
+// clearOfflineOutbox 同步维护；mount 决策已被 outbox 三方合并路径取代，decideInitialSync
+// 的布尔标志矩阵无法等价表达 base/local/remote 合并语义，故删而非改造）。
 
 /**
  * 把即将被服务端版本覆盖的本地状态存一份备份。
- * 这是最后防线：离线修改推送冲突/失败而不得不采纳服务端版本时，本地态不至于
- * 彻底丢失（用户可从 DevTools 手动取回）。刻意不做 UI 恢复入口——单用户产品里
- * 这种双重冲突极罕见，为它建 UI 的复杂度不划算。
+ * 这是最后防线：用户在冲突裁决里显式选择「采用服务器版本」（App.useRemoteConflictVersion）
+ * 时，被丢弃的本地态不至于彻底丢失（可从 DevTools 手动取回）。刻意不做 UI 恢复入口——
+ * 单用户产品里这种双重冲突极罕见，为它建 UI 的复杂度不划算。
  */
 export function backupUnsyncedState(state: unknown): void {
   if (typeof window === "undefined") {
@@ -348,29 +332,6 @@ export function backupUnsyncedState(state: unknown): void {
   } catch {
     // 备份失败（配额）也不能阻断重连流程；标志/notice 已经把"发生过覆盖"告知用户。
   }
-}
-
-export type InitialSyncDecision = "adopt-remote" | "push-local" | "adopt-remote-clear-flag";
-
-/**
- * mount 初始 getState() 成功后的同步决策（F-05 重连保护核心矩阵）：
- * - 无未同步标志 → 采纳远端（现行为，服务器是真相源）；
- * - 有标志且本地内容 ≠ 远端 → 本地优先推送（离线修改是单用户产品下用户的最新意图）；
- * - 有标志但内容相同 → 采纳远端并清标志（上次会话其实已同步成功，只是标志没来得及清）。
- * 签名比较用 productStateContentSignature（忽略 revision），revision 漂移不算内容分歧。
- */
-export function decideInitialSync(input: {
-  hasUnsynced: boolean;
-  localSignature: string;
-  remoteSignature: string;
-}): InitialSyncDecision {
-  if (!input.hasUnsynced) {
-    return "adopt-remote";
-  }
-  if (input.localSignature !== input.remoteSignature) {
-    return "push-local";
-  }
-  return "adopt-remote-clear-flag";
 }
 
 // autosave 失败重试退避参数：5s 起步（网络抖动通常几秒内恢复），指数放大避免

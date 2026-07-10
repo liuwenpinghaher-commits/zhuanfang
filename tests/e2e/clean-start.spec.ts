@@ -1,5 +1,6 @@
 /**
- * P4-T2 regression: "清空示例，开始我的记录" (clean-start feature).
+ * P4-T2 regression: "清空全部数据，从头开始" (clean-start feature；原名"清空示例，开始我的记录",
+ * 审计「reset 文案如实」后按钮/通知文案已如实化).
  *
  * Regression for the crash bug that occurred when 清空示例 was clicked and the
  * app tried to render views with an empty ProductState. Tests:
@@ -22,16 +23,18 @@ test("清空示例 clears demo data and leaves app usable", async ({ page }) => 
   await expect(page.getByText("长期记忆必须可见、可修正、可删除。AI 推断不能直接等同于事实。")).toBeVisible();
 
   // ── Step 2: register dialog handler BEFORE clicking, then click ───────────
-  // ProfileView renders the button with text "清空示例，开始我的记录".
+  // B 类修正(规格陈旧,2026-07-10):审计「reset 文案如实」(B11/B12,F-03 延续)把按钮从
+  // “清空示例，开始我的记录”改为“清空全部数据，从头开始”、成功通知从“示例数据已清空”改为
+  // “全部数据已清空”——reset 删除的是全部数据(含用户真实记录),旧文案会误导用户。断言跟上新文案。
   // App.resetData uses window.confirm, so we must intercept with page.on("dialog").
   page.on("dialog", async (dialog) => {
     await dialog.accept();
   });
 
-  await page.getByRole("button", { name: "清空示例，开始我的记录" }).click();
+  await page.getByRole("button", { name: "清空全部数据，从头开始" }).click();
 
-  // App shows a success notice after clearing.
-  await expect(page.getByText("示例数据已清空")).toBeVisible();
+  // App shows a success notice after clearing (F-03:该文案只在服务端确认全部清空时出现)。
+  await expect(page.getByText("全部数据已清空")).toBeVisible();
 
   // App navigates to home view ("home") after reset.
   // The nav button "今日访谈台" must be visible — proves no blank-screen crash.

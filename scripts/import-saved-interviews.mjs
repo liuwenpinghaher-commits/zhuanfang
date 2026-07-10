@@ -33,7 +33,10 @@ for (const key of MERGE_KEYS) console.log(`  ${key}: ${merged[key].length}`);
 const res = await fetch(`${API}/api/state/import`, {
   method: "POST",
   headers: { "content-type": "application/json" },
-  body: JSON.stringify({ confirm: "REPLACE_ALL_STATE", state: merged }),
+  // F-04(B2#3):裸 state(无 rawMaterials/audios 数组)属 legacy 包,新契约要求显式声明冷层去向,
+  // 否则 422。本脚本是"恢复保存的访谈"——现有冷层(逐字稿/录音)可能正属于这些 session,
+  // 必须保留,故选 preserve-cold(只替换热态,冷层原样不动)。
+  body: JSON.stringify({ confirm: "REPLACE_ALL_STATE", coldLayerMode: "preserve-cold", state: merged }),
   signal: AbortSignal.timeout(60000)
 });
 if (!res.ok) { console.error("IMPORT FAILED:", res.status, (await res.text()).slice(0, 300)); process.exit(1); }

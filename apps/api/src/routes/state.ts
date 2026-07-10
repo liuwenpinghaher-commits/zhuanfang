@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { assessStateExportCompleteness, buildBackupRestoreRehearsalReport } from "../../../../src/domain/backup";
-import { buildStableDigest } from "../../../../src/domain/stateDigest";
+import { fnv1aDigest } from "../../../../src/domain/stateDigest";
 import { buildPrivacyReport, createPurgedProductState, createScopedPurge, type PurgeScope } from "../../../../src/domain/privacy";
 import { normalizeProductState } from "../../../../src/domain/storage";
 import { withAuditEvent } from "../../../../src/domain/utils";
@@ -182,24 +182,27 @@ export async function registerStateRoutes(
     // F-06:摘要覆盖热态 + 冷层清单 + 实际打包音频,不只沿用 report.package.stateDigest
     // (后者只证明 ProductState,无法发现冷层/音频导出损坏)。compat/completeness 是摘要的
     // 派生元数据,为避免自引用不纳入 digest。
-    const bundleWithDigest = { ...bundleCore, bundleDigest: buildStableDigest(bundleCore) };
+    // C2#1:digest 不再走 buildStableDigest(bundleCore)——那会对含全部音频 base64 的对象做
+    // 键排序深拷贝 + 第二次全量序列化,恰好违背下方 R4-5"大对象只序列化一次"的初衷(瞬时
+    // 内存峰值随导出包翻倍)。改为:核心包只 JSON.stringify 一次,对该字符串做单遍 FNV-1a
+    // (fnv1aDigest,格式 fnv1a-xxxxxxxx 不变)。语义不变:仍是"对导出包主体内容(除
+    // bundleDigest/importCompatibility/completeness 外)的稳定摘要"——同一内容经同一构造
+    // 路径序列化的键序确定,摘要即确定;仅哈希输入从"键排序 JSON"换成"响应实际字节的 JSON"。
+    const coreStr = JSON.stringify(bundleCore);
+    const bundleDigest = fnv1aDigest(coreStr);
     // 审计修复(P1-8 对偶):导出侧如实预警包体积与导入体限的兼容性——"备份成功恢复失败"
     // 必须在备份时就可见,而不是恢复时才 413。
     // 回归审查 R4-5:大对象只序列化一次。此前 JSON.stringify(bundle) 算字节 + return 对象让 Fastify
     // 再序列化整包一次 → 导出包(可达 ~28MB,含音频 base64)双序列化=瞬时内存峰值翻倍。改为手动序列化
-    // bundle 一次、复用该字符串,只额外序列化极小的 importCompatibility 尾并拼接(bundle 由对象字面量
-    // 构成,其 JSON 必以 } 结尾,slice(0,-1) 去尾后拼入兼容性字段安全)。
-    const bundleStr = JSON.stringify(bundleWithDigest);
+    // bundle 一次、复用该字符串,bundleDigest/importCompatibility/completeness 都以字符串拼接追加
+    // (bundle 由对象字面量构成,其 JSON 必以 } 结尾,slice(0,-1) 去尾后拼入字段安全)。
+    const bundleStr = `${coreStr.slice(0, -1)},"bundleDigest":${JSON.stringify(bundleDigest)}}`;
     const prefix = bundleStr.slice(0, -1);
-    let finalBytes = Buffer.byteLength(bundleStr);
-    let finalPayload = bundleStr;
-    // bytes 字段包含在最终 JSON 内,其十进制位数又会影响最终字节数。只迭代极小的尾部
-    // 元数据,不重复序列化可达数十 MB 的 bundle 主体；通常 2 次即稳定。
-    for (let i = 0; i < 8; i += 1) {
+    const buildCandidate = (bytes: number) => {
       const importCompatibility = {
-        bytes: finalBytes,
+        bytes,
         importBodyLimitBytes: IMPORT_BODY_LIMIT_BYTES,
-        exceedsImportLimit: finalBytes > IMPORT_BODY_LIMIT_BYTES
+        exceedsImportLimit: bytes > IMPORT_BODY_LIMIT_BYTES
       };
       const completeness = assessStateExportCompleteness({
         audioSessions,
@@ -208,12 +211,41 @@ export async function registerStateRoutes(
         importCompatibility,
         checks: report.checks
       });
-      const tail = `,"importCompatibility":${JSON.stringify(importCompatibility)},"completeness":${JSON.stringify(completeness)}}`;
-      const candidate = `${prefix}${tail}`;
+      return `${prefix},"importCompatibility":${JSON.stringify(importCompatibility)},"completeness":${JSON.stringify(completeness)}}`;
+    };
+    let finalBytes = Buffer.byteLength(bundleStr);
+    let finalPayload = bundleStr;
+    // bytes 字段包含在最终 JSON 内,其十进制位数又会影响最终字节数。只迭代极小的尾部
+    // 元数据,不重复序列化可达数十 MB 的 bundle 主体；通常 2 次即稳定。
+    let converged = false;
+    for (let i = 0; i < 8; i += 1) {
+      const candidate = buildCandidate(finalBytes);
       const candidateBytes = Buffer.byteLength(candidate);
       finalPayload = candidate;
-      if (candidateBytes === finalBytes) break;
+      if (candidateBytes === finalBytes) {
+        converged = true;
+        break;
+      }
       finalBytes = candidateBytes;
+    }
+    if (!converged) {
+      // C2#6:定点迭代耗尽的理论残缺收尾。8 轮不收敛只可能发生在 64MB 边界 ± 几百字节、
+      // exceedsImportLimit 在相邻两轮间反复翻转的构造性场景——旧实现此时直接返回最后一轮
+      // candidate,其内嵌 bytes 还是上一轮的值,与响应实际字节数不符("页面说可导入、实际
+      // 413"的窗口)。收尾:以最后一轮实测的 candidateBytes(此刻已在 finalBytes 中)再构建
+      // 一次,让内嵌 bytes 等于"上一轮 payload 的实测字节数";相邻两轮 payload 只差 bytes
+      // 数字与 exceedsImportLimit/completeness 文案,量级相同,收尾值即为最忠实的可得值。
+      // 若极端到收尾轮字节数仍与内嵌值不等,如实留下结构化告警而不是静默返回。
+      finalPayload = buildCandidate(finalBytes);
+      const settledBytes = Buffer.byteLength(finalPayload);
+      if (settledBytes !== finalBytes) {
+        console.warn(JSON.stringify({
+          event: "export_bytes_fixed_point_not_converged",
+          embeddedBytes: finalBytes,
+          actualBytes: settledBytes,
+          detail: "导出包 importCompatibility.bytes 与实际响应字节数存在微小偏差(64MB 边界振荡),导入前请以实际文件大小为准。"
+        }));
+      }
     }
     return reply.type("application/json").send(finalPayload);
   });
@@ -486,14 +518,19 @@ export async function registerStateRoutes(
             : []
       },
       missing: {
-        audioSessions: [...new Set([
-          ...(Array.isArray(body?.audioOmittedSessions)
-            ? body.audioOmittedSessions.filter((id): id is string => typeof id === "string")
-            : []),
-          ...(Array.isArray(body?.audioSessions)
-            ? body.audioSessions.filter((id): id is string => typeof id === "string")
-            : []).filter((id) => !new Set((restoredAudios ?? []).map((audio) => audio.sessionId)).has(id))
-        ])]
+        // C2#7:restoredAudios 的 sessionId Set 只建一次——此前写在 filter 回调里,每个已声明
+        // 的 audioSession 都重建一遍整份 Set,O(n²)(大包数百会话 × 数百音频时白耗 CPU)。
+        audioSessions: (() => {
+          const restoredAudioIds = new Set((restoredAudios ?? []).map((audio) => audio.sessionId));
+          return [...new Set([
+            ...(Array.isArray(body?.audioOmittedSessions)
+              ? body.audioOmittedSessions.filter((id): id is string => typeof id === "string")
+              : []),
+            ...(Array.isArray(body?.audioSessions)
+              ? body.audioSessions.filter((id): id is string => typeof id === "string")
+              : []).filter((id) => !restoredAudioIds.has(id))
+          ])];
+        })()
       },
       knowledgeIndex: knowledgeIndexOutcome
     };

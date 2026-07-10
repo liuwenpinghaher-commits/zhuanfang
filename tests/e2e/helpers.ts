@@ -4,7 +4,10 @@ import { createInitialProductState } from "../../src/domain/engine";
 export async function resetDemoState(page: Page) {
   // Restore a known demo baseline (createInitialProductState) via the Product API.
   // We must read the current revision first so the server's optimistic-concurrency check accepts the PUT.
-  const base = "http://127.0.0.1:8787/api/state";
+  // B 类修正(规格陈旧,2026-07-10):自 828abea9「固定端口」起 API 固定在 3210(见 playwright.config
+  // webServer 与 src/api/productApi.ts 的默认 base),这里残留的 8787 让 PUT 永远打空、被 catch 吞掉,
+  // 种子从未真正落库——各 spec 实际跑在上一个 spec 留下的残留状态上。改回真实端口恢复本函数的本意。
+  const base = "http://127.0.0.1:3210/api/state";
   try {
     const cur = await (await page.request.get(base)).json() as { revision?: number };
     const demoState = { ...createInitialProductState(), revision: cur.revision ?? 0 };

@@ -143,7 +143,10 @@ export function assessStateExportCompleteness(input: {
   return {
     status,
     complete: status === "complete",
-    directlyImportable: !input.importCompatibility.exceedsImportLimit,
+    // C2#3:与 status 同源推导。此前 directlyImportable 只看 exceedsImportLimit——演练 check
+    // failed 时 status 已是 not-directly-importable,boolean 却仍 true,两字段互相矛盾,
+    // 消费方信哪个全凭运气。凡 status 判定"不可直接导入",boolean 必须一致为 false。
+    directlyImportable: status !== "not-directly-importable",
     reasons,
     audioSessions,
     includedAudioSessions,

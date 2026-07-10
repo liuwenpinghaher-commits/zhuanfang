@@ -39,7 +39,11 @@ test.describe("primary navigation", () => {
   });
 
   test("shows live Product API capability health in system configuration", async ({ page }) => {
-    await page.route("http://127.0.0.1:8787/api/system/capabilities", async (route) => {
+    // B 类修正(规格陈旧,2026-07-10):前端自 828abea9「固定端口」起固定调 3210(productApi 默认 base),
+    // 旧 mock 挂在 8787 从未匹配,页面实际渲染真后端 capabilities——隔离环境(F-02,provider key 全空)下
+    // “缺少 DASHSCOPE_API_KEY…”出现 10 处,getByText 严格模式必炸。把 mock 指回真实端口,恢复本测试
+    // “UI 按 capabilities 契约渲染”的本意(不依赖 key 配置)。
+    await page.route("http://127.0.0.1:3210/api/system/capabilities", async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -134,7 +138,10 @@ test.describe("primary navigation", () => {
       ]
     };
 
-    await page.route("http://127.0.0.1:8787/api/system/config", async (route) => {
+    // B 类修正(规格陈旧,2026-07-10):同上,mock 端口 8787→3210。此前 mock 永不匹配,
+    // “保存服务端配置”的 PATCH 直达真后端并写进仓库根 .env.local(server.ts 默认 envFilePath),
+    // 把真实 DASHSCOPE_API_KEY 覆盖成测试占位值——修正端口后 PATCH 被拦截,不再触碰真实 env 文件。
+    await page.route("http://127.0.0.1:3210/api/system/config", async (route) => {
       const request = route.request();
       if (request.method() === "PATCH") {
         receivedUpdates = JSON.parse(request.postData() ?? "{}").updates;
@@ -167,7 +174,7 @@ test.describe("primary navigation", () => {
         body: JSON.stringify(configResponse)
       });
     });
-    await page.route("http://127.0.0.1:8787/api/system/capabilities", async (route) => {
+    await page.route("http://127.0.0.1:3210/api/system/capabilities", async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -229,6 +236,22 @@ test.describe("primary navigation", () => {
     await page.getByRole("button", { name: "保存产品策略" }).click();
 
     await expect(page.getByText("产品策略已保存")).toBeVisible();
+    // 2026-07-10:保存产品策略只改本地 state,由 300ms 去抖 autosave PUT 落库;而下面进入
+    // 「外部调研」会触发"打开即更新"(autoRunResearch),前端会整份采纳服务端返回的状态——
+    // 若此刻策略还未落库,就会被服务端旧值覆盖(resetDemoState 修复 8787→3210 后 demo 种子
+    // 真正落库,auto-run 不再空议程短路,这个既有竞态才暴露)。这里先轮询后端确认策略真的
+    // 持久化(顺带把"保存=真落库"变成被断言的事实,不是削弱而是强化),再继续导航。
+    await expect
+      .poll(
+        async () => {
+          const st = (await (await page.request.get("http://127.0.0.1:3210/api/state")).json()) as {
+            systemConfig?: { search?: { maxSources?: number; activeProvider?: string } };
+          };
+          return `${st.systemConfig?.search?.activeProvider}:${st.systemConfig?.search?.maxSources}`;
+        },
+        { timeout: 10_000, intervals: [300] }
+      )
+      .toBe("anysearch:4");
     // 播客工作台已移出顶层导航，从"我的资产"档案卡点击"生成播客"进入。
     // demo state 中 notes[0] 存在，点击后 App 跳转至 podcast view。
     await page.getByRole("button", { name: "我的资产" }).click();

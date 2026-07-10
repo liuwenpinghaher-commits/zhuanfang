@@ -407,9 +407,24 @@ test.describe("真实业务·认知资产模块(UI→真后端 3210,不 mock)", 
    *
    * 与上面 seed 路径互补:这条不注入种子,资产完全由真 LLM finalize 产出(慢)。
    * 真实 LLM 慢,timeout 放大到 240s。
+   *
+   * C 类前提(2026-07-10):本用例设计上要求真实 LLM key。隔离 E2E 服务器(F-02,provider key
+   * 全空)下 finalize 走确定性降级,而确定性 finalize 是刻意的"诚实轻记录"——只产 note,
+   * points/questions/decisions/debts 恒为空数组(src/domain/finalize.ts,基线 5aac343d 亦然,
+   * 非本轮回归)。因此无 key 时该断言必然失败:检测到 key 未配置就原生 skip,不弱化有 key 时的断言。
    */
   test("用例2:真实访谈 finalize 产资产 → 资产库可操作 + 后端状态变化", async ({ page }) => {
     test.setTimeout(240_000);
+    // 用 capabilities 判定 LLM key 是否配置:bailian-character(kind=llm)与 finalize 的
+    // bailianChatClient 同源于 DASHSCOPE_API_KEY/BAILIAN_API_KEY,needs-key 即无真实 LLM。
+    const caps = (await (await page.request.get(`${API}/api/system/capabilities`)).json()) as {
+      capabilities?: Array<{ id: string; status: string }>;
+    };
+    const llmCap = (caps.capabilities ?? []).find((c) => c.id === "bailian-character");
+    test.skip(
+      !llmCap || llmCap.status !== "ready",
+      "需要真实 LLM key(DASHSCOPE_API_KEY):确定性降级 finalize 刻意不产认知资产,无 key 环境该用例无意义"
+    );
     await reset(page);
     await page.goto("/");
 

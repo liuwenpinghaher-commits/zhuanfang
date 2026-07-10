@@ -3,7 +3,7 @@ import { useState, type ChangeEvent } from "react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { PrivacyReport } from "../../domain/privacy";
 import type { StateExportBundle } from "../../domain/backup";
-import type { ColdLayerMode, ImportReceipt, StateImportResult } from "../../api/productApi";
+import { ApiError, type ColdLayerMode, type ImportReceipt, type StateImportResult } from "../../api/productApi";
 import type { InterviewStrength, ProductState } from "../../domain/types";
 import { updateProfile, addExplicitBoundary, removeExplicitBoundary, approveProfileSuggestion, rejectProfileSuggestion } from "../../domain/profile";
 
@@ -26,6 +26,36 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// B2#6/C2#2:import/purge 失败时优先透出服务端写的中文 body.error(coldLayerMode 缺失/半截包/
+// 非法条目等),而不是只显示 ApiError 的英文状态码 message("Product API request failed: 422 …")。
+// import 422 还可能携带 invalidRawMaterials / invalidAudios 逐条清单——摘要展示前 3 条 + 总数,
+// 让用户知道具体哪些条目坏了,而不是笼统的"导入失败"。
+function describeGovernanceError(err: unknown, fallback: string): string {
+  if (err instanceof ApiError && err.body && typeof err.body === "object") {
+    const body = err.body as { error?: unknown; invalidRawMaterials?: unknown; invalidAudios?: unknown };
+    if (typeof body.error === "string" && body.error.length > 0) {
+      const details: string[] = [];
+      for (const [label, list] of [
+        ["逐字稿", body.invalidRawMaterials],
+        ["录音", body.invalidAudios]
+      ] as const) {
+        if (Array.isArray(list) && list.length > 0) {
+          const sample = list
+            .slice(0, 3)
+            .map((item) => {
+              const entry = item as { index?: unknown; error?: unknown };
+              return `#${typeof entry.index === "number" ? entry.index : "?"} ${typeof entry.error === "string" ? entry.error : "未知错误"}`;
+            })
+            .join("；");
+          details.push(`非法${label}条目：${sample}${list.length > 3 ? `（共 ${list.length} 条）` : ""}`);
+        }
+      }
+      return details.length > 0 ? `${body.error} ${details.join("；")}` : body.error;
+    }
+  }
+  return err instanceof Error && err.message ? err.message : fallback;
 }
 
 export function ProfileView({
@@ -81,6 +111,8 @@ export function ProfileView({
   const [purgeSuccess, setPurgeSuccess] = useState(false);
   const [privacyReport, setPrivacyReport] = useState<PrivacyReport | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
+  // C2#8:用户主动取消下载不是错误,走中性提示通道,不落危险红的 exportError。
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
   const [importSuccess, setImportSuccess] = useState(false);
   const [importReceipt, setImportReceipt] = useState<ImportReceipt | null>(null);
   const [legacyColdLayerMode, setLegacyColdLayerMode] = useState<ColdLayerMode>("preserve-cold");
@@ -93,6 +125,7 @@ export function ProfileView({
     setExportSuccess(false);
     setExportBundle(null);
     setExportError(null);
+    setExportNotice(null);
     try {
       const bundle = await onExport();
       setExportBundle(bundle);
@@ -102,7 +135,8 @@ export function ProfileView({
           `${bundle.completeness.reasons.join("\n")}\n\n仍要下载吗？下载后请勿把它作为清空数据前的唯一恢复保障。`
         );
         if (!confirmed) {
-          setExportError("已取消下载；完整性检查结果保留在下方。请先处理遗漏项。 ");
+          // C2#8:主动取消是用户决定,不是失败——中性提示(且不带尾随空格)。
+          setExportNotice("已取消下载；完整性检查结果保留在下方，请先处理遗漏项。");
           return;
         }
       }
@@ -145,7 +179,8 @@ export function ProfileView({
       setImportReceipt(result.receipt);
       setImportSuccess(true);
     } catch (err) {
-      setImportError(err instanceof Error ? err.message : "导入失败，请确认文件是有效的导出包。");
+      // B2#6/C2#2:优先透出服务端中文 body.error(含非法条目清单摘要),不再只给英文状态码。
+      setImportError(describeGovernanceError(err, "导入失败，请确认文件是有效的导出包。"));
     } finally {
       setLoadingAction(null);
     }
@@ -178,7 +213,9 @@ export function ProfileView({
       onSetProductState(nextState);
       setPurgeSuccess(true);
     } catch (err) {
-      setPurgeError(err instanceof Error ? err.message : "清空失败");
+      // B2#6/C2#2:优先透出服务端中文 body.error;部分失败时 App.purgeData 已采纳热态并抛出
+      // 中文说明(哪些库未删除、请重试),这里如实显示,绝不显示"个人数据已彻底清空"。
+      setPurgeError(describeGovernanceError(err, "清空失败"));
     } finally {
       setLoadingAction(null);
     }
@@ -370,9 +407,11 @@ export function ProfileView({
               <span style={{ color: "var(--color-success, #22c55e)", fontSize: "0.875rem" }}>已下载完整 JSON 备份包</span>
             )}
             {exportSuccess && exportBundle && !exportBundle.completeness.complete && (
-              <span style={{ color: "#b45309", fontSize: "0.875rem" }}>已下载，但该备份不是完整恢复保障</span>
+              /* C2#9:琥珀色走设计系统 token(--accent-amber),不再硬编码 #b45309。 */
+              <span style={{ color: "var(--accent-amber)", fontSize: "0.875rem" }}>已下载，但该备份不是完整恢复保障</span>
             )}
             {exportError && <span style={{ color: "var(--action-danger)", fontSize: "0.875rem" }}>{exportError}</span>}
+            {exportNotice && <span style={{ color: "var(--text-secondary)", fontSize: "0.875rem" }}>{exportNotice}</span>}
             <label
               className={"secondary-action" + (loadingAction === "import" ? " btn-loading" : "")}
               style={{ cursor: loadingAction !== null ? "default" : "pointer", opacity: loadingAction !== null && loadingAction !== "import" ? 0.6 : 1 }}
@@ -385,7 +424,8 @@ export function ProfileView({
               <span style={{ color: "var(--color-success, #22c55e)", fontSize: "0.875rem" }}>已完整恢复并核对清单</span>
             )}
             {importSuccess && (!importReceipt || importReceipt.partial) && (
-              <span style={{ color: "#b45309", fontSize: "0.875rem" }}>
+              /* C2#9:同上,琥珀色统一引用 --accent-amber token。 */
+              <span style={{ color: "var(--accent-amber)", fontSize: "0.875rem" }}>
                 {importReceipt ? "已部分恢复，请核对缺失项" : "已恢复，但服务端未返回完整性清单"}
               </span>
             )}
