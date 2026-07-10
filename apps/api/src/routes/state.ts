@@ -70,24 +70,51 @@ export async function registerStateRoutes(
         error: "Reset requires explicit confirmation: send confirm=\"RESET_ALL_DATA\"."
       });
     }
+    // 顺序:先清热态、后清冷层。热态 resetState() 是原子必选步骤,失败让异常自然冒泡成 500
+    // (此时冷层未动,用户重试即可整体重来);冷层随后逐库"尽力而为"清(隐私删除要最大化,
+    // 一库 IO 故障不该挡住其余库),清理结果逐库如实记入 resetReceipt 返回给前端。
     const next = repository.resetState();
     // 审计修复(P1-1):reset 此前只清热态,冷层逐字稿/录音/派生知识索引全部残留——
     // 实测 25/26 份冷层材料为跨 reset 孤儿,且 chat 继续召回"已清空"的私人内容。
     // 与 purge 对齐:重置即三库同清(索引是派生可重建的,清空即语义正确的空索引)。
     // 回归审查 R4-2:每库独立 try/catch 尽力清——某库 deleteAll 抛错(sqlite IO 故障)不该跳过
     // 后续库(尤其知识索引残留=可召回私人数据泄漏);逐库告警,不让一处失败掩盖其余未清。
+    // 审计修复 F-03(P1):此前任一冷层清理失败仍无条件 200——用户看到"全部数据已清空"
+    // 但私密逐字稿/录音/索引仍残留(隐私假成功)。改为逐库记录结构化结果并回执:
+    // 任一库 failed → 500 + resetReceipt(热态已清的事实随 state 一并带回,前端可采纳);
+    // repo 未注入记 "not-configured",不算失败(嵌入式/测试场景三库常不注入)。
+    const stores: Record<string, string> = {};
     for (const [name, repo] of [
       ["raw-material", rawMaterialRepository],
       ["audio", audioRepository],
       ["knowledge-index", knowledgeIndexRepository]
     ] as const) {
+      if (!repo) {
+        stores[name] = "not-configured";
+        continue;
+      }
       try {
-        repo?.deleteAll();
+        repo.deleteAll();
+        stores[name] = "cleared";
       } catch (err) {
-        console.warn(JSON.stringify({ event: "reset_cold_layer_clear_failed", store: name, error: err instanceof Error ? err.message : String(err) }));
+        const message = err instanceof Error ? err.message : String(err);
+        stores[name] = `failed: ${message}`;
+        // F-03:从 warn 升级为 error——这是隐私删除失败(残留可召回的私人数据),不是可忽略的告警。
+        console.error(JSON.stringify({ event: "reset_cold_layer_clear_failed", store: name, error: message }));
       }
     }
-    return next;
+    const failedStores = Object.entries(stores)
+      .filter(([, outcome]) => outcome.startsWith("failed"))
+      .map(([name]) => name);
+    const resetReceipt = { partialFailure: failedStores.length > 0, stores };
+    if (resetReceipt.partialFailure) {
+      return reply.code(500).send({
+        error: `reset partial failure: ${failedStores.join(", ")}`,
+        state: next,
+        resetReceipt
+      });
+    }
+    return { ...next, resetReceipt };
   });
 
   // P0-1: Privacy report

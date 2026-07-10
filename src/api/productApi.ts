@@ -60,7 +60,8 @@ export interface ProductApiClient {
   updateMemoryRecordText(id: string, text: string): Promise<ProductState>;
   deleteMemoryRecord(id: string): Promise<ProductState>;
   saveState(state: ProductState): Promise<{ state: ProductState; conflicted: boolean }>;
-  resetState(): Promise<ProductState>;
+  /** F-03:成功时附带服务端逐库清理回执(见 {@link ResetReceipt});部分失败抛 ApiError(500, body 含 state+resetReceipt)。 */
+  resetState(): Promise<ProductState & { resetReceipt?: ResetReceipt }>;
   createSearchBrief(input: CreateSearchBriefRequest): Promise<CreateSearchBriefResponse>;
   refreshSearchBrief(id: string): Promise<RefreshSearchBriefResponse>;
   trackSearchBrief(id: string, tracked: boolean): Promise<TrackSearchBriefResponse>;
@@ -411,10 +412,27 @@ export function getProductApiBaseUrl() {
  * so callers don't mistake a 422/409 for "backend offline" and tear down persistence.
  */
 export class ApiError extends Error {
-  constructor(public readonly status: number, path: string) {
+  /**
+   * 审计修复 F-03:携带解析后的响应 body(若可解析)。reset 部分失败(500)的响应里带着
+   * `state`(热态已清的事实)与 `resetReceipt`(逐库清理结果),前端 catch 需要据此如实
+   * 提示"哪些库未清空"而不是笼统报错。可选参数,既有 2 参调用点行为不变。
+   */
+  constructor(public readonly status: number, path: string, public readonly body?: unknown) {
     super(`Product API request failed: ${status} (${path})`);
     this.name = "ApiError";
   }
+}
+
+/**
+ * F-03:reset 单库清理结果三态,与后端 apps/api/src/routes/state.ts 的 reset 端点对齐:
+ * "cleared" | "not-configured" | "failed: <原因>"(not-configured 不算失败)。
+ */
+export type ResetStoreOutcome = "cleared" | "not-configured" | `failed: ${string}`;
+
+/** F-03:POST /api/state/reset 的逐库清理回执。 */
+export interface ResetReceipt {
+  partialFailure: boolean;
+  stores: Record<string, ResetStoreOutcome>;
 }
 
 /** True when the error means the server was unreachable (fetch threw), not a 4xx/5xx. */
@@ -460,7 +478,10 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
   async function requestJson(path: string, init: RequestInit): Promise<unknown> {
     const response = await authedFetch(`${normalizedBaseUrl}${path}`, init);
     if (!response.ok) {
-      throw new ApiError(response.status, path);
+      // F-03:尽力解析错误 body 挂到 ApiError 上——reset 部分失败(500)的 body 带着
+      // 热态 state 与 resetReceipt,前端要用;解析失败(非 JSON)不影响抛错本身。
+      const errorBody: unknown = await response.json().catch(() => undefined);
+      throw new ApiError(response.status, path, errorBody);
     }
     return response.json();
   }
@@ -617,13 +638,28 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
       return { state: normalizeProductState(await response.json()), conflicted: false };
     },
     async resetState() {
-      return normalizeProductState(
-        await requestJson("/api/state/reset", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ confirm: "RESET_ALL_DATA" })
-        })
-      );
+      const payload = await requestJson("/api/state/reset", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ confirm: "RESET_ALL_DATA" })
+      });
+      // F-03:服务端把 resetReceipt(逐库清理回执)spread 进了 state 响应体。它是装饰键,
+      // 不属于 ProductState——与 purgeState 同口径,normalize 前先剥离,避免被 autosave
+      // 原样 PUT 回服务器寄生在持久化数据里;再作为附加字段透给调用方(App 据此防御性
+      // 检查 partialFailure,理论上 200 时恒为 false)。
+      let resetReceipt: ResetReceipt | undefined;
+      if (payload && typeof payload === "object") {
+        const record = payload as Record<string, unknown>;
+        if (record.resetReceipt && typeof record.resetReceipt === "object") {
+          resetReceipt = record.resetReceipt as ResetReceipt;
+        }
+        delete record.resetReceipt;
+      }
+      const state = normalizeProductState(payload) as ProductState & { resetReceipt?: ResetReceipt };
+      if (resetReceipt) {
+        state.resetReceipt = resetReceipt;
+      }
+      return state;
     },
     async createSearchBrief(input) {
       const response = (await requestJson("/api/search/briefs", {

@@ -49,6 +49,44 @@ describe("product api client", () => {
     expect(result.profile.name).toBe("Mia");
   });
 
+  it("F-03: resetState 透出 200 响应里的 resetReceipt,且状态字段照常可用", async () => {
+    const state = createInitialProductState();
+    const receipt = {
+      partialFailure: false,
+      stores: { "raw-material": "cleared", audio: "cleared", "knowledge-index": "cleared" }
+    };
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ ...state, resetReceipt: receipt }), { status: 200 }));
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+
+    const result = await client.resetState();
+
+    expect(result.resetReceipt).toEqual(receipt);
+    expect(result.profile.name).toBe("Mia");
+  });
+
+  it("F-03: resetState 500 部分失败时 ApiError 携带解析后的 body(state+resetReceipt 可取)", async () => {
+    const state = createInitialProductState();
+    const errorBody = {
+      error: "reset partial failure: raw-material",
+      state,
+      resetReceipt: {
+        partialFailure: true,
+        stores: { "raw-material": "failed: simulated io", audio: "cleared", "knowledge-index": "cleared" }
+      }
+    };
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify(errorBody), { status: 500 }));
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+
+    await expect(client.resetState()).rejects.toMatchObject({
+      name: "ApiError",
+      status: 500,
+      body: {
+        error: "reset partial failure: raw-material",
+        resetReceipt: { partialFailure: true, stores: { "raw-material": "failed: simulated io" } }
+      }
+    });
+  });
+
   it("saves state through the API", async () => {
     const state = createInitialProductState();
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify(state), { status: 200 }));

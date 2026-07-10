@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
+import Fastify from "fastify";
 import { buildApiServer } from "../server";
+import { registerStateRoutes } from "./state";
+import { createInMemoryProductStateRepository } from "../product-state-repository";
 import { buildPrivacyReport } from "../../../../src/domain/privacy";
 import { buildBackupRestoreRehearsalReport } from "../../../../src/domain/backup";
 import { createInMemoryRawMaterialRepository } from "../raw-material-repository";
@@ -381,6 +384,102 @@ describe("state routes", () => {
       expect(after.profile.name).toBe(before.profile.name);
       expect(after.points.length).toBe(before.points.length);
       expect(after.notes.length).toBe(before.notes.length);
+      await server.close();
+    });
+  });
+
+  describe("F-03: reset 冷层清理失败不再假 200(部分失败 → 500 + resetReceipt)", () => {
+    // 故障注入:包一层让 deleteAll 抛错,模拟 sqlite IO 故障。
+    const failing = <T extends { deleteAll: () => void }>(repo: T): T => ({
+      ...repo,
+      deleteAll: () => {
+        throw new Error("simulated cold-layer delete failure");
+      }
+    });
+
+    // fail=true 时包上故障注入。条件包装让"哪个库坏"由参数决定,三库类型各自保持精确,
+    // 无需对联合键索引做任何类型断言(as never / as 联合都不诚实)。
+    const maybeFailing = <T extends { deleteAll: () => void }>(repo: T, fail: boolean): T =>
+      fail ? failing(repo) : repo;
+
+    const buildRepos = (failStore?: "raw-material" | "audio" | "knowledge-index") => ({
+      rawMaterialRepository: maybeFailing(createInMemoryRawMaterialRepository(), failStore === "raw-material"),
+      audioRepository: maybeFailing(createInMemoryAudioRepository(), failStore === "audio"),
+      knowledgeIndexRepository: maybeFailing(createInMemoryKnowledgeIndexRepository(), failStore === "knowledge-index")
+    });
+
+    it.each(["raw-material", "audio", "knowledge-index"] as const)(
+      "%s deleteAll 抛错 → 500 + resetReceipt 标记该库 failed,其余库仍被清,热态已重置",
+      async (storeName) => {
+        const server = buildApiServer(buildRepos(storeName));
+        // 先污染热态,证明 reset 后热态确实被清(空基底 profile.name 为空)。
+        const cur = (await server.inject({ method: "GET", url: "/api/state" })).json();
+        await server.inject({
+          method: "PUT",
+          url: "/api/state",
+          payload: { ...cur, revision: cur.revision, profile: { ...cur.profile, name: "WillBeReset" } }
+        });
+        const res = await server.inject({
+          method: "POST",
+          url: "/api/state/reset",
+          payload: { confirm: "RESET_ALL_DATA" }
+        });
+        // 冷层删除失败绝不再无条件 200——用户必须知道私密数据仍残留。
+        expect(res.statusCode).toBe(500);
+        const body = res.json();
+        expect(body.error).toContain("reset partial failure");
+        expect(body.error).toContain(storeName);
+        expect(body.resetReceipt.partialFailure).toBe(true);
+        expect(body.resetReceipt.stores[storeName]).toMatch(/^failed: /);
+        // 其余两库仍被尽力清空(一库失败不挡其余库)。
+        for (const other of ["raw-material", "audio", "knowledge-index"].filter(n => n !== storeName)) {
+          expect(body.resetReceipt.stores[other]).toBe("cleared");
+        }
+        // 热态已重置并随响应带回(前端可采纳),GET 也确认已清。
+        expect(body.state).toBeDefined();
+        expect(body.state.profile.name).not.toBe("WillBeReset");
+        const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
+        expect(after.profile.name).not.toBe("WillBeReset");
+        expect(after.sessions.length).toBe(0);
+        await server.close();
+      }
+    );
+
+    it("三库全部清理成功 → 200 + resetReceipt 全 cleared 且 partialFailure=false", async () => {
+      const server = buildApiServer(buildRepos());
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/reset",
+        payload: { confirm: "RESET_ALL_DATA" }
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.resetReceipt.partialFailure).toBe(false);
+      expect(body.resetReceipt.stores).toEqual({
+        "raw-material": "cleared",
+        audio: "cleared",
+        "knowledge-index": "cleared"
+      });
+      await server.close();
+    });
+
+    it("三库未注入(嵌入式/测试场景)→ 200,not-configured 不算失败", async () => {
+      // buildApiServer 会默认注入三库,not-configured 只在直接注册路由且不传 repo 时出现。
+      const server = Fastify();
+      await registerStateRoutes(server, createInMemoryProductStateRepository());
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/reset",
+        payload: { confirm: "RESET_ALL_DATA" }
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.resetReceipt.partialFailure).toBe(false);
+      expect(body.resetReceipt.stores).toEqual({
+        "raw-material": "not-configured",
+        audio: "not-configured",
+        "knowledge-index": "not-configured"
+      });
       await server.close();
     });
   });

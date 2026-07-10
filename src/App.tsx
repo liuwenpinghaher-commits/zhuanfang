@@ -54,7 +54,7 @@ import { addAnnotation, removeAnnotation } from "./domain/raw-material";
 import { deleteImportSource } from "./domain/material";
 import { executeSearchProvider } from "./capabilities/search";
 import { createIdleCapabilityTask, failCapabilityTask, startCapabilityTask } from "./capabilities/task";
-import { productApiClient, isNetworkError, ApiError, type ReviewsResponse } from "./api/productApi";
+import { productApiClient, isNetworkError, ApiError, type ResetReceipt, type ReviewsResponse } from "./api/productApi";
 import type { RealtimeVoiceSessionResponse, SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigUpdateRequest, VoiceInfo } from "./api/productApi";
 // WebRTC omni client is incomplete (no callbacks/turn recording); the connect path is
 // downlined to WebSocket in startVoiceSession. Type kept for the connection union only.
@@ -75,7 +75,7 @@ import {
   deletePodcastEpisode,
   deleteSearchBrief
 } from "./domain/lifecycle";
-import { loadProductState, productStateContentSignature, resetProductState, saveProductState } from "./domain/storage";
+import { loadProductState, normalizeProductState, productStateContentSignature, resetProductState, saveProductState } from "./domain/storage";
 import type {
   AssetStatus,
   ChatCitation,
@@ -1484,15 +1484,60 @@ export default function App() {
       return;
     }
     let nextState: ProductState;
+    // 审计修复 F-03:此前任何 API 失败(网络断/4xx/5xx)都本地清空并统一显示"全部数据已清空"
+    // ——服务端与冷层的私密数据可能原封不动,却对用户宣称删除成功。改为按失败类型分流,
+    // 默认成功文案只在服务端确认全部清空时使用。
+    let notice = buildNotice("warning", "全部数据已清空", "可以开始记录你自己的真实访谈了。");
     try {
-      nextState = await productApiClient.resetState();
+      const { resetReceipt, ...serverState } = await productApiClient.resetState();
       setApiPersistenceEnabled(true);
+      nextState = serverState;
       saveProductState(nextState);
-    } catch {
-      setApiPersistenceEnabled(false);
-      // Preserve the current revision so the post-reset auto-save isn't rejected by
-      // optimistic-concurrency and doesn't re-adopt the server's demo state.
-      nextState = { ...resetProductState(), revision: productState.revision };
+      if (resetReceipt?.partialFailure) {
+        // 防御:契约上 200 时 partialFailure 恒为 false,但若服务端行为漂移也不能谎报成功。
+        notice = buildNotice("warning", "服务端部分数据未清空", `${describeResetReceiptFailures(resetReceipt)}，请重试"清空全部数据"。`);
+      }
+    } catch (err) {
+      // 服务端部分失败(500 + resetReceipt):热态已清并随 body 带回,只是某些冷层库删除失败。
+      const partialBody =
+        err instanceof ApiError &&
+        err.status === 500 &&
+        err.body &&
+        typeof err.body === "object" &&
+        typeof (err.body as { resetReceipt?: unknown }).resetReceipt === "object" &&
+        (err.body as { resetReceipt?: unknown }).resetReceipt !== null &&
+        typeof (err.body as { state?: unknown }).state === "object" &&
+        (err.body as { state?: unknown }).state !== null
+          ? (err.body as { state: unknown; resetReceipt: ResetReceipt })
+          : undefined;
+      if (partialBody) {
+        // 采纳服务端已清空的热态、保持在线,如实列出未删除的库并提示重试——绝不宣称"已清空"。
+        setApiPersistenceEnabled(true);
+        nextState = normalizeProductState(partialBody.state);
+        saveProductState(nextState);
+        notice = buildNotice(
+          "warning",
+          "服务端部分数据未清空",
+          `${describeResetReceiptFailures(partialBody.resetReceipt)}，界面数据已重置，请重试"清空全部数据"以删除残留。`
+        );
+      } else if (isNetworkError(err)) {
+        // 网络不可达:后端没有确认任何删除,只能重置本地视图——文案必须如实,不复用成功文案。
+        setApiPersistenceEnabled(false);
+        // Preserve the current revision so the post-reset auto-save isn't rejected by
+        // optimistic-concurrency and doesn't re-adopt the server's demo state.
+        nextState = { ...resetProductState(), revision: productState.revision };
+        notice = buildNotice("warning", "仅本地视图已重置", "后端未确认删除：服务端与冷层数据可能仍在，恢复连接后请重新执行清空。");
+      } else {
+        // 其他 4xx/5xx(如 422):服务端拒绝且什么都没删——不动本地状态,直接报错返回。
+        const serverMessage =
+          err instanceof ApiError && err.body && typeof err.body === "object" && typeof (err.body as { error?: unknown }).error === "string"
+            ? (err.body as { error: string }).error
+            : err instanceof Error
+              ? err.message
+              : String(err);
+        setNotice(buildNotice("danger", "清空失败", `服务端未执行清空：${serverMessage}`));
+        return;
+      }
     }
     setProductState(nextState);
     setSession(null);
@@ -1508,7 +1553,8 @@ export default function App() {
     setCorpusSourceUrl("");
     setCorpusAudioBase64("");
     setCorpusAudioFileName("");
-    setNotice(buildNotice("warning", "全部数据已清空", "可以开始记录你自己的真实访谈了。"));
+    // F-03:文案由上方分流决定——只有服务端确认全部清空才是成功文案。
+    setNotice(notice);
     setView("home");
   }
 
@@ -2245,4 +2291,18 @@ function buildLocalAudioTranscriptionDraft(sourceUrl: string) {
     "被访者：请在这里补充被访者的关键原话、停顿和情绪变化。",
     "主持人：补齐后我会分析这段专访如何索要具体时刻、推进反方观点和控制节奏。"
   ].join("\n");
+}
+
+// F-03 notice 辅助:把 resetReceipt 里 failed 的库翻译成用户可读的中文清单。
+// 纯函数,放模块级避免组件每次 render 重建(同 buildLocalAudioTranscriptionDraft 先例)。
+function describeResetReceiptFailures(receipt: ResetReceipt): string {
+  const labels: Record<string, string> = {
+    "raw-material": "逐字稿冷层",
+    audio: "录音",
+    "knowledge-index": "知识索引"
+  };
+  const failed = Object.entries(receipt.stores ?? {})
+    .filter(([, outcome]) => typeof outcome === "string" && outcome.startsWith("failed"))
+    .map(([store]) => labels[store] ?? store);
+  return failed.length > 0 ? `以下数据未能删除：${failed.join("、")}` : "部分服务端数据未能删除";
 }
