@@ -117,16 +117,15 @@
 - 迁移脚本 `migrate-cold-to-surreal.mjs`(沿用 migrate-sqlite-to-surreal 的校验+marker 模式);dual 双跑比对每库 digest。
 - 测试:F-04 的故障注入测试全部改跑新路径(事务回滚断言替代补偿断言,补偿测试保留给文件层);E2E data-governance 复跑。
 
-### R3 · 写路径收窄:实体命令 + 并发模型换轨(P1、P4、P7 减半)
+### R3 · 写路径收窄:CAS 重试换轨(P4 减半)——**设计已按 R2b/M1 教训收窄(2026-07-11)**
 
-这是收益最大、也最需克制的阶段。**不重写域层**——域层纯函数继续产出 next ProductState;变化在仓库层的落库方式与锁的范围。
+> 调整记录:原设计的 `applyEntityCommand`(实体级 DB 事务 + revision CAS 下沉 SQL)只有在**多进程写同一 DB** 时才有独特价值;本产品是单进程嵌入式,内存工作副本就是真相源,repo 层已有 `expectedRevision` 乐观锁(同步判定)。且 R2b/M1 证明"内存态推进与 DB 事务解耦"是最危险的模式——原设计会把 M1 的坑重新引入每一条命令路径。故 R3 收窄为**应用层 CAS 重试**,零新持久化机器,同样消掉全局写锁的排队(P4)。
 
-- **实体命令接口**:`SurrealRepoHandle` 增加 `applyEntityCommand(cmd)`(如 `{kind:"upsert-note", note}`、`{kind:"confirm-decision", id}`):单事务内 UPSERT 目标实体 + 相关边 + `UPDATE state_meta:main SET revision += 1 WHERE revision = $expected`——**乐观锁下沉到 DB 语句**,冲突由事务失败+有界重试(R0-S3 的真实错误形状)解决。
-- **试点路由**(读改写热点、语义局部):`POST /api/assets/decisions/:id/confirm`、`PATCH /api/memory-records/*`、note/annotation 编辑。这些路由**摘出全局写锁**,走"域层算 patch → 实体命令事务"。整包 PUT / interview /end 等宽事务路由留在写锁内(它们本来就该串行)。
-- **persist queue 收缩**:实体命令是同步 await 的事务(失败即刻报错给调用方,P7 的掩盖在新路径终结);整包 replaceState 的异步队列+自愈保留,服务遗留通道。
-- **审计同事务**:实体命令内直接 `CREATE audit_event:[...]`(同一 BEGIN 块),审计与业务写原子一致——比 DEFINE EVENT 更可控(EVENT 留给级联清理)。
-- 度量闸门:压测脚本对比改造前后 p50/p95 写延迟与并发吞吐(目标:热点路由并发不再互相排队,p95 下降可测量)。
-- **风险**:同一实体同时被"命令通道"和"整包通道"写 → 以 state_meta.revision 为全局闸(两通道都 CAS 同一 revision),不会静默交叠,只会 409/重试。
+- **`runStateCommand(repo, mutate, opts)` helper**(apps/api):有界 CAS 重试循环——`getState()` → 域层纯函数算 next → `replaceState(next, {expectedRevision})`;撞 `StateRevisionConflictError` 重读重算重试(有界);撞 `GovernanceInFlightError` 直接 409(治理在途,前端已有 409 处理)。审计事件本就在 ProductState 数组里 → 与业务变更同一 replaceState/同一 persist diff/同一事务,"审计同事务"自动成立。
+- **试点路由摘出全局写锁**(读改写热点、语义局部):`POST /api/assets/decisions/:id/confirm`、note/annotation/资产状态编辑类小 RMW 路由;`PATCH /api/memory-records`(现走 runExclusive)改 CAS 重试。整包 PUT / interview /end / 治理路由留在写锁内(宽事务本该串行)。
+- **persist 失败语义不变**(P7 的整包自愈保留;其终结留给后续"命令路由改同步 flush 回执"的独立评估——不在 R3 强推,避免把写延迟加回热点路由)。
+- 度量闸门:压测脚本对比改造前后热点路由的并发吞吐与 p95(目标:热点路由并发不再互相排队)。
+- **风险**:CAS 重试与整包通道并发 → repo 层 revision 判定串行(同步函数),只会 409/重试,不会静默交叠;重试上限内失败 → 409 如实返回。
 
 ### R4 · 读路径下沉与物化(召回与统计)
 
