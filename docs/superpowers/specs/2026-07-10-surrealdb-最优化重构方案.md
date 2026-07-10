@@ -83,7 +83,9 @@
 
 ## 4. 分阶段方案
 
-### R0 · 前提验证 Spike(0.5~1 天,零生产改动)
+### R0 · 前提验证 Spike(0.5~1 天,零生产改动)——**已完成,结论见 `2026-07-10-R0-spike-结论.md`**
+
+> 实测更新(2026-07-10):S1 live 仅 unmanaged 路可用、changefeed 可用**但 3.0.2 有 dbg! stderr 噪声(定义 CHANGEFEED 的表每写十几行)→ R1b 暂不加 CHANGEFEED 子句,R5 启用前先评估/升级依赖**;S2 音频入库 bytes **通过,余量 20 倍+ → R2 定案入库**;S3 真冲突错误形状实测出**现货 bug**(现行重试匹配失效,修复并入 R1a);S4 **versioned 在 @surrealdb/node 3.0.3 不可用(连接挂死)→ R6 放弃 versioned,备份走 export/JSON;用户决策 2 相应作废**;S5 **ngram(1,3) 值得升**(单字/人名召回显著提升,体积 ~2.6x,R4 执行,需在真实体量复核)。
 
 文档四个缺口逐一实测,产出决策矩阵(`docs/superpowers/specs/` 记录):
 
