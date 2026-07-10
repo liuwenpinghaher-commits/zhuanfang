@@ -89,7 +89,7 @@ export async function registerChatRoutes(
       }
     }
 
-    const retrieved = rankKnowledgeChunks(knowledgeRepo.listAll(), message, queryEmbedding, TOP_K);
+    const retrieved = rankKnowledgeChunks(await knowledgeRepo.listAll(), message, queryEmbedding, TOP_K);   // R2a:仓库接口已异步化
 
     // ── 答案生成 ──
     const allowLlm = !!options.bailianChatClient && budget.tryConsume("chat");

@@ -16,7 +16,7 @@ describe("applySchema", () => {
   it("在空库上应用全部 migrations(返回已应用文件名)", async () => {
     const d = await freshDb();
     const applied = await applySchema(d);
-    expect(applied).toEqual(["001_nodes.surql", "002_relations.surql", "003_index.surql", "004_p1a_rest_meta.surql", "005_p3_cascade.surql", "006_p4_cascade_note_scope.surql", "007_r1a_entities.surql", "008_r1b_event_streams.surql"]);
+    expect(applied).toEqual(["001_nodes.surql", "002_relations.surql", "003_index.surql", "004_p1a_rest_meta.surql", "005_p3_cascade.surql", "006_p4_cascade_note_scope.surql", "007_r1a_entities.surql", "008_r1b_event_streams.surql", "009_r2a_cold.surql"]);
   });
 
   it("L1:关系表 ENFORCED——RELATE 指向不存在端点节点应被引擎拒绝(DB 层引用完整性兜底)", async () => {
@@ -33,7 +33,7 @@ describe("applySchema", () => {
     expect(second).toEqual([]); // 全部已应用
     const [ledger] = await d.query<[{ name: string }[]]>("SELECT name FROM _migration;");
     const names = (ledger ?? []).map((r) => r.name).sort();
-    expect(names).toEqual(["001_nodes.surql", "002_relations.surql", "003_index.surql", "004_p1a_rest_meta.surql", "005_p3_cascade.surql", "006_p4_cascade_note_scope.surql", "007_r1a_entities.surql", "008_r1b_event_streams.surql"]);
+    expect(names).toEqual(["001_nodes.surql", "002_relations.surql", "003_index.surql", "004_p1a_rest_meta.surql", "005_p3_cascade.surql", "006_p4_cascade_note_scope.surql", "007_r1a_entities.surql", "008_r1b_event_streams.surql", "009_r2a_cold.surql"]);
   });
 
   it("INFO FOR DB:13 节点表 + entity_kind + 8 边表 + R1a 11 实体表 + R1b 4 流水表齐全", async () => {
@@ -51,6 +51,8 @@ describe("applySchema", () => {
       "memory_correction","podcast_episode","corpus_import","corpus_insight","playbook_patch","config_version",
       // R1b:008_r1b_event_streams.surql(4 流水表)
       "audit_event","ai_run_event","workflow_run","operational_check",
+      // R2a:009_r2a_cold.surql(三冷层)
+      "raw_material","audio","knowledge_chunk",
     ]) {
       expect(tables, `缺表 ${t}`).toContain(t);
     }
@@ -73,6 +75,10 @@ describe("applySchema", () => {
     const [memInfo] = await d.query<[{ indexes: Record<string, string> }]>("INFO FOR TABLE memory;");
     const def = String(memInfo?.indexes?.memory_emb ?? "");
     expect(def).toContain(`DIMENSION ${EMBEDDING_DIMENSION}`);
+    // R2a:009 的 knowledge_chunk HNSW 索引同样必须 == EMBEDDING_DIMENSION(009 注释"守卫防漂移"落实)。
+    const [kcInfo] = await d.query<[{ indexes: Record<string, string> }]>("INFO FOR TABLE knowledge_chunk;");
+    const kcDef = String(kcInfo?.indexes?.kc_emb ?? "");
+    expect(kcDef).toContain(`DIMENSION ${EMBEDDING_DIMENSION}`);
   });
 
   it("ASSERT 拒非法 status,放行合法值", async () => {

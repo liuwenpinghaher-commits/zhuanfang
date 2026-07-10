@@ -95,7 +95,7 @@ export async function registerStateRoutes(
         continue;
       }
       try {
-        repo.deleteAll();
+        await repo.deleteAll();   // R2a:仓库接口已异步化
         stores[name] = "cleared";
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -132,10 +132,10 @@ export async function registerStateRoutes(
     // Cold-layer raw material lives outside ProductState (its own SQLite store), so the
     // hot-state rehearsal report doesn't see it. Bundle it here so a downloaded export is a
     // complete backup and the matching import below can restore the cold layer too.
-    const rawMaterials: InterviewRawMaterial[] = rawMaterialRepository?.list() ?? [];
+    const rawMaterials: InterviewRawMaterial[] = (await rawMaterialRepository?.list()) ?? [];   // R2a:仓库接口已异步化
     // Audio blobs are large; `audioSessions` records *which* sessions have audio (the full
     // set, by ID), so an operator can see the recorded-audio footprint and reconcile a purge.
-    const audioSessions: string[] = audioRepository?.listSessionIds() ?? [];
+    const audioSessions: string[] = (await audioRepository?.listSessionIds()) ?? [];
     // Bundle the actual bytes (base64) so the export is restorable — but cap the total to stay
     // under the request body limit (28MB). We walk sessions in a stable order (createdAt asc,
     // matching the repo's listAll ordering) and accumulate base64 length; once a session would
@@ -152,7 +152,7 @@ export async function registerStateRoutes(
     }> = [];
     const audioOmittedSessions: string[] = [];
     let audioBudgetUsed = 0;
-    const allAudio = (audioRepository?.listAll() ?? []).slice().sort((a, b) =>
+    const allAudio = ((await audioRepository?.listAll()) ?? []).slice().sort((a, b) =>   // R2a:仓库接口已异步化
       a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0
     );
     for (const a of allAudio) {
@@ -388,17 +388,19 @@ export async function registerStateRoutes(
     // 恢复操作可接受——用这份内存开销换"任一步失败都不丢旧数据"的确定性。
     // 顺序:raw 清+恢复 → audio 清+恢复 → 热态 replaceState 最后。热态排最后是关键:前面
     // 任何一步失败时热态尚未写入,不需要"热态回滚"这种做不到的操作(replaceState 无逆操作)。
-    const rawSnapshot = restoredRawMaterials !== undefined ? rawMaterialRepository!.list() : undefined;
-    const audioSnapshot = restoredAudios !== undefined ? audioRepository!.listAll() : undefined;
+    // R2a:冷层仓库接口已异步化,快照读取 await。
+    const rawSnapshot = restoredRawMaterials !== undefined ? await rawMaterialRepository!.list() : undefined;
+    const audioSnapshot = restoredAudios !== undefined ? await audioRepository!.listAll() : undefined;
 
     type ImportStore = "raw-material" | "audio" | "hot-state";
     type ImportStepStatus = "pending" | "completed" | "compensated" | "failed";
     interface ImportStep {
       store: ImportStore;
       status: ImportStepStatus;
-      run: () => void;
+      // R2a:run/compensate 允许返回 Promise(冷层写异步);执行处逐个 await。
+      run: () => void | Promise<void>;
       /** 逆序补偿:把快照放回去。hot-state 最后一步失败即未提交,无需(也无法)补偿。 */
-      compensate?: () => void;
+      compensate?: () => void | Promise<void>;
     }
     let replaced: ProductState | undefined;
     const steps: ImportStep[] = [];
@@ -406,13 +408,13 @@ export async function registerStateRoutes(
       steps.push({
         store: "raw-material",
         status: "pending",
-        run: () => {
-          rawMaterialRepository!.deleteAll();
-          for (const material of restoredRawMaterials!) rawMaterialRepository!.put(material);
+        run: async () => {
+          await rawMaterialRepository!.deleteAll();
+          for (const material of restoredRawMaterials!) await rawMaterialRepository!.put(material);
         },
-        compensate: () => {
-          rawMaterialRepository!.deleteAll();
-          for (const material of rawSnapshot) rawMaterialRepository!.put(material);
+        compensate: async () => {
+          await rawMaterialRepository!.deleteAll();
+          for (const material of rawSnapshot) await rawMaterialRepository!.put(material);
         }
       });
     }
@@ -420,13 +422,13 @@ export async function registerStateRoutes(
       steps.push({
         store: "audio",
         status: "pending",
-        run: () => {
-          audioRepository!.deleteAll();
-          for (const restored of restoredAudios!) audioRepository!.put(restored);
+        run: async () => {
+          await audioRepository!.deleteAll();
+          for (const restored of restoredAudios!) await audioRepository!.put(restored);
         },
-        compensate: () => {
-          audioRepository!.deleteAll();
-          for (const audio of audioSnapshot) audioRepository!.put(audio);
+        compensate: async () => {
+          await audioRepository!.deleteAll();
+          for (const audio of audioSnapshot) await audioRepository!.put(audio);
         }
       });
     }
@@ -442,7 +444,7 @@ export async function registerStateRoutes(
 
     for (let i = 0; i < steps.length; i += 1) {
       try {
-        steps[i]!.run();
+        await steps[i]!.run();   // R2a:step 可能异步
         steps[i]!.status = "completed";
       } catch (err) {
         const failedStep = steps[i]!.store;
@@ -457,7 +459,7 @@ export async function registerStateRoutes(
           const step = steps[j]!;
           if (!step.compensate) continue;
           try {
-            step.compensate();
+            await step.compensate();   // R2a:补偿可能异步
             if (step.status === "completed") step.status = "compensated";
           } catch (compensationErr) {
             const compensationMessage = compensationErr instanceof Error ? compensationErr.message : String(compensationErr);
@@ -487,7 +489,7 @@ export async function registerStateRoutes(
     let knowledgeIndexOutcome: "rebuilt" | "failed" | "skipped" = "skipped";
     if (knowledgeIndexRepository) {
       try {
-        rebuildKnowledgeIndex(replaced!, {
+        await rebuildKnowledgeIndex(replaced!, {   // R2a:rebuildKnowledgeIndex 已异步化
           knowledgeRepo: knowledgeIndexRepository,
           ...(rawMaterialRepository ? { rawMaterialRepo: rawMaterialRepository } : {}),
           ...(options.embeddingClient ? { embeddingClient: options.embeddingClient } : {}),
@@ -571,7 +573,7 @@ export async function registerStateRoutes(
     // 且热态不动,但注入实测第二库失败时第一库已删——前序删除无法恢复,"热态未变"的响应
     // 语义与实际不符;一库故障还会挡住其余库(隐私残留)。purge 是隐私删除:目标是删得
     // 尽量多,而不是假装原子。两个涉及冷层的档位(all/interviews)共用这段逐库清理。
-    const clearColdStoresBestEffort = (): Record<string, string> => {
+    const clearColdStoresBestEffort = async (): Promise<Record<string, string>> => {   // R2a:冷层异步化
       const stores: Record<string, string> = {};
       for (const [name, repo] of [
         ["raw-material", rawMaterialRepository],
@@ -583,7 +585,7 @@ export async function registerStateRoutes(
           continue;
         }
         try {
-          repo.deleteAll();
+          await repo.deleteAll();   // R2a:仓库接口已异步化
           stores[name] = "cleared";
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -620,11 +622,11 @@ export async function registerStateRoutes(
       // Cold layer (raw transcripts / recorded audio / derived knowledge index) must go with a
       // full wipe, otherwise the original Q&A / voice / indexed personal text survives the
       // "complete" purge (Task 13 / Task 4 / Task 12)。F-04:逐库尽力而为,一库失败不挡其余库。
-      const stores = clearColdStoresBestEffort();
       // F-04:热态 purge 无论冷层成败都提交——隐私删除最大化(冷层某库 IO 故障不该让热态的
       // 私人数据也留下来);冷层失败以 500 + purgeReceipt 如实回执,让前端明确"删了什么、
       // 哪里还残留、该重试什么",而不是假装什么都没发生。
       // 回归审查 R4-3(保留):跳过增量重索引——上方已直接清空整个知识索引。
+      const stores = await clearColdStoresBestEffort();   // R2a:已异步化
       const nextState = repository.replaceState(purged, { skipReindex: true });
       const failedStores = listFailedStores(stores);
       const purgeReceipt = { partialFailure: failedStores.length > 0, hotStateCommitted: true, stores };
@@ -645,7 +647,7 @@ export async function registerStateRoutes(
     // 已清资产的可召回块)。与 all/interviews 对齐:同步全量重建(存活的会话/素材块随重建回来)。
     if (scope === "assets" && knowledgeIndexRepository) {
       try {
-        rebuildKnowledgeIndex(nextState, {
+        await rebuildKnowledgeIndex(nextState, {   // R2a:rebuildKnowledgeIndex 已异步化
           knowledgeRepo: knowledgeIndexRepository,
           ...(rawMaterialRepository ? { rawMaterialRepo: rawMaterialRepository } : {}),
           ...(options.embeddingClient ? { embeddingClient: options.embeddingClient } : {}),
@@ -662,7 +664,7 @@ export async function registerStateRoutes(
     // 会裸 500——热态其实已变、也没有回执说明哪库残留。改为逐库尽力而为 + purgeReceipt,
     // 失败时 receipt 注明 hotStateCommitted,让前端明白 500≠什么都没发生。
     if (scope === "interviews") {
-      const stores = clearColdStoresBestEffort();
+      const stores = await clearColdStoresBestEffort();   // R2a:已异步化
       const failedStores = listFailedStores(stores);
       const purgeReceipt = { partialFailure: failedStores.length > 0, hotStateCommitted: true, stores };
       if (purgeReceipt.partialFailure) {

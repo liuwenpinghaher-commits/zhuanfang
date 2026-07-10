@@ -17,17 +17,18 @@ function makeChunk(overrides: Partial<KnowledgeChunk> & { id: string }): Knowled
   };
 }
 
-function seedKnowledge() {
+// R2a:仓库接口已异步化,await put。
+async function seedKnowledge() {
   const repo = createInMemoryKnowledgeIndexRepository();
-  repo.put(makeChunk({ id: "k1", title: "担忧记录", text: "我担心放权之后团队失控。", keywords: ["担心", "放权", "失控"] }));
-  repo.put(makeChunk({ id: "k2", title: "天气", text: "今天天气不错。", keywords: ["天气"] }));
+  await repo.put(makeChunk({ id: "k1", title: "担忧记录", text: "我担心放权之后团队失控。", keywords: ["担心", "放权", "失控"] }));
+  await repo.put(makeChunk({ id: "k2", title: "天气", text: "今天天气不错。", keywords: ["天气"] }));
   return repo;
 }
 
 describe("POST /api/chat", () => {
   it("在线: 新建会话, user+assistant 两条消息, assistant.citations 非空", async () => {
     const repository = createInMemoryProductStateRepository(createInitialProductState());
-    const knowledgeIndexRepository = seedKnowledge();
+    const knowledgeIndexRepository = await seedKnowledge();
     const fakeChatClient = { complete: async () => "根据你的资料[1],你担心放权失控。" };
 
     const server = buildApiServer({
@@ -61,7 +62,7 @@ describe("POST /api/chat", () => {
 
   it("同会话追加: 第二次带 sessionId → messages 变 4 条", async () => {
     const repository = createInMemoryProductStateRepository(createInitialProductState());
-    const knowledgeIndexRepository = seedKnowledge();
+    const knowledgeIndexRepository = await seedKnowledge();
     const fakeChatClient = { complete: async () => "根据你的资料[1]..." };
 
     const server = buildApiServer({
@@ -94,7 +95,7 @@ describe("POST /api/chat", () => {
 
   it("message 空 → 422", async () => {
     const repository = createInMemoryProductStateRepository(createInitialProductState());
-    const knowledgeIndexRepository = seedKnowledge();
+    const knowledgeIndexRepository = await seedKnowledge();
     const fakeChatClient = { complete: async () => "x" };
 
     const server = buildApiServer({
@@ -115,7 +116,7 @@ describe("POST /api/chat", () => {
 
   it("离线: 无 bailianChatClient → assistant 是降级文案, 不报错", async () => {
     const repository = createInMemoryProductStateRepository(createInitialProductState());
-    const knowledgeIndexRepository = seedKnowledge();
+    const knowledgeIndexRepository = await seedKnowledge();
 
     const server = buildApiServer({
       productStateRepository: repository,

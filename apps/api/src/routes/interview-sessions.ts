@@ -353,7 +353,7 @@ export async function registerInterviewSessionRoutes(
     if (options.rawMaterialRepository) {
       const { hotState, material } = offloadCompletedSession(reasonedState, session.id);
       if (material) {
-        options.rawMaterialRepository.put(material);
+        await options.rawMaterialRepository.put(material);   // R2a:仓库接口已异步化(降冷落库须先于返回轻态)
         stateToPersist = hotState;
         offloadedTurns = material.turns;
       }

@@ -9,19 +9,20 @@ const mk = (id: string): InterviewRawMaterial => ({
   createdAt: "2026-06-21T00:00:00.000Z"
 });
 
+// R2a:仓库接口已异步化,全部调用 await。
 describe("sqlite RawMaterialRepository", () => {
-  it("put→get 往返,跨实例持久(同 dbPath)", () => {
+  it("put→get 往返,跨实例持久(同 dbPath)", async () => {
     const repo = createSqliteRawMaterialRepository({ dbPath: ":memory:" });
-    repo.put(mk("s1"));
-    expect(repo.get("s1")?.turns[0].content).toBe("原话");
-    expect(repo.get("missing")).toBeUndefined();
+    await repo.put(mk("s1"));
+    expect((await repo.get("s1"))?.turns[0].content).toBe("原话");
+    expect(await repo.get("missing")).toBeUndefined();
   });
-  it("delete / deleteAll", () => {
+  it("delete / deleteAll", async () => {
     const repo = createSqliteRawMaterialRepository({ dbPath: ":memory:" });
-    repo.put(mk("s1")); repo.put(mk("s2"));
-    repo.delete("s1");
-    expect(repo.get("s1")).toBeUndefined();
-    repo.deleteAll();
-    expect(repo.get("s2")).toBeUndefined();
+    await repo.put(mk("s1")); await repo.put(mk("s2"));
+    await repo.delete("s1");
+    expect(await repo.get("s1")).toBeUndefined();
+    await repo.deleteAll();
+    expect(await repo.get("s2")).toBeUndefined();
   });
 });

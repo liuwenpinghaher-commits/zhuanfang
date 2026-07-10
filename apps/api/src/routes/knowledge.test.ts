@@ -29,7 +29,7 @@ describe("POST /api/knowledge/rebuild", () => {
     const body = res.json() as { chunkCount: number };
     expect(body.chunkCount).toBeGreaterThanOrEqual(1);
 
-    const all = knowledgeIndexRepository.listAll();
+    const all = await knowledgeIndexRepository.listAll();
     expect(all.length).toBe(body.chunkCount);
     expect(all.length).toBeGreaterThanOrEqual(1);
 
@@ -54,7 +54,7 @@ describe("POST /api/knowledge/rebuild", () => {
       chunkCount: number;
     };
     expect(second.chunkCount).toBe(first.chunkCount);
-    expect(knowledgeIndexRepository.listAll().length).toBe(first.chunkCount);
+    expect((await knowledgeIndexRepository.listAll()).length).toBe(first.chunkCount);
 
     await server.close();
   });
@@ -129,12 +129,12 @@ describe("reindexOnStateChange", () => {
     };
     const repo = createInMemoryKnowledgeIndexRepository();
     // 预置：m1/m2 的旧块各一条
-    repo.put({ ...makeChunk("old1"), sourceType: "memory", sourceId: "m1", text: "旧文本" });
-    repo.put({ ...makeChunk("old2"), sourceType: "memory", sourceId: "m2", text: "将删除" });
+    await repo.put({ ...makeChunk("old1"), sourceType: "memory", sourceId: "m1", text: "旧文本" });
+    await repo.put({ ...makeChunk("old2"), sourceType: "memory", sourceId: "m2", text: "将删除" });
 
     await reindexOnStateChange(prev, next, repo, undefined, createLlmBudget());
 
-    const all = repo.listAll();
+    const all = await repo.listAll();
     const m1 = all.filter((c) => c.sourceType === "memory" && c.sourceId === "m1");
     const m2 = all.filter((c) => c.sourceType === "memory" && c.sourceId === "m2");
     expect(m1).toHaveLength(1);
@@ -145,9 +145,9 @@ describe("reindexOnStateChange", () => {
   it("无变更 → 不动索引、不抛", async () => {
     const base = createInitialProductState();
     const repo = createInMemoryKnowledgeIndexRepository();
-    repo.put({ ...makeChunk("k"), sourceType: "memory", sourceId: "m1" });
+    await repo.put({ ...makeChunk("k"), sourceType: "memory", sourceId: "m1" });
     await reindexOnStateChange(base, base, repo, undefined, createLlmBudget());
-    expect(repo.listAll()).toHaveLength(1);
+    expect(await repo.listAll()).toHaveLength(1);
   });
 
   it("删除一条 importSource → 其 material 孤儿块被清除(终审#1)", async () => {
@@ -172,11 +172,11 @@ describe("reindexOnStateChange", () => {
     const next: ProductState = { ...base, importSources: [] };
     const repo = createInMemoryKnowledgeIndexRepository();
     // 预置：s1 的 material 块
-    repo.put({ ...makeChunk("mat1"), sourceType: "material", sourceId: "s1", text: "正文一" });
+    await repo.put({ ...makeChunk("mat1"), sourceType: "material", sourceId: "s1", text: "正文一" });
 
     await reindexOnStateChange(prev, next, repo, undefined, createLlmBudget());
 
-    const orphan = repo.listAll().filter((c) => c.sourceType === "material" && c.sourceId === "s1");
+    const orphan = (await repo.listAll()).filter((c) => c.sourceType === "material" && c.sourceId === "s1");
     expect(orphan).toHaveLength(0);
   });
 
@@ -189,12 +189,12 @@ describe("reindexOnStateChange", () => {
     const next: ProductState = { ...base, sessions: [...base.sessions] };
     const repo = createInMemoryKnowledgeIndexRepository();
     // 预置：sess-x 的两条 transcript 块(sourceId 形如 sessionId#turnId)
-    repo.put({ ...makeChunk("tc1"), sourceType: "transcript", sourceId: "sess-x#t1", text: "轮一" });
-    repo.put({ ...makeChunk("tc2"), sourceType: "transcript", sourceId: "sess-x#t2", text: "轮二" });
+    await repo.put({ ...makeChunk("tc1"), sourceType: "transcript", sourceId: "sess-x#t1", text: "轮一" });
+    await repo.put({ ...makeChunk("tc2"), sourceType: "transcript", sourceId: "sess-x#t2", text: "轮二" });
 
     await reindexOnStateChange(prev, next, repo, undefined, createLlmBudget());
 
-    const orphan = repo.listAll().filter((c) => c.sourceType === "transcript" && c.sourceId.startsWith("sess-x#"));
+    const orphan = (await repo.listAll()).filter((c) => c.sourceType === "transcript" && c.sourceId.startsWith("sess-x#"));
     expect(orphan).toHaveLength(0);
   });
 });
@@ -221,9 +221,7 @@ describe("PUT /api/state 触发增量重索引(经包装的 replaceState)", () =
     // reindex 是 fire-and-forget(微任务)，让事件循环转一圈再断言。
     await new Promise((r) => setTimeout(r, 20));
 
-    const block = knowledgeIndexRepository
-      .listAll()
-      .find((c) => c.sourceType === "theme" && c.sourceId === target.id);
+    const block = (await knowledgeIndexRepository.listAll()).find((c) => c.sourceType === "theme" && c.sourceId === target.id);
     expect(block).toBeDefined();
     expect(block?.text).toContain(newSummary);
 

@@ -31,7 +31,7 @@ describe("audio routes", () => {
     expect(body.ok).toBe(true);
     expect(body.byteSize).toBe(3);
 
-    const stored = audioRepository.get("s1");
+    const stored = await audioRepository.get("s1");
     expect(stored).toBeDefined();
     expect(Array.from(stored!.audio)).toEqual([1, 2, 3]);
     expect(stored!.mime).toBe("audio/webm");
@@ -101,7 +101,7 @@ describe("audio routes", () => {
         recordingStartedAt: "2026-06-21T10:00:00.000Z"
       }
     });
-    const stored = audioRepository.get("s1");
+    const stored = await audioRepository.get("s1");
     expect(stored!.recordingStartedAt).toBe("2026-06-21T10:00:00.000Z");
 
     const res = await server.inject({ method: "GET", url: "/api/sessions/s1/audio/meta" });
@@ -161,8 +161,8 @@ describe("audio routes", () => {
     expect(Array.from(eeRes.rawPayload)).toEqual([1, 1]);
 
     // 两路在 repo 里各存一条
-    expect(audioRepository.get("s1", "interviewee")!.role).toBe("interviewee");
-    expect(audioRepository.get("s1", "interviewer")!.role).toBe("interviewer");
+    expect((await audioRepository.get("s1", "interviewee"))!.role).toBe("interviewee");
+    expect((await audioRepository.get("s1", "interviewer"))!.role).toBe("interviewer");
   });
 
   it("meta?role=interviewer 返回里带 role", async () => {
@@ -197,7 +197,7 @@ describe("audio routes", () => {
       payload: { audioBase64: Buffer.from([7]).toString("base64"), mime: "audio/webm" }
     });
     // 非法 role 落入 interviewee
-    expect(audioRepository.get("s1", "interviewee")!.role).toBe("interviewee");
+    expect((await audioRepository.get("s1", "interviewee"))!.role).toBe("interviewee");
     const res = await server.inject({ method: "GET", url: "/api/sessions/s1/audio?role=bogus" });
     expect(res.statusCode).toBe(200);
     expect(Array.from(res.rawPayload)).toEqual([7]);
@@ -242,7 +242,7 @@ describe("audio routes", () => {
       payload: { audioBase64: Buffer.from([1]).toString("base64"), mime: "audio/webm" }
     });
     expect(res.statusCode).toBe(404);
-    expect(audioRepository.get("ghost")).toBeUndefined();
+    expect(await audioRepository.get("ghost")).toBeUndefined();
   });
 
   it("审计修复(F6):非白名单 mime(text/html)被降级为 application/octet-stream", async () => {

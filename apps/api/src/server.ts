@@ -787,8 +787,30 @@ export async function startServer() {
     const dataDir = join(dirname(productStateDbPath), "surreal");
     return mod.createSurrealProductStateRepository({ url: `surrealkv://${dataDir}/surreal` });
   };
+  // R2a:surreal 档下热态 + 三冷层共用同一嵌入式连接(嵌入式 surrealkv 同进程独占锁,不能开第二连接)。
+  // createSurrealStores 打开一个连接、applySchema 一次,返回热态仓库 + 三冷层仓库。
+  const loadSurrealStores = async () => {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const mod = await (Function("p", "return import(p)") as (p: string) => Promise<{
+      createSurrealStores: (opts: { url: string }) => Promise<{
+        productState: ProductStateRepository;
+        rawMaterial: RawMaterialRepository;
+        audio: AudioRepository;
+        knowledgeIndex: KnowledgeIndexRepository;
+      }>;
+    }>)(new URL("../../../packages/db/src/surreal/surreal-cold-repositories.ts", import.meta.url).pathname);
+    const dataDir = join(dirname(productStateDbPath), "surreal");
+    return mod.createSurrealStores({ url: `surrealkv://${dataDir}/surreal` });
+  };
 
   let repository: ProductStateRepository;
+  // R2a:surreal 档注入 Surreal 冷层(与热态同连接);其余档 undefined → buildApiServer 走默认工厂
+  // (memory→内存,sqlite/dual/dual-surreal→sqlite 冷层;冷层不做双写,R7 将删这些档)。
+  let surrealColdRepos: {
+    rawMaterialRepository?: RawMaterialRepository;
+    audioRepository?: AudioRepository;
+    knowledgeIndexRepository?: KnowledgeIndexRepository;
+  } = {};
   if (productStore === "memory") {
     // F-02/A2:in-memory 档位(sentinel 或显式 PRODUCT_STORE=memory)。productStateDbPath 此时
     // 恒为 sentinel,buildApiServer 里的冷层默认工厂(raw/audio/knowledge)据此同走内存,零落盘。
@@ -801,9 +823,15 @@ export async function startServer() {
       ...(selection.ignoredProductStore ? { ignoredProductStore: selection.ignoredProductStore } : {})
     }));
   } else if (productStore === "surreal") {
-    // P1a:纯 SurrealDB,opt-in。
-    repository = await loadSurreal();
-    console.warn(JSON.stringify({ event: "product_store", mode: "surreal" }));
+    // P1a:纯 SurrealDB,opt-in。R2a:热态 + 三冷层共用同一嵌入式连接。
+    const stores = await loadSurrealStores();
+    repository = stores.productState;
+    surrealColdRepos = {
+      rawMaterialRepository: stores.rawMaterial,
+      audioRepository: stores.audio,
+      knowledgeIndexRepository: stores.knowledgeIndex,
+    };
+    console.warn(JSON.stringify({ event: "product_store", mode: "surreal", detail: "热态+三冷层同连接(R2a)" }));
   } else if (productStore === "dual") {
     // P1d:sqlite 权威 + surreal 影子。观察等价,sqlite 仍是真相、零风险。
     const sqlite = createSqliteProductStateRepository({ dbPath: productStateDbPath });
@@ -898,6 +926,8 @@ export async function startServer() {
   const server = buildApiServer({
     productStateDbPath,
     productStateRepository: repository,
+    // R2a:surreal 档注入 Surreal 冷层(与热态同连接);其余档为空 → 默认工厂据 dbPath 选 memory/sqlite。
+    ...surrealColdRepos,
     // F-02/A2:把实际生效档位透出到 /api/system/capabilities,供 E2E globalSetup 校验隔离。
     productStoreMode: productStore,
     enableResearchScheduler: true,

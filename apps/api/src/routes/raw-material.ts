@@ -42,7 +42,7 @@ export async function registerRawMaterialRoutes(
 ): Promise<void> {
   server.get("/api/sessions/:id/raw-material", async (request, reply) => {
     const id = (request.params as { id?: string }).id ?? "";
-    const material = rawRepo.get(id);
+    const material = await rawRepo.get(id);   // R2a:仓库接口已异步化
     if (!material) {
       return reply.code(404).send({ error: "Raw material not found for session." });
     }
@@ -69,7 +69,7 @@ export async function registerRawMaterialRoutes(
       const { hotState: next, material } = offloadCompletedSession(hotState, session.id);
       hotState = next;
       if (material) {
-        rawRepo.put(material);
+        await rawRepo.put(material);   // R2a:仓库接口已异步化
         offloaded += 1;
       }
     }

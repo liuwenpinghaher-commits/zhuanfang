@@ -49,6 +49,12 @@ export const DATETIME_DEFAULT_COLS: Record<string, readonly string[]> = {
   ai_run_event: ["createdAt"],
   workflow_run: ["startedAt"],
   operational_check: ["checkedAt"],
+  // R2a:三冷层(009_r2a_cold.surql)的 DEFAULT datetime 列。冷层由独立仓库直读直写、不走
+  // persist 的 UPSERT CONTENT 路径,登记于此仅为满足 node-mapper.test 的防漂移守卫(扫全部
+  // migration 的 DEFAULT datetime 列)。冷层写全量提供 createdAt,不依赖 fillUpsertDefaults。
+  raw_material: ["createdAt"],
+  audio: ["createdAt"],
+  knowledge_chunk: ["createdAt"],
 };
 
 /** 把记录补成"可被 UPSERT CONTENT 全量覆盖"的形态:
@@ -221,9 +227,43 @@ export function isTransientPersistError(err: unknown): boolean {
   return /failed transaction|transaction conflict|can be retried/i.test(err instanceof Error ? err.message : String(err));
 }
 
+/** 瞬态冲突有界重试(1+4 次尝试,累计 ~3.2s):对同一嵌入式连接上写事务偶发的乐观冲突自恢复。
+ *  单一实现——persist 写路径与 R2a 冷层写路径共用同一阶梯(勿复制第二份重试逻辑);
+ *  非瞬态错误(schema ASSERT/字段 coerce)立即抛,不重试(重试必然再失败,徒增延迟且掩盖真错)。
+ *  onRetrySuccess:重试后成功的回调(仅 attempt>0 触发),供调用方打诊断日志。 */
+export async function runWithTransientRetry<T>(
+  fn: () => Promise<T>,
+  onRetrySuccess?: (attempt: number) => void
+): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= PERSIST_RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, PERSIST_RETRY_DELAYS_MS[attempt - 1]));
+      const result = await fn();
+      if (attempt > 0) onRetrySuccess?.(attempt);
+      return result;
+    } catch (err) {
+      lastErr = err;
+      if (!isTransientPersistError(err)) break;
+    }
+  }
+  throw lastErr;
+}
+
 export async function createSurrealProductStateRepository(opts: SurrealRepoOptions): Promise<SurrealRepoHandle> {
   const db = await createSurrealConnection(opts);
   await applySchema(db);
+  return buildSurrealProductStateRepositoryOnConnection(db, { ownsConnection: true });
+}
+
+/** R2a:在一个已打开且已 applySchema 的共享连接上构建产品状态仓库(不自己开连接)。
+ *  createSurrealStores 用它把热态与三冷层挂到同一嵌入式连接(surrealkv 同进程独占锁,
+ *  且 R2b 治理事务要跨冷热单事务);ownsConnection=false 时 close() 不关连接(由 stores 统一关)。
+ *  standalone 的 createSurrealProductStateRepository 走 ownsConnection=true,close() 自关(向后兼容)。 */
+export async function buildSurrealProductStateRepositoryOnConnection(
+  db: Surreal,
+  cfg: { ownsConnection: boolean }
+): Promise<SurrealRepoHandle> {
 
   // 内存工作副本:同步接口的真相源。
   const loaded = await loadState(db);
@@ -244,23 +284,14 @@ export async function createSurrealProductStateRepository(opts: SurrealRepoOptio
         // 瞬态冲突有界重试(P4 真实业务 E2E 实测):原生召回读(HNSW/BM25/图遍历)与 persist
         // 写事务在同一嵌入式连接上并发时,surrealkv 乐观事务偶发 "failed transaction"——
         // P4 修通生产可达性之前原生读不存在,故此前从未暴露。读绝不串行化(教训 6fca26b4:
-        // 不把任何东西塞进写串行化),写侧立即有界重试即可;非瞬态错误(schema ASSERT 等)
-        // 不重试直接 fail-loud。重试全败 → 基线不动,自愈兜底(下次写以旧基线 diff 补回)。
-        let lastErr: unknown;
-        for (let attempt = 0; attempt <= PERSIST_RETRY_DELAYS_MS.length; attempt++) {
-          try {
-            if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, PERSIST_RETRY_DELAYS_MS[attempt - 1]));
-            await persist(db, lastPersisted, snapshot);
-            lastPersisted = snapshot;                 // 仅成功后推进基线
-            persistHealth = { consecutiveFailures: 0 };
-            if (attempt > 0) console.warn(JSON.stringify({ event: "surreal_persist_retried_ok", attempt }));
-            return;
-          } catch (err) {
-            lastErr = err;
-            if (!isTransientPersistError(err)) break;
-          }
-        }
-        throw lastErr;
+        // 不把任何东西塞进写串行化),写侧立即有界重试即可(runWithTransientRetry,冷层复用同阶梯);
+        // 非瞬态错误(schema ASSERT 等)不重试直接 fail-loud。重试全败 → 基线不动,自愈兜底。
+        await runWithTransientRetry(
+          () => persist(db, lastPersisted, snapshot),
+          (attempt) => console.warn(JSON.stringify({ event: "surreal_persist_retried_ok", attempt }))
+        );
+        lastPersisted = snapshot;                 // 仅成功后推进基线
+        persistHealth = { consecutiveFailures: 0 };
       })
       .catch((err) => {
         // fail-loud:基线不动,下次 persist 以旧基线 diff、补回本次漏写(自愈)。
@@ -318,7 +349,9 @@ export async function createSurrealProductStateRepository(opts: SurrealRepoOptio
       return state.sessions.find((s) => s.id === id) ?? null;
     },
     async flush() { await persistQueue; },
-    async close() { await persistQueue; await db.close(); },
+    // R2a:共享连接下(ownsConnection=false)不在此关连接——由 createSurrealStores 统一关一次,
+    // 避免冷层仓库还在用连接时被产品仓库 close 提前关掉。standalone 仍自关(向后兼容)。
+    async close() { await persistQueue; if (cfg.ownsConnection) await db.close(); },
     query<T extends unknown[]>(surql: string, vars?: Record<string, unknown>) { return db.query<T>(surql, vars) as Promise<T>; },
     async recallThemeAssets(themeId: string) {
       const t = new RecordId("theme", themeId);

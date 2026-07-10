@@ -112,18 +112,19 @@ export function createSqliteAudioRepository(
     return result;
   };
 
+  // R2a 接口异步化:同步 sqlite 实现机械包装为 async(语义不变),对齐异步化后的接口。
   return {
-    get(sessionId, role = DEFAULT_ROLE) {
+    async get(sessionId, role = DEFAULT_ROLE) {
       const row = selectOne.get(sessionId, role) as AudioRow | undefined;
       if (!row) {
         return undefined;
       }
       return mapRow(row);
     },
-    has(sessionId, role = DEFAULT_ROLE) {
+    async has(sessionId, role = DEFAULT_ROLE) {
       return existsOne.get(sessionId, role) !== undefined;
     },
-    put(a) {
+    async put(a) {
       upsert.run(
         a.sessionId,
         a.role ?? DEFAULT_ROLE,
@@ -135,7 +136,7 @@ export function createSqliteAudioRepository(
         a.createdAt
       );
     },
-    delete(sessionId, role) {
+    async delete(sessionId, role) {
       if (role) {
         deleteOneRole.run(sessionId, role);
         return;
@@ -143,14 +144,14 @@ export function createSqliteAudioRepository(
       // 无 role：删该 session 的全部 role。
       deleteSession.run(sessionId);
     },
-    deleteAll() {
+    async deleteAll() {
       deleteAllStmt.run();
     },
-    listSessionIds() {
+    async listSessionIds() {
       const rows = selectIds.all() as Array<Pick<AudioRow, "session_id">>;
       return rows.map((row) => row.session_id);
     },
-    listAll() {
+    async listAll() {
       const rows = selectAll.all() as unknown as AudioRow[];
       return rows.map(mapRow);
     }

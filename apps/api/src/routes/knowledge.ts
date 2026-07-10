@@ -84,9 +84,9 @@ export async function reindexOnStateChange(
   try {
     const diff = diffIndexableSources(prev, next);
 
-    // 先处理删除：被删来源的块直接清掉。
+    // 先处理删除：被删来源的块直接清掉。（R2a:仓库接口已异步化，逐个 await）
     for (const ref of diff.removed) {
-      knowledgeRepo.deleteBySource(ref.sourceType, ref.sourceId);
+      await knowledgeRepo.deleteBySource(ref.sourceType, ref.sourceId);
     }
 
     // material 不在 diffIndexableSources 内（新增/变更由 import 端点补点），但"删除"必须在此清理：
@@ -96,7 +96,7 @@ export async function reindexOnStateChange(
     const nextSourceIds = new Set(next.importSources.map((s) => s.id));
     for (const source of prev.importSources) {
       if (!nextSourceIds.has(source.id)) {
-        knowledgeRepo.deleteBySource("material", source.id);
+        await knowledgeRepo.deleteBySource("material", source.id);
       }
     }
 
@@ -106,11 +106,11 @@ export async function reindexOnStateChange(
     const nextSessionIds = new Set(next.sessions.map((s) => s.id));
     const removedSessionIds = prev.sessions.filter((s) => !nextSessionIds.has(s.id)).map((s) => s.id);
     if (removedSessionIds.length > 0) {
-      for (const chunk of knowledgeRepo.listAll()) {
+      for (const chunk of await knowledgeRepo.listAll()) {
         if (chunk.sourceType !== "transcript") continue;
         const sid = chunk.sourceId.split("#")[0];
         if (removedSessionIds.includes(sid)) {
-          knowledgeRepo.deleteBySource("transcript", chunk.sourceId);
+          await knowledgeRepo.deleteBySource("transcript", chunk.sourceId);
         }
       }
     }
@@ -123,9 +123,9 @@ export async function reindexOnStateChange(
     const allChunks = buildKnowledgeChunks(next, new Map());
     const relevant = allChunks.filter((c) => changedKeys.has(`${c.sourceType}::${c.sourceId}`));
     // R8-1:embed 前捕获代际,若嵌入期间被 reset/purge 清空则整批丢弃(不复活已清块)。
-    const epochAtEmbed = knowledgeRepo.epoch();
+    const epochAtEmbed = await knowledgeRepo.epoch();
     const embedded = await embedChunks(relevant, embeddingClient, budget);
-    if (knowledgeRepo.epoch() !== epochAtEmbed) {
+    if (await knowledgeRepo.epoch() !== epochAtEmbed) {
       console.warn(JSON.stringify({ event: "reindex_discarded_stale_epoch" }));
       return;
     }
@@ -143,7 +143,7 @@ export async function reindexOnStateChange(
     }
     for (const ref of diff.changed) {
       const k = `${ref.sourceType}::${ref.sourceId}`;
-      knowledgeRepo.replaceSource(ref.sourceType, ref.sourceId, bySource.get(k) ?? []);
+      await knowledgeRepo.replaceSource(ref.sourceType, ref.sourceId, bySource.get(k) ?? []);
     }
   } catch (err) {
     console.warn(
@@ -171,10 +171,10 @@ export async function reindexMaterial(
     const chunks = buildKnowledgeChunks(state, new Map()).filter(
       (c) => c.sourceType === "material" && c.sourceId === sourceId
     );
-    const epochAtEmbed = knowledgeRepo.epoch();   // R8-1
+    const epochAtEmbed = await knowledgeRepo.epoch();   // R8-1
     const embedded = await embedChunks(chunks, embeddingClient, budget);
-    if (knowledgeRepo.epoch() !== epochAtEmbed) return;   // 中途清空则丢弃
-    knowledgeRepo.replaceSource("material", sourceId, embedded);
+    if (await knowledgeRepo.epoch() !== epochAtEmbed) return;   // 中途清空则丢弃
+    await knowledgeRepo.replaceSource("material", sourceId, embedded);
   } catch (err) {
     console.warn(
       JSON.stringify({
@@ -205,9 +205,9 @@ export async function reindexTranscript(
     const chunks = all.filter(
       (c) => c.sourceType === "transcript" && c.sourceId.startsWith(`${sessionId}#`)
     );
-    const epochAtEmbed = knowledgeRepo.epoch();   // R8-1
+    const epochAtEmbed = await knowledgeRepo.epoch();   // R8-1
     const embedded = await embedChunks(chunks, embeddingClient, budget);
-    if (knowledgeRepo.epoch() !== epochAtEmbed) return;   // 中途清空则丢弃
+    if (await knowledgeRepo.epoch() !== epochAtEmbed) return;   // 中途清空则丢弃
     // 每条 user 轮一个独立 sourceId，逐条整组替换。
     const bySource = new Map<string, KnowledgeChunk[]>();
     for (const c of embedded) {
@@ -219,7 +219,7 @@ export async function reindexTranscript(
       }
     }
     for (const [sid, list] of bySource) {
-      knowledgeRepo.replaceSource("transcript", sid, list);
+      await knowledgeRepo.replaceSource("transcript", sid, list);
     }
   } catch (err) {
     console.warn(
@@ -241,8 +241,10 @@ export interface KnowledgeRouteOptions {
 
 /** 全量重建知识索引(审计修复 B2 抽取复用:rebuild 路由 / import 恢复 / purge scope=assets 共用)。
  *  同步部分:清空旧索引 + 立即写入关键词块(无嵌入即可召回);嵌入后台补,失败仅 warn。
- *  rawMaterialRepo 可缺省(state 路由等无冷层配置的调用方):transcript 块跳过,其余照常。 */
-export function rebuildKnowledgeIndex(
+ *  rawMaterialRepo 可缺省(state 路由等无冷层配置的调用方):transcript 块跳过,其余照常。
+ *  R2a:仓库接口异步化后本函数改为 async——"同步部分"(清空+关键词写入+捕获 epoch)现在是
+ *  await 到完成再 resolve 返回 chunkCount(语义不变:resolve 时关键词召回已就绪),嵌入仍后台补。 */
+export async function rebuildKnowledgeIndex(
   state: ProductState,
   deps: {
     knowledgeRepo: KnowledgeIndexRepository;
@@ -250,12 +252,12 @@ export function rebuildKnowledgeIndex(
     embeddingClient?: BailianEmbeddingClient;
     budget: LlmBudget;
   }
-): { chunkCount: number } {
+): Promise<{ chunkCount: number }> {
   // 逐字稿属冷层，不在 ProductState 里——从 raw-material 仓库按会话补回。
   const rawTurns = new Map<string, InterviewTurn[]>();
   if (deps.rawMaterialRepo) {
     for (const session of state.sessions) {
-      const material = deps.rawMaterialRepo.get(session.id);
+      const material = await deps.rawMaterialRepo.get(session.id);
       if (material) {
         rawTurns.set(session.id, material.turns);
       }
@@ -266,26 +268,26 @@ export function rebuildKnowledgeIndex(
 
   // 全量重建：先清空旧索引、立即写入(无嵌入也能关键词召回)并返回——避免调用方
   // 阻塞在数百次嵌入上(嵌入 API 慢时会拖到分钟级)。
-  deps.knowledgeRepo.deleteAll();
+  await deps.knowledgeRepo.deleteAll();
   for (const chunk of chunks) {
-    deps.knowledgeRepo.put(chunk);
+    await deps.knowledgeRepo.put(chunk);
   }
   // 回归审查 R8-1:捕获本次重建的代际号。后台异步嵌入(数秒~分钟)期间若用户 reset/purge 清空了
   // 索引(epoch 递增),下面的 put 必须被丢弃——否则会把 reset 前构建的块 put 回索引 → chat 再召回
   // 已清空的私人内容(窄窗重开 P1-1 隐私症状)。
-  const rebuildEpoch = deps.knowledgeRepo.epoch();
+  const rebuildEpoch = await deps.knowledgeRepo.epoch();
 
   // 嵌入在后台补：每补好一条就 upsert 覆盖(put 按 id 覆盖)，召回随之从关键词升级到向量。失败只 warn。
   void embedChunks(chunks, deps.embeddingClient, deps.budget)
-    .then((embedded) => {
+    .then(async (embedded) => {
       // R8-1:代际已变(中途被 reset/purge 清空)→ 整批陈旧嵌入丢弃,绝不复活已清私密块。
-      if (deps.knowledgeRepo.epoch() !== rebuildEpoch) {
-        console.warn(JSON.stringify({ event: "knowledge_embed_discarded_stale_epoch", rebuildEpoch, current: deps.knowledgeRepo.epoch() }));
+      if (await deps.knowledgeRepo.epoch() !== rebuildEpoch) {
+        console.warn(JSON.stringify({ event: "knowledge_embed_discarded_stale_epoch", rebuildEpoch, current: await deps.knowledgeRepo.epoch() }));
         return;
       }
       for (const chunk of embedded) {
         if (chunk.embedding && chunk.embedding.length > 0) {
-          deps.knowledgeRepo.put(chunk);
+          await deps.knowledgeRepo.put(chunk);
         }
       }
     })
@@ -311,7 +313,7 @@ export async function registerKnowledgeRoutes(
   server.post("/api/knowledge/rebuild", async () => {
     const budget = options.llmBudget ?? createLlmBudget();
     const state = productRepo.getState();
-    const result = rebuildKnowledgeIndex(state, {
+    const result = await rebuildKnowledgeIndex(state, {   // R2a:rebuildKnowledgeIndex 已异步化
       knowledgeRepo,
       rawMaterialRepo,
       embeddingClient: options.embeddingClient,

@@ -32,7 +32,7 @@ export async function registerAudioRoutes(
     const ALLOWED_AUDIO_MIME = new Set(["audio/webm", "audio/wav", "audio/mpeg", "audio/mp4", "audio/ogg", "audio/x-wav", "audio/wave"]);
     const safeMime = ALLOWED_AUDIO_MIME.has(body.mime) ? body.mime : "application/octet-stream";
     const audio = new Uint8Array(Buffer.from(body.audioBase64, "base64"));
-    audioRepo.put({
+    await audioRepo.put({   // R2a:仓库接口已异步化
       sessionId: id,
       role,
       audio,
@@ -48,7 +48,7 @@ export async function registerAudioRoutes(
   server.get("/api/sessions/:id/audio", async (request, reply) => {
     const id = (request.params as { id?: string }).id ?? "";
     const role = readRole(request);
-    const a = audioRepo.get(id, role);
+    const a = await audioRepo.get(id, role);   // R2a:仓库接口已异步化
     if (!a) return reply.code(404).send({ error: "No audio for session." });
     return reply
       .header("content-type", a.mime)
@@ -62,7 +62,7 @@ export async function registerAudioRoutes(
   server.get("/api/sessions/:id/audio/meta", async (request) => {
     const id = (request.params as { id?: string }).id ?? "";
     const role = readRole(request);
-    const a = audioRepo.get(id, role);
+    const a = await audioRepo.get(id, role);   // R2a:仓库接口已异步化
     return a
       ? {
           exists: true,

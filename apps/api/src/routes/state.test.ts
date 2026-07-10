@@ -292,8 +292,8 @@ describe("state routes", () => {
 
     it("purge(all) 清空冷层 raw material", async () => {
       const rawRepo = createInMemoryRawMaterialRepository();
-      rawRepo.put(sampleMaterial("cold-session-1"));
-      expect(rawRepo.get("cold-session-1")).toBeDefined();
+      await rawRepo.put(sampleMaterial("cold-session-1"));
+      expect(await rawRepo.get("cold-session-1")).toBeDefined();
 
       const server = buildApiServer({ rawMaterialRepository: rawRepo });
       const purgeRes = await server.inject({
@@ -303,13 +303,13 @@ describe("state routes", () => {
       });
       expect(purgeRes.statusCode).toBe(200);
       // Cold layer wiped
-      expect(rawRepo.get("cold-session-1")).toBeUndefined();
+      expect(await rawRepo.get("cold-session-1")).toBeUndefined();
       await server.close();
     });
 
     it("export 打包冷层原始材料，可经 import 恢复", async () => {
       const rawRepo = createInMemoryRawMaterialRepository();
-      rawRepo.put(sampleMaterial("cold-session-A"));
+      await rawRepo.put(sampleMaterial("cold-session-A"));
 
       const server = buildApiServer({ rawMaterialRepository: rawRepo });
       const exportRes = await server.inject({ method: "GET", url: "/api/state/export" });
@@ -332,15 +332,15 @@ describe("state routes", () => {
         payload: { confirm: "REPLACE_ALL_STATE", ...body }
       });
       expect(importRes.statusCode).toBe(200);
-      expect(freshRepo.get("cold-session-A")).toBeDefined();
-      expect(freshRepo.get("cold-session-A")?.turns.length).toBe(2);
+      expect(await freshRepo.get("cold-session-A")).toBeDefined();
+      expect((await freshRepo.get("cold-session-A"))?.turns.length).toBe(2);
       await freshServer.close();
       await server.close();
     });
 
     it("R4-1:import 含非法 rawMaterial(缺 turns)→ 422 且旧冷层不丢(build-then-swap 先校验后交换)", async () => {
       const rawRepo = createInMemoryRawMaterialRepository();
-      rawRepo.put(sampleMaterial("existing-cold"));
+      await rawRepo.put(sampleMaterial("existing-cold"));
       const server = buildApiServer({ rawMaterialRepository: rawRepo });
       const cur = (await server.inject({ method: "GET", url: "/api/state" })).json();
       // 非法包:一条 rawMaterial 缺 turns(node:sqlite put 会抛)。若"先 deleteAll 再逐条 put",中途抛错则
@@ -358,7 +358,7 @@ describe("state routes", () => {
         }
       });
       expect(res.statusCode).toBe(422);
-      expect(rawRepo.get("existing-cold")?.turns.length).toBe(2);   // 旧冷层数据完好,未被清空
+      expect((await rawRepo.get("existing-cold"))?.turns.length).toBe(2);   // 旧冷层数据完好,未被清空
       const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
       expect(after.profile.name).toBe(cur.profile.name);
       await server.close();
@@ -366,8 +366,8 @@ describe("state routes", () => {
 
     it("R4-2:reset 清冷层 raw material(重置即三库同清,索引/冷层不残留可召回私密)", async () => {
       const rawRepo = createInMemoryRawMaterialRepository();
-      rawRepo.put(sampleMaterial("reset-cold"));
-      expect(rawRepo.get("reset-cold")).toBeDefined();
+      await rawRepo.put(sampleMaterial("reset-cold"));
+      expect(await rawRepo.get("reset-cold")).toBeDefined();
       const server = buildApiServer({ rawMaterialRepository: rawRepo });
       const res = await server.inject({
         method: "POST",
@@ -375,7 +375,7 @@ describe("state routes", () => {
         payload: { confirm: "RESET_ALL_DATA" }
       });
       expect(res.statusCode).toBe(200);
-      expect(rawRepo.get("reset-cold")).toBeUndefined();   // 冷层被清
+      expect(await rawRepo.get("reset-cold")).toBeUndefined();   // 冷层被清
       await server.close();
     });
 
@@ -386,7 +386,7 @@ describe("state routes", () => {
     it("purge(all) 冷层清理失败 → 500 + purgeReceipt,但热态仍已清(隐私删除最大化)", async () => {
       const rawRepo = {
         ...createInMemoryRawMaterialRepository(),
-        deleteAll: () => {
+        deleteAll: async () => {
           throw new Error("simulated raw delete failure");
         }
       };
@@ -413,7 +413,7 @@ describe("state routes", () => {
     // 故障注入:包一层让 deleteAll 抛错,模拟 sqlite IO 故障。
     const failing = <T extends { deleteAll: () => void }>(repo: T): T => ({
       ...repo,
-      deleteAll: () => {
+      deleteAll: async () => {
         throw new Error("simulated cold-layer delete failure");
       }
     });
@@ -508,7 +508,7 @@ describe("state routes", () => {
   describe("audio in export/purge (Task 4 — 隐私闭环)", () => {
     it("purge(all) 清空音频", async () => {
       const audioRepo = createInMemoryAudioRepository();
-      audioRepo.put({
+      await audioRepo.put({
         sessionId: "a1",
         role: "interviewee",
         audio: new Uint8Array([1]),
@@ -516,7 +516,7 @@ describe("state routes", () => {
         byteSize: 1,
         createdAt: "2026-06-20T00:00:00.000Z"
       });
-      expect(audioRepo.has("a1")).toBe(true);
+      expect(await audioRepo.has("a1")).toBe(true);
 
       const server = buildApiServer({ audioRepository: audioRepo });
       const purgeRes = await server.inject({
@@ -526,13 +526,13 @@ describe("state routes", () => {
       });
       expect(purgeRes.statusCode).toBe(200);
       // Audio wiped along with the full purge
-      expect(audioRepo.has("a1")).toBe(false);
+      expect(await audioRepo.has("a1")).toBe(false);
       await server.close();
     });
 
     it("export 记录有音频会话", async () => {
       const audioRepo = createInMemoryAudioRepository();
-      audioRepo.put({
+      await audioRepo.put({
         sessionId: "a1",
         role: "interviewee",
         audio: new Uint8Array([1]),
@@ -554,7 +554,7 @@ describe("state routes", () => {
   describe("知识索引 in purge (Task 12 — 隐私闭环)", () => {
     it("purge(all) 清空知识索引", async () => {
       const knowledgeIndexRepository = createInMemoryKnowledgeIndexRepository();
-      knowledgeIndexRepository.put({
+      await knowledgeIndexRepository.put({
         id: "k1",
         sourceType: "transcript",
         sourceId: "s1",
@@ -563,7 +563,7 @@ describe("state routes", () => {
         keywords: ["关键词"],
         createdAt: "2026-06-21T00:00:00.000Z"
       });
-      expect(knowledgeIndexRepository.listAll().length).toBe(1);
+      expect((await knowledgeIndexRepository.listAll()).length).toBe(1);
 
       const server = buildApiServer({ knowledgeIndexRepository });
       const purgeRes = await server.inject({
@@ -573,7 +573,7 @@ describe("state routes", () => {
       });
       expect(purgeRes.statusCode).toBe(200);
       // 知识索引随全量 purge 一并清空（它是派生、可重建的)
-      expect(knowledgeIndexRepository.listAll().length).toBe(0);
+      expect((await knowledgeIndexRepository.listAll()).length).toBe(0);
       await server.close();
     });
   });
@@ -581,7 +581,7 @@ describe("state routes", () => {
   describe("audio bytes in export/import (导出含音频可恢复)", () => {
     it("export 打包音频且可经 import 恢复", async () => {
       const audioRepo = createInMemoryAudioRepository();
-      audioRepo.put({
+      await audioRepo.put({
         sessionId: "a1",
         role: "interviewee",
         audio: new Uint8Array([1, 2, 3]),
@@ -618,7 +618,7 @@ describe("state routes", () => {
       });
       expect(importRes.statusCode).toBe(200);
 
-      const restored = freshAudioRepo.get("a1");
+      const restored = await freshAudioRepo.get("a1");
       expect(restored).toBeDefined();
       expect(Array.from(restored!.audio)).toEqual([1, 2, 3]);
       expect(restored!.mime).toBe("audio/webm");
@@ -631,7 +631,7 @@ describe("state routes", () => {
 
     it("两路 role 都被导出且经 import 恢复", async () => {
       const audioRepo = createInMemoryAudioRepository();
-      audioRepo.put({
+      await audioRepo.put({
         sessionId: "s1",
         role: "interviewee",
         audio: new Uint8Array([1, 1]),
@@ -639,7 +639,7 @@ describe("state routes", () => {
         byteSize: 2,
         createdAt: "2026-06-21T10:00:00.000Z"
       });
-      audioRepo.put({
+      await audioRepo.put({
         sessionId: "s1",
         role: "interviewer",
         audio: new Uint8Array([2, 2, 2]),
@@ -665,8 +665,8 @@ describe("state routes", () => {
         url: "/api/state/import",
         payload: { confirm: "REPLACE_ALL_STATE", ...body }
       });
-      expect(Array.from(freshAudioRepo.get("s1", "interviewee")!.audio)).toEqual([1, 1]);
-      expect(Array.from(freshAudioRepo.get("s1", "interviewer")!.audio)).toEqual([2, 2, 2]);
+      expect(Array.from((await freshAudioRepo.get("s1", "interviewee"))!.audio)).toEqual([1, 1]);
+      expect(Array.from((await freshAudioRepo.get("s1", "interviewer"))!.audio)).toEqual([2, 2, 2]);
       await freshServer.close();
       await server.close();
     });
@@ -674,7 +674,7 @@ describe("state routes", () => {
     it("base64 往返字节精确(含 0/255 边界)", async () => {
       const audioRepo = createInMemoryAudioRepository();
       const bytes = new Uint8Array([0, 1, 127, 128, 254, 255]);
-      audioRepo.put({
+      await audioRepo.put({
         sessionId: "edge",
         role: "interviewee",
         audio: bytes,
@@ -692,7 +692,7 @@ describe("state routes", () => {
         url: "/api/state/import",
         payload: { confirm: "REPLACE_ALL_STATE", ...body }
       });
-      expect(Array.from(freshAudioRepo.get("edge")!.audio)).toEqual([0, 1, 127, 128, 254, 255]);
+      expect(Array.from((await freshAudioRepo.get("edge"))!.audio)).toEqual([0, 1, 127, 128, 254, 255]);
       await freshServer.close();
       await server.close();
     });
@@ -702,7 +702,7 @@ describe("state routes", () => {
       // Two ~10MB blobs. base64 inflates by 4/3, so the first (~13.3MB) fits under the
       // 18MB budget but the second pushes the running total over it and is omitted.
       const tenMB = 10 * 1024 * 1024;
-      audioRepo.put({
+      await audioRepo.put({
         sessionId: "big-1",
         role: "interviewee",
         audio: new Uint8Array(tenMB),
@@ -710,7 +710,7 @@ describe("state routes", () => {
         byteSize: tenMB,
         createdAt: "2026-06-21T10:00:00.000Z"
       });
-      audioRepo.put({
+      await audioRepo.put({
         sessionId: "big-2",
         role: "interviewee",
         audio: new Uint8Array(tenMB),
@@ -773,15 +773,15 @@ describe("state routes", () => {
 
     it("完整包中段失败(audio put 抛)→ 500 + journal 回滚:raw/audio 快照恢复,热态未变", async () => {
       const rawRepo = createInMemoryRawMaterialRepository();
-      rawRepo.put(sampleMaterial("old-raw"));
+      await rawRepo.put(sampleMaterial("old-raw"));
       const audioBase = createInMemoryAudioRepository();
-      audioBase.put(seededAudio("old-audio"));
+      await audioBase.put(seededAudio("old-audio"));
       // 故障注入:仅对导入的新条目抛错——补偿路径 put 回旧快照必须仍然可用。
       const audioRepo = {
         ...audioBase,
-        put: (a: InterviewAudio) => {
+        put: async (a: InterviewAudio) => {
           if (a.sessionId === "new-audio") throw new Error("simulated audio put failure");
-          audioBase.put(a);
+          await audioBase.put(a);
         }
       };
       const server = buildApiServer({ rawMaterialRepository: rawRepo, audioRepository: audioRepo });
@@ -806,10 +806,10 @@ describe("state routes", () => {
         { store: "hot-state", status: "pending" }
       ]);
       // 快照已恢复:旧世代数据在,新世代数据不在。
-      expect(rawRepo.get("old-raw")).toBeDefined();
-      expect(rawRepo.get("new-raw")).toBeUndefined();
-      expect(audioBase.has("old-audio")).toBe(true);
-      expect(audioBase.has("new-audio")).toBe(false);
+      expect(await rawRepo.get("old-raw")).toBeDefined();
+      expect(await rawRepo.get("new-raw")).toBeUndefined();
+      expect(await audioBase.has("old-audio")).toBe(true);
+      expect(await audioBase.has("new-audio")).toBe(false);
       // 热态排在最后一步,失败时尚未写入——GET 复核未变。
       const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
       expect(after.profile.name).toBe(cur.profile.name);
@@ -821,17 +821,17 @@ describe("state routes", () => {
       // raw-material 是 journal 第一步,deleteAll 成功后 put 新条目抛错——失败步骤自身可能已
       // 部分执行,补偿必须把 raw 快照放回;后续步骤(audio/hot-state)必须保持 pending 未执行。
       const rawBase = createInMemoryRawMaterialRepository();
-      rawBase.put(sampleMaterial("old-raw"));
+      await rawBase.put(sampleMaterial("old-raw"));
       // 故障注入:仅对导入的新条目抛错——补偿路径 put 回旧快照必须仍然可用。
       const rawRepo = {
         ...rawBase,
-        put: (m: InterviewRawMaterial) => {
+        put: async (m: InterviewRawMaterial) => {
           if (m.sessionId === "new-raw") throw new Error("simulated raw put failure");
-          rawBase.put(m);
+          await rawBase.put(m);
         }
       };
       const audioRepo = createInMemoryAudioRepository();
-      audioRepo.put(seededAudio("old-audio"));
+      await audioRepo.put(seededAudio("old-audio"));
       const server = buildApiServer({ rawMaterialRepository: rawRepo, audioRepository: audioRepo });
       const cur = (await server.inject({ method: "GET", url: "/api/state" })).json();
       const res = await server.inject({
@@ -854,10 +854,10 @@ describe("state routes", () => {
         { store: "hot-state", status: "pending" }
       ]);
       // raw 快照已恢复:旧世代在,新世代不在;audio 库根本没被执行,旧数据原样。
-      expect(rawBase.get("old-raw")).toBeDefined();
-      expect(rawBase.get("new-raw")).toBeUndefined();
-      expect(audioRepo.has("old-audio")).toBe(true);
-      expect(audioRepo.has("new-audio")).toBe(false);
+      expect(await rawBase.get("old-raw")).toBeDefined();
+      expect(await rawBase.get("new-raw")).toBeUndefined();
+      expect(await audioRepo.has("old-audio")).toBe(true);
+      expect(await audioRepo.has("new-audio")).toBe(false);
       // 热态排在最后一步,首步失败时尚未写入——GET 复核未变。
       const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
       expect(after.profile.name).toBe(cur.profile.name);
@@ -866,9 +866,9 @@ describe("state routes", () => {
 
     it("最后一步热态 replaceState 失败 → 冷层已全部补偿恢复,journal 标 hot-state failed", async () => {
       const rawRepo = createInMemoryRawMaterialRepository();
-      rawRepo.put(sampleMaterial("old-raw"));
+      await rawRepo.put(sampleMaterial("old-raw"));
       const audioRepo = createInMemoryAudioRepository();
-      audioRepo.put(seededAudio("old-audio"));
+      await audioRepo.put(seededAudio("old-audio"));
       const baseRepo = createInMemoryProductStateRepository();
       let failReplace = false;
       const stateRepo = {
@@ -902,10 +902,10 @@ describe("state routes", () => {
         { store: "hot-state", status: "failed" }
       ]);
       // 冷层两库已回到导入前的世代。
-      expect(rawRepo.get("old-raw")).toBeDefined();
-      expect(rawRepo.get("new-raw")).toBeUndefined();
-      expect(audioRepo.has("old-audio")).toBe(true);
-      expect(audioRepo.has("new-audio")).toBe(false);
+      expect(await rawRepo.get("old-raw")).toBeDefined();
+      expect(await rawRepo.get("new-raw")).toBeUndefined();
+      expect(await audioRepo.has("old-audio")).toBe(true);
+      expect(await audioRepo.has("new-audio")).toBe(false);
       const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
       expect(after.profile.name).toBe(cur.profile.name);
       await server.close();
@@ -913,24 +913,24 @@ describe("state routes", () => {
 
     it("补偿自身失败 → rolledBack=false + compensationFailures 写明不一致细节", async () => {
       const rawBase = createInMemoryRawMaterialRepository();
-      rawBase.put(sampleMaterial("old-raw"));
+      await rawBase.put(sampleMaterial("old-raw"));
       // 第一次 deleteAll(执行步骤)成功,第二次(补偿)抛错——模拟回滚窗口里的 IO 故障。
       let rawDeleteCalls = 0;
       const rawRepo = {
         ...rawBase,
-        deleteAll: () => {
+        deleteAll: async () => {
           rawDeleteCalls += 1;
           if (rawDeleteCalls >= 2) throw new Error("simulated raw compensation failure");
-          rawBase.deleteAll();
+          await rawBase.deleteAll();
         }
       };
       const audioBase = createInMemoryAudioRepository();
-      audioBase.put(seededAudio("old-audio"));
+      await audioBase.put(seededAudio("old-audio"));
       const audioRepo = {
         ...audioBase,
-        put: (a: InterviewAudio) => {
+        put: async (a: InterviewAudio) => {
           if (a.sessionId === "new-audio") throw new Error("simulated audio put failure");
-          audioBase.put(a);
+          await audioBase.put(a);
         }
       };
       const server = buildApiServer({ rawMaterialRepository: rawRepo, audioRepository: audioRepo });
@@ -960,7 +960,7 @@ describe("state routes", () => {
         { store: "hot-state", status: "pending" }
       ]);
       // 不一致的真实现场:raw 库停在导入世代,热态未变。
-      expect(rawBase.get("new-raw")).toBeDefined();
+      expect(await rawBase.get("new-raw")).toBeDefined();
       const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
       expect(after.profile.name).toBe(cur.profile.name);
       await server.close();
@@ -968,9 +968,9 @@ describe("state routes", () => {
 
     it("音频非法条目不再静默跳过 → 422 + 错误清单含条目下标,任何存储未动", async () => {
       const rawRepo = createInMemoryRawMaterialRepository();
-      rawRepo.put(sampleMaterial("old-raw"));
+      await rawRepo.put(sampleMaterial("old-raw"));
       const audioRepo = createInMemoryAudioRepository();
-      audioRepo.put(seededAudio("old-audio"));
+      await audioRepo.put(seededAudio("old-audio"));
       const server = buildApiServer({ rawMaterialRepository: rawRepo, audioRepository: audioRepo });
       const cur = (await server.inject({ method: "GET", url: "/api/state" })).json();
       const res = await server.inject({
@@ -991,10 +991,10 @@ describe("state routes", () => {
       expect(body.invalidAudios[0].error).toContain("audioBase64");
       expect(body.invalidAudios[0].error).toContain("mime");
       // 一起拒绝,绝不部分恢复:冷层与热态全部原样。
-      expect(rawRepo.get("old-raw")).toBeDefined();
-      expect(rawRepo.get("new-raw")).toBeUndefined();
-      expect(audioRepo.has("old-audio")).toBe(true);
-      expect(audioRepo.has("ok-audio")).toBe(false);
+      expect(await rawRepo.get("old-raw")).toBeDefined();
+      expect(await rawRepo.get("new-raw")).toBeUndefined();
+      expect(await audioRepo.has("old-audio")).toBe(true);
+      expect(await audioRepo.has("ok-audio")).toBe(false);
       const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
       expect(after.profile.name).toBe(cur.profile.name);
       await server.close();
@@ -1002,7 +1002,7 @@ describe("state routes", () => {
 
     it("legacy 裸 state 缺 coldLayerMode → 422,错误信息解释两种模式,状态未变", async () => {
       const rawRepo = createInMemoryRawMaterialRepository();
-      rawRepo.put(sampleMaterial("old-raw"));
+      await rawRepo.put(sampleMaterial("old-raw"));
       const server = buildApiServer({ rawMaterialRepository: rawRepo });
       const cur = (await server.inject({ method: "GET", url: "/api/state" })).json();
       const res = await server.inject({
@@ -1018,7 +1018,7 @@ describe("state routes", () => {
       expect(message).toContain("coldLayerMode");
       expect(message).toContain("preserve-cold");
       expect(message).toContain("replace-all");
-      expect(rawRepo.get("old-raw")).toBeDefined();
+      expect(await rawRepo.get("old-raw")).toBeDefined();
       const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
       expect(after.profile.name).toBe(cur.profile.name);
       await server.close();
@@ -1043,9 +1043,9 @@ describe("state routes", () => {
 
     it("legacy + coldLayerMode=preserve-cold → 200,冷层保留,importReceipt 如实", async () => {
       const rawRepo = createInMemoryRawMaterialRepository();
-      rawRepo.put(sampleMaterial("kept-raw"));
+      await rawRepo.put(sampleMaterial("kept-raw"));
       const audioRepo = createInMemoryAudioRepository();
-      audioRepo.put(seededAudio("kept-audio"));
+      await audioRepo.put(seededAudio("kept-audio"));
       const server = buildApiServer({ rawMaterialRepository: rawRepo, audioRepository: audioRepo });
       const cur = (await server.inject({ method: "GET", url: "/api/state" })).json();
       const res = await server.inject({
@@ -1063,16 +1063,16 @@ describe("state routes", () => {
       expect(body.importReceipt.coldLayerMode).toBe("preserve-cold");
       expect(body.importReceipt.restored).toEqual({ rawMaterials: 0, audios: 0 });
       // 冷层原样保留(显式选择,不再是静默默认)。
-      expect(rawRepo.get("kept-raw")).toBeDefined();
-      expect(audioRepo.has("kept-audio")).toBe(true);
+      expect(await rawRepo.get("kept-raw")).toBeDefined();
+      expect(await audioRepo.has("kept-audio")).toBe(true);
       await server.close();
     });
 
     it("legacy + coldLayerMode=replace-all → 200,冷层清空", async () => {
       const rawRepo = createInMemoryRawMaterialRepository();
-      rawRepo.put(sampleMaterial("stale-raw"));
+      await rawRepo.put(sampleMaterial("stale-raw"));
       const audioRepo = createInMemoryAudioRepository();
-      audioRepo.put(seededAudio("stale-audio"));
+      await audioRepo.put(seededAudio("stale-audio"));
       const server = buildApiServer({ rawMaterialRepository: rawRepo, audioRepository: audioRepo });
       const cur = (await server.inject({ method: "GET", url: "/api/state" })).json();
       const res = await server.inject({
@@ -1089,14 +1089,14 @@ describe("state routes", () => {
       expect(body.profile.name).toBe("Imported-Clean");
       expect(body.importReceipt.coldLayerMode).toBe("replace-all");
       // 冷层与热态同世代:旧冷层全部清空。
-      expect(rawRepo.list()).toHaveLength(0);
-      expect(audioRepo.listAll()).toHaveLength(0);
+      expect(await rawRepo.list()).toHaveLength(0);
+      expect(await audioRepo.listAll()).toHaveLength(0);
       await server.close();
     });
 
     it("完整包成功 → importReceipt.restored 数量正确 + knowledgeIndex=rebuilt", async () => {
       const rawRepo = createInMemoryRawMaterialRepository();
-      rawRepo.put(sampleMaterial("previous-gen"));
+      await rawRepo.put(sampleMaterial("previous-gen"));
       const audioRepo = createInMemoryAudioRepository();
       const server = buildApiServer({ rawMaterialRepository: rawRepo, audioRepository: audioRepo });
       const cur = (await server.inject({ method: "GET", url: "/api/state" })).json();
@@ -1118,9 +1118,9 @@ describe("state routes", () => {
       // 完整包不需要 coldLayerMode(数组本身就是冷层的完整声明)。
       expect(body.importReceipt.coldLayerMode).toBeUndefined();
       // 冷层被整体替换为导入世代。
-      expect(rawRepo.get("previous-gen")).toBeUndefined();
-      expect(rawRepo.list().map((m) => m.sessionId).sort()).toEqual(["new-raw-1", "new-raw-2"]);
-      expect(audioRepo.has("new-audio")).toBe(true);
+      expect(await rawRepo.get("previous-gen")).toBeUndefined();
+      expect((await rawRepo.list()).map((m) => m.sessionId).sort()).toEqual(["new-raw-1", "new-raw-2"]);
+      expect(await audioRepo.has("new-audio")).toBe(true);
       await server.close();
     });
 
@@ -1157,7 +1157,7 @@ describe("state routes", () => {
   describe("F-04: purge 冷层尽力而为 + purgeReceipt(热态无论冷层成败都提交)", () => {
     const failing = <T extends { deleteAll: () => void }>(repo: T): T => ({
       ...repo,
-      deleteAll: () => {
+      deleteAll: async () => {
         throw new Error("simulated cold-layer delete failure");
       }
     });
