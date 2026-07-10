@@ -10,7 +10,10 @@ import { createSqliteRawMaterialRepository } from "../../../packages/db/src/sqli
 import { createSqliteAudioRepository } from "../../../packages/db/src/sqlite-audio-repository";
 import { createSqliteKnowledgeIndexRepository } from "../../../packages/db/src/sqlite-knowledge-index-repository";
 import { loadLocalEnvFile } from "./env";
+import { isInMemoryDbPath, resolveProductStoreSelection, type ProductStoreMode } from "./store-selection";
 import { createInMemoryProductStateRepository, type ProductStateRepository } from "./product-state-repository";
+// F-01/A1:仅类型引用(readStateOrExplain 的签名)。
+import type { ProductState } from "../../../src/domain/types";
 import { createInMemoryRawMaterialRepository, type RawMaterialRepository } from "./raw-material-repository";
 import { createInMemoryAudioRepository, type AudioRepository } from "./audio-repository";
 import { createInMemoryKnowledgeIndexRepository, type KnowledgeIndexRepository } from "./knowledge-index-repository";
@@ -83,6 +86,13 @@ interface BuildApiServerOptions {
    * (startServer) sets this; buildApiServer/tests leave it off so no timers leak.
    */
   enableResearchScheduler?: boolean;
+  /**
+   * 审计修复(F-02/A2):实际生效的产品状态档位(resolveProductStoreSelection 的 mode),由
+   * startServer 传入并透出到 /api/system/capabilities,让 E2E globalSetup 能验证测试没连上
+   * 真实存储。不传时按 stateStore(memory/sqlite)如实推断——buildApiServer 的默认工厂只会
+   * 构造这两种,绝不按 env.PRODUCT_STORE 谎报 dual/surreal。
+   */
+  productStoreMode?: ProductStoreMode;
 }
 
 interface ProviderClients {
@@ -214,8 +224,11 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   void server.register(async (registeredServer) => {
     await registerSystemRoutes(registeredServer, productStateRepository, {
       stateStore,
-      // 审计修复(P3-47):真实权威库档位透出(dual-surreal 下 stateStore 仍是 sqlite)。
-      productStore: (runtimeEnv.PRODUCT_STORE ?? "sqlite").trim().toLowerCase(),
+      // 审计修复(P3-47→F-02/A2):真实权威库档位透出(dual-surreal 下 stateStore 仍是 sqlite)。
+      // 改为只信 startServer 解析后传入的 mode,不再读 env.PRODUCT_STORE——嵌入/测试路径下
+      // buildApiServer 的默认工厂只构造 memory/sqlite,按 env 上报会在 sentinel 场景下撒谎。
+      // 未传时直传 undefined:`?? stateStore` 如实回落只归 system.ts 一处,避免双份兜底漂移。
+      productStore: options.productStoreMode,
       env: runtimeEnv,
       envFilePath,
       refreshProviderClients,
@@ -735,10 +748,8 @@ function createDefaultAudioRepository(productStateDbPath?: string) {
   return createInMemoryAudioRepository();
 }
 
-function isInMemoryDbPath(dbPath: string) {
-  const normalized = dbPath.trim().toLowerCase();
-  return normalized === "memory" || normalized === ":memory:" || normalized === "in-memory";
-}
+// isInMemoryDbPath 已搬到 store-selection.ts(F-02/A2):startServer 与默认工厂必须共用同一份
+// sentinel 判定,否则 "memory" 会在 startServer 路径被当成普通文件路径交给 SQLite 工厂。
 
 export async function startServer() {
   loadLocalEnvFile();
@@ -760,9 +771,11 @@ export async function startServer() {
 
   // Persist by default so a server restart no longer drops all interview state.
   // Tests call buildApiServer() directly (no dbPath) and stay in-memory/isolated.
-  const productStateDbPath = process.env.PRODUCT_STATE_DB_PATH ?? join(process.cwd(), ".data", "product-state.db");
-
-  const productStore = (process.env.PRODUCT_STORE ?? "sqlite").trim().toLowerCase();
+  // 审计修复(F-02/A2):档位与路径解析收敛到纯函数 resolveProductStoreSelection——
+  // dbPath sentinel(memory/:memory:/in-memory)一律解析为 memory 档位并压过 PRODUCT_STORE,
+  // 否则 E2E 只设 PRODUCT_STATE_DB_PATH=memory 时会继承 .env.local 的 dual-surreal 连上真实存储。
+  const selection = resolveProductStoreSelection(process.env);
+  const { mode: productStore, productStateDbPath } = selection;
 
   // P1a/P1d:动态 import surreal 工厂(避开 apps/api tsconfig moduleResolution:Node 对 @surrealdb/node 的类型检查)。
   // packages/db/tsconfig.json 用 moduleResolution:bundler 覆盖这些文件。
@@ -776,7 +789,18 @@ export async function startServer() {
   };
 
   let repository: ProductStateRepository;
-  if (productStore === "surreal") {
+  if (productStore === "memory") {
+    // F-02/A2:in-memory 档位(sentinel 或显式 PRODUCT_STORE=memory)。productStateDbPath 此时
+    // 恒为 sentinel,buildApiServer 里的冷层默认工厂(raw/audio/knowledge)据此同走内存,零落盘。
+    repository = createInMemoryProductStateRepository();
+    console.warn(JSON.stringify({
+      event: "product_store",
+      mode: "memory",
+      reason: selection.reason,
+      // sentinel 压过档位继承时响亮注明,避免运维误以为 dual-surreal 生效。
+      ...(selection.ignoredProductStore ? { ignoredProductStore: selection.ignoredProductStore } : {})
+    }));
+  } else if (productStore === "surreal") {
     // P1a:纯 SurrealDB,opt-in。
     repository = await loadSurreal();
     console.warn(JSON.stringify({ event: "product_store", mode: "surreal" }));
@@ -788,31 +812,77 @@ export async function startServer() {
     repository = createDualWriteRepository({ authoritative: sqlite, shadow: surreal });
     console.warn(JSON.stringify({ event: "product_store", mode: "dual", detail: "sqlite 权威 / surreal 影子" }));
   } else if (productStore === "dual-surreal") {
-    // 审计修复(D6/P1-4):回退后再切回、或漏 migrate 直切时,surreal 处女库的 demo 种子会成为
-    // 权威并镜像覆盖 sqlite 冷备的真实数据(mirror 后比对恒等,零告警)。启动期比对两库 revision:
-    // surreal 明显落后(尤其 <=1 的处女态)而 sqlite 有实数据 → 响亮告警,让运维先 migrate。
+    // 审计修复(F-01/A1,升级 D6/P1-4):回退后再切回、或漏 migrate 直切时,surreal 处女库会成为
+    // 权威并在**首笔写**时镜像覆盖 sqlite 冷备的真实数据(mirror 后比对恒等,零告警)。旧版只
+    // console.warn——半夜自动重启没人看日志,告警挡不住覆盖。现改为启动期用 assessDualSurrealCutover
+    // (内容摘要 + 实体数 + revision 三重判据)决策:疑似"近空权威覆盖有数据冷备"默认 fail-closed,
+    // 绝不监听端口;人工确认覆盖需显式设 ALLOW_DUAL_SURREAL_AUTHORITY_MISMATCH=true。
     // P1d:surreal 权威 + sqlite 冷备。切读 surreal,sqlite 仍写以便回退。
     const sqlite = createSqliteProductStateRepository({ dbPath: productStateDbPath });
     const surreal = await loadSurreal();
     const { createDualWriteRepository } = await import("./dual-write-repository");
-    try {
-      const surrealRev = surreal.getState().revision ?? 0;
-      const sqliteRev = sqlite.getState().revision ?? 0;
-      if (surrealRev <= 1 && sqliteRev > 1) {
-        console.warn(JSON.stringify({
-          event: "dual_surreal_authority_suspect",
-          detail: "surreal 权威库近乎空(revision<=1)而 sqlite 冷备有实数据 —— 疑似漏 migrate 或回退后误切。" +
-            "首次写会以 surreal 空态镜像覆盖 sqlite。请先运行 migrate-sqlite-to-surreal 再切 dual-surreal。",
-          surrealRevision: surrealRev, sqliteRevision: sqliteRev
+    const { assessDualSurrealCutover, readCutoverMarker } = await import("./dual-surreal-cutover");
+    // F-01:读不到任一库的状态就无法做安全评估,必须失败(fail-closed 精神)。但各自 try/catch
+    // 把裸异常(如 SQLITE_CORRUPT 栈)升格为带定位与修复指引的结构化事件后再 throw——冷备损坏
+    // 半夜发生时,值班第一眼要能看出"哪个库、哪个文件、怎么办",而不是一条 SQLITE 栈。
+    const readStateOrExplain = (which: "surreal" | "sqlite", read: () => ProductState): ProductState => {
+      try {
+        return read();
+      } catch (err) {
+        console.error(JSON.stringify({
+          event: "dual_surreal_state_read_failed",
+          store: which,
+          dbPath: which === "sqlite" ? productStateDbPath : join(dirname(productStateDbPath), "surreal"),
+          error: err instanceof Error ? err.message : String(err),
+          remediation: which === "sqlite"
+            ? "sqlite 冷备读取失败(文件损坏?):修复或把损坏的 db 文件移走后重启。注意:移走后冷备为空库,启动检查会按'反向自愈'放行(镜像把权威数据补进新冷备),这是预期方向——但请先确认 surreal 权威库数据完好再移。"
+            : "surreal 权威库读取失败:检查 surreal 数据目录是否损坏/被其他进程锁住(嵌入式 surrealkv 同进程独占),修复或移走损坏目录后重跑 migrate 再启动。"
         }));
+        throw err; // startServer 顶层 catch 会 exit(1);评估不了安全性就绝不监听端口。
       }
-    } catch (err) {
-      console.warn(JSON.stringify({ event: "dual_surreal_authority_check_failed", error: err instanceof Error ? err.message : String(err) }));
+    };
+    const assessment = assessDualSurrealCutover({
+      surrealState: readStateOrExplain("surreal", () => surreal.getState()),
+      sqliteState: readStateOrExplain("sqlite", () => sqlite.getState()),
+      allowMismatchEnv: process.env.ALLOW_DUAL_SURREAL_AUTHORITY_MISMATCH
+    });
+    if (assessment.action === "fail-closed") {
+      // marker 仅诊断("上次迁移完成于 X / 从未迁移"),不参与放行判定——过期 marker 不能证明
+      // 当下两库一致,凭它绕过 digest 检查恰好放行本修复要堵的覆盖路径(见 readCutoverMarker 注释)。
+      const marker = readCutoverMarker(join(dirname(productStateDbPath), "surreal"));
+      console.error(JSON.stringify({
+        event: "dual_surreal_authority_mismatch_fail_closed",
+        rule: assessment.rule,
+        reason: assessment.reason,
+        ...assessment.detail,
+        // marker 的 counts 是 migrate 脚本口径(6 数组明细),与上面 detail 的 userEntityCount
+        // (16 数组)口径不同——只透传明细不做求和,避免两个名同义异的总数并排误导运维。
+        cutoverMarker: marker ? { migratedAt: marker.migratedAt, sourceSqliteRevision: marker.sourceSqliteRevision, counts: marker.counts } : "从未迁移(未发现 cutover-marker.json)",
+        remediation: [
+          "①运行 node scripts/migrate-sqlite-to-surreal.mjs(经 npx tsx)完成 sqlite→surreal 迁移后再切 dual-surreal;",
+          "②确属人工恢复、要以 surreal 当前内容为准覆盖 sqlite 冷备时,显式设 ALLOW_DUAL_SURREAL_AUTHORITY_MISMATCH=true 放行。"
+        ]
+      }));
+      // startServer 顶层 catch 会 exit(1)——服务在监听端口之前终止,冷备数据不会被首笔写覆盖。
+      throw new Error(`dual-surreal 权威库可疑,拒绝启动(F-01 fail-closed):${assessment.reason}`);
+    }
+    if (assessment.action === "proceed-with-override") {
+      console.warn(JSON.stringify({
+        event: "dual_surreal_authority_mismatch_override",
+        rule: assessment.rule,
+        detail: "警告:ALLOW_DUAL_SURREAL_AUTHORITY_MISMATCH=true 已放行近空权威切换——首笔写将以 surreal 当前内容覆盖 sqlite 冷备。确认这是人工恢复的预期行为。",
+        reason: assessment.reason,
+        ...assessment.detail
+      }));
+    } else if (assessment.rule === "divergent") {
+      // 规则 c(rule 一等字段分发,不解析 reason 文案/不比对截断 digest 反推):
+      // 普通影子漂移保持"响亮但不熔断"的现状语义(镜像自愈 + shadow 健康度上报兜底)。
+      console.warn(JSON.stringify({ event: "dual_surreal_shadow_divergence_at_startup", rule: assessment.rule, reason: assessment.reason, ...assessment.detail }));
     }
     repository = createDualWriteRepository({ authoritative: surreal, shadow: sqlite });
     console.warn(JSON.stringify({ event: "product_store", mode: "dual-surreal", detail: "surreal 权威 / sqlite 冷备" }));
   } else {
-    // 默认:sqlite(不变,任何未知值也落此分支)。
+    // 默认:sqlite(不变;未知 PRODUCT_STORE 值已在 resolveProductStoreSelection 归一为 sqlite)。
     repository = createSqliteProductStateRepository({ dbPath: productStateDbPath });
   }
   // enableResearchScheduler: only the persistent process runs the background scheduler.
@@ -821,6 +891,8 @@ export async function startServer() {
   const server = buildApiServer({
     productStateDbPath,
     productStateRepository: repository,
+    // F-02/A2:把实际生效档位透出到 /api/system/capabilities,供 E2E globalSetup 校验隔离。
+    productStoreMode: productStore,
     enableResearchScheduler: true
   });
   const port = Number(process.env.PORT ?? 3210);

@@ -514,6 +514,9 @@ export async function registerSystemRoutes(
     return {
       generatedAt,
       configVersion: state.systemConfig.version,
+      // 审计修复(F-02/A2):透出实际生效的产品状态档位(memory/sqlite/surreal/dual/dual-surreal)。
+      // E2E globalSetup 靠它断言测试进程没有继承 .env.local 连上真实存储;缺省按 stateStore 如实回落。
+      productStore: options.productStore ?? options.stateStore,
       runtime: {
         service: "interview-product-api",
         stateStore: options.stateStore

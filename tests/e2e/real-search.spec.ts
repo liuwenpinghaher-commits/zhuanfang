@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import type { ProductState, SearchBrief, SourceHighlight } from "../../src/domain/types";
+import { resetServerState } from "./helpers";
 
 /**
  * 真实业务 E2E（不 mock）·外部调研 / 搜索模块
@@ -131,7 +132,7 @@ async function seedState(page: Page, seedBriefs: SearchBrief[]): Promise<void> {
 
 /** reset → 可选注入种子 → 打开应用并加载真后端 state（清 localStorage 防离线 demo 分叉）。 */
 async function bootApp(page: Page, seedBriefs?: SearchBrief[]): Promise<void> {
-  await page.request.post(`${API}/api/state/reset`);
+  await resetServerState(page, API); // F-08:reset 需 confirm,统一走 helper
   if (seedBriefs) {
     await seedState(page, seedBriefs);
   }

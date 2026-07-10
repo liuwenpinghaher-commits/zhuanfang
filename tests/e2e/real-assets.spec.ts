@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { createInitialProductState } from "../../src/domain/engine";
+import { resetServerState } from "./helpers";
 
 /**
  * 真实业务 E2E·认知资产模块(不 mock):前端 127.0.0.1:3220 直连真后端 127.0.0.1:3210。
@@ -40,8 +41,9 @@ async function getState(page: Page): Promise<AnyState> {
  * 干净起点。reset 把后端清成空状态(createEmptyProductState),保证每个 test 互不串扰。
  */
 async function reset(page: Page): Promise<void> {
-  const res = await page.request.post(`${API}/api/state/reset`);
-  expect(res.ok(), "reset 应成功(后端 3210 在线)").toBeTruthy();
+  // F-08:reset 契约要求 body confirm="RESET_ALL_DATA"(F-05 防误触),裸 POST 会 422。
+  // 统一走 helpers.resetServerState,非 2xx 会抛带响应体的错误。
+  await resetServerState(page, API);
 }
 
 /**

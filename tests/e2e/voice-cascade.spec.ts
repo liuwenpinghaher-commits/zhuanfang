@@ -1,6 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { installFakeMic, speak, type VoiceFixture } from "./fakeMic";
+import { resetServerState } from "./helpers";
 
 // 语音办法 B 端到端:fakeMic 注入合成麦克风 → 进 cascade 语音模式 → 说一轮(项目 TTS 预生成的真实
 // 16k 语音)→ 真实 DashScope ASR 转写 → 主持人 LLM 追问 → 写进同一份专访记录。前端直连真后端 3210/真 key。
@@ -22,7 +23,7 @@ test("语音办法B端到端:fakeMic→真实 ASR→主持人追问→写进专�
 
   await installFakeMic(context);
   const page = await context.newPage();
-  await page.request.post(`${API}/api/state/reset`); log("reset");
+  await resetServerState(page, API); log("reset"); // F-08:reset 需 confirm,统一走 helper
   await page.goto("/"); log("goto");
   await page.getByRole("button", { name: "今日访谈台" }).click(); log("访谈台");
   await page.getByRole("button", { name: /一键开始/ }).click(); log("一键开始");

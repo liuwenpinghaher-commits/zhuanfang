@@ -1,6 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import { createInitialProductState } from "../../src/domain/engine";
 import type { MemoryCandidate, MemoryRecord, ProductState } from "../../src/domain/types";
+import { resetServerState } from "./helpers";
 
 /**
  * 真实业务 E2E（不 mock）·记忆治理模块
@@ -103,7 +104,7 @@ async function bootMemoryView(
   page: Page,
   seed?: { candidates?: MemoryCandidate[]; records?: MemoryRecord[] }
 ): Promise<void> {
-  await page.request.post(`${API}/api/state/reset`);
+  await resetServerState(page, API); // F-08:reset 需 confirm,统一走 helper
   if (seed) {
     await seedState(page, seed);
   }
@@ -317,7 +318,7 @@ test.describe("真实业务·记忆治理（UI→真后端 3210，无 mock）", 
    */
   test("@slow 真访谈 finalize 产真实候选 → 记忆视图 approve → 后端转正式记忆", async ({ page }) => {
     test.setTimeout(300_000);
-    await page.request.post(`${API}/api/state/reset`);
+    await resetServerState(page, API); // F-08:reset 需 confirm,统一走 helper
     await page.goto("/");
     await page.evaluate(() => window.localStorage.clear());
     await page.reload();

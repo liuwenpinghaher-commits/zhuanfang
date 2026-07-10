@@ -155,6 +155,8 @@ describe("Product API", () => {
     expect(response.statusCode).toBe(200);
     expect(body).toMatchObject({
       configVersion: "local-demo-2026.06.10",
+      // 审计修复(F-02/A2):未传 productStoreMode 时按 stateStore 如实回落,绝不按 env 谎报档位。
+      productStore: "memory",
       runtime: {
         service: "interview-product-api",
         stateStore: "memory"
@@ -170,6 +172,18 @@ describe("Product API", () => {
     });
     expect(JSON.stringify(body)).not.toContain("secret-dashscope-key");
     expect(JSON.stringify(body)).not.toContain("secret-anysearch-key");
+  });
+
+  // 审计修复(F-02/A2):capabilities 的 productStore 只信 startServer 解析后显式传入的档位,
+  // 不再读 env.PRODUCT_STORE——E2E globalSetup 靠这个字段熔断"测试连上真实存储"。
+  it("reports the injected productStoreMode instead of trusting env.PRODUCT_STORE", async () => {
+    const server = buildApiServer({
+      productStoreMode: "dual-surreal",
+      env: { PRODUCT_STORE: "sqlite" }
+    });
+
+    const body = (await server.inject({ method: "GET", url: "/api/system/capabilities" })).json();
+    expect(body.productStore).toBe("dual-surreal");
   });
 
   it("returns editable runtime configuration with masked secret values", async () => {

@@ -21,8 +21,10 @@ const IGNORED_DIGEST_KEYS = new Set<string>(["revision", "schemaVersion"]);
  * - revision:两库各自 bump,不代表内容差异。
  * - schemaVersion:两个持久库(sqlite+surreal)均由 normalizeProductState 无条件注入=2、恒等;
  *   in-memory 不注入。均属存储层元信息,非业务内容,zero 掉以免干扰内容比对。
+ * 审计修复(F-01/A1):导出给 dual-surreal-cutover 的启动期权威库检查复用——两处必须是同一份
+ * 摘要口径(同一 IGNORED 集合),否则"启动期判等"与"运行期发散比对"会各说各话。
  */
-function contentDigest(state: ProductState): string {
+export function contentDigest(state: ProductState): string {
   return buildStableDigest({ ...state, revision: 0, schemaVersion: 0 });
 }
 

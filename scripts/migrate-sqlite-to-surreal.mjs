@@ -3,6 +3,7 @@
 //   npx tsx scripts/migrate-sqlite-to-surreal.mjs --src .data/product-state.db --dst .data/surreal [--dry-run]
 // 幂等:surreal 用稳定 id UPSERT 覆盖(P1b persist),重复跑结果一致。
 import process from "node:process";
+import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createSqliteProductStateRepository } from "../packages/db/src/sqlite-product-state-repository.ts";
 import { createSurrealProductStateRepository } from "../packages/db/src/surreal/surreal-product-state-repository.ts";
@@ -43,5 +44,28 @@ if (!eq) { console.error("迁移后 surreal getState 与 sqlite 不等价 ——
 if (persistHealth.consecutiveFailures > 0) {
   console.error(`迁移落库失败(consecutiveFailures=${persistHealth.consecutiveFailures}, lastError=${persistHealth.lastError ?? "?"}) —— DB 未写入,勿切档`);
   process.exit(1);
+}
+
+// 审计修复(F-01/A1):迁移确认成功(等价校验通过 + 落库零失败)后,在 surreal 数据目录落
+// cutover-marker.json。server 启动期 fail-closed 时读它,把"上次迁移完成于 X / 从未迁移"
+// 写进错误信息,帮运维定位是漏 migrate 还是回退后误切。
+// 注意:marker **仅做诊断,不参与放行判定**——它只证明历史某刻迁移成功,不证明当下两库一致
+// (迁移后回退 sqlite 继续写再切回时 marker 仍在但 surreal 已落后),放行一律由 server 侧
+// assessDualSurrealCutover 的内容摘要检查决定,过期 marker 绕不过。写入失败只警告不影响
+// 迁移成功的退出码(marker 是锦上添花的诊断,不是迁移交付物)。
+// 时机:必须在上面两道成功校验之后——失败迁移落 marker 会制造"迁过了"的假象,误导排查。
+// 只存 counts 明细、不存求和总数:此处 counts 只数 6 个核心数组,与 server 侧
+// userEntityCount(16 数组)口径不同,再存一个叫"entityCount"的总数会在 fail-closed
+// 日志里与 detail.surrealEntityCount 并排出现且对不上数,徒增排查困惑;明细自带语义。
+try {
+  writeFileSync(join(dst, "cutover-marker.json"), JSON.stringify({
+    migratedAt: new Date().toISOString(),
+    sourceSqliteRevision: state.revision ?? 0,
+    counts,
+    src, dst
+  }, null, 2));
+  console.log(JSON.stringify({ event: "migrate_cutover_marker_written", path: join(dst, "cutover-marker.json") }));
+} catch (err) {
+  console.warn(JSON.stringify({ event: "migrate_cutover_marker_write_failed", error: err instanceof Error ? err.message : String(err) }));
 }
 process.exit(0);

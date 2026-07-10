@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { resetServerState } from "./helpers";
 
 // 真实业务 UI E2E(不 mock):前端直连真后端 3210/真 key,UI 操作 → 真 LLM → 断言后台副作用。
 // 真实业务测试模式样板,区别于现有 mock 8787 的前端单元测(那些不碰真实 LLM/后台逻辑)。
@@ -22,7 +23,7 @@ async function submitTurn(page: Page, text: string, expectUserCount: number): Pr
 test.describe("真实业务·文本访谈全链路(UI→真后端)", () => {
   test("开始→真实多轮→访谈控制→结束 finalize→后台资产/归属/记忆/prosody", async ({ page }) => {
     test.setTimeout(260_000);
-    await page.request.post(`${API}/api/state/reset`); // 干净起点(state 已备份)
+    await resetServerState(page, API); // 干净起点(state 已备份);F-08:reset 需 confirm,统一走 helper
     await page.goto("/");
     await page.getByRole("button", { name: "今日访谈台" }).click();
     await page.getByRole("button", { name: /一键开始/ }).click();
