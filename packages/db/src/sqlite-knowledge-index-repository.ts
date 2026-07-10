@@ -36,6 +36,11 @@ function mapRow(row: KnowledgeChunkRow): KnowledgeChunk {
   return chunk;
 }
 
+/** R2c · P6「双份真相」两档差异说明:本 sqlite 实现的 embedding 是 JSON 文本列(embedding_json)、
+ *  无向量索引,召回依赖消费点(chat)的 listAll + 应用层 cosine(rankKnowledgeChunks)——**刻意不实现**
+ *  可选的 searchHybrid,消费点探测不到即走旧路径,行为保持旧样。Surreal 档的 knowledge_chunk 表
+ *  (009_r2a_cold.surql)embedding 为 array<float> + HNSW/BM25 索引且无 JSON 副本,原生混合召回见
+ *  createSurrealKnowledgeIndexRepository.searchHybrid;本文件随 sqlite 档位在 R7 一并退役删除。 */
 export function createSqliteKnowledgeIndexRepository(
   options: SqliteKnowledgeIndexRepositoryOptions
 ): KnowledgeIndexRepository {

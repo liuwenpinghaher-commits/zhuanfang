@@ -173,7 +173,17 @@ export function createSurrealAudioRepository(db: Surreal): AudioRepository {
  *  (knowledge.ts:epochAtEmbed)照常丢弃"清空前构建、清空后才落库"的陈旧后台嵌入。 */
 export interface SurrealKnowledgeIndexRepository extends KnowledgeIndexRepository {
   bumpEpoch(): void;
+  /** R2c:原生混合召回在 Surreal 档必有(基接口上是可选能力,此处收紧为必选)。 */
+  searchHybrid(query: { text: string; embedding?: number[]; limit: number }): Promise<KnowledgeChunk[]>;
 }
+
+/** R2c:searchHybrid 的 BM25 query token 上限。chat 的 message 是用户自由输入(上限 3 万余字),
+ *  zh analyzer ngram(2,2) 会切出海量 token——逐 token OR 的 SurrealQL 语句不能无界膨胀。
+ *  去重后取前 32 个(范例 recallRagChunks 的 queryText 是受控短议程文本,无需此钳制;这里必须有)。
+ *  量化锚点:32 个 `text @@ $tN` 谓词 ≈ 语句体积数百字节 + 每次召回至多 32 次全文索引查找(毫秒级),
+ *  覆盖 query 头部约 33 个汉字的去重 bigram(连续 n 字产 n-1 个 2-gram)——足以覆盖一句真实提问;
+ *  超长 query 的语义信号主要由 HNSW 向量路承担,BM25 取前缀 token 已足够拉回关键词降级块。 */
+const MAX_BM25_QUERY_TOKENS = 32;
 
 export function createSurrealKnowledgeIndexRepository(db: Surreal): SurrealKnowledgeIndexRepository {
   // epoch 照搬 sqlite/in-memory:进程内单调计数,deleteAll 递增(不持久化)。
@@ -251,6 +261,84 @@ export function createSurrealKnowledgeIndexRepository(db: Surreal): SurrealKnowl
     },
     async epoch() { return epoch; },
     bumpEpoch() { epoch += 1; },   // R2b:治理事务清空知识表后调用(SQL 直清不经 deleteAll,须显式代际递增)
+    /** R2c · 原生混合召回(P6 收敛):HNSW(kc_emb)+ BM25(kc_ft)+ search::rrf 融合,
+     *  照 recallRagChunks 的成熟模式(packages/db surreal-product-state-repository.ts),含全部坑规避:
+     *  - KNN 的 k/ef **只接受字面量插值**(参数绑定会让索引路径失效)→ 数字钳制后模板插值,防注入;
+     *  - LET 子查询里**不能叠加额外 AND 过滤**(索引路径失效、子查询恒空)→ 两路保持纯索引。
+     *    knowledge_chunk 无行级门控列(敏感/未确认内容在摄入侧就不切进索引,见域层 buildKnowledgeChunks),
+     *    故最终 SELECT 也无需门控 WHERE——P2a「门控移到最终 SELECT」在本表没有门控可移;
+     *  - search::rrf 入参须 `SELECT id`(非 VALUE);
+     *  - `WHERE id IN …` 取回不保序 → 末条 RETURN rrf 名次,JS 侧按名次重排(混合路按 rrf 名次降序
+     *    返回;BM25-only 路是**无序候选截断**,见分支注释——最终排序一律归消费点精排);
+     *  - 三级降级:混合失败/为空 → 纯 HNSW → [];无 embedding → BM25-only(无嵌入的关键词降级块
+     *    HNSW 索引不含,由 BM25 路可达);query 切不出 token → 纯 HNSW。
+     *  epoch 是进程内计数、不落库(表无 epoch 列),召回无需也无法按代际过滤——清空即物理删,
+     *  陈旧代际的块不可能存在于表内(R8-1 守卫拦的是"清空后回写",与读路径无关)。
+     *  记档(rule-of-three 已触发,独立小重构,不在 R2c 面内):memory / rag_chunk / knowledge_chunk
+     *  三实例的混合召回机械件(search::analyze 切 token→bmClause 拼接、rrf 名次 JS 重排、k/ef 钳制)
+     *  已是第三份手抄——宜提炼共享纯函数 helper(如 buildBm25Clause/orderByRrfRank),三处消费。 */
+    async searchHybrid({ text, embedding, limit }) {
+      // k/ef 走字面量插值(KNN 坑)→ 必须先数字化钳制(NaN/0/负数/小数 → 合法正整数)。
+      const k = Math.max(1, Math.floor(Number.isFinite(limit) ? limit : 1));
+      const ef = Math.max(k * 4, 40);
+      const emb = Array.isArray(embedding) && embedding.length > 0 ? embedding : undefined;
+      const queryText = text.trim();
+
+      // 纯 HNSW 基线:直接 SELECT 可用(P2a 脆弱性仅在 LET 子查询);无 embedding → [](由消费点回落)。
+      const hnswOnly = async (): Promise<KnowledgeChunk[]> => {
+        if (!emb) return [];
+        const [rows] = await db.query<[Array<Record<string, unknown>>]>(
+          `SELECT * FROM knowledge_chunk WHERE embedding <|${k},${ef}|> $q;`,
+          { q: emb }
+        );
+        return (rows ?? []).map(mapRow);
+      };
+
+      if (!queryText) return hnswOnly();
+
+      try {
+        const tokensRes = await db.query<[string[]]>("RETURN search::analyze('zh', $t);", { t: queryText });
+        const rawTokens = Array.isArray(tokensRes?.[0]) ? (tokensRes[0] as unknown[]).map(String).filter(Boolean) : [];
+        // 去重 + 钳制(见 MAX_BM25_QUERY_TOKENS):去重不改 OR 语义,钳制防用户长文本撑爆语句。
+        const tokens = [...new Set(rawTokens)].slice(0, MAX_BM25_QUERY_TOKENS);
+        // fail-safe:query 切不出 token(纯符号/emoji 等)→ 无 BM25 可加,退化纯 HNSW。
+        if (tokens.length === 0) return hnswOnly();
+
+        const tokenVars: Record<string, unknown> = {};
+        const bmClause = tokens.map((tok, i) => { tokenVars[`t${i}`] = tok; return `text @@ $t${i}`; }).join(" OR ");
+
+        if (!emb) {
+          // BM25-only:无向量时关键词路单独可用——嵌入失败/离线摄入的无嵌入块由此可达。
+          // ⚠️ 无序候选截断:LIMIT 无 ORDER BY(3.x ORDER BY 不能用函数表达式,无法按 BM25 分排),
+          // 截掉的是候选集本身而非"BM25 top-k"——返回序不承诺分数序,排序契约归消费点精排。
+          const [rows] = await db.query<[Array<Record<string, unknown>>]>(
+            `SELECT * FROM knowledge_chunk WHERE (${bmClause}) LIMIT ${k};`,
+            tokenVars
+          );
+          return (rows ?? []).map(mapRow);
+        }
+
+        // 混合:两路纯索引 LET → search::rrf 融合 → SELECT * 取回完整块 + RETURN 名次供 JS 重排。
+        const results = await db.query<Array<unknown>>(
+          `LET $vec = (SELECT id FROM knowledge_chunk WHERE embedding <|${k},${ef}|> $q);
+           LET $bm  = (SELECT id FROM knowledge_chunk WHERE ${bmClause});
+           LET $fused = search::rrf([$vec, $bm], 60, ${k});
+           SELECT * FROM knowledge_chunk WHERE id IN $fused.map(|$r| $r.id);
+           RETURN $fused.map(|$r| $r.id);`,
+          { q: emb, ...tokenVars }
+        );
+        const rows = ((results[results.length - 2] ?? []) as Array<Record<string, unknown>>).map(mapRow);
+        // fail-safe:融合为空(rrf 在该 query 下无产出)→ 退化纯 HNSW,绝不无声空召回。
+        if (rows.length === 0) return hnswOnly();
+        const order = ((results[results.length - 1] ?? []) as unknown[]).map((rid) => domainIdOf(rid));
+        const rank = new Map(order.map((rid, idx) => [rid, idx] as const));
+        return rows.sort((a, b) => (rank.get(a.id) ?? order.length) - (rank.get(b.id) ?? order.length));
+      } catch (err) {
+        // fail-safe:search::rrf / BM25 在该环境不可用或报错 → 退化纯 HNSW,记降级日志。
+        console.warn(JSON.stringify({ event: "surreal_knowledge_recall_degraded", error: err instanceof Error ? err.message : String(err) }));
+        return hnswOnly();
+      }
+    },
   };
 }
 

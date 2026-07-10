@@ -201,6 +201,106 @@ describe("Surreal KnowledgeIndexRepository (R2a 冷层)", () => {
   });
 });
 
+describe("Surreal KnowledgeIndexRepository.searchHybrid (R2c 原生混合召回)", () => {
+  // 带自定义正文/嵌入的块(chunk() 的 text 固定,这里需要区分性 fixture)。
+  const kchunk = (id: string, text: string, emb?: number[]): KnowledgeChunk => ({
+    id, sourceType: "note", sourceId: `src-${id}`, title: `标题-${id}`, text,
+    keywords: [], ...(emb ? { embedding: emb } : {}), createdAt: "2026-06-22T00:00:00.000Z",
+  });
+  // SurrealStores 暴露的静态类型是 KnowledgeIndexRepository(searchHybrid 可选)——运行时对象必有,
+  // 收窄为必选取用(与消费点 typeof 探测同一事实)。
+  const hybridOf = (repo: SurrealStores["knowledgeIndex"]) => {
+    expect(typeof repo.searchHybrid).toBe("function");
+    return repo.searchHybrid!.bind(repo);
+  };
+
+  it("混合召回:query 向量的语义近邻排第一,返回完整 KnowledgeChunk 形状", async () => {
+    const { knowledgeIndex: repo } = await makeStores();
+    await repo.put(kchunk("near", "谈到放权与信任的边界", vec1024(1)));
+    await repo.put(kchunk("far1", "今天聊了天气与跑步", vec1024(60)));
+    await repo.put(kchunk("far2", "程序员的编辑器偏好", vec1024(120)));
+    const hits = await hybridOf(repo)({ text: "放权信任", embedding: vec1024(1), limit: 3 });
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0].id).toBe("near");
+    // 消费契约:候选是完整块(chat 的 citation 需要 sourceType/sourceId/title/text;精排需要 embedding)。
+    expect(hits[0].sourceType).toBe("note");
+    expect(hits[0].sourceId).toBe("src-near");
+    expect(hits[0].title).toBe("标题-near");
+    expect(hits[0].text).toContain("放权");
+    expect(hits[0].embedding).toHaveLength(1024);
+    expect(hits[0].createdAt).toBe("2026-06-22T00:00:00.000Z");
+  });
+
+  it("BM25-only:query 无 embedding 时纯关键词命中;不含词的块不返回", async () => {
+    const { knowledgeIndex: repo } = await makeStores();
+    await repo.put(kchunk("bm", "区块链共识机制的取舍", vec1024(1)));
+    await repo.put(kchunk("other", "晚饭吃了什么", vec1024(60)));
+    const hits = await hybridOf(repo)({ text: "区块链", limit: 5 });
+    expect(hits.map((h) => h.id)).toEqual(["bm"]);
+  });
+
+  it("无 embedding 的关键词降级块可达:BM25-only 与混合两条路都能召回它", async () => {
+    const { knowledgeIndex: repo } = await makeStores();
+    await repo.put(kchunk("noemb", "量子计算的产业前景")); // 无 embedding → HNSW 索引不含它
+    await repo.put(kchunk("vec", "完全另一个话题", vec1024(1)));
+    // BM25-only(查询也无向量):噪声嵌入失败/离线场景。
+    const bmOnly = await hybridOf(repo)({ text: "量子计算", limit: 5 });
+    expect(bmOnly.map((h) => h.id)).toContain("noemb");
+    // 混合(查询有向量):BM25 路把无嵌入块带进融合,HNSW 路带回向量近邻——两者都在候选集。
+    const mixed = await hybridOf(repo)({ text: "量子计算", embedding: vec1024(1), limit: 5 });
+    expect(mixed.map((h) => h.id)).toContain("noemb");
+    expect(mixed.map((h) => h.id)).toContain("vec");
+  });
+
+  it("rrf 融合排序:双路命中(向量近邻+关键词命中)排在单路命中之前;结果无重复", async () => {
+    const { knowledgeIndex: repo } = await makeStores();
+    await repo.put(kchunk("both", "星际旅行计划的想法", vec1024(1)));      // 向量同向 + 文本含词
+    await repo.put(kchunk("vecOnly", "毫不相干的日常琐事", vec1024(1.05))); // 向量近 + 文本不含词
+    await repo.put(kchunk("bmOnly", "读了星际旅行手册"));                   // 无嵌入 + 文本含词
+    const hits = await hybridOf(repo)({ text: "星际旅行", embedding: vec1024(1), limit: 5 });
+    expect(hits[0].id).toBe("both");
+    const ids = hits.map((h) => h.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids).toContain("vecOnly");
+    expect(ids).toContain("bmOnly");
+  });
+
+  it("降级链:空 text + 有向量 → 纯 HNSW;空 text + 无向量 → [];纯符号 query 不炸且向量近邻仍第一", async () => {
+    const { knowledgeIndex: repo } = await makeStores();
+    await repo.put(kchunk("v1", "任意正文", vec1024(1)));
+    await repo.put(kchunk("v2", "另一段正文", vec1024(80)));
+    const hnsw = await hybridOf(repo)({ text: "   ", embedding: vec1024(1), limit: 2 });
+    expect(hnsw[0]?.id).toBe("v1");
+    expect(await hybridOf(repo)({ text: "   ", limit: 2 })).toEqual([]);
+    // 纯符号:zh(class+ngram) 切不出词或 BM25 无命中——两条内部路径殊途同归,都落到向量路结果。
+    const sym = await hybridOf(repo)({ text: "!!!???", embedding: vec1024(1), limit: 2 });
+    expect(sym[0]?.id).toBe("v1");
+  });
+
+  it("k/ef 字面量插值防御:limit 为小数/0/NaN 都钳制不炸;超长 query 的 BM25 token 钳制不炸", async () => {
+    const { knowledgeIndex: repo } = await makeStores();
+    await repo.put(kchunk("a", "关于放权的看法", vec1024(1)));
+    await repo.put(kchunk("b", "关于跑步的看法", vec1024(50)));
+    expect((await hybridOf(repo)({ text: "放权", embedding: vec1024(1), limit: 2.7 })).length).toBeLessThanOrEqual(2);
+    expect((await hybridOf(repo)({ text: "放权", embedding: vec1024(1), limit: 0 })).length).toBeGreaterThan(0);
+    expect((await hybridOf(repo)({ text: "放权", embedding: vec1024(1), limit: Number.NaN })).length).toBeGreaterThan(0);
+    // 超长自由输入(chat message 可达数万字):去重后 token 种类 >32(钳制分支真被走到),
+    // "放权"在文本前缀 → 落在保留的前 32 个 token 里,BM25 信号不丢;语句有界,正常返回。
+    const long = `放权与信任,${"甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥东南西北春夏秋冬金木水火土山川河流日月星辰风雨雷电".repeat(40)}`;
+    const hits = await hybridOf(repo)({ text: long, embedding: vec1024(1), limit: 3 });
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0].id).toBe("a");
+  });
+
+  it("deleteAll 后召回为空(库空即空,无陈旧代际可召——epoch 是进程态,表无代际列)", async () => {
+    const { knowledgeIndex: repo } = await makeStores();
+    await repo.put(kchunk("x", "放权话题", vec1024(1)));
+    await repo.deleteAll();
+    expect(await hybridOf(repo)({ text: "放权", embedding: vec1024(1), limit: 3 })).toEqual([]);
+    expect(await hybridOf(repo)({ text: "放权", limit: 3 })).toEqual([]);
+  });
+});
+
 describe("createSurrealStores 共享连接", () => {
   it("热态产品仓库与三冷层挂同一连接:各自 roundtrip 且 close 一次不双关", async () => {
     const stores = await makeStores();
