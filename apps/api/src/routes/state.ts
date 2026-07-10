@@ -8,7 +8,7 @@ import type { ProductStateRepository } from "../product-state-repository";
 import type { RawMaterialRepository } from "../raw-material-repository";
 import type { AudioRepository } from "../audio-repository";
 import type { KnowledgeIndexRepository } from "../knowledge-index-repository";
-import type { InterviewAudio, InterviewRawMaterial } from "../../../../src/domain/types";
+import type { InterviewAudio, InterviewRawMaterial, ProductState } from "../../../../src/domain/types";
 import type { BailianEmbeddingClient } from "../providers/bailian";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import { rebuildKnowledgeIndex } from "./knowledge";
@@ -209,6 +209,7 @@ export async function registerStateRoutes(
           confirm?: unknown;
           rawMaterials?: unknown;
           audios?: unknown;
+          coldLayerMode?: unknown;
         }
       | undefined;
     // P0-B: import is a full-state overwrite — require an explicit confirm token so a stray /
@@ -236,81 +237,222 @@ export async function registerStateRoutes(
       entityId: "local-product-state",
       createdAt: new Date().toISOString()
     });
-    // 审计修复(P2-15 + 回归审查 R4-1):import 语义是"整体替换",热态 overwrite 而冷层此前是 upsert
-    // 合并——上一世代逐字稿/录音会残留并随下次导出打进"新备份"。改为先清后恢复,三库口径一致。
-    // ⚠️ R4-1 数据丢失窗口根治:此前"先 deleteAll 后逐条 put",若某 put 中途抛错(畸形/异构/截断包
-    // 缺 turns/createdAt,node:sqlite 会抛)→旧冷层已清空且未恢复=比不清更糟,且 audio.deleteAll 先于
-    // raw 恢复→raw 抛错则音频整体丢失。改为【先全量构建+校验合法条目,全部通过才 deleteAll+put】
-    // (build-then-swap):任一条目非法直接 422 拒,绝不在清空后才发现坏数据。
-    // legacy 包(无 rawMaterials/audios 字段)保持旧的纯热态导入行为(不清不恢复)。
+
+    // ═══ 审计修复 F-04(P1)阶段一:纯校验/构建,不动任何存储 ═══════════════════════
+    // 此前 build-then-swap(R4-1)只覆盖"校验失败",不覆盖"存储执行失败":先 replaceState
+    // 再清冷层 → raw delete 抛错时 500,但 profile 已是导入值、旧冷层仍在(热态与冷层来自
+    // 两个世代)。另两处一并根治:legacy 裸 state 静默保留旧冷层却仍以"替换全部状态"语义
+    // 返回 200;音频非法条目静默 continue,用户以为全量恢复实际缺条目且无从知晓。
+    const hasRawArray = Array.isArray(body?.rawMaterials);
+    const hasAudioArray = Array.isArray(body?.audios);
+    let coldLayerMode: "preserve-cold" | "replace-all" | undefined;
+    if (!hasRawArray && !hasAudioArray) {
+      // F-04:legacy/裸 ProductState 包没有冷层声明,旧行为是静默保留旧冷层(隐式混合两个
+      // 世代)。改为强制调用方显式二选一——语义必须由用户决定,而不是由代码默认。
+      const mode = body?.coldLayerMode;
+      if (mode !== "preserve-cold" && mode !== "replace-all") {
+        return reply.code(422).send({
+          error:
+            "Import 包不含 rawMaterials/audios 数组(legacy 备份),必须显式指定 coldLayerMode:" +
+            "\"preserve-cold\"=只替换热态,现有冷层(逐字稿/录音)原样保留;" +
+            "\"replace-all\"=热态替换且旧冷层一并清空。"
+        });
+      }
+      coldLayerMode = mode;
+    } else if (!hasRawArray || !hasAudioArray) {
+      // F-04:半截包(只带其一)既不是完整冷层声明也不是 legacy——拒绝,避免缺席的那一半
+      // 冷层被静默保留成跨世代混合。完整导出包永远同时携带两个数组(见 export)。
+      return reply.code(422).send({
+        error: "Import 包必须同时携带 rawMaterials 与 audios 数组(完整导出包),或两者都不带并显式指定 coldLayerMode。"
+      });
+    }
+
+    // 校验能安全 put 的形状,收集全部非法条目(条目下标+缺失字段)后整体 422——一起拒绝,
+    // 绝不部分恢复(F-04:音频此前静默跳过;raw 此前只报第一条,现在两者同口径出完整清单)。
+    const invalidRawMaterials: Array<{ index: number; error: string }> = [];
     let restoredRawMaterials: InterviewRawMaterial[] | undefined;
-    if (rawMaterialRepository && Array.isArray(body?.rawMaterials)) {
+    if (rawMaterialRepository && hasRawArray) {
       const built: InterviewRawMaterial[] = [];
-      for (const material of body.rawMaterials as InterviewRawMaterial[]) {
-        // 校验能安全 put 的形状:sessionId + turns(数组) + createdAt(string)——node:sqlite 对
-        // undefined/null 的 turns/createdAt 会抛,必须在 deleteAll 前挡住。
-        if (
-          !material ||
-          typeof material.sessionId !== "string" ||
-          !Array.isArray(material.turns) ||
-          typeof material.createdAt !== "string"
-        ) {
-          return reply.code(422).send({ error: "Import rawMaterials 含非法条目(需 sessionId/turns/createdAt),已拒绝以保护现有冷层数据。" });
+      (body!.rawMaterials as InterviewRawMaterial[]).forEach((material, index) => {
+        // sessionId + turns(数组) + createdAt(string)——node:sqlite 对 undefined/null 会抛,
+        // 必须在动存储前挡住。
+        const missing: string[] = [];
+        if (!material || typeof material.sessionId !== "string") missing.push("sessionId");
+        if (!material || !Array.isArray(material.turns)) missing.push("turns");
+        if (!material || typeof material.createdAt !== "string") missing.push("createdAt");
+        if (missing.length > 0) {
+          invalidRawMaterials.push({ index, error: `缺失/类型错误字段: ${missing.join(", ")}` });
+          return;
         }
         built.push(material);
-      }
+      });
       restoredRawMaterials = built;
     }
 
+    const invalidAudios: Array<{ index: number; error: string }> = [];
     let restoredAudios: InterviewAudio[] | undefined;
-    if (audioRepository && Array.isArray(body?.audios)) {
+    if (audioRepository && hasAudioArray) {
       const built: InterviewAudio[] = [];
-      for (const entry of body.audios as Array<{
+      (body!.audios as Array<{
         sessionId?: unknown; role?: unknown; audioBase64?: unknown; mime?: unknown; durationMs?: unknown; recordingStartedAt?: unknown;
-      }>) {
-        // 跳过明显不完整的音频条目(与旧行为一致——音频缺失不阻断,但已校验的才恢复)。
-        if (!entry || typeof entry.sessionId !== "string" || typeof entry.audioBase64 !== "string" || typeof entry.mime !== "string") {
-          continue;
+      }>).forEach((entry, index) => {
+        const missing: string[] = [];
+        if (!entry || typeof entry.sessionId !== "string") missing.push("sessionId");
+        if (!entry || typeof entry.audioBase64 !== "string") missing.push("audioBase64");
+        if (!entry || typeof entry.mime !== "string") missing.push("mime");
+        if (missing.length > 0) {
+          invalidAudios.push({ index, error: `缺失/类型错误字段: ${missing.join(", ")}` });
+          return;
         }
-        const audio = new Uint8Array(Buffer.from(entry.audioBase64, "base64"));
+        const audio = new Uint8Array(Buffer.from(entry.audioBase64 as string, "base64"));
         const role: InterviewAudio["role"] = entry.role === "interviewer" ? "interviewer" : "interviewee";
-        const restored: InterviewAudio = { sessionId: entry.sessionId, role, audio, mime: entry.mime, byteSize: audio.byteLength, createdAt: new Date().toISOString() };
+        const restored: InterviewAudio = { sessionId: entry.sessionId as string, role, audio, mime: entry.mime as string, byteSize: audio.byteLength, createdAt: new Date().toISOString() };
         if (typeof entry.durationMs === "number") restored.durationMs = entry.durationMs;
         if (typeof entry.recordingStartedAt === "string") restored.recordingStartedAt = entry.recordingStartedAt;
         built.push(restored);
-      }
+      });
       restoredAudios = built;
     }
+    if (invalidRawMaterials.length > 0 || invalidAudios.length > 0) {
+      return reply.code(422).send({
+        error: "Import 包含非法条目,已整体拒绝以保护现有数据(绝不部分恢复)。",
+        ...(invalidRawMaterials.length > 0 ? { invalidRawMaterials } : {}),
+        ...(invalidAudios.length > 0 ? { invalidAudios } : {})
+      });
+    }
 
-    // 全部条目已校验/构建完毕(上面任何非法都已 422 返回),现在才提交热态与冷层。
-    // F-01:热态 replace 必须在 raw/audio 校验之后,否则 422 拒绝坏包时热态已被覆盖。
-    // 回归审查 R4-3:跳过包装层增量重索引——下方 rebuildKnowledgeIndex 全量重建(含冷层逐字稿),
-    // 增量与全量并跑是重复嵌入(浪费预算)。由显式 rebuild 负责索引一致性。
-    const replaced = repository.replaceState(imported, { skipReindex: true });
-    if (restoredRawMaterials) {
-      rawMaterialRepository!.deleteAll();
-      for (const material of restoredRawMaterials) rawMaterialRepository!.put(material);
+    // legacy replace-all:冷层清空 = "恢复为空集",与完整包共用同一条 journal 执行/补偿路径。
+    if (coldLayerMode === "replace-all") {
+      if (rawMaterialRepository) restoredRawMaterials = [];
+      if (audioRepository) restoredAudios = [];
     }
-    if (restoredAudios) {
-      audioRepository!.deleteAll();
-      for (const restored of restoredAudios) audioRepository!.put(restored);
+
+    // ═══ F-04 阶段二:执行协议(journal + 补偿)═══════════════════════════════════
+    // 执行前对将被改写的冷层做全量内存快照:import 体限 64MB,快照峰值与包体同量级,一次性
+    // 恢复操作可接受——用这份内存开销换"任一步失败都不丢旧数据"的确定性。
+    // 顺序:raw 清+恢复 → audio 清+恢复 → 热态 replaceState 最后。热态排最后是关键:前面
+    // 任何一步失败时热态尚未写入,不需要"热态回滚"这种做不到的操作(replaceState 无逆操作)。
+    const rawSnapshot = restoredRawMaterials !== undefined ? rawMaterialRepository!.list() : undefined;
+    const audioSnapshot = restoredAudios !== undefined ? audioRepository!.listAll() : undefined;
+
+    type ImportStore = "raw-material" | "audio" | "hot-state";
+    type ImportStepStatus = "pending" | "completed" | "compensated" | "failed";
+    interface ImportStep {
+      store: ImportStore;
+      status: ImportStepStatus;
+      run: () => void;
+      /** 逆序补偿:把快照放回去。hot-state 最后一步失败即未提交,无需(也无法)补偿。 */
+      compensate?: () => void;
     }
-    // 审计修复(P3-39):恢复后自动重建知识索引——material/transcript 块此前只在 import 端点/
-    // /end 补点,备份恢复路径两者都不经过 → 恢复后资料明明在、chat/召回却查无此块。
-    // 同步清空+关键词重建立即生效,嵌入后台补;失败仅 warn 不影响恢复本身。
+    let replaced: ProductState | undefined;
+    const steps: ImportStep[] = [];
+    if (rawSnapshot !== undefined) {
+      steps.push({
+        store: "raw-material",
+        status: "pending",
+        run: () => {
+          rawMaterialRepository!.deleteAll();
+          for (const material of restoredRawMaterials!) rawMaterialRepository!.put(material);
+        },
+        compensate: () => {
+          rawMaterialRepository!.deleteAll();
+          for (const material of rawSnapshot) rawMaterialRepository!.put(material);
+        }
+      });
+    }
+    if (audioSnapshot !== undefined) {
+      steps.push({
+        store: "audio",
+        status: "pending",
+        run: () => {
+          audioRepository!.deleteAll();
+          for (const restored of restoredAudios!) audioRepository!.put(restored);
+        },
+        compensate: () => {
+          audioRepository!.deleteAll();
+          for (const audio of audioSnapshot) audioRepository!.put(audio);
+        }
+      });
+    }
+    steps.push({
+      store: "hot-state",
+      status: "pending",
+      run: () => {
+        // 回归审查 R4-3(保留):跳过包装层增量重索引——下方显式 rebuildKnowledgeIndex 全量
+        // 重建(含冷层逐字稿),增量与全量并跑是重复嵌入(浪费预算)。
+        replaced = repository.replaceState(imported, { skipReindex: true });
+      }
+    });
+
+    for (let i = 0; i < steps.length; i += 1) {
+      try {
+        steps[i]!.run();
+        steps[i]!.status = "completed";
+      } catch (err) {
+        const failedStep = steps[i]!.store;
+        const message = err instanceof Error ? err.message : String(err);
+        steps[i]!.status = "failed";
+        console.error(JSON.stringify({ event: "import_journal_step_failed", step: failedStep, error: message }));
+        // 逆序补偿:失败步骤自身可能已部分执行(deleteAll 成功、put 中途抛),它的快照同样
+        // 要恢复,所以补偿从 i(含)往前扫。补偿成功的已完成步骤记 compensated;补偿自身再
+        // 抛错则如实记 rolledBack:false——绝不谎报"已回滚",不一致细节进 body + console.error。
+        const compensationFailures: Array<{ store: ImportStore; error: string }> = [];
+        for (let j = i; j >= 0; j -= 1) {
+          const step = steps[j]!;
+          if (!step.compensate) continue;
+          try {
+            step.compensate();
+            if (step.status === "completed") step.status = "compensated";
+          } catch (compensationErr) {
+            const compensationMessage = compensationErr instanceof Error ? compensationErr.message : String(compensationErr);
+            compensationFailures.push({ store: step.store, error: compensationMessage });
+            console.error(JSON.stringify({
+              event: "import_journal_compensation_failed",
+              step: step.store,
+              error: compensationMessage,
+              detail: "该库停在导入世代且回滚失败,与其余库/热态不一致,需人工介入或重试 import。"
+            }));
+          }
+        }
+        return reply.code(500).send({
+          error: `import failed at ${failedStep}: ${message}`,
+          failedStep,
+          rolledBack: compensationFailures.length === 0,
+          steps: steps.map((step) => ({ store: step.store, status: step.status })),
+          ...(compensationFailures.length > 0 ? { compensationFailures } : {})
+        });
+      }
+    }
+
+    // ═══ F-04 阶段三:post-commit 装饰(尽力而为,不影响已成功的恢复本身)═══════════
+    // 审计修复(P3-39,保留):恢复后自动重建知识索引——material/transcript 块此前只在 import
+    // 端点/ /end 补点,备份恢复路径两者都不经过 → 恢复后资料明明在、chat/召回却查无此块。
+    // 同步清空+关键词重建立即生效,嵌入后台补;失败仅 warn,但结果如实记入 importReceipt。
+    let knowledgeIndexOutcome: "rebuilt" | "failed" | "skipped" = "skipped";
     if (knowledgeIndexRepository) {
       try {
-        rebuildKnowledgeIndex(replaced, {
+        rebuildKnowledgeIndex(replaced!, {
           knowledgeRepo: knowledgeIndexRepository,
           ...(rawMaterialRepository ? { rawMaterialRepo: rawMaterialRepository } : {}),
           ...(options.embeddingClient ? { embeddingClient: options.embeddingClient } : {}),
           budget: options.llmBudget ?? createLlmBudget()
         });
+        knowledgeIndexOutcome = "rebuilt";
       } catch (err) {
+        knowledgeIndexOutcome = "failed";
         console.warn(JSON.stringify({ event: "import_knowledge_rebuild_failed", error: err instanceof Error ? err.message : String(err) }));
       }
     }
-    return replaced;
+    // F-04:成功回执(与 purge/reset 的装饰键 spread 模式一致,前端 productApi 会剥离)。
+    const importReceipt = {
+      ...(coldLayerMode ? { coldLayerMode } : {}),
+      restored: {
+        rawMaterials: restoredRawMaterials?.length ?? 0,
+        audios: restoredAudios?.length ?? 0
+      },
+      knowledgeIndex: knowledgeIndexOutcome
+    };
+    return { ...replaced!, importReceipt };
   });
 
   // P0-3: Purge — clears personal data from the state store AND deletes the referenced
@@ -337,6 +479,39 @@ export async function registerStateRoutes(
 
     const state = repository.getState();
 
+    // 审计修复 F-04(P1):冷层三库"尽力而为"清理 + 三态回执(与 B1 reset/F-03 同口径:
+    // cleared / not-configured / failed: <原因>)。此前 purge(all) 任一 deleteAll 抛错就 500
+    // 且热态不动,但注入实测第二库失败时第一库已删——前序删除无法恢复,"热态未变"的响应
+    // 语义与实际不符;一库故障还会挡住其余库(隐私残留)。purge 是隐私删除:目标是删得
+    // 尽量多,而不是假装原子。两个涉及冷层的档位(all/interviews)共用这段逐库清理。
+    const clearColdStoresBestEffort = (): Record<string, string> => {
+      const stores: Record<string, string> = {};
+      for (const [name, repo] of [
+        ["raw-material", rawMaterialRepository],
+        ["audio", audioRepository],
+        ["knowledge-index", knowledgeIndexRepository]
+      ] as const) {
+        if (!repo) {
+          stores[name] = "not-configured";
+          continue;
+        }
+        try {
+          repo.deleteAll();
+          stores[name] = "cleared";
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          stores[name] = `failed: ${message}`;
+          // 隐私删除失败(残留可召回的私人数据),用 error 级结构化日志,不是可忽略的告警。
+          console.error(JSON.stringify({ event: "purge_cold_layer_clear_failed", store: name, error: message }));
+        }
+      }
+      return stores;
+    };
+    const listFailedStores = (stores: Record<string, string>): string[] =>
+      Object.entries(stores)
+        .filter(([, outcome]) => outcome.startsWith("failed"))
+        .map(([name]) => name);
+
     // Partial scopes don't touch on-disk audio (only interviews carry artifacts, and the
     // historical artifact-deletion behavior is tied to the full wipe). Keep full-wipe behavior
     // byte-for-byte (single audit event + artifact deletion) so existing restores/tests hold.
@@ -355,21 +530,26 @@ export async function registerStateRoutes(
           createdAt: new Date().toISOString()
         });
       }
-      // Cold layer (raw-material store) holds the verbatim interview transcripts. A full wipe
-      // must clear it too, otherwise the original Q&A survives the "complete" purge (Task 13).
-      rawMaterialRepository?.deleteAll();
-      // Recorded audio is keyed by sessionId; a full wipe must clear it too, otherwise the
-      // original voice survives the "complete" purge (Task 4).
-      audioRepository?.deleteAll();
-      // The knowledge index is derived (search/recall chunks built from the above). It's
-      // rebuildable, so a full wipe clears it too — otherwise indexed personal text survives
-      // the "complete" purge (Task 12).
-      knowledgeIndexRepository?.deleteAll();
-      // F-04:冷层清理成功后才提交热态。若任一冷层 deleteAll 抛错,请求会失败且热态保持不变,
-      // 避免“500 但热态已清空”的假失败/部分提交。
-      // 回归审查 R4-3:跳过增量重索引——上方 knowledgeIndexRepository.deleteAll() 已直接清空整个索引。
+      // Cold layer (raw transcripts / recorded audio / derived knowledge index) must go with a
+      // full wipe, otherwise the original Q&A / voice / indexed personal text survives the
+      // "complete" purge (Task 13 / Task 4 / Task 12)。F-04:逐库尽力而为,一库失败不挡其余库。
+      const stores = clearColdStoresBestEffort();
+      // F-04:热态 purge 无论冷层成败都提交——隐私删除最大化(冷层某库 IO 故障不该让热态的
+      // 私人数据也留下来);冷层失败以 500 + purgeReceipt 如实回执,让前端明确"删了什么、
+      // 哪里还残留、该重试什么",而不是假装什么都没发生。
+      // 回归审查 R4-3(保留):跳过增量重索引——上方已直接清空整个知识索引。
       const nextState = repository.replaceState(purged, { skipReindex: true });
-      return { ...nextState, artifactPurge, deletedScope: "all" as PurgeScope, deletedCount };
+      const failedStores = listFailedStores(stores);
+      const purgeReceipt = { partialFailure: failedStores.length > 0, hotStateCommitted: true, stores };
+      if (purgeReceipt.partialFailure) {
+        return reply.code(500).send({
+          error: `purge partial failure: ${failedStores.join(", ")}`,
+          state: nextState,
+          artifactPurge,
+          purgeReceipt
+        });
+      }
+      return { ...nextState, artifactPurge, deletedScope: "all" as PurgeScope, deletedCount, purgeReceipt };
     }
 
     const { nextState: scopedState, deletedScope, deletedCount } = createScopedPurge(state, scope);
@@ -388,16 +568,27 @@ export async function registerStateRoutes(
         console.warn(JSON.stringify({ event: "purge_knowledge_rebuild_failed", error: err instanceof Error ? err.message : String(err) }));
       }
     }
-    // The interviews scope clears all sessions from hot state; their cold-layer raw materials
-    // are keyed by sessionId and would otherwise be orphaned, so wipe the cold layer too.
+    // The interviews scope clears all sessions from hot state; their cold-layer raw materials /
+    // recorded audio / derived knowledge index are keyed by those sessions and would otherwise
+    // be orphaned, so wipe the cold layer too (Task 13 / Task 4 / Task 12)。
+    // 审计修复 F-04(P1):热态在上方已先提交(既有顺序保持),但此前任一冷层 deleteAll 抛错
+    // 会裸 500——热态其实已变、也没有回执说明哪库残留。改为逐库尽力而为 + purgeReceipt,
+    // 失败时 receipt 注明 hotStateCommitted,让前端明白 500≠什么都没发生。
     if (scope === "interviews") {
-      rawMaterialRepository?.deleteAll();
-      // Recorded audio is keyed by sessionId; clearing all sessions orphans it, so wipe it too.
-      audioRepository?.deleteAll();
-      // The derived knowledge index is built from those sessions/materials; clearing all
-      // sessions orphans it, so wipe the whole rebuildable index too (Task 12).
-      knowledgeIndexRepository?.deleteAll();
+      const stores = clearColdStoresBestEffort();
+      const failedStores = listFailedStores(stores);
+      const purgeReceipt = { partialFailure: failedStores.length > 0, hotStateCommitted: true, stores };
+      if (purgeReceipt.partialFailure) {
+        return reply.code(500).send({
+          error: `purge partial failure: ${failedStores.join(", ")}`,
+          state: nextState,
+          purgeReceipt
+        });
+      }
+      return { ...nextState, deletedScope, deletedCount, purgeReceipt };
     }
+    // 其余分档(profile/assets)不涉及冷层三库(assets 的索引一致性由上方同步 rebuild 负责,
+    // 失败已有 warn),维持原响应形状,不强加 receipt。
     return { ...nextState, deletedScope, deletedCount };
   });
 }

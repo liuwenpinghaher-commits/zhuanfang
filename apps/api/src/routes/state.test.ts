@@ -8,7 +8,7 @@ import { buildBackupRestoreRehearsalReport } from "../../../../src/domain/backup
 import { createInMemoryRawMaterialRepository } from "../raw-material-repository";
 import { createInMemoryAudioRepository } from "../audio-repository";
 import { createInMemoryKnowledgeIndexRepository } from "../knowledge-index-repository";
-import type { InterviewRawMaterial } from "../../../../src/domain/types";
+import type { InterviewAudio, InterviewRawMaterial, ProductState } from "../../../../src/domain/types";
 
 describe("state routes", () => {
   it("rejects a stale whole-state PUT with 409 and returns the current state", async () => {
@@ -244,6 +244,8 @@ describe("state routes", () => {
         url: "/api/state/import",
         payload: {
           confirm: "REPLACE_ALL_STATE",
+          // 审计修复 F-04:裸 state(legacy 包)现在必须显式声明冷层去向,否则 422。
+          coldLayerMode: "preserve-cold",
           state: { ...before, profile: { ...before.profile, name: "Imported" } }
         }
       });
@@ -340,7 +342,10 @@ describe("state routes", () => {
         payload: {
           confirm: "REPLACE_ALL_STATE",
           state: { ...cur, profile: { ...cur.profile, name: "SHOULD_NOT_APPLY_AFTER_422" } },
-          rawMaterials: [{ sessionId: "bad", createdAt: "2026-06-27T00:00:00.000Z" }]
+          rawMaterials: [{ sessionId: "bad", createdAt: "2026-06-27T00:00:00.000Z" }],
+          // F-04:完整包要求 rawMaterials+audios 同时在场(半截包会走另一条 422),
+          // 补空 audios 让本测试仍精确命中"非法 rawMaterial 条目"的校验路径。
+          audios: []
         }
       });
       expect(res.statusCode).toBe(422);
@@ -365,7 +370,11 @@ describe("state routes", () => {
       await server.close();
     });
 
-    it("purge(all) 若冷层清理失败则不清热态，避免 500 后热态已被删除", async () => {
+    // 审计修复 F-04:本测试原契约是"冷层失败 → 500 且热态不动"。但故障注入实测第二个库
+    // 失败时第一个库已删,前序删除无法恢复——"热态未变"的响应语义与实际不符,重试也拿不回
+    // 已删的库。新契约:purge 是隐私删除,删除最大化——热态无论冷层成败都提交,失败以
+    // 500 + purgeReceipt 如实回执(细粒度矩阵见下方 "F-04: purge 冷层尽力而为" describe)。
+    it("purge(all) 冷层清理失败 → 500 + purgeReceipt,但热态仍已清(隐私删除最大化)", async () => {
       const rawRepo = {
         ...createInMemoryRawMaterialRepository(),
         deleteAll: () => {
@@ -373,17 +382,20 @@ describe("state routes", () => {
         }
       };
       const server = buildApiServer({ rawMaterialRepository: rawRepo });
-      const before = (await server.inject({ method: "GET", url: "/api/state" })).json();
       const res = await server.inject({
         method: "POST",
         url: "/api/state/purge",
         payload: { confirm: "PURGE_PERSONAL_DATA" }
       });
       expect(res.statusCode).toBe(500);
+      const body = res.json();
+      expect(body.purgeReceipt.partialFailure).toBe(true);
+      expect(body.purgeReceipt.stores["raw-material"]).toMatch(/^failed: /);
+      // 热态已清空并随 body 带回(前端可采纳),GET 复核落库。
+      expect(body.state.profile.name).toBe("");
       const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
-      expect(after.profile.name).toBe(before.profile.name);
-      expect(after.points.length).toBe(before.points.length);
-      expect(after.notes.length).toBe(before.notes.length);
+      expect(after.profile.name).toBe("");
+      expect(after.sessions.length).toBe(0);
       await server.close();
     });
   });
@@ -706,6 +718,466 @@ describe("state routes", () => {
       expect(body.audioOmittedSessions).toContain("big-2");
       // audioSessions still lists every audio-bearing session
       expect(body.audioSessions).toEqual(expect.arrayContaining(["big-1", "big-2"]));
+      await server.close();
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 审计修复 F-04(P1):import 执行协议(journal+补偿)、legacy 显式冷层模式、音频非法
+  // 条目整体 422。此前 build-then-swap 只覆盖"校验失败",不覆盖"存储执行失败":
+  // 先 replaceState 再清冷层 → raw delete 抛错时 500 但 profile 已是导入值、旧冷层仍在
+  // (热态与冷层来自两个世代);legacy 裸 state 静默保留旧冷层却仍以"替换全部"语义 200;
+  // 音频非法条目静默 continue,用户以为全量恢复实际缺条目。
+  // ═══════════════════════════════════════════════════════════════════════════════
+  describe("F-04: import 执行协议(journal+补偿)与 legacy 显式冷层模式", () => {
+    const sampleMaterial = (sessionId: string): InterviewRawMaterial => ({
+      sessionId,
+      turns: [
+        { id: `${sessionId}-t1`, role: "assistant", content: "问题", intent: "open", timestamp: "2026-06-20T00:00:00.000Z" },
+        { id: `${sessionId}-t2`, role: "user", content: "回答", intent: "answer", timestamp: "2026-06-20T00:00:05.000Z" }
+      ],
+      strategyTrace: [],
+      createdAt: "2026-06-20T00:00:10.000Z"
+    });
+    const seededAudio = (sessionId: string): InterviewAudio => ({
+      sessionId,
+      role: "interviewee",
+      audio: new Uint8Array([1, 2, 3]),
+      mime: "audio/webm",
+      byteSize: 3,
+      createdAt: "2026-06-20T00:00:00.000Z"
+    });
+    const audioImportEntry = (sessionId: string) => ({
+      sessionId,
+      role: "interviewee",
+      mime: "audio/webm",
+      audioBase64: Buffer.from([9, 9, 9]).toString("base64")
+    });
+
+    it("完整包中段失败(audio put 抛)→ 500 + journal 回滚:raw/audio 快照恢复,热态未变", async () => {
+      const rawRepo = createInMemoryRawMaterialRepository();
+      rawRepo.put(sampleMaterial("old-raw"));
+      const audioBase = createInMemoryAudioRepository();
+      audioBase.put(seededAudio("old-audio"));
+      // 故障注入:仅对导入的新条目抛错——补偿路径 put 回旧快照必须仍然可用。
+      const audioRepo = {
+        ...audioBase,
+        put: (a: InterviewAudio) => {
+          if (a.sessionId === "new-audio") throw new Error("simulated audio put failure");
+          audioBase.put(a);
+        }
+      };
+      const server = buildApiServer({ rawMaterialRepository: rawRepo, audioRepository: audioRepo });
+      const cur = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/import",
+        payload: {
+          confirm: "REPLACE_ALL_STATE",
+          state: { ...cur, profile: { ...cur.profile, name: "SHOULD_NOT_COMMIT" } },
+          rawMaterials: [sampleMaterial("new-raw")],
+          audios: [audioImportEntry("new-audio")]
+        }
+      });
+      expect(res.statusCode).toBe(500);
+      const body = res.json();
+      expect(body.failedStep).toBe("audio");
+      expect(body.rolledBack).toBe(true);
+      expect(body.steps).toEqual([
+        { store: "raw-material", status: "compensated" },
+        { store: "audio", status: "failed" },
+        { store: "hot-state", status: "pending" }
+      ]);
+      // 快照已恢复:旧世代数据在,新世代数据不在。
+      expect(rawRepo.get("old-raw")).toBeDefined();
+      expect(rawRepo.get("new-raw")).toBeUndefined();
+      expect(audioBase.has("old-audio")).toBe(true);
+      expect(audioBase.has("new-audio")).toBe(false);
+      // 热态排在最后一步,失败时尚未写入——GET 复核未变。
+      const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      expect(after.profile.name).toBe(cur.profile.name);
+      await server.close();
+    });
+
+    it("最后一步热态 replaceState 失败 → 冷层已全部补偿恢复,journal 标 hot-state failed", async () => {
+      const rawRepo = createInMemoryRawMaterialRepository();
+      rawRepo.put(sampleMaterial("old-raw"));
+      const audioRepo = createInMemoryAudioRepository();
+      audioRepo.put(seededAudio("old-audio"));
+      const baseRepo = createInMemoryProductStateRepository();
+      let failReplace = false;
+      const stateRepo = {
+        ...baseRepo,
+        replaceState: ((state: ProductState, opts?: Parameters<typeof baseRepo.replaceState>[1]) => {
+          if (failReplace) throw new Error("simulated hot-state replace failure");
+          return baseRepo.replaceState(state, opts);
+        }) as typeof baseRepo.replaceState
+      };
+      const server = buildApiServer({ productStateRepository: stateRepo, rawMaterialRepository: rawRepo, audioRepository: audioRepo });
+      const cur = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      failReplace = true;
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/import",
+        payload: {
+          confirm: "REPLACE_ALL_STATE",
+          state: { ...cur, profile: { ...cur.profile, name: "SHOULD_NOT_COMMIT" } },
+          rawMaterials: [sampleMaterial("new-raw")],
+          audios: [audioImportEntry("new-audio")]
+        }
+      });
+      failReplace = false;
+      expect(res.statusCode).toBe(500);
+      const body = res.json();
+      expect(body.failedStep).toBe("hot-state");
+      expect(body.rolledBack).toBe(true);
+      expect(body.steps).toEqual([
+        { store: "raw-material", status: "compensated" },
+        { store: "audio", status: "compensated" },
+        { store: "hot-state", status: "failed" }
+      ]);
+      // 冷层两库已回到导入前的世代。
+      expect(rawRepo.get("old-raw")).toBeDefined();
+      expect(rawRepo.get("new-raw")).toBeUndefined();
+      expect(audioRepo.has("old-audio")).toBe(true);
+      expect(audioRepo.has("new-audio")).toBe(false);
+      const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      expect(after.profile.name).toBe(cur.profile.name);
+      await server.close();
+    });
+
+    it("补偿自身失败 → rolledBack=false + compensationFailures 写明不一致细节", async () => {
+      const rawBase = createInMemoryRawMaterialRepository();
+      rawBase.put(sampleMaterial("old-raw"));
+      // 第一次 deleteAll(执行步骤)成功,第二次(补偿)抛错——模拟回滚窗口里的 IO 故障。
+      let rawDeleteCalls = 0;
+      const rawRepo = {
+        ...rawBase,
+        deleteAll: () => {
+          rawDeleteCalls += 1;
+          if (rawDeleteCalls >= 2) throw new Error("simulated raw compensation failure");
+          rawBase.deleteAll();
+        }
+      };
+      const audioBase = createInMemoryAudioRepository();
+      audioBase.put(seededAudio("old-audio"));
+      const audioRepo = {
+        ...audioBase,
+        put: (a: InterviewAudio) => {
+          if (a.sessionId === "new-audio") throw new Error("simulated audio put failure");
+          audioBase.put(a);
+        }
+      };
+      const server = buildApiServer({ rawMaterialRepository: rawRepo, audioRepository: audioRepo });
+      const cur = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/import",
+        payload: {
+          confirm: "REPLACE_ALL_STATE",
+          state: { ...cur, profile: { ...cur.profile, name: "SHOULD_NOT_COMMIT" } },
+          rawMaterials: [sampleMaterial("new-raw")],
+          audios: [audioImportEntry("new-audio")]
+        }
+      });
+      expect(res.statusCode).toBe(500);
+      const body = res.json();
+      expect(body.failedStep).toBe("audio");
+      // raw 的补偿失败:绝不谎报"已回滚"。
+      expect(body.rolledBack).toBe(false);
+      expect(body.compensationFailures).toEqual([
+        { store: "raw-material", error: expect.stringContaining("simulated raw compensation failure") }
+      ]);
+      // raw 步骤已执行且未能回滚(completed 非 compensated),body 如实反映不一致。
+      expect(body.steps).toEqual([
+        { store: "raw-material", status: "completed" },
+        { store: "audio", status: "failed" },
+        { store: "hot-state", status: "pending" }
+      ]);
+      // 不一致的真实现场:raw 库停在导入世代,热态未变。
+      expect(rawBase.get("new-raw")).toBeDefined();
+      const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      expect(after.profile.name).toBe(cur.profile.name);
+      await server.close();
+    });
+
+    it("音频非法条目不再静默跳过 → 422 + 错误清单含条目下标,任何存储未动", async () => {
+      const rawRepo = createInMemoryRawMaterialRepository();
+      rawRepo.put(sampleMaterial("old-raw"));
+      const audioRepo = createInMemoryAudioRepository();
+      audioRepo.put(seededAudio("old-audio"));
+      const server = buildApiServer({ rawMaterialRepository: rawRepo, audioRepository: audioRepo });
+      const cur = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/import",
+        payload: {
+          confirm: "REPLACE_ALL_STATE",
+          state: { ...cur, profile: { ...cur.profile, name: "SHOULD_NOT_COMMIT" } },
+          rawMaterials: [sampleMaterial("new-raw")],
+          // index 0 合法,index 1 缺 audioBase64/mime——旧行为静默 continue,现在整体 422。
+          audios: [audioImportEntry("ok-audio"), { sessionId: "bad-audio" }]
+        }
+      });
+      expect(res.statusCode).toBe(422);
+      const body = res.json();
+      expect(body.invalidAudios).toHaveLength(1);
+      expect(body.invalidAudios[0].index).toBe(1);
+      expect(body.invalidAudios[0].error).toContain("audioBase64");
+      expect(body.invalidAudios[0].error).toContain("mime");
+      // 一起拒绝,绝不部分恢复:冷层与热态全部原样。
+      expect(rawRepo.get("old-raw")).toBeDefined();
+      expect(rawRepo.get("new-raw")).toBeUndefined();
+      expect(audioRepo.has("old-audio")).toBe(true);
+      expect(audioRepo.has("ok-audio")).toBe(false);
+      const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      expect(after.profile.name).toBe(cur.profile.name);
+      await server.close();
+    });
+
+    it("legacy 裸 state 缺 coldLayerMode → 422,错误信息解释两种模式,状态未变", async () => {
+      const rawRepo = createInMemoryRawMaterialRepository();
+      rawRepo.put(sampleMaterial("old-raw"));
+      const server = buildApiServer({ rawMaterialRepository: rawRepo });
+      const cur = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/import",
+        payload: {
+          confirm: "REPLACE_ALL_STATE",
+          state: { ...cur, profile: { ...cur.profile, name: "SHOULD_NOT_COMMIT" } }
+        }
+      });
+      expect(res.statusCode).toBe(422);
+      const message = res.json().error as string;
+      expect(message).toContain("coldLayerMode");
+      expect(message).toContain("preserve-cold");
+      expect(message).toContain("replace-all");
+      expect(rawRepo.get("old-raw")).toBeDefined();
+      const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      expect(after.profile.name).toBe(cur.profile.name);
+      await server.close();
+    });
+
+    it("半截包(只带 rawMaterials 无 audios)→ 422,拒绝静默混合另一半冷层", async () => {
+      const server = buildApiServer();
+      const cur = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/import",
+        payload: {
+          confirm: "REPLACE_ALL_STATE",
+          state: cur,
+          rawMaterials: [sampleMaterial("half-package")]
+        }
+      });
+      expect(res.statusCode).toBe(422);
+      expect(res.json().error).toContain("audios");
+      await server.close();
+    });
+
+    it("legacy + coldLayerMode=preserve-cold → 200,冷层保留,importReceipt 如实", async () => {
+      const rawRepo = createInMemoryRawMaterialRepository();
+      rawRepo.put(sampleMaterial("kept-raw"));
+      const audioRepo = createInMemoryAudioRepository();
+      audioRepo.put(seededAudio("kept-audio"));
+      const server = buildApiServer({ rawMaterialRepository: rawRepo, audioRepository: audioRepo });
+      const cur = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/import",
+        payload: {
+          confirm: "REPLACE_ALL_STATE",
+          coldLayerMode: "preserve-cold",
+          state: { ...cur, profile: { ...cur.profile, name: "Imported-Legacy" } }
+        }
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.profile.name).toBe("Imported-Legacy");
+      expect(body.importReceipt.coldLayerMode).toBe("preserve-cold");
+      expect(body.importReceipt.restored).toEqual({ rawMaterials: 0, audios: 0 });
+      // 冷层原样保留(显式选择,不再是静默默认)。
+      expect(rawRepo.get("kept-raw")).toBeDefined();
+      expect(audioRepo.has("kept-audio")).toBe(true);
+      await server.close();
+    });
+
+    it("legacy + coldLayerMode=replace-all → 200,冷层清空", async () => {
+      const rawRepo = createInMemoryRawMaterialRepository();
+      rawRepo.put(sampleMaterial("stale-raw"));
+      const audioRepo = createInMemoryAudioRepository();
+      audioRepo.put(seededAudio("stale-audio"));
+      const server = buildApiServer({ rawMaterialRepository: rawRepo, audioRepository: audioRepo });
+      const cur = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/import",
+        payload: {
+          confirm: "REPLACE_ALL_STATE",
+          coldLayerMode: "replace-all",
+          state: { ...cur, profile: { ...cur.profile, name: "Imported-Clean" } }
+        }
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.profile.name).toBe("Imported-Clean");
+      expect(body.importReceipt.coldLayerMode).toBe("replace-all");
+      // 冷层与热态同世代:旧冷层全部清空。
+      expect(rawRepo.list()).toHaveLength(0);
+      expect(audioRepo.listAll()).toHaveLength(0);
+      await server.close();
+    });
+
+    it("完整包成功 → importReceipt.restored 数量正确 + knowledgeIndex=rebuilt", async () => {
+      const rawRepo = createInMemoryRawMaterialRepository();
+      rawRepo.put(sampleMaterial("previous-gen"));
+      const audioRepo = createInMemoryAudioRepository();
+      const server = buildApiServer({ rawMaterialRepository: rawRepo, audioRepository: audioRepo });
+      const cur = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/import",
+        payload: {
+          confirm: "REPLACE_ALL_STATE",
+          state: { ...cur, profile: { ...cur.profile, name: "Imported-Full" } },
+          rawMaterials: [sampleMaterial("new-raw-1"), sampleMaterial("new-raw-2")],
+          audios: [audioImportEntry("new-audio")]
+        }
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.profile.name).toBe("Imported-Full");
+      expect(body.importReceipt.restored).toEqual({ rawMaterials: 2, audios: 1 });
+      expect(body.importReceipt.knowledgeIndex).toBe("rebuilt");
+      // 完整包不需要 coldLayerMode(数组本身就是冷层的完整声明)。
+      expect(body.importReceipt.coldLayerMode).toBeUndefined();
+      // 冷层被整体替换为导入世代。
+      expect(rawRepo.get("previous-gen")).toBeUndefined();
+      expect(rawRepo.list().map((m) => m.sessionId).sort()).toEqual(["new-raw-1", "new-raw-2"]);
+      expect(audioRepo.has("new-audio")).toBe(true);
+      await server.close();
+    });
+  });
+
+  // 审计修复 F-04(P1):purge 冷层从"假原子"改为尽力而为 + purgeReceipt 三态回执。
+  // 此前 purge(all) 先删冷层最后提交热态,注入第二库失败:500、热态未变,但第一库已删
+  // ——响应语义与实际不符;purge(interviews) 冷层失败 500 但热态已变且无任何回执。
+  describe("F-04: purge 冷层尽力而为 + purgeReceipt(热态无论冷层成败都提交)", () => {
+    const failing = <T extends { deleteAll: () => void }>(repo: T): T => ({
+      ...repo,
+      deleteAll: () => {
+        throw new Error("simulated cold-layer delete failure");
+      }
+    });
+    const maybeFailing = <T extends { deleteAll: () => void }>(repo: T, fail: boolean): T =>
+      fail ? failing(repo) : repo;
+    const buildRepos = (failStore?: "raw-material" | "audio" | "knowledge-index") => ({
+      rawMaterialRepository: maybeFailing(createInMemoryRawMaterialRepository(), failStore === "raw-material"),
+      audioRepository: maybeFailing(createInMemoryAudioRepository(), failStore === "audio"),
+      knowledgeIndexRepository: maybeFailing(createInMemoryKnowledgeIndexRepository(), failStore === "knowledge-index")
+    });
+
+    it.each(["raw-material", "audio", "knowledge-index"] as const)(
+      "purge(all) %s 失败 → 500 + purgeReceipt 该库 failed,其余库仍被清,热态已清",
+      async (storeName) => {
+        const server = buildApiServer(buildRepos(storeName));
+        const res = await server.inject({
+          method: "POST",
+          url: "/api/state/purge",
+          payload: { confirm: "PURGE_PERSONAL_DATA" }
+        });
+        expect(res.statusCode).toBe(500);
+        const body = res.json();
+        expect(body.error).toContain("purge partial failure");
+        expect(body.error).toContain(storeName);
+        expect(body.purgeReceipt.partialFailure).toBe(true);
+        expect(body.purgeReceipt.hotStateCommitted).toBe(true);
+        expect(body.purgeReceipt.stores[storeName]).toMatch(/^failed: /);
+        // 一库失败不挡其余库(隐私删除最大化)。
+        for (const other of ["raw-material", "audio", "knowledge-index"].filter((n) => n !== storeName)) {
+          expect(body.purgeReceipt.stores[other]).toBe("cleared");
+        }
+        // 热态无论冷层成败都提交:body 带回已清热态,GET 复核确已落库。
+        expect(body.state.profile.name).toBe("");
+        expect(body.state.sessions.length).toBe(0);
+        const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
+        expect(after.profile.name).toBe("");
+        expect(after.sessions.length).toBe(0);
+        await server.close();
+      }
+    );
+
+    it("purge(all) 全成功 → 200 + purgeReceipt 全 cleared", async () => {
+      const server = buildApiServer(buildRepos());
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/purge",
+        payload: { confirm: "PURGE_PERSONAL_DATA" }
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.deletedScope).toBe("all");
+      expect(body.purgeReceipt.partialFailure).toBe(false);
+      expect(body.purgeReceipt.stores).toEqual({
+        "raw-material": "cleared",
+        audio: "cleared",
+        "knowledge-index": "cleared"
+      });
+      await server.close();
+    });
+
+    it("purge(interviews) 冷层失败 → 500 + purgeReceipt 注明热态已提交,scoped 审计事件已落库", async () => {
+      const server = buildApiServer(buildRepos("raw-material"));
+      const before = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/purge",
+        payload: { confirm: "PURGE_PERSONAL_DATA", scope: "interviews" }
+      });
+      expect(res.statusCode).toBe(500);
+      const body = res.json();
+      expect(body.purgeReceipt.partialFailure).toBe(true);
+      // interviews 档热态先提交是既有顺序;receipt 必须注明,让前端明白 500≠什么都没发生。
+      expect(body.purgeReceipt.hotStateCommitted).toBe(true);
+      expect(body.purgeReceipt.stores["raw-material"]).toMatch(/^failed: /);
+      expect(body.purgeReceipt.stores.audio).toBe("cleared");
+      expect(body.purgeReceipt.stores["knowledge-index"]).toBe("cleared");
+      // 热态已提交:会话清空、profile 保留(interviews 是分档清除);scoped purge 的
+      // privacy_data_purged 审计事件落库是"热态确已提交"的确凿证据(空基底会话本就为 0)。
+      expect(body.state.sessions.length).toBe(0);
+      expect(
+        (body.state.auditEvents ?? []).some(
+          (e: { type: string; entityId: string }) => e.type === "privacy_data_purged" && e.entityId === "local-product-state:interviews"
+        )
+      ).toBe(true);
+      const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      expect(after.sessions.length).toBe(0);
+      expect(after.profile.name).toBe(before.profile.name);
+      expect(
+        (after.auditEvents ?? []).some(
+          (e: { type: string; entityId: string }) => e.type === "privacy_data_purged" && e.entityId === "local-product-state:interviews"
+        )
+      ).toBe(true);
+      await server.close();
+    });
+
+    it("purge(interviews) 全成功 → 200 + purgeReceipt 全 cleared", async () => {
+      const server = buildApiServer(buildRepos());
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/purge",
+        payload: { confirm: "PURGE_PERSONAL_DATA", scope: "interviews" }
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.deletedScope).toBe("interviews");
+      expect(body.purgeReceipt.partialFailure).toBe(false);
+      expect(body.purgeReceipt.stores).toEqual({
+        "raw-material": "cleared",
+        audio: "cleared",
+        "knowledge-index": "cleared"
+      });
       await server.close();
     });
   });
