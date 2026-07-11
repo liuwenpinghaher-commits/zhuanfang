@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Fastify, { type FastifyInstance } from "fastify";
 import { createServer } from "node:http";
 import { createInitialProductState } from "../../../../src/domain/engine";
@@ -499,6 +499,99 @@ describe("realtime-voice /agent-turn route", () => {
     expect(res.statusCode).toBe(503);
     expect(res.json().error).toBe("state_repo_unavailable");
     await lonelyApp.close();
+  });
+});
+
+describe("realtime-voice 会话 TTL 滑动续期与活跃 WS 豁免(N-14/P3-20)", () => {
+  const TTL_MS = 10 * 60 * 1000;
+  let app: FastifyInstance;
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    if (app) await app.close();
+  });
+
+  async function freshSession(): Promise<string> {
+    app = Fastify();
+    await registerRealtimeVoiceRoutes(app);
+    await app.ready();
+    const res = await app.inject({ method: "POST", url: "/api/realtime-voice/sessions", payload: {} });
+    expect(res.statusCode).toBe(200);
+    return (res.json() as { sessionId: string }).sessionId;
+  }
+
+  it("无流量超 TTL → /interrupt 返回 410(会话确实过期,不是永不过期)", async () => {
+    const base = Date.now();
+    const sessionId = await freshSession();
+    // 时钟推过 TTL,期间无任何访问/WS → 会话应过期。
+    vi.spyOn(Date, "now").mockReturnValue(base + TTL_MS + 1000);
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/realtime-voice/sessions/${sessionId}/interrupt`,
+      payload: { spokenTextSoFar: "abc" }
+    });
+    expect(res.statusCode).toBe(410);
+  });
+
+  it("TTL 内的 REST 访问滑动续期 → 超过原始过期点仍存活", async () => {
+    const base = Date.now();
+    const sessionId = await freshSession();
+    const nowSpy = vi.spyOn(Date, "now");
+    // +9min 访问一次:此刻未过期,访问后续期到 +19min。
+    nowSpy.mockReturnValue(base + 9 * 60 * 1000);
+    const first = await app.inject({
+      method: "POST",
+      url: `/api/realtime-voice/sessions/${sessionId}/interrupt`,
+      payload: { spokenTextSoFar: "abc" }
+    });
+    expect(first.statusCode).toBe(200);
+    // +15min:已超过原始 +10min 过期点,但因上一步续期到 +19min → 仍存活。
+    nowSpy.mockReturnValue(base + 15 * 60 * 1000);
+    const second = await app.inject({
+      method: "POST",
+      url: `/api/realtime-voice/sessions/${sessionId}/interrupt`,
+      payload: { spokenTextSoFar: "abc" }
+    });
+    expect(second.statusCode).toBe(200);
+  });
+
+  it("活跃 TTS WS 存在期间,时钟超 TTL 也不判过期(长访谈 cascade 核心场景)", async () => {
+    const base = Date.now();
+    app = Fastify();
+    await registerRealtimeVoiceRoutes(app);
+    await app.ready();
+    const sessionRes = await app.inject({ method: "POST", url: "/api/realtime-voice/sessions", payload: {} });
+    const { sessionId } = sessionRes.json() as { sessionId: string };
+
+    await new Promise<void>((resolve, reject) => {
+      const httpServer = app.server;
+      httpServer.listen(0, "127.0.0.1", () => {
+        const port = (httpServer.address() as { port: number }).port;
+        const { WebSocket: WsClient } = require("ws") as typeof import("ws");
+        const ws = new WsClient(`ws://127.0.0.1:${port}/api/realtime-voice/ws/tts/${sessionId}`);
+        ws.on("open", () => {
+          void (async () => {
+            try {
+              // WS 已连上(addActiveWs)。把时钟推过 TTL——无活跃 WS 时这会让会话过期。
+              vi.spyOn(Date, "now").mockReturnValue(base + TTL_MS + 60 * 1000);
+              const res = await app.inject({
+                method: "POST",
+                url: `/api/realtime-voice/sessions/${sessionId}/interrupt`,
+                payload: { spokenTextSoFar: "abc" }
+              });
+              // 活跃 WS 豁免过期 → 200(而非 410)。这正是长访谈 interrupt 不再静默失效的证据。
+              expect(res.statusCode).toBe(200);
+              ws.close();
+            } catch (err) {
+              ws.close();
+              reject(err as Error);
+            }
+          })();
+        });
+        ws.on("close", () => resolve());
+        ws.on("error", (err: Error) => reject(err));
+        setTimeout(() => ws.close(), 2000);
+      });
+    });
   });
 });
 

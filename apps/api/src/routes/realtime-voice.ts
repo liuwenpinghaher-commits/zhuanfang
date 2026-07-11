@@ -123,23 +123,53 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
   const sessions = new Map<string, RealtimeVoiceSessionRecord>();
   const runtimeEnv = options.env ?? process.env;
 
-  // 过期会话清理:记录带 expiresAt(10 分钟)但此前无人读取/无清理 → Map 单调增长且过期会话仍可被
-  // WS 升级命中(expiresAt 形同虚设)。lazy 校验 + 创建时清扫,界定内存并让过期凭据失效。
-  function pruneExpiredSessions(): void {
-    const now = Date.now();
-    for (const [id, rec] of sessions) {
-      if (Date.parse(rec.expiresAt) <= now) sessions.delete(id);
-    }
-  }
   // 审计修复(P1-5):TTL 改为滑动续期——此前只在创建时设 10 分钟且从不续期,而产品核心场景
   // 就是长访谈:>10min 后 /interrupt 静默失效(截断跳过但仍回 interrupted:true → 归档失真)、
   // cascade TTS WS 断线重连撞 404 直到会话结束。活跃访问即续期;真僵尸(无流量)照旧过期。
   const SESSION_TTL_MS = 10 * 60 * 1000;
+  // N-14:P1-5 的续期只落在 liveSession 的 4 个调用点(含 WS 升级那一次),但 WS 连上后整场访谈
+  // 的 cascade 每轮流量(ASR 音频帧 / TTS speak)都走 ws.on("message"),【不经】liveSession →
+  // >10min 后会话仍过期:/interrupt 410、TTS 断线重连 404 永死。两道防线补齐:
+  //  ① 只要该会话有活跃 WS 连接,就不判过期(长访谈里用户静默思考几分钟也不该被踢);
+  //  ② WS 每收到一帧就 touchSession 滑动续期(WS 关闭后仍保留完整一个 TTL 的宽限窗)。
+  const activeWsCount = new Map<string, number>();
+  function hasActiveWs(id: string): boolean {
+    return (activeWsCount.get(id) ?? 0) > 0;
+  }
+  function addActiveWs(id: string): void {
+    activeWsCount.set(id, (activeWsCount.get(id) ?? 0) + 1);
+    touchSession(id);
+  }
+  function removeActiveWs(id: string): void {
+    const next = (activeWsCount.get(id) ?? 0) - 1;
+    if (next <= 0) {
+      activeWsCount.delete(id);
+      // 断开时刷新到完整 TTL:让关闭后仍有一整段宽限窗(重连/后续 REST 调用)。
+      touchSession(id);
+    } else {
+      activeWsCount.set(id, next);
+    }
+  }
+  /** 滑动续期:会话存在则把过期时刻推到 now+TTL。WS 每帧调用,成本极低。 */
+  function touchSession(id: string): void {
+    const rec = sessions.get(id);
+    if (rec) rec.expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
+  }
+  // 过期会话清理:记录带 expiresAt(10 分钟)但此前无人读取/无清理 → Map 单调增长且过期会话仍可被
+  // WS 升级命中(expiresAt 形同虚设)。lazy 校验 + 创建时清扫,界定内存并让过期凭据失效。
+  // N-14:有活跃 WS 的会话豁免清理(访谈进行中,连接还开着)。
+  function pruneExpiredSessions(): void {
+    const now = Date.now();
+    for (const [id, rec] of sessions) {
+      if (Date.parse(rec.expiresAt) <= now && !hasActiveWs(id)) sessions.delete(id);
+    }
+  }
   function liveSession(id: string | undefined): RealtimeVoiceSessionRecord | undefined {
     if (!id) return undefined;
     const rec = sessions.get(id);
     if (!rec) return undefined;
-    if (Date.parse(rec.expiresAt) <= Date.now()) {
+    // N-14:有活跃 WS 时不判过期(长访谈连接一直开着,静默期也不该被踢)。
+    if (Date.parse(rec.expiresAt) <= Date.now() && !hasActiveWs(id)) {
       sessions.delete(id);
       return undefined;
     }
@@ -538,6 +568,10 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       }
 
       ttsWss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
+        // N-14:登记活跃 WS,连接存活期间该会话不判过期(长访谈 TTS 通道整场开着)。
+        // 专门的 close 监听立即注册,确保任何早退路径(如无 key close)也能配平计数,不泄漏。
+        addActiveWs(sessionId);
+        ws.on("close", () => removeActiveWs(sessionId));
         // Resolve TTS client: prefer injected (tests / server.ts wires one)
         // then fall back to constructing from env at upgrade time.
         const apiKey = runtimeEnv.DASHSCOPE_API_KEY ?? runtimeEnv.BAILIAN_API_KEY;
@@ -553,6 +587,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
         let abortController = new AbortController();
 
         ws.on("message", (data: Buffer) => {
+          touchSession(sessionId);   // N-14:每帧滑动续期,长访谈 TTS 流量不再让会话过期。
           let msg: { type?: string; segments?: unknown; voice?: unknown; prosody?: unknown };
           try {
             msg = JSON.parse(data.toString());
@@ -643,6 +678,10 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     }
 
     wss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
+      // N-14:登记活跃 WS,连接存活期间该会话不判过期(长访谈 ASR 通道整场开着)。
+      // close 监听立即注册,任何早退(如无 key close)也能配平计数。
+      addActiveWs(sessionId);
+      ws.on("close", () => removeActiveWs(sessionId));
       const apiKey = runtimeEnv.DASHSCOPE_API_KEY ?? runtimeEnv.BAILIAN_API_KEY;
       if (!apiKey) {
         ws.close(4001, "API key not configured");
@@ -697,6 +736,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
 
         ws.on("message", (data: Buffer) => {
           if (closed) return;
+          touchSession(sessionId);   // N-14:每帧滑动续期,长访谈 ASR 流量不再让会话过期。
           if (dashscopeWs && dashscopeWs.readyState === WebSocket.OPEN) {
             dashscopeWs.send(data.toString());
           }
