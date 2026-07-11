@@ -205,6 +205,28 @@ function optStr(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+/** 必填 int 列兜底(N-01,补 P0-3/R1-F2 家族的**数值变体**缺口):SurrealDB SCHEMAFULL 的
+ *  `TYPE int DEFAULT 0` 列(question/theme.appearances)收到非 int(字符串数字 "3" / 小数 3.7 /
+ *  null / bool),或 **UPSERT CONTENT 覆盖已存在记录时缺该字段**(→ NONE,CONTENT 不重跑 DEFAULT)时,
+ *  持久层 coerce 失败 → 确定性 wedge 权威库、基线冻结、连坐同批无辜实体(mem:// 真库 spike 实证:
+ *  '3' / 3.7 / null / NONE 四形态各自 `Expected int but found ...`)。`Number.isFinite` 是**严格**判定
+ *  (不 coerce:"3" / true / null / NaN / Infinity 全判 false)——fail-closed 从严:畸形输入一律归下界
+ *  默认,绝不 parseFloat 救活("3" 不猜成 3,与 str() 兜空串同精神)。Math.floor 去小数;Math.max(0,·)
+ *  钳负(appearances 是出现计数,语义无负数——负值 spike 虽不 wedge 但仍是脏值,一并规整)。
+ *  缺字段(undefined)→ 0,确保覆盖写时该 core 列**恒有合法 int**(专治 found NONE 变体)。 */
+function intCount(value: unknown): number {
+  return Number.isFinite(value) ? Math.max(0, Math.floor(value as number)) : 0;
+}
+
+/** 可选 int 列兜底(N-01):SurrealDB `TYPE option<int>` 列(memory.importance)接受 NONE(缺失 →
+ *  toRecord 跳过不落列 → 合法),但不接受 null / 字符串 / 小数(spike 实证 null → `Expected none|int
+ *  but found NULL` → wedge)。严格整数则 Math.floor 保留(option<int> 无 ASSERT、无下界,负整数合法
+ *  不 wedge,照任务口径不额外钳负);否则 undefined —— fail-closed:畸形值不落库、退化为"无重要度"
+ *  (消费点 `importance ?? 5` 已有中性兜底,见 storage.test MemoryRecord migration)。 */
+function optInt(value: unknown): number | undefined {
+  return Number.isFinite(value) ? Math.floor(value as number) : undefined;
+}
+
 function clampPersistableEnums(state: ProductState): ProductState {
   return {
     ...state,
@@ -237,7 +259,12 @@ function clampPersistableEnums(state: ProductState): ProductState {
       content: str(p.content),
       status: clampEnum(p.status, POINT_STATUSES, "临时想法"),
       // 置信钳制 fail-closed:坏值不得冒充「用户确认」(A3 精神)。
-      confidence: clampEnum(p.confidence, POINT_CONFIDENCES, "待验证")
+      confidence: clampEnum(p.confidence, POINT_CONFIDENCES, "待验证"),
+      // N-01:`TYPE bool` 列坏值(如 "yes")→ coerce 失败 wedge(spike 实证)。严格 `=== true`
+      // (镜像 config_version.active 口径):非严格 true 一律 false,fail-closed。此为最终权威钳制;
+      // backfillPointDefaults 的 `?? false` 只在管线更早处补 undefined 缺省,方向一致、不冲突
+      //(undefined→false→false;"yes"→"yes"→false),此处始终最后跑、恒产出合法 bool。
+      important: p.important === true
     })),
     decisions: state.decisions.map((d) => ({
       ...d,
@@ -248,8 +275,9 @@ function clampPersistableEnums(state: ProductState): ProductState {
       status: clampEnum(d.status, DECISION_STATUSES, "待复盘")
     })),
     debts: state.debts.map((d) => ({ ...d, concept: str(d.concept), context: str(d.context), status: clampEnum(d.status, DEBT_STATUSES, "待了解") })),
-    questions: state.questions.map((q) => ({ ...q, question: str(q.question), whyImportant: str(q.whyImportant), status: clampEnum(q.status, QUESTION_STATUSES, "开放") })),
-    themes: state.themes.map((t) => ({ ...t, name: str(t.name), summary: str(t.summary), representativeQuote: str(t.representativeQuote), maturity: clampEnum(t.maturity, THEME_MATURITIES, "萌芽") })),
+    // N-01:appearances 是 `TYPE int` core 列,坏值/缺字段 wedge(spike 实证)→ intCount 恒产出合法 int。
+    questions: state.questions.map((q) => ({ ...q, question: str(q.question), whyImportant: str(q.whyImportant), status: clampEnum(q.status, QUESTION_STATUSES, "开放"), appearances: intCount(q.appearances) })),
+    themes: state.themes.map((t) => ({ ...t, name: str(t.name), summary: str(t.summary), representativeQuote: str(t.representativeQuote), maturity: clampEnum(t.maturity, THEME_MATURITIES, "萌芽"), appearances: intCount(t.appearances) })),
     memoryRecords: state.memoryRecords.map((m) => ({
       ...m,
       text: str(m.text),
@@ -258,7 +286,10 @@ function clampPersistableEnums(state: ProductState): ProductState {
       evidenceQuote: str(m.evidenceQuote),   // R1-F2:DEFAULT '' 兜底
       // 坏值绝不冒充 confirmed(会越权进召回);敏感度坏值按敏感处理(隔离而非放行)。
       status: clampEnum(m.status, MEMORY_STATUSES, "deprecated"),
-      sensitivity: clampEnum(m.sensitivity ?? "normal", SENSITIVITIES, "sensitive")
+      sensitivity: clampEnum(m.sensitivity ?? "normal", SENSITIVITIES, "sensitive"),
+      // N-01:importance 是 `TYPE option<int>` core 列,null/字符串/小数 wedge(spike 实证 null →
+      // Expected none|int but found NULL)。optInt:整数保留、坏值→undefined(toRecord 跳过→NONE 合法)。
+      importance: optInt(m.importance)
     })),
     memoryCandidates: state.memoryCandidates.map((c) => ({
       ...c,
@@ -402,6 +433,25 @@ function clampPersistableEnums(state: ProductState): ProductState {
     }))
   };
 }
+
+/** N-01 防漂移登记:**标量**数值/布尔 typed **core** 列的坏值兜底覆盖集(节点表名 → 列名,与
+ *  NODE_MAPPINGS.table 对齐)。SurrealDB SCHEMAFULL 的 `TYPE int/float/bool`(及 option 变体)core 列
+ *  被非法值 / 缺字段 coerce 失败即确定性 wedge 权威库(mem:// 真库 spike 实证);本表是"每个此类
+ *  core 列都必须有兜底"的机器可查清单。node-mapper.test 的防漂移守卫扫 migrations 的标量数值/bool
+ *  typed core 列,断言逐一落在本集内——未来新增此类列忘了钳制会变红(把静默数据缺陷变成响亮的
+ *  测试失败,镜像 DATETIME_DEFAULT_COLS 守卫)。
+ *  注:兜底实现分布两处——多数在 clampPersistableEnums(本文件),reviewScore 在 memoryReview.ts
+ *  (clampReviewScore + Number.isFinite,域层既有先例);本表只登记"已被守卫",不区分实现位置。
+ *  ⚠️ 刻意只含**标量**数值/bool:embedding(option<array<float>>)是同族 wedge 但形态是**数组**
+ *  (元素级 coerce,非标量),不在本守卫标量口径内——守卫的类型正则也据此排除 array<float>。 */
+export const NUMERIC_BOOL_CLAMPED_COLS: Record<string, readonly string[]> = {
+  question:         ["appearances"],   // int         · clampPersistableEnums intCount
+  theme:            ["appearances"],   // int         · clampPersistableEnums intCount
+  memory:           ["importance"],    // option<int> · clampPersistableEnums optInt
+  point:            ["important"],     // bool        · clampPersistableEnums === true
+  config_version:   ["active"],        // bool        · clampPersistableEnums === true(R1a 既有)
+  memory_candidate: ["reviewScore"],   // float       · memoryReview.ts clampReviewScore(域层先例)
+};
 
 // ── 审计修复(P0-1 chunk 变体):悬空派生块修剪 ────────────────────────────
 // rag_chunk 是纯派生、可重建的索引块,sourceId 指向 importSource 或 memoryRecord。

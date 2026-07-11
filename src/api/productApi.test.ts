@@ -103,6 +103,33 @@ describe("product api client", () => {
     expect(result.state.profile.name).toBe("Mia");
   });
 
+  // N-02:落库降级信号改由 getHealth 轮询驱动 banner(route-agnostic,覆盖全部"200+异步落库"写路径),
+  // saveState 不再透出 persistHealth。以下两测钉住新数据源:degraded 时透出 persist、健康时缺席。
+  it("N-02:getHealth 透出 /api/health 的 persist 降级信号(banner 轮询数据源)", async () => {
+    const degraded = {
+      ok: true,
+      service: "interview-product-api",
+      persist: { degraded: true, consecutiveFailures: 3, lastErrorAt: "2026-07-11T00:00:00.000Z" }
+    };
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify(degraded), { status: 200 }));
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+
+    const result = await client.getHealth();
+
+    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:8787/api/health", { method: "GET" });
+    expect(result.persist).toEqual({ degraded: true, consecutiveFailures: 3, lastErrorAt: "2026-07-11T00:00:00.000Z" });
+  });
+
+  it("N-02:getHealth 健康时不带 persist 字段(前端据缺席清零 banner)", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ ok: true, service: "interview-product-api" }), { status: 200 }));
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+
+    const result = await client.getHealth();
+
+    expect(result.ok).toBe(true);
+    expect(result.persist).toBeUndefined();
+  });
+
   it("loads system capability health from the Product API", async () => {
     const response = {
       generatedAt: "2026-06-10T00:00:00.000Z",

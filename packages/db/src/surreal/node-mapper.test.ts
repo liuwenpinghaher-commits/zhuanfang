@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { NODE_MAPPINGS, STREAM_MAPPINGS, toRecord, fromRecord, mappingFor } from "./node-mapper";
 import { META_KEYS, SINGLETON_TABLES, DATETIME_DEFAULT_COLS } from "./surreal-product-state-repository";
 import { createInitialProductState } from "../../../../src/domain/engine";
+import { NUMERIC_BOOL_CLAMPED_COLS } from "../../../../src/domain/storage";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -81,5 +82,40 @@ describe("node-mapper", () => {
       }
     }
     expect(missing, `这些 DEFAULT datetime 列未登记进 DATETIME_DEFAULT_COLS,UPSERT 覆盖会静默失败: ${missing.join(", ")}`).toEqual([]);
+  });
+
+  // N-01 防漂移守卫:每个 migration 里的**标量**数值/bool typed **core** 列(TYPE int/float/number/
+  // decimal/bool 及其 option 变体,进 NODE_MAPPINGS.core → 落 typed 列)都必须在 NUMERIC_BOOL_CLAMPED_COLS
+  // 里有坏值兜底。否则 API PUT/坏 import 的非法值(字符串数字/null/小数/缺字段)会经 UPSERT coerce 失败
+  // → persist 确定性 wedge 权威库(mem:// spike 实证)。把"新增数值/bool typed core 列忘了钳制"从静默
+  // 数据缺陷变成响亮的测试失败(镜像上面的 DATETIME_DEFAULT_COLS 守卫)。双向:漏钳→missing 红;
+  // 登记表有 schema 不存在的陈旧项→stale 红。刻意排除 array<float>(embedding,数组形态非标量,见登记表注释)。
+  it("NUMERIC_BOOL_CLAMPED_COLS 覆盖所有 migration 里的标量数值/bool typed core 列(防坏值 wedge)", () => {
+    const migDir = join(dirname(fileURLToPath(import.meta.url)), "migrations");
+    const fieldRe = /DEFINE FIELD (?:IF NOT EXISTS\s+)?(\w+)\s+ON\s+(\w+)\s+TYPE\s+([^\s;]+)/g;
+    // 标量数值/bool(含 option 包装);option<array<float>> / option<datetime> / array<string> 不匹配。
+    const scalarNumericBool = /^(?:option<)?(?:int|float|number|decimal|bool)>?$/;
+    const coreByTable = new Map(NODE_MAPPINGS.map((m) => [m.table, new Set(m.core)] as const));
+
+    const scanned = new Set<string>();
+    for (const f of readdirSync(migDir).filter((x) => x.endsWith(".surql"))) {
+      const sql = readFileSync(join(migDir, f), "utf8");
+      for (const [, col, tbl, type] of sql.matchAll(fieldRe)) {
+        if (!scalarNumericBool.test(type)) continue;      // 只标量数值/bool
+        if (!coreByTable.has(tbl)) continue;              // 非节点表(edge/state_meta/冷层)不走 persist typed core
+        if (!coreByTable.get(tbl)!.has(col)) continue;    // 进 rest blob(非 core)不 wedge
+        scanned.add(`${tbl}.${col}`);
+      }
+    }
+    const registered = new Set(
+      Object.entries(NUMERIC_BOOL_CLAMPED_COLS).flatMap(([tbl, cols]) => cols.map((c) => `${tbl}.${c}`))
+    );
+
+    // schema→登记:任何标量数值/bool typed core 列都必须被钳制,否则坏值确定性 wedge。
+    const missing = [...scanned].filter((k) => !registered.has(k)).sort();
+    expect(missing, `这些标量数值/bool typed core 列未在 NUMERIC_BOOL_CLAMPED_COLS 登记兜底,坏值会 wedge 权威库: ${missing.join(", ")}`).toEqual([]);
+    // 登记→schema:登记表不得有 migration 已不存在的陈旧项(防笔误/删列后遗留)。
+    const stale = [...registered].filter((k) => !scanned.has(k)).sort();
+    expect(stale, `NUMERIC_BOOL_CLAMPED_COLS 有 migration 中不存在的标量数值/bool typed core 列(陈旧登记): ${stale.join(", ")}`).toEqual([]);
   });
 });

@@ -42,6 +42,12 @@ export interface ProductApiClient {
   getSystemConfig(): Promise<SystemConfigResponse>;
   updateSystemConfig(updates: SystemConfigUpdateRequest): Promise<SystemConfigUpdateResponse>;
   getState(): Promise<ProductState>;
+  /**
+   * N-02:轻量健康探针(route-agnostic 落库降级数据源)。前端低频轮询该端点驱动持久顶栏 banner:
+   * persist.degraded 时常驻、恢复即消失——覆盖全部"200+异步落库"写路径(资产确认/记忆编辑等从不
+   * PUT /api/state 却共享同一 persistQueue)。auth 豁免、只读、不触发任何写/联网副作用。
+   */
+  getHealth(): Promise<HealthResponse>;
   getReviews(): Promise<ReviewsResponse>;
   importDocument(input: ImportDocumentRequest): Promise<ImportDocumentResponse>;
   /** Full rebuild of the server-side knowledge index. Returns how many chunks were indexed. */
@@ -480,6 +486,31 @@ export interface PurgeReceipt {
   stores: Record<string, ResetStoreOutcome>;
 }
 
+/**
+ * N-02:GET /api/health 的响应形状(route-agnostic 落库健康度数据源)。persist 字段仅在权威库
+ * 连续落库失败(degraded)时出现——健康 / 内存档 / 旧后端一律不带该字段。前端低频轮询该端点,
+ * 据 persist 驱动持久顶栏 banner,覆盖全部"200+异步落库"写路径(资产确认/记忆编辑等从不
+ * PUT /api/state 却共享同一 persistQueue)。与后端 apps/api/src/routes/health.ts 的非泄漏形状
+ * 对齐(不含 lastError 原文,避免内部错误串泄漏)。
+ */
+export interface HealthResponse {
+  ok: boolean;
+  service?: string;
+  persist?: { degraded: boolean; consecutiveFailures: number; lastErrorAt?: string };
+}
+
+/**
+ * N-02:持久顶栏 banner 的落库健康度快照(前端消费用轻量型)。由 getHealth 轮询得到的
+ * {@link HealthResponse.persist} 派生:degraded 时为 { consecutiveFailures, lastErrorAt };
+ * 健康 / 内存档 / 离线一律为 null(banner 消失)。只含 consecutiveFailures + lastErrorAt
+ * (不含 lastError 原文,与 /api/health 的非泄漏形状一致)。consecutiveFailures 是"连续失败"
+ * 语义:下一笔成功落库即清零,不因单次瞬态误报。
+ */
+export interface PersistHealthLite {
+  consecutiveFailures: number;
+  lastErrorAt?: string;
+}
+
 /** True when the error means the server was unreachable (fetch threw), not a 4xx/5xx. */
 export function isNetworkError(err: unknown): boolean {
   return !(err instanceof ApiError);
@@ -649,6 +680,9 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
     async getState() {
       return normalizeProductState(await requestJson("/api/state", { method: "GET" }));
     },
+    async getHealth() {
+      return (await requestJson("/api/health", { method: "GET" })) as HealthResponse;
+    },
     async getReviews() {
       return (await requestJson("/api/reviews", { method: "GET" })) as ReviewsResponse;
     },
@@ -735,6 +769,8 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
       if (!response.ok) {
         throw new ApiError(response.status, "/api/state");
       }
+      // N-02:PUT 响应不再携带 persistHealth 装饰键(落库降级信号改由 getHealth 轮询驱动 banner,
+      // 见 getHealth / HealthResponse)。保持与其它保存路径一致的纯净 { state, conflicted }。
       return { state: normalizeProductState(await response.json()), conflicted: false };
     },
     async resetState() {

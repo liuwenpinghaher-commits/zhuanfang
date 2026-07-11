@@ -1,5 +1,8 @@
-// OpenTelemetry must be initialized before any other imports
-import "./telemetry";
+// OpenTelemetry must be initialized before any other imports.
+// N-10:具名导入 shutdownTelemetry——模块体的 sdk.start() 仍作为副作用在此(首位)执行,
+// instrumentation 补丁照旧先于 fastify/http 加载;telemetry 不再自注册 SIGTERM,其 OTel 关闭
+// 由下方 startServer 的统一优雅关闭序列在【数据 flush 之后】调用(见 createGracefulShutdown)。
+import { shutdownTelemetry } from "./telemetry";
 
 import Fastify, { type FastifyRequest, type FastifyReply } from "fastify";
 import fastifyStatic from "@fastify/static";
@@ -828,6 +831,84 @@ function createDefaultAudioRepository() {
   return createInMemoryAudioRepository();
 }
 
+/** N-10:给一个 promise 加超时——到点 reject(Error("<label> timeout"))。调用方 catch 后继续
+ *  走关闭序列(绝不因某一步卡住而永不退出)。settle 后清 timer,不留悬挂计时器。 */
+function withDeadline<T>(p: Promise<T>, ms: number, label = "operation"): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timeout after ${ms}ms`)), ms);
+    p.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); }
+    );
+  });
+}
+
+export interface GracefulShutdownDeps {
+  /** 停止收新请求(Fastify server.close;排空在途 HTTP)。 */
+  closeServer: () => Promise<void>;
+  /** 排空持久化——surreal 档 = stores.close(先 flush persist 队列再关连接);memory 档 = flush(no-op 也无妨)。 */
+  flushPersistence: () => Promise<void>;
+  /** 关闭 OTel(数据 flush 之后才调,内部已吞错)。 */
+  shutdownTelemetry: () => Promise<void>;
+  /** 退出进程(注入以便单测断言,不真的杀测试进程)。 */
+  exit: (code: number) => void;
+  /** flush 上限超时(默认 10s):flush 卡住不永久挂起,超时强退并记「可能丢失未落库写」。 */
+  flushTimeoutMs?: number;
+  /** server.close 上限超时(默认 8s):某个永挂的在途请求不该挡住 flush 步骤。 */
+  closeTimeoutMs?: number;
+}
+
+/**
+ * N-10:统一优雅关闭序列(数据 flush 优先于 OTel)。抽成可注入依赖的工厂,便于单测断言
+ * 「close → flush → OTel → exit」顺序、幂等(重复信号只跑一次)、flush 超时兜底(不卡死)。
+ *
+ * 序列:① closeServer() 停止收新请求(排空在途 HTTP,有界超时——永挂请求不该挡住 flush);
+ * ② flushPersistence() 排空 persist 队列——R7 删同步 sqlite 后这是唯一持久路径,不 flush 直接退
+ * 会丢已确认 200 的写(常态窗口小,但重试期/积压/降级期 N-02 窗口可无限);③ shutdownTelemetry()
+ * 关 OTel(数据已落库);④ exit(0)。② 加上限超时:超时后强制走完 OTel + exit,并 console.error
+ * 记「可能丢失未落库写」(至少留信号,呼应 N-02)。任一步抛错都不阻断后续步骤(尽力走到 exit)。
+ */
+export function createGracefulShutdown(deps: GracefulShutdownDeps): (signal: string) => Promise<void> {
+  const flushTimeoutMs = deps.flushTimeoutMs ?? 10_000;
+  const closeTimeoutMs = deps.closeTimeoutMs ?? 8_000;
+  let shuttingDown = false;
+  return async (signal: string) => {
+    // 幂等防重入:第二个信号(SIGINT 后 SIGTERM,或同信号重发)直接返回,绝不重复跑关闭序列。
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.warn(JSON.stringify({ event: "graceful_shutdown_start", signal }));
+
+    // ① 停止收新请求(有界:永挂的在途请求不该挡住 flush 步骤)。
+    try {
+      await withDeadline(deps.closeServer(), closeTimeoutMs, "server_close");
+    } catch (err) {
+      console.error(JSON.stringify({
+        event: "graceful_shutdown_server_close_failed",
+        error: err instanceof Error ? err.message : String(err)
+      }));
+    }
+
+    // ② 排空 persist 队列(数据优先于 OTel)。超时兜底 → 至少留信号,不永久挂起。
+    try {
+      await withDeadline(deps.flushPersistence(), flushTimeoutMs, "flush");
+    } catch (err) {
+      console.error(JSON.stringify({
+        event: "graceful_shutdown_flush_failed",
+        error: err instanceof Error ? err.message : String(err),
+        detail: "persist 队列未能在超时内排空,可能丢失未落库的写(已确认 200 但未落 surreal 权威库)。"
+      }));
+    }
+
+    // ③ 关 OTel(数据已 flush;shutdownTelemetry 内部已吞错,此处再兜一层保证到达 exit)。
+    try {
+      await deps.shutdownTelemetry();
+    } catch { /* 已在 shutdownTelemetry 内记账;绝不阻断 exit */ }
+
+    // ④ 退出。
+    deps.exit(0);
+  };
+}
+
 export async function startServer() {
   loadLocalEnvFile();
 
@@ -875,6 +956,8 @@ export async function startServer() {
         rawMaterial: RawMaterialRepository;
         audio: AudioRepository;
         knowledgeIndex: KnowledgeIndexRepository;
+        // N-10:优雅关闭用——先 flush 热态 persist 队列、再关共享嵌入式连接。
+        close: () => Promise<void>;
       }>;
     }>)(new URL("../../../packages/db/src/surreal/surreal-cold-repositories.ts", import.meta.url).pathname);
     const dataDir = join(dirname(productStateDbPath), "surreal");
@@ -882,6 +965,8 @@ export async function startServer() {
   };
 
   let repository: ProductStateRepository;
+  // N-10:surreal 档的「flush persist 队列 + 关共享连接」句柄(优雅关闭时调);memory 档为 undefined。
+  let storesClose: (() => Promise<void>) | undefined;
   // R7:档位收敛为 memory|surreal 两档。surreal 档注入 Surreal 冷层(与热态同连接);memory 档
   // 冷层 undefined → buildApiServer 走默认内存工厂。
   let surrealColdRepos: {
@@ -905,6 +990,7 @@ export async function startServer() {
     // R2a:热态 + 三冷层共用同一嵌入式连接(嵌入式 surrealkv 同进程独占锁,不能开第二连接)。
     const stores = await loadSurrealStores();
     repository = stores.productState;
+    storesClose = stores.close;   // N-10:优雅关闭时 flush persist 队列 + 关连接
     surrealColdRepos = {
       rawMaterialRepository: stores.rawMaterial,
       audioRepository: stores.audio,
@@ -934,6 +1020,30 @@ export async function startServer() {
   const port = Number(process.env.PORT ?? 3210);
   const host = process.env.HOST ?? "127.0.0.1";
   await server.listen({ host, port });
+
+  // N-10:优雅关闭钩子——SIGINT/SIGTERM 时先停收新请求、再排空 persist 队列(数据优先)、
+  // 再关 OTel、最后退出。R7 删同步 sqlite 后 persist 是唯一持久路径,裸退会丢已确认 200 的写;
+  // telemetry.ts 已不再自注册 SIGTERM(避免两个 handler 各自 exit 打架),OTel 关闭串进本序列。
+  // 仅 startServer(真实常驻进程)注册钩子;buildApiServer/测试路径不注册,故不泄漏信号 handler。
+  const flushPersistence = async () => {
+    if (storesClose) {
+      // surreal 档:stores.close() 先 flush 热态 persist 队列、再关共享嵌入式连接。
+      await storesClose();
+    } else {
+      // memory 档:flush 若存在则排空(基接口无 flush → no-op 也无妨),无连接可关 → 干净退出。
+      await (repository as { flush?: () => Promise<void> }).flush?.();
+    }
+  };
+  const gracefulShutdown = createGracefulShutdown({
+    closeServer: () => server.close(),
+    flushPersistence,
+    shutdownTelemetry,
+    exit: (code) => process.exit(code)
+  });
+  // process.once:同一信号只触发一次(自动摘除 handler);跨信号(SIGINT 后 SIGTERM)由
+  // createGracefulShutdown 内部的 shuttingDown 幂等守卫兜住,二者叠加=双保险。
+  process.once("SIGINT", () => void gracefulShutdown("SIGINT"));
+  process.once("SIGTERM", () => void gracefulShutdown("SIGTERM"));
 
   return server;
 }

@@ -67,6 +67,24 @@ const sdk = new NodeSDK({
 
 sdk.start();
 
-process.on("SIGTERM", () => {
-  sdk.shutdown().finally(() => process.exit(0));
-});
+/**
+ * N-10:优雅关闭协调——telemetry 不再自行注册 SIGTERM handler。
+ *
+ * 旧实现 `process.on("SIGTERM", () => sdk.shutdown().finally(() => process.exit(0)))` 有两处害:
+ *  ① 它不等 persist 队列排空就 exit——R7 删同步 sqlite 后异步 persist 是唯一持久路径,
+ *     重试期/队列积压/降级期(N-02)窗口会丢已确认 200 的写;
+ *  ② 若 server.ts 也注册一个关闭钩子,两个 handler 会各自 process.exit 打架(谁先退谁说了算,
+ *     数据 flush 可能根本没跑完)。
+ * 改为:导出 shutdownTelemetry(),由 startServer 的统一关闭序列在【数据 flush 之后】调用
+ * (数据落库优先 → OTel 其次 → 单一 exit)。错误吞掉:OTel 关不掉绝不该阻塞进程退出。
+ */
+export async function shutdownTelemetry(): Promise<void> {
+  try {
+    await sdk.shutdown();
+  } catch (err) {
+    console.error(JSON.stringify({
+      event: "otel_shutdown_failed",
+      error: err instanceof Error ? err.message : String(err)
+    }));
+  }
+}

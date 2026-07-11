@@ -54,7 +54,7 @@ import { addAnnotation, removeAnnotation } from "./domain/raw-material";
 import { deleteImportSource } from "./domain/material";
 import { executeSearchProvider } from "./capabilities/search";
 import { createIdleCapabilityTask, failCapabilityTask, startCapabilityTask } from "./capabilities/task";
-import { productApiClient, isNetworkError, ApiError, type PurgeReceipt, type ResetReceipt, type ReviewsResponse } from "./api/productApi";
+import { productApiClient, isNetworkError, ApiError, type PersistHealthLite, type PurgeReceipt, type ResetReceipt, type ReviewsResponse } from "./api/productApi";
 import type { ColdLayerMode, RealtimeVoiceSessionResponse, StateImportResult, SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigUpdateRequest, VoiceInfo } from "./api/productApi";
 // WebRTC omni client is incomplete (no callbacks/turn recording); the connect path is
 // downlined to WebSocket in startVoiceSession. Type kept for the connection union only.
@@ -181,6 +181,11 @@ export default function App() {
   const [session, setSession] = useState<InterviewSession | null>(null);
   const [pendingMode, setPendingMode] = useState<InterviewMode>("decision");
   const [notice, setNotice] = useState<UiNotice | null>(null);
+  // N-02:权威库(surreal)落库健康度——degraded 期间常驻顶栏警告(独立持久状态,区别于一次性 notice)。
+  // 由低频轮询 route-agnostic 的 GET /api/health 驱动(见下方 health 轮询 effect):后端仅在
+  // consecutiveFailures>0 时带 persist.degraded → 亮灯,健康/内存档/离线 → null 清零。轮询覆盖全部
+  // "200+异步落库"写路径(资产确认/记忆编辑等从不 PUT /api/state,却共享同一 persistQueue)。
+  const [persistHealth, setPersistHealth] = useState<PersistHealthLite | null>(null);
   const [interviewInput, setInterviewInput] = useState("");
   const [submittingTurn, setSubmittingTurn] = useState(false);
   const [startingInterview, setStartingInterview] = useState(false);
@@ -655,6 +660,38 @@ export default function App() {
     }, 300);
     return () => clearTimeout(timer);
   }, [apiPersistenceEnabled, productState, autosaveRetryNonce, syncConflict]);
+
+  // N-02:权威库落库降级 banner 的数据源——低频轮询 route-agnostic 的 GET /api/health。
+  // persist.degraded 是共享异步 persistQueue 的属性,与触发它的写路由无关;轮询(而非只在 PUT
+  // 响应上采样)覆盖全部"200+异步落库"写路径:只做资产确认/记忆编辑而从不 PUT /api/state 的用户,
+  // 撞降级时也能看到 banner。mount 立即探一次 + 每 30s 一次(低频,只读、auth 豁免、不触发写/联网);
+  // 卸载清定时器。health 拉取失败(后端离线)不翻转 banner——离线本身由同步/outbox 机制提示,此处
+  // 只反映 persist 降级,避免瞬时网络抖动误清/误亮。degraded 常驻、恢复即消失。
+  useEffect(() => {
+    let cancelled = false;
+    const pollHealth = () => {
+      productApiClient
+        .getHealth()
+        .then((health) => {
+          if (cancelled) return;
+          const persist = health.persist;
+          setPersistHealth(
+            persist && persist.degraded && persist.consecutiveFailures > 0
+              ? { consecutiveFailures: persist.consecutiveFailures, ...(persist.lastErrorAt ? { lastErrorAt: persist.lastErrorAt } : {}) }
+              : null
+          );
+        })
+        .catch(() => {
+          /* 后端不可达:不翻转 banner(离线信号由同步/outbox 机制负责),保留上一次已知状态。 */
+        });
+    };
+    pollHealth(); // mount 立即探一次,不必等首个 30s 周期
+    const healthTimer = setInterval(pollHealth, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(healthTimer);
+    };
+  }, []);
 
   // 打开即更新：首次进入外部调研视图时自动跑一次盯梢(每会话一次,静默,失败不打扰)。
   // 即时手动刷新走视图内的「自动盯梢」按钮;后台周期刷新走配置里的定时调度。
@@ -2543,6 +2580,20 @@ export default function App() {
                 采用服务器版本
               </button>
             </div>
+          </section>
+        )}
+        {/* N-02:权威库落库降级的持久顶栏警告——常驻于 degraded 期间(consecutiveFailures>0),
+            由 health 轮询 effect 驱动(GET /api/health 恢复报健康 → setPersistHealth(null))即消失。
+            独立持久状态,区别于下方一次性 notice(它是持续状态而非瞬时提示,非复用 buildNotice)。
+            role=alert + assertive 让读屏立即播报这条数据安全风险。 */}
+        {persistHealth && persistHealth.consecutiveFailures > 0 && (
+          <section className="notice danger" role="alert" aria-live="assertive" aria-atomic="true">
+            <strong>本地数据库写入异常，最近改动可能未保存，请检查后端日志。</strong>
+            <span>
+              服务端已连续 {persistHealth.consecutiveFailures} 次落库失败
+              {persistHealth.lastErrorAt ? `（最近一次 ${new Date(persistHealth.lastErrorAt).toLocaleString()}）` : ""}
+              。恢复后本提示会自动消失。
+            </span>
           </section>
         )}
         {notice && (

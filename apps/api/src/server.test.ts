@@ -1,8 +1,8 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildApiServer, isDirectCliExecution } from "./server";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildApiServer, isDirectCliExecution, createGracefulShutdown } from "./server";
 
 describe("Product API", () => {
   const tempDirs: string[] = [];
@@ -1269,5 +1269,86 @@ describe("Product API", () => {
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({ ok: true, service: "interview-product-api" });
     });
+  });
+});
+
+// N-10:优雅关闭序列——单测断言「close → flush → OTel → exit」顺序、数据 flush 优先于 OTel、
+// 幂等(重复信号只跑一次)、flush 超时兜底仍退出并留信号、任一步抛错不阻断后续。真发信号难在
+// 单测里做,故把序列抽成可注入依赖的 createGracefulShutdown,注入 fake exit(不杀测试进程)。
+describe("createGracefulShutdown (N-10 优雅关闭序列)", () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warnSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  it("顺序:closeServer → flushPersistence → shutdownTelemetry → exit(0)(数据 flush 先于 OTel)", async () => {
+    const calls: string[] = [];
+    const shutdown = createGracefulShutdown({
+      closeServer: async () => { calls.push("close"); },
+      flushPersistence: async () => { calls.push("flush"); },
+      shutdownTelemetry: async () => { calls.push("otel"); },
+      exit: (code) => { calls.push(`exit:${code}`); }
+    });
+    await shutdown("SIGTERM");
+    expect(calls).toEqual(["close", "flush", "otel", "exit:0"]);
+  });
+
+  it("幂等:重复信号只跑一次(close/flush/exit 各恰一次)", async () => {
+    let close = 0, flush = 0, exit = 0;
+    const shutdown = createGracefulShutdown({
+      closeServer: async () => { close += 1; },
+      flushPersistence: async () => { flush += 1; },
+      shutdownTelemetry: async () => {},
+      exit: () => { exit += 1; }
+    });
+    await shutdown("SIGINT");
+    await shutdown("SIGTERM");   // 第二个信号:被 shuttingDown 守卫挡住
+    expect(close).toBe(1);
+    expect(flush).toBe(1);
+    expect(exit).toBe(1);
+  });
+
+  it("flush 卡住 → 超时兜底仍走到 exit(不永久挂起),并记「可能丢失未落库写」(呼应 N-02)", async () => {
+    let exited = false;
+    const shutdown = createGracefulShutdown({
+      closeServer: async () => {},
+      flushPersistence: () => new Promise<void>(() => {}),   // 永不 resolve
+      shutdownTelemetry: async () => {},
+      exit: () => { exited = true; },
+      flushTimeoutMs: 20
+    });
+    await shutdown("SIGTERM");
+    expect(exited).toBe(true);
+    expect(errorSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes("graceful_shutdown_flush_failed"))).toBe(true);
+  });
+
+  it("closeServer 抛错不阻断后续步骤(仍 flush + exit)", async () => {
+    const calls: string[] = [];
+    const shutdown = createGracefulShutdown({
+      closeServer: async () => { throw new Error("close boom"); },
+      flushPersistence: async () => { calls.push("flush"); },
+      shutdownTelemetry: async () => {},
+      exit: () => { calls.push("exit"); }
+    });
+    await shutdown("SIGTERM");
+    expect(calls).toEqual(["flush", "exit"]);
+  });
+
+  it("flush 抛错(非超时)不阻断退出,仍关 OTel + exit", async () => {
+    const calls: string[] = [];
+    const shutdown = createGracefulShutdown({
+      closeServer: async () => { calls.push("close"); },
+      flushPersistence: async () => { throw new Error("flush boom"); },
+      shutdownTelemetry: async () => { calls.push("otel"); },
+      exit: () => { calls.push("exit"); }
+    });
+    await shutdown("SIGTERM");
+    expect(calls).toEqual(["close", "otel", "exit"]);
   });
 });

@@ -83,6 +83,10 @@ export async function registerStateRoutes(
     if (typeof incomingRevision !== "number" || incomingRevision !== stored.revision) {
       return reply.code(409).send({ error: "stale revision", current: stored });
     }
+    // N-02:PUT 响应保持纯净、不再装饰 persist 降级信号。落库降级(persist.degraded)是**共享异步
+    // persistQueue 的属性,与触发路由无关**——只在 PUT 上采样会漏掉那些只做资产确认/记忆编辑而从不
+    // PUT /api/state 的用户。改由前端低频轮询 route-agnostic 的 GET /api/health(health.ts 暴露
+    // persist.degraded)驱动持久顶栏 banner,覆盖全部"200+异步落库"写路径。
     return repository.replaceState(normalizeProductState(request.body));
   });
   server.post("/api/state/reset", async (request, reply) => {

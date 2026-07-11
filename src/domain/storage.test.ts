@@ -870,6 +870,89 @@ describe("product state storage", () => {
     });
   });
 
+  describe("N-01:数值/布尔 typed core 列坏值钳制(P0-3/R1-F2 家族的 int/option<int>/bool 变体)", () => {
+    // 背景:SurrealDB SCHEMAFULL `TYPE int/option<int>/bool` core 列被非法值 coerce 失败 → persist
+    // 确定性 wedge 权威库(mem:// 真库 spike 实证 '3'/3.7/null/NONE/'yes' 各自报错)。clampPersistableEnums
+    // 此前只兜 string/array<string>/枚举,漏了数值/bool。以下逐列覆盖六种坏形态(字符串数字/null/缺字段/
+    // 负数/小数/非法类型)+ 合法值不破坏。
+    const TS = "2026-06-27T00:00:00.000Z";
+
+    it("question.appearances(TYPE int)六种坏形态 → 合法非负整数;合法值不破坏", () => {
+      const state = createInitialProductState();
+      const norm = (appearances: unknown) =>
+        normalizeProductState({
+          ...state,
+          questions: [{ id: "qx", question: "q", whyImportant: "", status: "开放", appearances, relatedThemeIds: [], nextPrompt: "", important: false, updatedAt: TS }] as never
+        }).questions.find((q) => q.id === "qx")!.appearances;
+      expect(norm("3")).toBe(0);        // 字符串数字 → 0(fail-closed:不 parseFloat 救活)
+      expect(norm(null)).toBe(0);       // null → 0
+      expect(norm(undefined)).toBe(0);  // 缺字段 → 0(专治 UPSERT 覆盖 "found NONE")
+      expect(norm(-2)).toBe(0);         // 负数 → 0(出现计数语义无负)
+      expect(norm(3.7)).toBe(3);        // 小数 → Math.floor 3
+      expect(norm(true)).toBe(0);       // 非法类型(bool)→ 0
+      expect(norm(5)).toBe(5);          // 合法值原样保留
+    });
+
+    it("theme.appearances(TYPE int)六种坏形态 → 合法非负整数;合法值不破坏", () => {
+      const state = createInitialProductState();
+      const norm = (appearances: unknown) =>
+        normalizeProductState({
+          ...state,
+          themes: [{ id: "thx", name: "t", summary: "", maturity: "萌芽", representativeQuote: "", appearances, nextQuestion: "", updatedAt: TS }] as never
+        }).themes.find((t) => t.id === "thx")!.appearances;
+      expect(norm("5")).toBe(0);
+      expect(norm(null)).toBe(0);
+      expect(norm(undefined)).toBe(0);
+      expect(norm(-9)).toBe(0);
+      expect(norm(2.9)).toBe(2);
+      expect(norm(false)).toBe(0);
+      expect(norm(7)).toBe(7);
+    });
+
+    it("memory.importance(TYPE option<int>)坏形态 → 整数保留、其余 undefined(toRecord 跳过 → NONE 合法)", () => {
+      const state = createInitialProductState();
+      const norm = (importance: unknown) =>
+        normalizeProductState({
+          ...state,
+          memoryRecords: [{ id: "mx", text: "x", status: "confirmed", sourceType: "profile", sourceId: "s", evidenceQuote: "", sensitivity: "normal", importance, createdAt: TS, updatedAt: TS }] as never
+        }).memoryRecords.find((m) => m.id === "mx")!.importance;
+      expect(norm("5")).toBeUndefined();     // 字符串数字 → undefined(fail-closed 不落库)
+      expect(norm(null)).toBeUndefined();    // null → undefined(spike:null 会 wedge option<int>)
+      expect(norm(undefined)).toBeUndefined(); // 缺字段 → undefined(本就 NONE)
+      expect(norm(7.9)).toBe(7);             // 小数 → Math.floor 7
+      expect(norm(-3)).toBe(-3);             // 负整数保留(option<int> 无 ASSERT/下界,不 wedge;照任务口径不钳负)
+      expect(norm(true)).toBeUndefined();    // 非法类型 → undefined
+      expect(norm(8)).toBe(8);               // 合法值原样保留
+    });
+
+    it("point.important(TYPE bool)非严格 true 一律 false(=== true,镜像 config_version.active)", () => {
+      const state = createInitialProductState();
+      const norm = (important: unknown) =>
+        normalizeProductState({
+          ...state,
+          points: [{ id: "px", title: "t", content: "c", status: "临时想法", confidence: "待验证", evidence: [], relatedThemeIds: [], important, updatedAt: TS }] as never
+        }).points.find((p) => p.id === "px")!.important;
+      expect(norm("yes")).toBe(false);       // 字符串 → false(spike:'yes' 会 wedge bool 列)
+      expect(norm(1)).toBe(false);           // 数字 → false
+      expect(norm(null)).toBe(false);        // null → false
+      expect(norm(undefined)).toBe(false);   // 缺字段 → false
+      expect(norm("true")).toBe(false);      // 字符串 "true" → false(只认真 boolean)
+      expect(norm(true)).toBe(true);         // 合法 true 原样保留
+    });
+
+    it("backfillPointDefaults 与 important clamp 协调不打架:缺省/坏值最终恒合法 bool,evidence/relatedThemeIds 仍兜底", () => {
+      const state = createInitialProductState();
+      const p = normalizeProductState({
+        ...state,
+        // important 坏值 + evidence/relatedThemeIds 缺失:验证 backfill(补数组)与 clamp(定 bool)各司其职。
+        points: [{ id: "pz", title: "t", content: "c", status: "临时想法", confidence: "待验证", important: "yes", updatedAt: TS }] as never
+      }).points.find((x) => x.id === "pz")!;
+      expect(p.important).toBe(false);          // clamp(=== true)最终权威,坏值 → false
+      expect(p.evidence).toEqual([]);           // backfillPointDefaults 仍补齐(未被 clamp 影响)
+      expect(p.relatedThemeIds).toEqual([]);    // 同上
+    });
+  });
+
   describe("MemoryRecord migration (M3 data)", () => {
     it("normalizes legacy MemoryRecord without new fields, no crash", () => {
       const legacy = {

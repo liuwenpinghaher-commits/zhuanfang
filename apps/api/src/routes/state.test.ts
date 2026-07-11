@@ -1273,3 +1273,8 @@ describe("state routes", () => {
     });
   });
 });
+
+// N-02:落库降级信号(persist.degraded)不再装饰 PUT /api/state 响应——它是共享异步 persistQueue
+// 的属性、与触发路由无关,改由前端轮询 route-agnostic 的 GET /api/health 驱动持久 banner(覆盖全部
+// "200+异步落库"写路径)。该数据源的路由测试见 apps/api/src/routes/health.test.ts(persist.degraded
+// 三态);前端 saveState 不再透出 persistHealth 的客户端测试见 src/api/productApi.test.ts。
