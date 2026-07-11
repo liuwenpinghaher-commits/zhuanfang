@@ -137,7 +137,9 @@
 
 - 结论:**R4 = R4a**(已完成)。R4b/R4c 的撤销是"不建无消费者的机器"的正确工程取舍,非能力缺失。
 
-### R5 · 同步骨干:CHANGEFEED 增量同步(P9 收窄)
+### R5 · 同步骨干:CHANGEFEED 增量同步(P9 收窄)——**推迟(2026-07-11):3.0.2 硬阻断 + 单用户收益有限**
+
+> 判断:①R0-S1 实测 3.0.2 定义 CHANGEFEED 的表每次写打十几行 `dbg!` stderr 噪声(surrealdb-core `timestamp.rs:272` 遗留宏,无法抑制,除非升级/patch 依赖)——全表覆盖会淹没日志,是硬阻断;②managed live query 在 @surrealdb/node 坏(只 unmanaged 路可用);③本产品单用户,整包同步的冲突面只是同一用户的多标签/离线分叉,已被 C1/F-05 的持久 outbox + 三方合并(`mergeProductStates` 按 id 合并)实体级处理;④R3 已论证否决前端实体命令改造,整包 GET 的 28MB 是内存整状态模型(P1)的内生成本,非 R5 能单独解。综合:高成本(日志阻断 + 前端重做 + versionstamp BigInt 处理)/ 单用户下收益有限。**推迟**,由 SurrealDB 升级去掉 `dbg!` 噪声后解阻;R1-R4 与 R7 不依赖它。
 
 - 库级 `CHANGEFEED 3d`(或按表白名单)。
 - 新端点 `GET /api/state/changes?since=<versionstamp>`:封装 `SHOW CHANGES`,返回实体级变更 + 新游标。前端轮询该端点替代"整包 GET 对比"——离线 outbox 的三方合并已是实体感知(`mergeProductStates` 按 id 合并),天然消费实体级 delta,冲突面从全库缩到实体。
@@ -145,12 +147,21 @@
 - 整包 `PUT /api/state` 保留(兼容+导入),但前端主路径迁移到"命令端点 + changes 拉取"。
 - 前端体积/复杂度闸门:此阶段做完后 `offline-sync.ts` 的 localStorage 全量双份问题(已知限制 M-2)顺势解决——outbox 只存命令与实体 delta。
 
-### R6 · 运维收官与退役
+### R6 · 运维收官与退役——**大部分已死/并入 R7(2026-07-11)**
 
-- **versioned surrealkv 评估**(R0-S4):新库以 `surrealkv+versioned://` 建(注意:**只能建库时开启**),保留期对齐隐私政策;`surreal export --versions` 进备份 runbook;用户级 JSON 导出契约(StateExportBundle)不变。
-- **dual-write 退役路径**:R1/R2 soak 绿后,per-write 双写比对(P2)降级为"抽样比对 + 每日全量 digest 任务"(changefeed 驱动),最终 sqlite 影子仅在 `dual-surreal` 档保留、默认关闭镜像同步比对。
-- 档位收敛:`sqlite` 档进入维护模式(只修不增);文档与 README 更新;`.env.example` 增 `PRODUCT_STORE=dual-surreal` 推荐注释。
-- 遗留清理:`promoted_from`/`corrects` 两张 schema 预留死表——接线(P4 系公理消费)或移除,不再悬置。
+- **versioned surrealkv ❌ 死**(R0-S4 实测):`surrealkv+versioned://` 在 @surrealdb/node 3.0.3 连接永久挂死,时间旅行不可用。备份走既有 `surreal export` + 用户级 StateExportBundle(C2/F-06 已就位,契约不变)。升级 SDK 后可重跑 s4 脚本再评估。
+- **dual-write 退役 → 并入 R7**:用户决策"删 sqlite 档"直接删除 dual-write-repository 与 dual/dual-surreal 档,不再需要"降级为抽样比对"的中间态。
+- **档位收敛 → R7 执行**:见下。
+- 遗留清理 `promoted_from`/`corrects` 死表:并入 R7 或独立小清理。
+
+### R7 · 删除 sqlite 档,收敛为 surreal 唯一持久档(用户决策"删")
+
+> 前提已满足:surreal 档经 R2a(冷层)/R2b(治理真事务+M1 修复)/R2c(召回)已功能完备,可作唯一持久档。用户决策历史数据可清空(demo)。
+
+- **删除**:`PRODUCT_STORE` 从 5 值(memory/sqlite/surreal/dual/dual-surreal)收敛为 **2 值(memory/surreal)**;删除 dual-write-repository、dual-surreal-cutover 守卫、三个 sqlite 冷层实现(raw/audio/knowledge)、sqlite-product-state-repository;`resolveProductStoreSelection` 相应收窄;server.ts 装配简化(不再有 loadSurreal/dual 分支)。
+- **默认档**:`surreal` 成为默认持久档(memory 保留给测试/E2E 隔离,globalSetup 闸门不变);更新 `.env.example`/README;用户的 `.env.local`(现 `PRODUCT_STORE=dual-surreal`)需改为 `surreal`。
+- **保留 sqlite 依赖仅供**:无(node:sqlite 若无其他消费者可移除;先 grep 确认冷层外用途)。
+- **风险**:删除的是当前默认档 + 安全网,是大范围不可逆变更。以全量测试(把断言里所有 sqlite/dual 档用例改为 surreal 或删除)+ 真实启动冒烟护航;分步(先删 dual 家族守卫、再删 sqlite 冷层、再删 sqlite product-state、最后收窄档位枚举)。
 
 ## 5. 明确不做(YAGNI 边界)
 
