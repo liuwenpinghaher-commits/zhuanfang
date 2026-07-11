@@ -77,13 +77,22 @@ describe("R2b 治理路由 × 真 SurrealDB(mem://)", () => {
     expect(await coldCounts(stores)).toEqual({ raw: 0, audio: 0, knowledge: 0 });
   });
 
-  it("purge(interviews):HTTP → 200,真实三冷层被清空", async () => {
+  it("purge(interviews):HTTP → 200,专访冷层(raw/audio)清空 + N-12 知识索引重建存活来源", async () => {
     const { stores, server } = await makeRig();
     await seedCold(stores);
     const res = await server.inject({ method: "POST", url: "/api/state/purge", payload: { confirm: "PURGE_PERSONAL_DATA", scope: "interviews" } });
     expect(res.statusCode).toBe(200);
     expect(res.json().purgeReceipt.hotStateCommitted).toBe(true);
-    expect(await coldCounts(stores)).toEqual({ raw: 0, audio: 0, knowledge: 0 });
+    const after = await coldCounts(stores);
+    // 专访冷层(逐字稿/录音)确实清空。
+    expect(after.raw).toBe(0);
+    expect(after.audio).toBe(0);
+    // N-12:interviews wipe 清整张 knowledge_chunk 表后【重建存活来源的块】,不再留空。
+    // 播种的 note 源块 c1 被清(note 随 interviews 清空),而存活的非专访资产(theme/point/...)块被重建回来。
+    const chunks = await stores.knowledgeIndex.listAll();
+    expect(chunks.some((c) => c.id === "c1")).toBe(false);
+    expect(chunks.some((c) => c.sourceType === "transcript")).toBe(false);
+    expect(after.knowledge).toBeGreaterThan(0); // 重建让索引反映存活热态,而非旧行为的留空
   });
 
   it("import 完整包:HTTP → 200,真实冷层 raw/audio 被替换恢复", async () => {
