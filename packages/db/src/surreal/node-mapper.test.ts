@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { NODE_MAPPINGS, STREAM_MAPPINGS, toRecord, fromRecord, mappingFor } from "./node-mapper";
 import { META_KEYS, SINGLETON_TABLES, DATETIME_DEFAULT_COLS } from "./surreal-product-state-repository";
 import { createInitialProductState } from "../../../../src/domain/engine";
-import { NUMERIC_BOOL_CLAMPED_COLS, ARRAY_FLOAT_CLAMPED_COLS, EMBEDDING_DIMENSION } from "../../../../src/domain/storage";
+import { NUMERIC_BOOL_CLAMPED_COLS, ARRAY_FLOAT_CLAMPED_COLS, DATETIME_CLAMPED_COLS, EMBEDDING_DIMENSION } from "../../../../src/domain/storage";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -167,5 +167,66 @@ describe("node-mapper", () => {
     }
     expect(dims.size, "migration 里未找到任何 HNSW DIMENSION(索引定义漂移?)").toBeGreaterThan(0);
     expect([...dims], `HNSW DIMENSION 与 EMBEDDING_DIMENSION(${EMBEDDING_DIMENSION})不一致`).toEqual([EMBEDDING_DIMENSION]);
+  });
+
+  // N-01-datetime 防漂移守卫:每个 migration 里 clampable 表(NODE_MAPPINGS ∪ STREAM_MAPPINGS ∪ {turn})
+  // 上的 datetime(含 option<datetime>)typed 列都必须在 DATETIME_CLAMPED_COLS 有坏值兜底。datetime 列
+  // 与前两族的关键差异:它**不在** NODE_MAPPINGS.core(日期随 rest 落库),而是 persist 的 fillUpsertDefaults
+  // 把 rest 里同名 ISO **提升为 typed 列**(new Date(rest[col]))→ 存在且非法的日期串 coerce 成 Invalid Date
+  // → SDK InvalidDateError → 确定性 wedge 权威库(mem:// spike 实证:"not-a-date"/""/NaN 各 +1 失败)。
+  // 故此守卫的表过滤用 clampable 表集(**非** core.has),排除冷层(raw_material/audio/knowledge_chunk 由
+  // 冷层仓库直写、不走本管线)。与标量/embedding 守卫同构、双向:漏钳→missing 红;陈旧登记→stale 红。
+  // 类型正则只认 datetime / option<datetime>(与标量 numeric/bool、array<float>、array<string> 干净分区)。
+  function scanClampableDatetimeCols(): Set<string> {
+    const migDir = join(dirname(fileURLToPath(import.meta.url)), "migrations");
+    const fieldRe = /DEFINE FIELD (?:IF NOT EXISTS\s+)?(\w+)\s+ON\s+(\w+)\s+TYPE\s+([^\s;]+)/g;
+    const datetimeType = /^(?:option<)?datetime>?$/;
+    // clampable 表 = 走 clampPersistableEnums + fillUpsertDefaults 提升的表(节点/流水/turn)。
+    const clampable = new Set<string>([
+      ...NODE_MAPPINGS.map((m) => m.table),
+      ...STREAM_MAPPINGS.map((m) => m.table),
+      "turn", // turn 不在 NODE_MAPPINGS(persist 单列处理),但 timestamp 经 fillUpsertDefaults 提升 + clampPersistableEnums 处理
+    ]);
+    const scanned = new Set<string>();
+    for (const f of readdirSync(migDir).filter((x) => x.endsWith(".surql"))) {
+      const sql = readFileSync(join(migDir, f), "utf8");
+      for (const [, col, tbl, type] of sql.matchAll(fieldRe)) {
+        if (!datetimeType.test(type)) continue;   // 只 datetime / option<datetime>
+        if (!clampable.has(tbl)) continue;         // 冷层/edge/state_meta 不走本管线
+        scanned.add(`${tbl}.${col}`);
+      }
+    }
+    return scanned;
+  }
+  const registeredDatetime = () => new Set(
+    Object.entries(DATETIME_CLAMPED_COLS).flatMap(([tbl, cols]) => cols.map((c) => `${tbl}.${c}`))
+  );
+
+  it("DATETIME_CLAMPED_COLS 覆盖所有 migration 里 clampable 表的 datetime typed 列(防坏日期 wedge)", () => {
+    const scanned = scanClampableDatetimeCols();
+    const registered = registeredDatetime();
+    // schema→登记:任何 clampable 表的 datetime typed 列都必须被钳制,否则坏日期串确定性 wedge。
+    const missing = [...scanned].filter((k) => !registered.has(k)).sort();
+    expect(missing, `这些 datetime typed 列未在 DATETIME_CLAMPED_COLS 登记兜底,坏日期串会 wedge 权威库: ${missing.join(", ")}`).toEqual([]);
+    // 登记→schema:登记表不得有 migration 已不存在的陈旧项(防笔误/删列后遗留)。
+    const stale = [...registered].filter((k) => !scanned.has(k)).sort();
+    expect(stale, `DATETIME_CLAMPED_COLS 有 migration 中不存在的 datetime typed 列(陈旧登记): ${stale.join(", ")}`).toEqual([]);
+    // 兜底完整性 sanity:session.completedAt(option<datetime>)与流水 tsField 都在扫描集内(证明正则/表过滤真覆盖)。
+    expect(scanned.has("session.completedAt"), "option<datetime> 应被扫描到").toBe(true);
+    expect(scanned.has("workflow_run.startedAt"), "流水 tsField 应被扫描到").toBe(true);
+    expect(scanned.has("turn.timestamp"), "turn.timestamp 应被扫描到").toBe(true);
+    // 冷层 datetime 列不应进扫描集(它们不走本管线,由冷层仓库直写)。
+    expect(scanned.has("audio.createdAt"), "冷层表不该被本守卫要求").toBe(false);
+    expect(scanned.has("knowledge_chunk.createdAt"), "冷层表不该被本守卫要求").toBe(false);
+  });
+
+  // N-01-datetime 负控:证明上面的守卫**真能抓漏**——从真实登记表删掉一列(memory.createdAt),跑同一
+  // missing 检测算法,必须报出该缺口(否则守卫是空转、给不出保护)。这是"守卫真抓漏"的实证。
+  it("负控:DATETIME_CLAMPED_COLS 漏登记一列时守卫必红(证明守卫真抓漏)", () => {
+    const scanned = scanClampableDatetimeCols();
+    const registered = registeredDatetime();
+    registered.delete("memory.createdAt"); // 人为制造漏钳
+    const missing = [...scanned].filter((k) => !registered.has(k));
+    expect(missing, "守卫应报出被删的 memory.createdAt").toContain("memory.createdAt");
   });
 });

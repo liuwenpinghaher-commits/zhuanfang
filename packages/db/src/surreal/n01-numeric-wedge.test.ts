@@ -170,3 +170,97 @@ describe("N-01-embedding 真库 wedge 回归(mem:// createSurrealStores)", () =>
     expect(hits.some((h) => h.text === "语义可召回的合法向量"), "合法 1024 维 embedding 应被 HNSW 召回").toBe(true);
   });
 });
+
+// N-01-datetime 真库 wedge 回归(mem:// createSurrealStores):datetime typed 列(session.startedAt /
+// *.createdAt / *.updatedAt / turn.timestamp / 流水 tsField)的坏日期串经完整 persist 路径后落库成功、
+// 坏日期钳成固定哨兵 1970、option<datetime>(session.completedAt)坏值→NONE、合法日期原样保留、无辜实体不连坐。
+// 修复前(未加 isoDate/optIsoDate):坏日期串经持久层 fillUpsertDefaults 的 `new Date(bad)` = Invalid Date
+// → SDK `InvalidDateError: The provided date is invalid` → persist 确定性 wedge、基线冻结、连坐同事务全体
+// (mem:// spike 实证:"not-a-date" / "" / NaN 各 consecutiveFailures=1;null/缺字段落 new Date() 不 wedge;
+// option<datetime> 坏值留 rest 不 wedge——本回归覆盖会 wedge 的必填 datetime 主路径)。
+describe("N-01-datetime 真库 wedge 回归(mem:// createSurrealStores)", () => {
+  // SurrealDB 读回 datetime 是 SDK 包装,直接字符串比较有格式歧义;用 time::year() 读年份(哨兵→1970、
+  // 合法→原年份),既证"未 wedge 且是合法 datetime",又区分"哨兵 vs 真实时刻",避开字面量/格式坑。
+  const yearOf = async (repo: SurrealStores["productState"], q: string) =>
+    (await repo.query<[number[]]>(q))[0]?.[0];
+
+  it("坏日期(node datetime / turn.timestamp / 流水 tsField / option<datetime>)经完整 persist → 不 wedge、坏→哨兵1970、option→NONE、合法保留、无辜不连坐", async () => {
+    const stores = await makeStores();
+    const repo = stores.productState;
+    const base = repo.getState();
+    // 一个合法 card/guide 最小壳(rest FLEXIBLE,persist 不校验其形状);session 走 typed 列 startedAt/completedAt。
+    const shell = { card: {}, guide: {}, turns: [] };
+    repo.replaceState(withArrays(base, {
+      memoryRecords: [
+        // createdAt 坏串、updatedAt 空串(两种 wedge 形态);合法字段其余照旧。
+        { id: "m_bad", text: "坏日期记忆", status: "confirmed", sourceType: "profile", sourceId: "s", evidenceQuote: "", sensitivity: "normal", createdAt: "not-a-date", updatedAt: "" },
+        // 合法日期:必须原样保留(不被误伤成哨兵)。
+        { id: "m_ok",  text: "合法日期记忆", status: "confirmed", sourceType: "profile", sourceId: "s", evidenceQuote: "", sensitivity: "normal", createdAt: "2026-06-27T00:00:00.000Z", updatedAt: "2026-06-27T00:00:00.000Z" },
+      ] as never,
+      questions: [
+        { id: "qu_bad", question: "q", whyImportant: "", status: "开放", appearances: 1, relatedThemeIds: [], nextPrompt: "", important: false, updatedAt: "2026-13-99T99:99:99Z" }, // 越界坏 ISO
+      ] as never,
+      sessions: [
+        // startedAt 坏串(node datetime,会 wedge)+ completedAt 坏串(option<datetime>,不 wedge→NONE);
+        // 内嵌 turn.timestamp 坏串(经 fillUpsertDefaults 提升,会 wedge)。
+        { id: "se_bad", title: "坏日期会话", mode: "daily", strength: "standard", status: "completed", ...shell,
+          startedAt: "garbage", completedAt: "also-garbage",
+          turns: [{ id: "tn_bad", sessionId: "se_bad", role: "user", content: "hi", timestamp: "nope-not-a-date" }] },
+      ] as never,
+      auditEvents: [
+        { id: "ae_bad", type: "x", label: "l", detail: "d", severity: "info", entityType: "e", entityId: "id", createdAt: "not-a-date" }, // 流水 tsField 坏串
+      ] as never,
+      memoryCorrections: [
+        { id: "mc_innocent", text: "无辜修正应照常落库", createdAt: "2026-06-27T00:00:00.000Z" },
+      ] as never,
+    }));
+    await repo.flush();
+
+    // ① 无 wedge:整批落库成功,健康度清零。
+    expect(repo.getPersistHealth().consecutiveFailures, "坏日期经 clamp 后 persist 不再 wedge").toBe(0);
+
+    // ② 坏日期钳成固定哨兵 1970(直查 mem:// 权威库的 typed datetime 列)。
+    expect(await yearOf(repo, "SELECT VALUE time::year(createdAt) FROM memory:m_bad;"), "坏串→哨兵").toBe(1970);
+    expect(await yearOf(repo, "SELECT VALUE time::year(updatedAt) FROM memory:m_bad;"), "空串→哨兵").toBe(1970);
+    expect(await yearOf(repo, "SELECT VALUE time::year(updatedAt) FROM question:qu_bad;"), "越界坏 ISO→哨兵").toBe(1970);
+    expect(await yearOf(repo, "SELECT VALUE time::year(startedAt) FROM session:se_bad;"), "node datetime 坏串→哨兵").toBe(1970);
+    expect(await yearOf(repo, "SELECT VALUE time::year(timestamp) FROM turn:tn_bad;"), "turn.timestamp 坏串→哨兵").toBe(1970);
+    expect(await yearOf(repo, "SELECT VALUE time::year(createdAt) FROM audit_event;"), "流水 tsField 坏串→哨兵").toBe(1970);
+
+    // ③ option<datetime>(completedAt)坏值→undefined→NONE(不 wedge、不落哨兵)。
+    const one = async (q: string) => (await repo.query<[unknown[]]>(q))[0]?.[0];
+    expect(await one("SELECT VALUE completedAt IS NONE FROM session:se_bad;"), "option<datetime> 坏值→NONE").toBe(true);
+
+    // ④ 合法日期原样保留(未被误伤成哨兵)。
+    expect(await yearOf(repo, "SELECT VALUE time::year(createdAt) FROM memory:m_ok;"), "合法日期不误伤").toBe(2026);
+    expect(await yearOf(repo, "SELECT VALUE time::year(updatedAt) FROM memory:m_ok;"), "合法日期不误伤").toBe(2026);
+
+    // ⑤ 无辜实体照常落库(不被坏日期同批连坐 wedge)。
+    expect(await one("SELECT VALUE text FROM memory_correction:mc_innocent;")).toBe("无辜修正应照常落库");
+    expect(await yearOf(repo, "SELECT VALUE time::year(createdAt) FROM memory_correction:mc_innocent;"), "无辜合法日期保留").toBe(2026);
+  });
+
+  it("UPSERT 覆盖已存在记录时缺 createdAt 字段(缺字段变体):钳制补哨兵1970(确定性),不 wedge", async () => {
+    const stores = await makeStores();
+    const repo = stores.productState;
+    // ① 先落一个带合法 createdAt 的 memory。
+    repo.replaceState(withArrays(repo.getState(), {
+      memoryRecords: [{ id: "m_ovr", text: "v1", status: "confirmed", sourceType: "profile", sourceId: "s", evidenceQuote: "", sensitivity: "normal", createdAt: "2026-06-27T00:00:00.000Z", updatedAt: "2026-06-27T00:00:00.000Z" }] as never,
+    }));
+    await repo.flush();
+    expect(repo.getPersistHealth().consecutiveFailures).toBe(0);
+
+    // ② 覆盖同 id、改 text 触发 UPSERT,但**删掉 createdAt 字段**。normalize 的 isoDate(undefined)=哨兵
+    //    → 确定性补 1970(不落 fillUpsertDefaults 的非确定性 now),不 wedge。updatedAt 仍合法则保留。
+    repo.replaceState(withArrays(repo.getState(), {
+      memoryRecords: [{ id: "m_ovr", text: "v2-changed", status: "confirmed", sourceType: "profile", sourceId: "s", evidenceQuote: "", sensitivity: "normal", updatedAt: "2026-06-27T00:00:00.000Z" }] as never,
+    }));
+    await repo.flush();
+
+    expect(repo.getPersistHealth().consecutiveFailures, "覆盖时缺 createdAt 被 isoDate 补哨兵,不 wedge").toBe(0);
+    expect(await yearOf(repo, "SELECT VALUE time::year(createdAt) FROM memory:m_ovr;"), "缺字段→哨兵1970(确定性)").toBe(1970);
+    expect(await yearOf(repo, "SELECT VALUE time::year(updatedAt) FROM memory:m_ovr;"), "在场合法 updatedAt 保留").toBe(2026);
+    const one = async (q: string) => (await repo.query<[unknown[]]>(q))[0]?.[0];
+    expect(await one("SELECT VALUE text FROM memory:m_ovr;")).toBe("v2-changed");
+  });
+});

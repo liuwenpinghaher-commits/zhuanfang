@@ -1116,4 +1116,74 @@ describe("product state storage", () => {
       expect(c.suggestedUpdate).toBeUndefined();
     });
   });
+
+  // N-01-datetime:normalize 的 isoDate/optIsoDate 坏日期钳制(纯函数层)。持久层 fillUpsertDefaults 会把
+  // datetime typed 列从 rest 提升(new Date(rest[col])),坏日期串会在提升时 coerce 成 Invalid Date → wedge
+  // (真库回归见 packages/db/src/surreal/n01-numeric-wedge.test.ts)。这里在 normalize 出口断言钳制结果。
+  describe("N-01-datetime: 坏日期钳制 (normalizeProductState 纯函数层)", () => {
+    const SENTINEL = "1970-01-01T00:00:00.000Z"; // 与 storage.ts DATE_SENTINEL 同值(固定哨兵,非真实时刻)
+    const mem = (over: Record<string, unknown>) => ({
+      id: "m1", text: "t", status: "confirmed", sourceType: "profile", sourceId: "s",
+      evidenceQuote: "", sensitivity: "normal", createdAt: "2026-06-27T00:00:00.000Z",
+      updatedAt: "2026-06-27T00:00:00.000Z", ...over
+    });
+    const normMem = (over: Record<string, unknown>) =>
+      normalizeProductState({ ...createInitialProductState(), memoryRecords: [mem(over)] }).memoryRecords[0];
+
+    it("必填 datetime 坏串/空串/NaN/null/缺失 → 固定哨兵;合法日期原样保留", () => {
+      expect(normMem({ createdAt: "not-a-date" }).createdAt, "坏串→哨兵").toBe(SENTINEL);
+      expect(normMem({ createdAt: "" }).createdAt, "空串→哨兵").toBe(SENTINEL);
+      expect(normMem({ createdAt: "2026-13-99T99:99:99Z" }).createdAt, "越界坏 ISO→哨兵").toBe(SENTINEL);
+      expect(normMem({ createdAt: NaN }).createdAt, "NaN→哨兵").toBe(SENTINEL);
+      expect(normMem({ createdAt: 12345 }).createdAt, "数字(非串)→哨兵(fail-closed 不救活)").toBe(SENTINEL);
+      expect(normMem({ createdAt: null }).createdAt, "null→哨兵").toBe(SENTINEL);
+      // 缺字段(undefined)→ 哨兵(确定性,不注入 now;Option A)。
+      const { createdAt: _omit, ...noCreatedAt } = mem({});
+      const normalized = normalizeProductState({ ...createInitialProductState(), memoryRecords: [noCreatedAt] }).memoryRecords[0];
+      expect(normalized.createdAt, "缺字段→哨兵").toBe(SENTINEL);
+      // 合法 ISO 原样保留(不重写、不篡改真实时刻,绝不误伤)。
+      expect(normMem({ createdAt: "2026-06-27T12:34:56.789Z" }).createdAt, "合法日期不误伤").toBe("2026-06-27T12:34:56.789Z");
+    });
+
+    it("option<datetime>(session.completedAt)坏值→undefined、合法保留、缺失仍缺失(不注入哨兵)", () => {
+      const base = createInitialProductState();
+      const mkSession = (over: Record<string, unknown>) => ({
+        id: "se1", title: "t", mode: "daily", strength: "standard", status: "completed",
+        card: {}, guide: {}, turns: [], startedAt: "2026-06-27T00:00:00.000Z", ...over
+      });
+      const normSess = (over: Record<string, unknown>) =>
+        normalizeProductState({ ...base, sessions: [mkSession(over)] }).sessions[0];
+      // 坏 completedAt → undefined(toRecord 会跳过 → 列 NONE)。
+      expect(normSess({ completedAt: "not-a-date" }).completedAt, "坏值→undefined").toBeUndefined();
+      // 合法 completedAt → 保留。
+      expect(normSess({ completedAt: "2026-06-27T01:00:00.000Z" }).completedAt, "合法保留").toBe("2026-06-27T01:00:00.000Z");
+      // 缺失 completedAt(active 会话常态)→ 仍 undefined,绝不注入哨兵(可选列不该凭空多一个假时刻)。
+      expect(normSess({ status: "active" }).completedAt, "缺失仍缺失").toBeUndefined();
+      // 必填 startedAt 坏串 → 哨兵(与 option 变体区分)。
+      expect(normSess({ startedAt: "garbage" }).startedAt, "必填坏串→哨兵").toBe(SENTINEL);
+    });
+
+    it("turn.timestamp 与流水 tsField(workflowRuns.startedAt)坏串 → 哨兵", () => {
+      const base = createInitialProductState();
+      const norm = normalizeProductState({
+        ...base,
+        sessions: [{ id: "se1", title: "t", mode: "daily", strength: "standard", status: "active", card: {}, guide: {},
+          startedAt: "2026-06-27T00:00:00.000Z",
+          turns: [{ id: "tn1", sessionId: "se1", role: "user", content: "hi", timestamp: "bad-ts" }] }],
+        workflowRuns: [{ id: "wr1", workflow: "context_pack_build", status: "succeeded", providerId: "local-workflow-runtime",
+          entityType: "interview_session", entityId: "s", inputSummary: "", outputSummary: "", traceId: "t", startedAt: "nope" }],
+      });
+      expect(norm.sessions[0].turns[0].timestamp, "turn.timestamp 坏串→哨兵").toBe(SENTINEL);
+      expect(norm.workflowRuns[0].startedAt, "流水 tsField 坏串→哨兵").toBe(SENTINEL);
+    });
+
+    it("幂等:坏日期钳制后再 normalize 一次结果稳定(哨兵/合法都不漂移)", () => {
+      const once = normalizeProductState({ ...createInitialProductState(),
+        memoryRecords: [mem({ createdAt: "not-a-date", updatedAt: "2026-06-27T00:00:00.000Z" })] });
+      const twice = normalizeProductState(once);
+      expect(twice.memoryRecords[0].createdAt).toBe(SENTINEL);
+      expect(twice.memoryRecords[0].createdAt).toBe(once.memoryRecords[0].createdAt);
+      expect(twice.memoryRecords[0].updatedAt).toBe("2026-06-27T00:00:00.000Z");
+    });
+  });
 });

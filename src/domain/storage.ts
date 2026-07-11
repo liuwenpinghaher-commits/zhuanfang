@@ -259,6 +259,44 @@ function optFloatArray(value: unknown): number[] | undefined {
     : undefined;
 }
 
+/** N-01-datetime:坏日期规整的固定哨兵。**非真实时刻**——仅为让持久层 fillUpsertDefaults 的
+ *  `new Date(rest[col])` 得到合法 Date、让 normalize 保持纯函数(禁 Date.now)。刻意与
+ *  surreal-product-state-repository.ts 的 streamTs 对非串/空 tsField 的兜底哨兵**同值**:流水复合 id
+ *  `<table>:[<tsField ISO>, <id>]` 与 typed 列由此对齐,坏 tsField 下二者不漂移。 */
+const DATE_SENTINEL = "1970-01-01T00:00:00.000Z";
+
+/** 必填 datetime 列兜底(N-01-datetime,补 P0-3/R1-F2/N-01 家族的**日期变体**缺口):
+ *  session.startedAt / turn.timestamp / *.createdAt / *.updatedAt 等 `TYPE datetime DEFAULT time::now()`
+ *  typed 列——**不在** NODE_MAPPINGS.core(日期不入核心、随 rest 落库),但 persist 的 fillUpsertDefaults
+ *  会把 rest 里的同名 ISO **提升为 typed 列**(`new Date(rest[col])`)。mem:// 真库 spike 实证:**存在
+ *  且非法**的日期值确定性 wedge 权威库(基线冻结、连坐同批无辜实体):
+ *    · "not-a-date" / 空串 "" / NaN → fillUpsertDefaults 的 `new Date(bad)` = Invalid Date → SDK
+ *      `InvalidDateError: The provided date is invalid` → 整事务被拒(spike:consecutiveFailures=1)。
+ *    · 对照:null / 缺字段 落到 `new Date()`(now)分支不 wedge —— 但仍统一规整(见下)。
+ *  外部输入面真实存在:import/PUT 携旧备份、第三方编辑、LLM 漏/坏字段,日期串任意畸形。
+ *
+ *  fail-closed 从严:**仅**「是 string ∧ `Date.parse` 可解析(⟺ fillUpsertDefaults 的 new Date 不产出
+ *  Invalid Date,同一 [[DateParse]] 规范)」才原样保留(不重写、不篡改真实时刻);否则 → 固定哨兵。
+ *  - 为何**用固定哨兵而非 new Date()/Date.now()**:normalize 是**纯函数**(loadState/replaceState 都调、
+ *    测试对其输出有确定性预期),注入当前时刻会破坏确定性 + 把坏数据伪装成"刚发生";本仓库亦禁 Date.now。
+ *    哨兵是**非真实时刻的显式占位**(坏日期已规整为哨兵,不代表真实发生时间)。
+ *  - 为何**缺失/null 也→哨兵**(而非交给 fillUpsertDefaults 落 now):normalize 侧确定性化"缺字段",且
+ *    与持久层 streamTs 的 missing→哨兵口径一致(否则流水复合 id=哨兵而 typed 列=now,二者漂移)。
+ *  合法日期恒被保留、绝不误伤。⚠️ 与 DATETIME_CLAMPED_COLS + node-mapper.test 的 datetime 守卫同步。 */
+function isoDate(value: unknown): string {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value)) ? value : DATE_SENTINEL;
+}
+
+/** 可选 datetime 列兜底(option<datetime>,N-01-datetime):session.completedAt 是 `TYPE option<datetime>`
+ *  无 DEFAULT 的 typed 列——**不在** DATETIME_DEFAULT_COLS、persist 不提升(值留 rest FLEXIBLE),故坏值
+ *  **当前不 wedge**(spike 实证 completedAt="not-a-date" 时 consecutiveFailures=0、typed 列 NONE)。此处
+ *  仍钳制是**纵深防御 + 一致性**:合法日期串保留、非法→undefined(toRecord 跳过 → 列 NONE),口径对齐
+ *  optStr/optInt(可选列坏值一律 undefined 不落列);若将来该列被登记进 DATETIME_DEFAULT_COLS(改为提升),
+ *  undefined 已提前免疫 wedge。(冷层 audio.recordingStartedAt 同为 option<datetime> 但不走本管线,故不在此。) */
+function optIsoDate(value: unknown): string | undefined {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value)) ? value : undefined;
+}
+
 function clampPersistableEnums(state: ProductState): ProductState {
   return {
     ...state,
@@ -268,11 +306,17 @@ function clampPersistableEnums(state: ProductState): ProductState {
       mode: clampEnum(s.mode, SESSION_MODES, "daily"),
       strength: clampEnum(s.strength, SESSION_STRENGTHS, "standard"),
       status: clampEnum(s.status, SESSION_STATUSES, "active"),
+      // N-01-datetime:startedAt 是 `TYPE datetime` typed 列(坏串经 fillUpsertDefaults 提升即 wedge);
+      // completedAt 是 `TYPE option<datetime>`(坏值留 rest 不 wedge,纵深防御→undefined)。
+      startedAt: isoDate(s.startedAt),
+      completedAt: optIsoDate((s as { completedAt?: unknown }).completedAt),
       turns: (s.turns ?? []).map((t) => ({
         ...t,
         sessionId: str((t as { sessionId?: unknown }).sessionId) || s.id,
         content: str(t.content),
-        role: clampEnum(t.role, TURN_ROLES, "user")
+        role: clampEnum(t.role, TURN_ROLES, "user"),
+        // N-01-datetime:turn.timestamp 是 `TYPE datetime` typed 列(经 fillUpsertDefaults 提升,坏串 wedge)。
+        timestamp: isoDate((t as { timestamp?: unknown }).timestamp)
       }))
     })),
     notes: state.notes.map((n) => ({
@@ -283,7 +327,8 @@ function clampPersistableEnums(state: ProductState): ProductState {
       // R1-F2:DEFAULT '' 的 keyQuote + array<string> 的 saidTrack/learnedTrack 兜底。
       keyQuote: str(n.keyQuote),
       saidTrack: strArr(n.saidTrack),
-      learnedTrack: strArr(n.learnedTrack)
+      learnedTrack: strArr(n.learnedTrack),
+      createdAt: isoDate(n.createdAt) // N-01-datetime:note.createdAt datetime typed 列
     })),
     points: state.points.map((p) => ({
       ...p,
@@ -296,7 +341,8 @@ function clampPersistableEnums(state: ProductState): ProductState {
       // (镜像 config_version.active 口径):非严格 true 一律 false,fail-closed。此为最终权威钳制;
       // backfillPointDefaults 的 `?? false` 只在管线更早处补 undefined 缺省,方向一致、不冲突
       //(undefined→false→false;"yes"→"yes"→false),此处始终最后跑、恒产出合法 bool。
-      important: p.important === true
+      important: p.important === true,
+      updatedAt: isoDate((p as { updatedAt?: unknown }).updatedAt) // N-01-datetime:point.updatedAt datetime typed 列
     })),
     decisions: state.decisions.map((d) => ({
       ...d,
@@ -304,12 +350,14 @@ function clampPersistableEnums(state: ProductState): ProductState {
       choice: str(d.choice),
       decisionKind: clampEnum(d.decisionKind, DECISION_KINDS, "候选决策"),
       confirmationStatus: clampEnum(d.confirmationStatus, DECISION_CONFIRMATIONS, "待用户确认"),
-      status: clampEnum(d.status, DECISION_STATUSES, "待复盘")
+      status: clampEnum(d.status, DECISION_STATUSES, "待复盘"),
+      updatedAt: isoDate((d as { updatedAt?: unknown }).updatedAt) // N-01-datetime:decision.updatedAt datetime typed 列
     })),
-    debts: state.debts.map((d) => ({ ...d, concept: str(d.concept), context: str(d.context), status: clampEnum(d.status, DEBT_STATUSES, "待了解") })),
+    debts: state.debts.map((d) => ({ ...d, concept: str(d.concept), context: str(d.context), status: clampEnum(d.status, DEBT_STATUSES, "待了解"), updatedAt: isoDate((d as { updatedAt?: unknown }).updatedAt) })), // N-01-datetime:debt.updatedAt
     // N-01:appearances 是 `TYPE int` core 列,坏值/缺字段 wedge(spike 实证)→ intCount 恒产出合法 int。
-    questions: state.questions.map((q) => ({ ...q, question: str(q.question), whyImportant: str(q.whyImportant), status: clampEnum(q.status, QUESTION_STATUSES, "开放"), appearances: intCount(q.appearances) })),
-    themes: state.themes.map((t) => ({ ...t, name: str(t.name), summary: str(t.summary), representativeQuote: str(t.representativeQuote), maturity: clampEnum(t.maturity, THEME_MATURITIES, "萌芽"), appearances: intCount(t.appearances) })),
+    // N-01-datetime:question/theme.updatedAt 是 datetime typed 列(经 fillUpsertDefaults 提升,坏串 wedge)。
+    questions: state.questions.map((q) => ({ ...q, question: str(q.question), whyImportant: str(q.whyImportant), status: clampEnum(q.status, QUESTION_STATUSES, "开放"), appearances: intCount(q.appearances), updatedAt: isoDate((q as { updatedAt?: unknown }).updatedAt) })),
+    themes: state.themes.map((t) => ({ ...t, name: str(t.name), summary: str(t.summary), representativeQuote: str(t.representativeQuote), maturity: clampEnum(t.maturity, THEME_MATURITIES, "萌芽"), appearances: intCount(t.appearances), updatedAt: isoDate((t as { updatedAt?: unknown }).updatedAt) })),
     memoryRecords: state.memoryRecords.map((m) => ({
       ...m,
       text: str(m.text),
@@ -325,7 +373,10 @@ function clampPersistableEnums(state: ProductState): ProductState {
       // N-01-embedding:embedding 是 `TYPE option<array<float>>` + HNSW 1024 的 core 列,null/非数组/
       // 含非数值元素/非 1024 维一律 wedge(spike 实证)。optFloatArray:仅合法 1024 维有限数值原样留,
       // 否则→undefined(toRecord 跳过→NONE 合法)。合法向量恒 1024 维,不误伤。
-      embedding: optFloatArray(m.embedding)
+      embedding: optFloatArray(m.embedding),
+      // N-01-datetime:memory.createdAt/updatedAt 均 datetime typed 列(经 fillUpsertDefaults 提升,坏串 wedge)。
+      createdAt: isoDate(m.createdAt),
+      updatedAt: isoDate(m.updatedAt)
     })),
     memoryCandidates: state.memoryCandidates.map((c) => ({
       ...c,
@@ -333,7 +384,8 @@ function clampPersistableEnums(state: ProductState): ProductState {
       sourceType: (str(c.sourceType) || "profile") as typeof c.sourceType,
       sourceId: str(c.sourceId),
       status: clampEnum(c.status, CANDIDATE_STATUSES, "pending"),
-      sensitivity: clampEnum(c.sensitivity ?? "normal", SENSITIVITIES, "sensitive")
+      sensitivity: clampEnum(c.sensitivity ?? "normal", SENSITIVITIES, "sensitive"),
+      createdAt: isoDate(c.createdAt) // N-01-datetime:memory_candidate.createdAt datetime typed 列
     })),
     importSources: state.importSources.map((s) => ({
       ...s,
@@ -343,7 +395,8 @@ function clampPersistableEnums(state: ProductState): ProductState {
       status: "chunked" as const,
       // R1-F1:缺失→normal(与 material schema DEFAULT 'normal' 对齐)。此前独缺 ?? "normal" 致缺失被
       // 钳成 sensitive → 合法参考资料静默从 RAG/chat 剔除。畸形非法值仍 fail-closed 到 sensitive。
-      sensitivity: clampEnum(s.sensitivity ?? "normal", SENSITIVITIES, "sensitive")
+      sensitivity: clampEnum(s.sensitivity ?? "normal", SENSITIVITIES, "sensitive"),
+      createdAt: isoDate((s as { createdAt?: unknown }).createdAt) // N-01-datetime:material.createdAt datetime typed 列
     })),
     ragChunks: state.ragChunks.map((c) => ({
       // usage 坏值 fail-closed 到 memory-candidate(不会被注入访谈上下文)。
@@ -355,14 +408,16 @@ function clampPersistableEnums(state: ProductState): ProductState {
       usage: clampEnum(c.usage, RAG_USAGES, "memory-candidate"),
       // N-01-embedding:同 memory.embedding —— `TYPE option<array<float>>` + HNSW 1024 的 core 列,
       // 坏值/非 1024 维确定性 wedge(spike 实证)。optFloatArray fail-closed:非法→undefined→NONE。
-      embedding: optFloatArray(c.embedding)
+      embedding: optFloatArray(c.embedding),
+      createdAt: isoDate((c as { createdAt?: unknown }).createdAt) // N-01-datetime:rag_chunk.createdAt datetime typed 列
     })),
     searchBriefs: state.searchBriefs.map((b) => ({
       ...b,
       topic: str(b.topic),
       summary: str(b.summary),   // R1-F2:DEFAULT '' 兜底
       provider: (str(b.provider) || "local-demo") as SearchProviderId,
-      status: clampEnum(b.status, BRIEF_STATUSES, "needs-review")
+      status: clampEnum(b.status, BRIEF_STATUSES, "needs-review"),
+      createdAt: isoDate((b as { createdAt?: unknown }).createdAt) // N-01-datetime:search_brief.createdAt datetime typed 列
     })),
     // ── R1a:blob 实体真表化后的钳制(与 007_r1a_entities.surql 核心列/ASSERT 对齐)───────
     profileSuggestions: state.profileSuggestions.map((s) => ({
@@ -374,16 +429,19 @@ function clampPersistableEnums(state: ProductState): ProductState {
       currentValue: str(s.currentValue),
       suggestedValue: str(s.suggestedValue),
       sourceSessionId: str(s.sourceSessionId),
-      status: clampEnum(s.status, SUGGESTION_STATUSES, "pending")
+      status: clampEnum(s.status, SUGGESTION_STATUSES, "pending"),
+      createdAt: isoDate((s as { createdAt?: unknown }).createdAt) // N-01-datetime:profile_suggestion.createdAt
     })),
     interviewAnnotations: state.interviewAnnotations.map((a) => ({
       ...a,
       sessionId: str(a.sessionId),
       turnId: str(a.turnId),
-      text: str(a.text)
+      text: str(a.text),
+      createdAt: isoDate((a as { createdAt?: unknown }).createdAt) // N-01-datetime:interview_annotation.createdAt
     })),
-    chatSessions: state.chatSessions.map((c) => ({ ...c, title: str(c.title) })),
-    memoryCorrections: state.memoryCorrections.map((c) => ({ ...c, text: str(c.text) })),
+    // N-01-datetime:chat_session.createdAt/updatedAt 均 datetime typed 列。
+    chatSessions: state.chatSessions.map((c) => ({ ...c, title: str(c.title), createdAt: isoDate((c as { createdAt?: unknown }).createdAt), updatedAt: isoDate((c as { updatedAt?: unknown }).updatedAt) })),
+    memoryCorrections: state.memoryCorrections.map((c) => ({ ...c, text: str(c.text), createdAt: isoDate((c as { createdAt?: unknown }).createdAt) })), // N-01-datetime:memory_correction.createdAt
     podcastEpisodes: state.podcastEpisodes.map((p) => ({
       ...p,
       noteId: str(p.noteId),
@@ -395,7 +453,8 @@ function clampPersistableEnums(state: ProductState): ProductState {
       status: clampEnum(p.status, PODCAST_STATUSES, "draft"),
       scriptReviewStatus: clampEnum(p.scriptReviewStatus, SCRIPT_REVIEW_STATUSES, "待确认"),
       sourceType: optStr(p.sourceType) as typeof p.sourceType,
-      sourceId: optStr(p.sourceId)
+      sourceId: optStr(p.sourceId),
+      createdAt: isoDate((p as { createdAt?: unknown }).createdAt) // N-01-datetime:podcast_episode.createdAt
     })),
     corpusImports: state.corpusImports.map((c) => ({
       ...c,
@@ -403,12 +462,14 @@ function clampPersistableEnums(state: ProductState): ProductState {
       content: str(c.content),
       mediaType: clampEnum(c.mediaType, CORPUS_MEDIA_TYPES, "text"),
       sourceUrl: optStr(c.sourceUrl),
-      status: "analyzed" as const
+      status: "analyzed" as const,
+      createdAt: isoDate((c as { createdAt?: unknown }).createdAt) // N-01-datetime:corpus_import.createdAt
     })),
     corpusInsights: state.corpusInsights.map((c) => ({
       ...c,
       importId: str(c.importId),
-      title: str(c.title)
+      title: str(c.title),
+      createdAt: isoDate((c as { createdAt?: unknown }).createdAt) // N-01-datetime:corpus_insight.createdAt
     })),
     playbookPatches: state.playbookPatches.map((p) => ({
       ...p,
@@ -417,7 +478,8 @@ function clampPersistableEnums(state: ProductState): ProductState {
       sourceImportId: optStr(p.sourceImportId),
       // status 坏值绝不冒充 applied(会让未生效补丁参与策略路由);impact 坏值按最低档。
       status: clampEnum(p.status, PATCH_STATUSES, "proposed"),
-      impact: clampEnum(p.impact, PATCH_IMPACTS, "low")
+      impact: clampEnum(p.impact, PATCH_IMPACTS, "low"),
+      createdAt: isoDate((p as { createdAt?: unknown }).createdAt) // N-01-datetime:playbook_patch.createdAt
     })),
     configVersions: state.configVersions.map((v) => ({
       ...v,
@@ -425,7 +487,8 @@ function clampPersistableEnums(state: ProductState): ProductState {
       reason: str(v.reason),
       // changedBy 坏值绝不冒充 user(A3 精神:坏数据不得伪装用户行为);active 非严格 true 一律 false。
       changedBy: clampEnum(v.changedBy, CONFIG_CHANGED_BY, "system"),
-      active: v.active === true
+      active: v.active === true,
+      createdAt: isoDate((v as { createdAt?: unknown }).createdAt) // N-01-datetime:config_version.createdAt
     })),
     // ── R1b:流水实体真表化后的钳制(与 008_r1b_event_streams.surql 核心列/ASSERT 对齐)────
     auditEvents: state.auditEvents.map((e) => ({
@@ -437,7 +500,11 @@ function clampPersistableEnums(state: ProductState): ProductState {
       // severity 坏值钳到 warning:既不虚报 critical(假警报)也不降为 info(掩盖问题)。
       severity: clampEnum(e.severity, AUDIT_SEVERITIES, "warning"),
       entityType: str(e.entityType) as typeof e.entityType,
-      entityId: str(e.entityId)
+      entityId: str(e.entityId),
+      // N-01-datetime:createdAt 是流水 tsField —— 既是 datetime typed 列(经 fillUpsertDefaults 提升,坏串 wedge),
+      // 又是复合记录 id `<table>:[createdAt, id]` 的时间段(坏串会被 streamTs 原样当 id、破坏字典序=时间序);
+      // isoDate→哨兵同时治两者(哨兵与 streamTs 兜底同值,复合 id 与 typed 列对齐)。
+      createdAt: isoDate((e as { createdAt?: unknown }).createdAt)
     })),
     aiRunEvents: state.aiRunEvents.map((e) => ({
       ...e,
@@ -448,7 +515,8 @@ function clampPersistableEnums(state: ProductState): ProductState {
       entityType: str(e.entityType) as typeof e.entityType,
       entityId: str(e.entityId),
       inputSummary: str(e.inputSummary),
-      outputSummary: str(e.outputSummary)
+      outputSummary: str(e.outputSummary),
+      createdAt: isoDate((e as { createdAt?: unknown }).createdAt) // N-01-datetime:ai_run_event.createdAt(tsField,同上)
     })),
     workflowRuns: state.workflowRuns.map((r) => ({
       ...r,
@@ -460,7 +528,8 @@ function clampPersistableEnums(state: ProductState): ProductState {
       entityId: str(r.entityId),
       inputSummary: str(r.inputSummary),
       outputSummary: str(r.outputSummary),
-      traceId: str(r.traceId)
+      traceId: str(r.traceId),
+      startedAt: isoDate((r as { startedAt?: unknown }).startedAt) // N-01-datetime:workflow_run.startedAt(tsField,同上)
     })),
     operationalChecks: state.operationalChecks.map((c) => ({
       ...c,
@@ -468,7 +537,8 @@ function clampPersistableEnums(state: ProductState): ProductState {
       label: str(c.label),
       // status 坏值绝不冒充 passed。
       status: clampEnum(c.status, OP_CHECK_STATUSES, "failed"),
-      detail: str(c.detail)
+      detail: str(c.detail),
+      checkedAt: isoDate((c as { checkedAt?: unknown }).checkedAt) // N-01-datetime:operational_check.checkedAt(tsField,同上)
     }))
   };
 }
@@ -505,6 +575,46 @@ export const NUMERIC_BOOL_CLAMPED_COLS: Record<string, readonly string[]> = {
 export const ARRAY_FLOAT_CLAMPED_COLS: Record<string, readonly string[]> = {
   memory:    ["embedding"],   // option<array<float>> + HNSW 1024 · clampPersistableEnums optFloatArray
   rag_chunk: ["embedding"],   // option<array<float>> + HNSW 1024 · clampPersistableEnums optFloatArray
+};
+
+/** N-01-datetime 防漂移登记:**datetime**(含 option<datetime>)typed 列的坏值兜底覆盖集(节点表名 →
+ *  列名,与 NODE_MAPPINGS.table / STREAM_MAPPINGS.table / "turn" 对齐)。与前两族登记表分立的根本原因:
+ *  datetime 列**不在** NODE_MAPPINGS.core(日期不入核心、随 rest 落库),而是 persist 的 fillUpsertDefaults
+ *  从 rest **提升**为 typed 列(`new Date(rest[col])`)→ **存在且非法**的日期串在提升时 coerce 成
+ *  Invalid Date → SDK InvalidDateError → 确定性 wedge 权威库(mem:// spike 实证:"not-a-date"/""/NaN
+ *  各 consecutiveFailures=1)。故 node-mapper.test 的 datetime 守卫**不能**用 core.has(col) 过滤(datetime
+ *  不在 core),改用"clampable 表"集(NODE ∪ STREAM ∪ {turn};排除冷层 raw_material/audio/knowledge_chunk
+ *  ——它们由冷层仓库直写、不走 clampPersistableEnums/fillUpsertDefaults 提升管线)。
+ *  必填 datetime(DEFAULT time::now())→ isoDate(非法→固定哨兵);option<datetime>(session.completedAt)→
+ *  optIsoDate(非法→undefined→NONE)。守卫扫 clampable 表上 `TYPE (option<)?datetime` 列,断言逐一落在本集
+ *  内(双向:漏钳→missing 红、陈旧→stale 红)——镜像 NUMERIC_BOOL_CLAMPED_COLS / ARRAY_FLOAT_CLAMPED_COLS。 */
+export const DATETIME_CLAMPED_COLS: Record<string, readonly string[]> = {
+  session:              ["startedAt", "completedAt"], // startedAt datetime→isoDate · completedAt option<datetime>→optIsoDate
+  turn:                 ["timestamp"],                // turn 不在 NODE_MAPPINGS(persist 单列处理),但经 fillUpsertDefaults 提升
+  note:                 ["createdAt"],
+  point:                ["updatedAt"],
+  decision:             ["updatedAt"],
+  debt:                 ["updatedAt"],
+  question:             ["updatedAt"],
+  theme:                ["updatedAt"],
+  memory:               ["createdAt", "updatedAt"],
+  memory_candidate:     ["createdAt"],
+  material:             ["createdAt"],
+  rag_chunk:            ["createdAt"],
+  search_brief:         ["createdAt"],
+  profile_suggestion:   ["createdAt"],
+  interview_annotation: ["createdAt"],
+  chat_session:         ["createdAt", "updatedAt"],
+  memory_correction:    ["createdAt"],
+  podcast_episode:      ["createdAt"],
+  corpus_import:        ["createdAt"],
+  corpus_insight:       ["createdAt"],
+  playbook_patch:       ["createdAt"],
+  config_version:       ["createdAt"],
+  audit_event:          ["createdAt"],   // 流水 tsField(复合 id 时间段 + typed 列)
+  ai_run_event:         ["createdAt"],   // 流水 tsField
+  workflow_run:         ["startedAt"],   // 流水 tsField
+  operational_check:    ["checkedAt"],   // 流水 tsField
 };
 
 // ── 审计修复(P0-1 chunk 变体):悬空派生块修剪 ────────────────────────────
