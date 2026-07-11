@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { NODE_MAPPINGS, STREAM_MAPPINGS, toRecord, fromRecord, mappingFor } from "./node-mapper";
 import { META_KEYS, SINGLETON_TABLES, DATETIME_DEFAULT_COLS } from "./surreal-product-state-repository";
 import { createInitialProductState } from "../../../../src/domain/engine";
-import { NUMERIC_BOOL_CLAMPED_COLS } from "../../../../src/domain/storage";
+import { NUMERIC_BOOL_CLAMPED_COLS, ARRAY_FLOAT_CLAMPED_COLS, EMBEDDING_DIMENSION } from "../../../../src/domain/storage";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -117,5 +117,55 @@ describe("node-mapper", () => {
     // 登记→schema:登记表不得有 migration 已不存在的陈旧项(防笔误/删列后遗留)。
     const stale = [...registered].filter((k) => !scanned.has(k)).sort();
     expect(stale, `NUMERIC_BOOL_CLAMPED_COLS 有 migration 中不存在的标量数值/bool typed core 列(陈旧登记): ${stale.join(", ")}`).toEqual([]);
+  });
+
+  // N-01-embedding 防漂移守卫:每个 migration 里的 **array<float>**(及 option<array<float>>)typed **core** 列
+  // (进 NODE_MAPPINGS.core → 落 typed 列,且各带 HNSW 向量索引)都必须在 ARRAY_FLOAT_CLAMPED_COLS 里有兜底。
+  // 否则 API PUT/坏 import/第三方备份的坏 embedding(null / 非数组 / 含非数值元素 / 非 1024 维)会经 UPSERT
+  // coerce 失败或 HNSW "Incorrect vector dimension" → persist 确定性 wedge 权威库(mem:// spike 实证)。
+  // 与标量守卫同构、双向;类型正则只认 array<float>(与标量正则干净分区,option<array<float>> 归本守卫)。
+  it("ARRAY_FLOAT_CLAMPED_COLS 覆盖所有 migration 里的 array<float> typed core 列(防坏 embedding wedge)", () => {
+    const migDir = join(dirname(fileURLToPath(import.meta.url)), "migrations");
+    const fieldRe = /DEFINE FIELD (?:IF NOT EXISTS\s+)?(\w+)\s+ON\s+(\w+)\s+TYPE\s+([^\s;]+)/g;
+    // array<float>(含 option 包装);int/float/bool 标量 / array<string> / option<datetime> 不匹配。
+    const arrayFloat = /^(?:option<)?array<float>>?$/;
+    const coreByTable = new Map(NODE_MAPPINGS.map((m) => [m.table, new Set(m.core)] as const));
+
+    const scanned = new Set<string>();
+    for (const f of readdirSync(migDir).filter((x) => x.endsWith(".surql"))) {
+      const sql = readFileSync(join(migDir, f), "utf8");
+      for (const [, col, tbl, type] of sql.matchAll(fieldRe)) {
+        if (!arrayFloat.test(type)) continue;             // 只 array<float>
+        if (!coreByTable.has(tbl)) continue;              // 非节点表(冷层 knowledge_chunk/edge)不走 persist typed core
+        if (!coreByTable.get(tbl)!.has(col)) continue;    // 进 rest blob(非 core)不 wedge
+        scanned.add(`${tbl}.${col}`);
+      }
+    }
+    const registered = new Set(
+      Object.entries(ARRAY_FLOAT_CLAMPED_COLS).flatMap(([tbl, cols]) => cols.map((c) => `${tbl}.${c}`))
+    );
+
+    // schema→登记:任何 array<float> typed core 列都必须被钳制,否则坏 embedding 确定性 wedge。
+    const missing = [...scanned].filter((k) => !registered.has(k)).sort();
+    expect(missing, `这些 array<float> typed core 列未在 ARRAY_FLOAT_CLAMPED_COLS 登记兜底,坏 embedding 会 wedge 权威库: ${missing.join(", ")}`).toEqual([]);
+    // 登记→schema:登记表不得有 migration 已不存在的陈旧项。
+    const stale = [...registered].filter((k) => !scanned.has(k)).sort();
+    expect(stale, `ARRAY_FLOAT_CLAMPED_COLS 有 migration 中不存在的 array<float> typed core 列(陈旧登记): ${stale.join(", ")}`).toEqual([]);
+    // 兜底完整性:当前应恰好覆盖 memory.embedding 与 rag_chunk.embedding 两列(knowledge_chunk 是冷层不入 NODE_MAPPINGS)。
+    expect([...scanned].sort()).toEqual(["memory.embedding", "rag_chunk.embedding"]);
+  });
+
+  // N-01-embedding:optFloatArray 的维度常量 EMBEDDING_DIMENSION 必须与 migration 里所有 HNSW 向量索引的
+  // DIMENSION 一致。否则 clamp 放行的"合法维度"与 DB 实际约束维度不符 → 要么误伤合法向量、要么放坏值进去
+  // wedge。把"改了 schema 维度忘了同步域层常量"从静默 bug 变成响亮失败。
+  it("EMBEDDING_DIMENSION 与 migration 所有 HNSW DIMENSION 对齐(防维度钳制漂移)", () => {
+    const migDir = join(dirname(fileURLToPath(import.meta.url)), "migrations");
+    const dimRe = /HNSW\s+DIMENSION\s+(\d+)/g;
+    const dims = new Set<number>();
+    for (const f of readdirSync(migDir).filter((x) => x.endsWith(".surql"))) {
+      for (const [, d] of readFileSync(join(migDir, f), "utf8").matchAll(dimRe)) dims.add(Number(d));
+    }
+    expect(dims.size, "migration 里未找到任何 HNSW DIMENSION(索引定义漂移?)").toBeGreaterThan(0);
+    expect([...dims], `HNSW DIMENSION 与 EMBEDDING_DIMENSION(${EMBEDDING_DIMENSION})不一致`).toEqual([EMBEDDING_DIMENSION]);
   });
 });

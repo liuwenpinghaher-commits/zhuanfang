@@ -42,7 +42,9 @@ function seedPendingCandidate(overrides: Partial<MemoryCandidate> = {}): Product
 
 describe("memory-candidates approve (M3c embedding enrichment)", () => {
   it("with embeddingClient: the new MemoryRecord carries the embedding vector and an importance", async () => {
-    const fixedVector = [0.11, 0.22, 0.33, 0.44];
+    // N-01-embedding:mock 向量须是合法 1024 维——approve 经 replaceState → normalizeProductState →
+    // clampPersistableEnums(optFloatArray)持久化,非 1024 维会被钳成 NONE(防坏维度 wedge HNSW)。
+    const fixedVector = Array.from({ length: 1024 }, (_, i) => (i % 4 + 1) * 0.11);
     const embed = vi.fn(async (texts: string[]) => texts.map(() => fixedVector));
     const repo = createInMemoryProductStateRepository(seedPendingCandidate());
     const server = Fastify({ logger: false });

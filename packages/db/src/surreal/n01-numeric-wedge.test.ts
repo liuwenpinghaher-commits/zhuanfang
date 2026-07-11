@@ -103,3 +103,70 @@ describe("N-01 真库 wedge 回归(mem:// createSurrealStores)", () => {
     expect(await one("SELECT VALUE name FROM theme:th_ovr;")).toBe("n2-changed");
   });
 });
+
+// N-01-embedding 真库 wedge 回归(mem:// createSurrealStores):array<float> 向量列(memory.embedding /
+// rag_chunk.embedding,均 option<array<float>> + HNSW 1024)的坏值经完整 persist 路径后落库成功、
+// 坏 embedding 钳成 NONE、无辜实体不连坐;合法 1024 维 embedding 原样落库且 HNSW 原生召回可达。
+// 修复前:null → `Expected none|array<float> but found NULL`、非 1024 维 → `Incorrect vector dimension`
+// → persist 确定性 wedge、基线冻结、连坐同事务全体(mem:// spike 实证的错误家族)。
+describe("N-01-embedding 真库 wedge 回归(mem:// createSurrealStores)", () => {
+  it("坏 embedding(null/非数组/含非数值/非 1024 维)经完整 persist → 不 wedge、DB 为 NONE、无辜实体不连坐", async () => {
+    const stores = await makeStores();
+    const repo = stores.productState;
+    const base = repo.getState();
+    repo.replaceState(withArrays(base, {
+      memoryRecords: [
+        { id: "m_null", text: "a", status: "confirmed", sourceType: "profile", sourceId: "s", evidenceQuote: "", sensitivity: "normal", embedding: null,          createdAt: TS, updatedAt: TS },  // null
+        { id: "m_dim",  text: "b", status: "confirmed", sourceType: "profile", sourceId: "s", evidenceQuote: "", sensitivity: "normal", embedding: [1, 2, 3],       createdAt: TS, updatedAt: TS },  // 3 维 ≠ 1024
+        { id: "m_str",  text: "c", status: "confirmed", sourceType: "profile", sourceId: "s", evidenceQuote: "", sensitivity: "normal", embedding: ["x", "y"],      createdAt: TS, updatedAt: TS },  // 含非数值元素
+        { id: "m_arr",  text: "d", status: "confirmed", sourceType: "profile", sourceId: "s", evidenceQuote: "", sensitivity: "normal", embedding: "notarray",      createdAt: TS, updatedAt: TS },  // 非数组
+      ] as never,
+      importSources: [
+        { id: "src1", title: "t", content: "c", sourceType: "text", status: "chunked", sensitivity: "normal", createdAt: TS },  // 供 rag_chunk.sourceId 挂靠,避免被悬空修剪
+      ] as never,
+      ragChunks: [
+        { id: "rc_bad", sourceId: "src1", title: "", text: "t", keywords: [], usage: "interview-context", tokenEstimate: 1, embedding: [0.1, 0.2], createdAt: TS },  // 2 维
+      ] as never,
+      memoryCorrections: [
+        { id: "mc_innocent", text: "无辜修正应照常落库", createdAt: TS },
+      ] as never,
+    }));
+    await repo.flush();
+
+    // ① 无 wedge:整批落库成功,健康度清零。
+    expect(repo.getPersistHealth().consecutiveFailures, "坏 embedding 经 clamp 后 persist 不再 wedge").toBe(0);
+
+    // ② 坏 embedding 全钳成 NONE(直查 mem:// 权威库)。
+    const one = async (q: string) => (await repo.query<[unknown[]]>(q))[0]?.[0];
+    expect(await one("SELECT VALUE embedding IS NONE FROM memory:m_null;")).toBe(true);
+    expect(await one("SELECT VALUE embedding IS NONE FROM memory:m_dim;")).toBe(true);
+    expect(await one("SELECT VALUE embedding IS NONE FROM memory:m_str;")).toBe(true);
+    expect(await one("SELECT VALUE embedding IS NONE FROM memory:m_arr;")).toBe(true);
+    expect(await one("SELECT VALUE embedding IS NONE FROM rag_chunk:rc_bad;")).toBe(true);
+
+    // ③ 记录本身照常落库(只是没 embedding);无辜 memoryCorrection 不再被连坐 wedge。
+    expect(await one("SELECT VALUE text FROM memory:m_dim;")).toBe("b");
+    expect(await one("SELECT VALUE text FROM memory_correction:mc_innocent;")).toBe("无辜修正应照常落库");
+  });
+
+  it("合法 1024 维 embedding 经完整 persist → 原样落库且 HNSW 原生召回可达", async () => {
+    const stores = await makeStores();
+    const repo = stores.productState;
+    // 单位向量(第 0 维为 1),cosine 稳定、与 query 向量完全同向 → 必是最近邻。
+    const vec = Array.from({ length: 1024 }, (_, i) => (i === 0 ? 1 : 0));
+    repo.replaceState(withArrays(repo.getState(), {
+      memoryRecords: [
+        { id: "m_ok", text: "语义可召回的合法向量", status: "confirmed", sourceType: "profile", sourceId: "s", evidenceQuote: "", sensitivity: "normal", embedding: vec, createdAt: TS, updatedAt: TS },
+      ] as never,
+    }));
+    await repo.flush();
+
+    expect(repo.getPersistHealth().consecutiveFailures).toBe(0);
+    // 合法向量原样落库(未被 clamp 裁掉),长度 1024。
+    const [len] = await repo.query<[number[]]>("SELECT VALUE array::len(embedding) FROM memory:m_ok;");
+    expect(len?.[0]).toBe(1024);
+    // 原生召回(生产路径 recallMemoriesByVector,走 HNSW):合法向量被真正建进向量索引 → 可召回。
+    const hits = await repo.recallMemoriesByVector(vec, 5);
+    expect(hits.some((h) => h.text === "语义可召回的合法向量"), "合法 1024 维 embedding 应被 HNSW 召回").toBe(true);
+  });
+});

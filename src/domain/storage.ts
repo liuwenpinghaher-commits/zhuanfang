@@ -227,6 +227,38 @@ function optInt(value: unknown): number | undefined {
   return Number.isFinite(value) ? Math.floor(value as number) : undefined;
 }
 
+/** N-01-embedding:嵌入向量维度。与 003_index.surql 的 `HNSW DIMENSION 1024`(memory_emb/rag_emb)、
+ *  009_r2a_cold.surql 的 kc_emb 及 packages/db constants.ts EMBEDDING_DIMENSION 三处对齐;
+ *  node-mapper.test 的防漂移守卫从 migration 解析 HNSW DIMENSION 与本常量机检相等,任一漂移即变红。
+ *  刻意在域层本地声明(非 import packages/db):src/domain 是核心域,不反向依赖持久层适配器(node-mapper
+ *  等是 packages/db → src/domain 的单向依赖)。 */
+export const EMBEDDING_DIMENSION = 1024;
+
+/** 必填/可选 array<float> 列兜底(N-01-embedding,补 P0-3/R1-F2 家族的**向量数组变体**缺口):
+ *  memory.embedding / rag_chunk.embedding 是 `TYPE option<array<float>>` 且各带 HNSW DIMENSION 1024 索引
+ *  的 core 列(node-mapper NODE_MAPPINGS.core 含 "embedding" → 落 typed 列)。mem:// 真库 spike 实证两类
+ *  确定性 wedge 权威库(基线冻结、连坐同批无辜实体):
+ *    ① 类型 coerce 失败 —— null → `Expected none|array<float> but found NULL`;非数组("x")、含非数值
+ *       元素(['a','b'])→ 同族 coerce 报错;
+ *    ② 维度不符 —— 任意**非 1024 维**有限数值数组(3 维/512 维/空 [])→ HNSW 建索引时
+ *       `Incorrect vector dimension (N). Expected a vector of 1024 dimension.`。
+ *  外部输入面真实存在:import/PUT 携带旧版本/第三方编辑/被截断的备份,其 embedding 维度任意或元素畸形。
+ *
+ *  fail-closed 从严:**仅当**「是数组 ∧ 长度恰为 1024 ∧ 每个元素都是有限数值」才原样保留(map(Number)
+ *  归一为 number),否则整个 → undefined(toRecord 跳过 undefined → 列为 NONE,option 合法、不 wedge)。
+ *  - 为何**在此钳维度**(而非"仅查有限数值、把维度交给 HNSW 层"):spike 证明维度不符本身就是确定性
+ *    wedge,把它留给 HNSW = 留一个 N-01 同款楔死洞;坏备份的 512/3 维正是外部输入面的真实形态。
+ *  - 为何**不误伤合法向量**:合法 embedding 恒由本地/云端 embed client 产出、恒 1024 维有限数值
+ *    (EMBEDDING_DIMENSION),维度钳制对它是恒等操作,绝不裁掉真向量。
+ *  - 为何仍查 `every(Number.isFinite)`:spike 另证 NaN/Infinity 能过 SurrealDB 的 float coerce(正确维度下
+ *    不报错),但会污染 COSINE 索引语义(相似度成噪声);Number.isFinite 严格排除 NaN/Infinity/字符串数字,
+ *    与 intCount/optInt 同精神(不 coerce、不救活)。⚠️ 与 003_index.surql / ARRAY_FLOAT_CLAMPED_COLS 同步。 */
+function optFloatArray(value: unknown): number[] | undefined {
+  return Array.isArray(value) && value.length === EMBEDDING_DIMENSION && value.every((x) => Number.isFinite(x))
+    ? value.map(Number)
+    : undefined;
+}
+
 function clampPersistableEnums(state: ProductState): ProductState {
   return {
     ...state,
@@ -289,7 +321,11 @@ function clampPersistableEnums(state: ProductState): ProductState {
       sensitivity: clampEnum(m.sensitivity ?? "normal", SENSITIVITIES, "sensitive"),
       // N-01:importance 是 `TYPE option<int>` core 列,null/字符串/小数 wedge(spike 实证 null →
       // Expected none|int but found NULL)。optInt:整数保留、坏值→undefined(toRecord 跳过→NONE 合法)。
-      importance: optInt(m.importance)
+      importance: optInt(m.importance),
+      // N-01-embedding:embedding 是 `TYPE option<array<float>>` + HNSW 1024 的 core 列,null/非数组/
+      // 含非数值元素/非 1024 维一律 wedge(spike 实证)。optFloatArray:仅合法 1024 维有限数值原样留,
+      // 否则→undefined(toRecord 跳过→NONE 合法)。合法向量恒 1024 维,不误伤。
+      embedding: optFloatArray(m.embedding)
     })),
     memoryCandidates: state.memoryCandidates.map((c) => ({
       ...c,
@@ -316,7 +352,10 @@ function clampPersistableEnums(state: ProductState): ProductState {
       text: str(c.text),
       title: str(c.title),          // R1-F2:DEFAULT '' 兜底
       keywords: strArr(c.keywords), // R1-F2:array<string> 兜底
-      usage: clampEnum(c.usage, RAG_USAGES, "memory-candidate")
+      usage: clampEnum(c.usage, RAG_USAGES, "memory-candidate"),
+      // N-01-embedding:同 memory.embedding —— `TYPE option<array<float>>` + HNSW 1024 的 core 列,
+      // 坏值/非 1024 维确定性 wedge(spike 实证)。optFloatArray fail-closed:非法→undefined→NONE。
+      embedding: optFloatArray(c.embedding)
     })),
     searchBriefs: state.searchBriefs.map((b) => ({
       ...b,
@@ -443,7 +482,8 @@ function clampPersistableEnums(state: ProductState): ProductState {
  *  注:兜底实现分布两处——多数在 clampPersistableEnums(本文件),reviewScore 在 memoryReview.ts
  *  (clampReviewScore + Number.isFinite,域层既有先例);本表只登记"已被守卫",不区分实现位置。
  *  ⚠️ 刻意只含**标量**数值/bool:embedding(option<array<float>>)是同族 wedge 但形态是**数组**
- *  (元素级 coerce,非标量),不在本守卫标量口径内——守卫的类型正则也据此排除 array<float>。 */
+ *  (元素级 coerce + 维度约束,非标量),归 ARRAY_FLOAT_CLAMPED_COLS(下方,独立守卫)——本守卫的
+ *  类型正则据此排除 array<float>,两族按类型正则干净分区,互不重叠。 */
 export const NUMERIC_BOOL_CLAMPED_COLS: Record<string, readonly string[]> = {
   question:         ["appearances"],   // int         · clampPersistableEnums intCount
   theme:            ["appearances"],   // int         · clampPersistableEnums intCount
@@ -451,6 +491,20 @@ export const NUMERIC_BOOL_CLAMPED_COLS: Record<string, readonly string[]> = {
   point:            ["important"],     // bool        · clampPersistableEnums === true
   config_version:   ["active"],        // bool        · clampPersistableEnums === true(R1a 既有)
   memory_candidate: ["reviewScore"],   // float       · memoryReview.ts clampReviewScore(域层先例)
+};
+
+/** N-01-embedding 防漂移登记:**array<float>** typed **core** 列(向量嵌入)的坏值兜底覆盖集
+ *  (节点表名 → 列名,与 NODE_MAPPINGS.table 对齐)。与 NUMERIC_BOOL_CLAMPED_COLS 分立的原因:
+ *  array<float> 的 wedge 形态是**元素级 coerce + HNSW 维度约束**(非标量的整体 coerce),兜底靠
+ *  optFloatArray(长度==1024 ∧ 全有限数值,否则→NONE),类型正则也另立一支。node-mapper.test 的
+ *  array<float> 防漂移守卫扫 migrations 里 `TYPE (option<)?array<float>` 的 NODE_MAPPINGS core 列,
+ *  断言逐一落在本集内(双向:漏钳→missing 红;登记表有 schema 不存在的陈旧项→stale 红)——未来新增
+ *  array<float> core 列忘了钳制会变红(镜像 NUMERIC_BOOL_CLAMPED_COLS / DATETIME_DEFAULT_COLS 守卫)。
+ *  注:knowledge_chunk.embedding(009,同 option<array<float>>+HNSW)是冷层直写、不在 NODE_MAPPINGS、
+ *  不走 clampPersistableEnums,故不登记于此;其 embedding 恒由 embed client 产出、无外部输入面(详见报告)。 */
+export const ARRAY_FLOAT_CLAMPED_COLS: Record<string, readonly string[]> = {
+  memory:    ["embedding"],   // option<array<float>> + HNSW 1024 · clampPersistableEnums optFloatArray
+  rag_chunk: ["embedding"],   // option<array<float>> + HNSW 1024 · clampPersistableEnums optFloatArray
 };
 
 // ── 审计修复(P0-1 chunk 变体):悬空派生块修剪 ────────────────────────────

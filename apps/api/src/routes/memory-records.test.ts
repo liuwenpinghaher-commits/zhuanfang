@@ -28,7 +28,9 @@ const client = (embed: BailianEmbeddingClient["embed"], providerId?: string): Ba
 
 describe("memory-records PATCH (P2-12 重嵌 + 回归审查 R6-5/R6-6)", () => {
   it("编辑文本 → 重算向量(带 provider 戳),返回权威态(revision 已 bump)", async () => {
-    const newVec = [0.1, 0.2, 0.3];
+    // N-01-embedding:mock 向量须是合法 1024 维——PATCH 经 replaceState → normalizeProductState →
+    // clampPersistableEnums(optFloatArray)持久化,非 1024 维会被钳成 NONE(防坏维度 wedge HNSW)。
+    const newVec = Array.from({ length: 1024 }, (_, i) => (i % 5) * 0.1);
     const embed = vi.fn(async (texts: string[]) => texts.map(() => newVec));
     const repo = createInMemoryProductStateRepository(seed([record({ id: "m1", text: "旧文本", embedding: [9, 9], embeddingProvider: "old" })]));
     const rev0 = repo.getState().revision ?? 0;

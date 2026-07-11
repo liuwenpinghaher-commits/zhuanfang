@@ -953,6 +953,62 @@ describe("product state storage", () => {
     });
   });
 
+  describe("N-01-embedding:array<float> 向量列坏值/维度钳制(memory.embedding / rag_chunk.embedding)", () => {
+    // 背景:embedding 是 `TYPE option<array<float>>` + HNSW DIMENSION 1024 的 core 列。mem:// 真库 spike 实证
+    // null/非数组/含非数值元素 → 类型 coerce 失败 wedge;任意非 1024 维有限数组 → HNSW "Incorrect vector
+    // dimension" wedge。optFloatArray fail-closed:仅「1024 维 ∧ 全有限数值」保留,否则 → undefined(NONE)。
+    const TS = "2026-06-27T00:00:00.000Z";
+    const valid1024 = Array.from({ length: 1024 }, (_, i) => (i % 7) * 0.001);
+
+    const normMemEmb = (embedding: unknown) =>
+      normalizeProductState({
+        ...createInitialProductState(),
+        memoryRecords: [{ id: "mx", text: "x", status: "confirmed", sourceType: "profile", sourceId: "s", evidenceQuote: "", sensitivity: "normal", createdAt: TS, updatedAt: TS, embedding }] as never
+      }).memoryRecords.find((m) => m.id === "mx")!.embedding;
+
+    const normRagEmb = (embedding: unknown) => {
+      const state = createInitialProductState();
+      const norm = normalizeProductState({
+        ...state,
+        // rag_chunk 的 sourceId 须指向存在的来源,否则 pruneDanglingContainmentRefs 会先把它裁掉(测不到 embedding)。
+        importSources: [...state.importSources, { id: "src-x", title: "t", content: "c", sourceType: "text", status: "chunked", sensitivity: "normal", createdAt: TS }] as never,
+        ragChunks: [{ id: "rx", sourceId: "src-x", title: "", text: "t", keywords: [], usage: "interview-context", tokenEstimate: 1, createdAt: TS, embedding }] as never
+      });
+      return norm.ragChunks.find((c) => c.id === "rx")?.embedding;
+    };
+
+    it("memory.embedding 坏形态 → undefined(NONE);合法 1024 维原样保留", () => {
+      expect(normMemEmb(null)).toBeUndefined();                 // null(spike:Expected none|array<float> but found NULL)
+      expect(normMemEmb("notarray")).toBeUndefined();           // 非数组
+      expect(normMemEmb(["a", "b"])).toBeUndefined();           // 含非数值元素(coerce 失败)
+      expect(normMemEmb([0.1, "0.2", 0.3])).toBeUndefined();    // 含字符串数字(不 coerce 救活)
+      expect(normMemEmb([0.1, NaN, 0.3])).toBeUndefined();      // 含 NaN(Number.isFinite 排除)
+      expect(normMemEmb([0.1, Infinity])).toBeUndefined();      // 含 Infinity
+      expect(normMemEmb([0.1, 0.2, 0.3])).toBeUndefined();      // 3 维 ≠ 1024(spike:Incorrect vector dimension)
+      expect(normMemEmb(Array.from({ length: 512 }, () => 0.01))).toBeUndefined(); // 512 维
+      expect(normMemEmb([])).toBeUndefined();                   // 空数组(0 维)
+      expect(normMemEmb(undefined)).toBeUndefined();            // 缺省(本就 NONE)
+      const kept = normMemEmb(valid1024);                       // 合法 1024 维
+      expect(kept).toEqual(valid1024);
+      expect(kept).toHaveLength(1024);
+    });
+
+    it("rag_chunk.embedding 坏形态 → undefined(NONE);合法 1024 维原样保留", () => {
+      expect(normRagEmb(null)).toBeUndefined();
+      expect(normRagEmb("notarray")).toBeUndefined();
+      expect(normRagEmb(["a", "b"])).toBeUndefined();
+      expect(normRagEmb([1, 2, 3])).toBeUndefined();            // 3 维
+      expect(normRagEmb([0.1, NaN])).toBeUndefined();           // NaN + 错维度
+      expect(normRagEmb(valid1024)).toEqual(valid1024);         // 合法保留
+    });
+
+    it("1024 维但含一个非有限元素 → 整个 undefined(维度对但元素级 fail-closed)", () => {
+      const almost = Array.from({ length: 1024 }, () => 0.01);
+      almost[500] = NaN;                                        // 维度正确、单元素 NaN
+      expect(normMemEmb(almost)).toBeUndefined();               // 仍 fail-closed(NaN 污染 COSINE 语义)
+    });
+  });
+
   describe("MemoryRecord migration (M3 data)", () => {
     it("normalizes legacy MemoryRecord without new fields, no crash", () => {
       const legacy = {
@@ -979,6 +1035,10 @@ describe("product state storage", () => {
 
     it("MemoryRecord with embedding and importance is preserved after normalize (round-trip)", () => {
       const state = createInitialProductState();
+      // N-01-embedding:embedding 必须是合法 1024 维(EMBEDDING_DIMENSION)才被 optFloatArray 原样保留——
+      // 非 1024 维会确定性 wedge HNSW,故 clamp fail-closed 裁成 undefined。此前该 fixture 用 3 维
+      // [0.1,0.2,0.3] 断言保留,但该值真落库会炸 HNSW;改用合法 1024 维,保留"合法向量往返无损"的原意。
+      const validEmbedding = Array.from({ length: 1024 }, (_, i) => (i % 10) * 0.01);
       const norm = normalizeProductState({
         ...state,
         memoryRecords: [
@@ -991,14 +1051,14 @@ describe("product state storage", () => {
             evidenceQuote: "quote",
             createdAt: "2026-01-01T00:00:00Z",
             updatedAt: "2026-01-01T00:00:00Z",
-            embedding: [0.1, 0.2, 0.3],
+            embedding: validEmbedding,
             importance: 8,
             lastAccessedAt: "2026-06-01T00:00:00Z"
           }
         ]
       });
       const r = norm.memoryRecords[0];
-      expect(r.embedding).toEqual([0.1, 0.2, 0.3]);
+      expect(r.embedding).toEqual(validEmbedding);   // 合法 1024 维原样保留
       expect(r.importance).toBe(8);
       expect(r.lastAccessedAt).toBe("2026-06-01T00:00:00Z");
       expect(r.text).toBe("y");
