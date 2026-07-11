@@ -127,13 +127,15 @@
 - 度量闸门:压测脚本对比改造前后热点路由的并发吞吐与 p95(目标:热点路由并发不再互相排队)。
 - **风险**:CAS 重试与整包通道并发 → repo 层 revision 判定串行(同步函数),只会 409/重试,不会静默交叠;重试上限内失败 → 409 如实返回。
 
-### R4 · 读路径下沉与物化(召回与统计)
+### R4 · 读路径下沉与物化(召回与统计)——**已执行:R4a 完成;R4b/R4c 经架构核证判为 YAGNI 撤销(2026-07-11)**
 
-- **COUNT 索引**:`userEntityCount`(cutover 守卫)、隐私报告实体清点、`/api/health` 实体规模——全部改 `SELECT count() FROM ... GROUP ALL` 走 COUNT 索引,零全表扫。
-- **物化视图**:`DEFINE TABLE theme_stats AS SELECT count() AS assets, theme FROM belongs_to_theme GROUP BY theme`(自动增量、`theme_stats:[<theme>]` 直取);同法做会话统计、调试面板指标。
-- **中文检索升级**(按 R0-S5 结论):`zh` analyzer 从 `ngram(2,2)` 调 `ngram(1,3)` 或加 `mapper` 领域词典(人名/术语);REBUILD INDEX 重建。
-- **精排候选放大**:prefetchRecall 的 topN*4 候选集依赖域层 cosine 精排——把三因子(relevance/recency/importance)中 recency/importance 两因子并入 SurrealQL 投影字段,域层只做最终加权,减少整包字段搬运。
-- 明确**不做**:把三因子精排整体塞进 SurrealQL(表达力换不来收益,域层纯函数可测性更好)。
+- **R4a 中文检索升级 ✅ 已完成(提交 4c25ad60)**:`zh` analyzer `ngram(2,2)`→`ngram(1,3)`(DEFINE ANALYZER OVERWRITE + REBUILD memory_ft/rag_ft/kc_ft);单字/短人名召回 0→~99%。真实体量复核揭示 1-gram 灌 BM25 使多字查询候选膨胀 10-14x + 延迟悬崖,新增 `selectBm25QueryTokens` 择优(含多字则丢单字 gram、纯单字才留)+ cap 32,三路(memory/rag/knowledge)统一口径,多字精度回到 (2,2) 水平、延迟降 5-23x。
+
+- **R4b COUNT 索引 + 物化视图 ❌ 撤销(YAGNI,架构核证)**:方案原设想给隐私报告/`/api/health`/`userEntityCount`/theme 统计建 DB 侧 `count()`/`GROUP BY` 聚合。但核证发现:本架构是「内存工作副本即真相源 + getState 全量克隆」,**全部计数/统计都在 JS 里对已加载的 ProductState 数组完成**(`buildPrivacyReport` 纯域函数 `state.<array>.length` 求和;theme 统计 `for theme of state.themes`;`/api/health` 探的是 persist 队列 consecutiveFailures 非实体计数;`userEntityCount` 也在内存 state 上求和且随 R7 删)。全仓**零** DB 侧 `count()`/`GROUP BY`/`math::sum` 查询,故 DB 侧 COUNT 索引/物化视图**没有任何消费者**——建了即死代码。原设计是从通用 SurrealDB 最佳实践出发、未计入本项目的内存副本架构。撤销。
+
+- **R4c 精排投影下沉 ❌ 撤销(收益≈0)**:召回已 `SELECT *` 取回候选整行、域层三因子精排在内存对返回行计算;把 recency/importance 挪进 SurrealQL 投影省不了字段搬运(行已取回),反而降低域层纯函数可测性。与方案 §5-4「不把精排搬进 SurrealQL」同向,撤销。
+
+- 结论:**R4 = R4a**(已完成)。R4b/R4c 的撤销是"不建无消费者的机器"的正确工程取舍,非能力缺失。
 
 ### R5 · 同步骨干:CHANGEFEED 增量同步(P9 收窄)
 
