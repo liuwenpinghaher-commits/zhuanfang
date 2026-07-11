@@ -518,3 +518,71 @@ describe("④根修:悬空溯源不再拒整事务(reset→重引入形状,E2E �
     expect(turns.map((t: { id: string }) => t.id)).toContain("tu_1");  // 溯源照常(P2c H1 契约不回归)
   });
 });
+
+// perf/审计(#2):turn 存在核对由 `SELECT VALUE id FROM turn WHERE id IN $ids`(扫最大 turn 表)
+// 改为 record-direct `SELECT VALUE id FROM $ids`。FROM $ids 对不存在记录返回 null → 必须 null 过滤,
+// 使「存在的 turn id 集合」与旧版逐一相同。下测构造【实存降冷 turn】+【从不存在 ghost turn】混合于
+// 同一批新增溯源,断言实存边保留、ghost 边丢弃、persist 零失败——若 FROM $ids 对不存在返回 id 本身
+// (而非 null)则 ghost 边会被误留 → RELATE ENFORCED 拒 → consecutiveFailures>0,本测即红。
+describe("perf/审计:#2 turn 存在核对记录直取(SELECT VALUE id FROM $ids + null 过滤)", () => {
+  it("同批新增溯源含【实存降冷 turn】+【ghost turn】混合:实存边保留、ghost 边丢弃、persist 零失败", async () => {
+    const repo = await makeMem();
+    // 步骤1:先落库 session se_1(含 turn tu_1),point 此刻不锚定 tu_1(无 derived_from)。
+    const s1 = linkedState();
+    repo.replaceState({ ...s1, points: s1.points.map((p) => ({ ...p, evidenceAnchors: [] })) });
+    await repo.flush();
+    const [t0] = await repo.query<[Array<{ id: unknown }>]>("SELECT id FROM turn;");
+    expect((t0 ?? []).length).toBe(1); // 前提:tu_1 实存于 DB
+
+    // 步骤2:同一笔 persist 新增两条 derived_from——
+    //   pt_1→tu_1:turns 已降冷清空 → tu_1 不在 nextTurnIds → 走 DB 存在核对(实存);
+    //   pt_2→tu_ghost:其 session se_ghost 从未落库 → DB 不存在(FROM $ids 返回 null)。
+    const s2 = linkedState();
+    repo.replaceState({
+      ...s2,
+      sessions: s2.sessions.map((x) => ({ ...x, turns: [] })),  // 降冷:tu_1 移出 nextTurnIds,逼出 DB 核对
+      points: [
+        { ...s2.points[0], id: "pt_1", evidenceAnchors: [{ sessionId: "se_1", turnId: "tu_1" }] },
+        { ...s2.points[0], id: "pt_2", relatedThemeIds: [], evidenceAnchors: [{ sessionId: "se_ghost", turnId: "tu_ghost" }] },
+      ],
+    });
+    await repo.flush();
+
+    expect(repo.getPersistHealth().consecutiveFailures).toBe(0); // ghost 边丢弃 → 不触 RELATE ENFORCED 失败
+    const [df] = await repo.query<[Array<{ it: string; ii: string; ot: string; oi: string }>]>(
+      "SELECT meta::tb(in) AS it, meta::id(in) AS ii, meta::tb(out) AS ot, meta::id(out) AS oi FROM derived_from;"
+    );
+    const edges = (df ?? []).map((r) => `${r.it}:${r.ii}->${r.ot}:${r.oi}`);
+    expect(edges).toEqual(["point:pt_1->turn:tu_1"]);            // 实存边保留、ghost 边不投影
+    const [pts] = await repo.query<[Array<{ id: unknown }>]>("SELECT VALUE meta::id(id) FROM point;");
+    expect((pts ?? []).map(String).sort()).toEqual(["pt_1", "pt_2"]); // pt_2 节点照常落库(仅其悬空溯源被丢)
+  });
+});
+
+// perf/审计(#5):search::rrf 官方签名 ($lists, limit, k)——第2=返回上限、第3=RRF 衰减常量(默认60)。
+// 此前把 60 放进 limit 槽、把 recall_k 放进 k 槽属语义倒置。下测在真库坐实第2槽=limit(与召回集membership无关)。
+describe("perf/审计:#5 search::rrf 参数位(第2=limit、第3=衰减 k)", () => {
+  it("坐实第2参=limit:候选池>limit 时恰被截断;旧倒置版 limit 恒=60 不随 recall_k 收窄", async () => {
+    const repo = await makeMem();
+    const base = createInitialProductState();
+    // 8 条记忆全部含关键词「区块链」→ BM25 路返回全部 8 条(候选池=8)。
+    const recs = Array.from({ length: 8 }, (_, i) => memWithEmbedding(`me_${i}`, `区块链记忆${i}`, vec(1)));
+    repo.replaceState({ ...base, memoryRecords: recs });
+    await repo.flush();
+    const q = vec(1);
+    const fusedLen = async (arg2: number, arg3: number): Promise<number> => {
+      const r = await repo.query<Array<unknown>>(
+        `LET $vec = (SELECT id FROM memory WHERE embedding <|3,40|> $q);
+         LET $bm  = (SELECT id FROM memory WHERE text @@ $tok);
+         LET $fused = search::rrf([$vec, $bm], ${arg2}, ${arg3});
+         RETURN $fused;`, { q, tok: "区块链" });
+      return ((r[r.length - 1] ?? []) as unknown[]).length;
+    };
+    // 修正版 (limit=Math.max(k,60)=60, k=60):候选池 8 < 60 → 返回全部 8(不误截)。
+    expect(await fusedLen(60, 60)).toBe(8);
+    // 第2参=limit 坐实:传 limit=3 → 恰返 3(证明第2槽是返回上限,而非衰减常量)。
+    expect(await fusedLen(3, 60)).toBe(3);
+    // 旧倒置版 (limit=60, k=3):limit 恒 60、与 recall_k=3 无关 → 仍返 8(暴露旧版把 60 误当 limit)。
+    expect(await fusedLen(60, 3)).toBe(8);
+  });
+});

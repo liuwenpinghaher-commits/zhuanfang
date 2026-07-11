@@ -211,6 +211,52 @@ describe("surreal graph edges (mem://)", () => {
   });
 });
 
+// perf/审计:persist 热路径「记录直取」优化(全局写串行化下慢一笔阻塞所有写)。
+// #1 节点删除 `DELETE $dv`(RecordId[] 直取,免整表扫)、#3 边删除图遍历 `DELETE $f->edge WHERE out=$t`
+// (出边直取,免边表扫)。mem:// 真库对拍旧版已确认逐位等价;下测钉死行为不回归。
+// 注:#1 的 A5 级联(删 session→级联清 turn)由既有「删 session→turn/part_of/derived_from 全清」用例覆盖。
+describe("perf/审计:persist 热路径记录直取(#1 节点删除 / #3 边定向删)", () => {
+  function pt(id: string, relatedThemeIds: string[] = []) {
+    return { id, title: id, content: "c", status: "稳定观点" as const, confidence: "用户确认" as const,
+      evidence: [], relatedThemeIds, important: false, updatedAt: "2026-06-27T00:00:00.000Z" };
+  }
+  function th(id: string) {
+    return { id, name: id, summary: "", maturity: "聚焦" as const, representativeQuote: "", appearances: 1, nextQuestion: "", updatedAt: "2026-06-27T00:00:00.000Z" };
+  }
+
+  it("#1 节点删除:移除其中一个 point,`DELETE $dv` 只删它、其余节点保留", async () => {
+    const repo = await makeMem();
+    const base = repo.getState();
+    repo.replaceState({ ...base, points: [pt("pt_1"), pt("pt_2"), pt("pt_3")] });
+    await repo.flush();
+    // 删 pt_2:removeIds=[pt_2] → `DELETE $del_point`(RecordId[] 直取)。
+    repo.replaceState({ ...repo.getState(), points: [pt("pt_1"), pt("pt_3")] });
+    await repo.flush();
+    const [rows] = await repo.query<[Array<{ id: unknown }>]>("SELECT VALUE meta::id(id) FROM point;");
+    expect((rows ?? []).map(String).sort()).toEqual(["pt_1", "pt_3"]); // 只删 pt_2,pt_1/pt_3 保留
+  });
+
+  it("#3 边定向删:去掉 pt_1 的一个主题,图遍历只删那条 belongs_to_theme,不误删同 f 出边 / 同 to 入边", async () => {
+    const repo = await makeMem();
+    const base = repo.getState();
+    // pt_1 →{th_1, th_2}(两条出边);pt_2 →{th_1}(与 pt_1 共享 to=th_1 的另一入边)。
+    repo.replaceState({ ...base, themes: [th("th_1"), th("th_2")], points: [pt("pt_1", ["th_1", "th_2"]), pt("pt_2", ["th_1"])] });
+    await repo.flush();
+    const listEdges = async () => {
+      const [rows] = await repo.query<[Array<{ it: string; ii: string; ot: string; oi: string }>]>(
+        "SELECT meta::tb(in) AS it, meta::id(in) AS ii, meta::tb(out) AS ot, meta::id(out) AS oi FROM belongs_to_theme;"
+      );
+      return (rows ?? []).map((r) => `${r.ii}->${r.oi}`).sort();
+    };
+    expect(await listEdges()).toEqual(["pt_1->th_1", "pt_1->th_2", "pt_2->th_1"]); // 前提:三条边
+
+    // 去掉 pt_1 的 th_1(保留 th_2)→ removed=[pt_1->th_1] → `DELETE $f->belongs_to_theme WHERE out=$t`。
+    repo.replaceState({ ...repo.getState(), points: [pt("pt_1", ["th_2"]), pt("pt_2", ["th_1"])] });
+    await repo.flush();
+    expect(await listEdges()).toEqual(["pt_1->th_2", "pt_2->th_1"]); // 只删 pt_1->th_1:同 f 出边 pt_1->th_2、同 to 入边 pt_2->th_1 均保留
+  });
+});
+
 describe("surreal diff-upsert (surrealkv://)", () => {
   it("多步增量写(增/改/删 节点+边)后跨进程 reload,DB 态与最终 state 等价", () => {
     const dir = mkdtempSync(join(tmpdir(), "surreal-p1c-"));

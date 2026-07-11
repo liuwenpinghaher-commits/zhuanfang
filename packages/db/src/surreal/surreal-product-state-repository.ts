@@ -552,9 +552,12 @@ export async function buildSurrealProductStateRepositoryOnConnection(
         // ③ 混合检索:HNSW(语义)+ BM25(关键词)→ search::rrf 倒数排名融合(实测 @3.0.2)。
         //
         // 3.0.2 实测要点(本轮 spike 锁定):
-        //  · search::rrf([resultSetA, resultSetB], k, limit):入参是「结果集数组的数组」,每个
-        //    结果集须为 [{id}, ...](即 `SELECT id`,不能 `SELECT VALUE id` 裸 RecordId,否则恒返 [])。
-        //    返回 [{ id, rrf_score }],按融合名次降序。limit 必传(漏则报 "limit must be a number")。
+        //  · 官方签名 search::rrf($lists, $limit, $k):第2参=limit(返回上限)、第3参=k(RRF 衰减
+        //    常量 1/(k+rank),默认 60)。perf/审计(#5):本轮 spike 坐实 `search::rrf([a,b],1,60)` 恰返
+        //    1 行 → 第2=limit。此前把 60 放进 limit 槽、把 recall_k 放进 k 槽属**语义倒置**,已更正为
+        //    `[$vec,$bm], Math.max(k,RRF_RANK_CONSTANT), RRF_RANK_CONSTANT`(limit=大候选池逼近精确、
+        //    k=60 官方衰减)。$lists 每个结果集须为 [{id}, ...](即 `SELECT id`,不能 `SELECT VALUE id`
+        //    裸 RecordId,否则恒返 [])。返回 [{ id, rrf_score }],按融合名次降序。limit 必传。
         //  · BM25 用 ngram(2,2) analyzer 时,裸 `@@ '多字词'`(及 @AND@/@OR@)对**多 token** query
         //    恒不命中(token 切分后匹配条件不满足);**单 token `@@` 才命中**。故把 queryText 经
         //    `search::analyze` 切成 ngram,逐 token `text @@ $tN` 用 OR 串联,等价 OR 召回。
@@ -574,7 +577,7 @@ export async function buildSurrealProductStateRepositoryOnConnection(
         const results = await db.query<Array<Array<Record<string, unknown>>>>(
           `LET $vec = (SELECT id FROM memory WHERE embedding <|${k},${ef}|> $q);
            LET $bm  = (SELECT id FROM memory WHERE ${bmClause});
-           LET $fused = search::rrf([$vec, $bm], ${RRF_RANK_CONSTANT}, ${k});
+           LET $fused = search::rrf([$vec, $bm], ${Math.max(k, RRF_RANK_CONSTANT)}, ${RRF_RANK_CONSTANT});
            SELECT id, text FROM memory
              WHERE id IN $fused.map(|$r| $r.id)
                AND status = 'confirmed'
@@ -641,7 +644,7 @@ export async function buildSurrealProductStateRepositoryOnConnection(
         const results = await db.query<Array<unknown>>(
           `LET $vec = (SELECT id FROM rag_chunk WHERE embedding <|${k},${ef}|> $q);
            LET $bm  = (SELECT id FROM rag_chunk WHERE ${bmClause});
-           LET $fused = search::rrf([$vec, $bm], ${RRF_RANK_CONSTANT}, ${k});
+           LET $fused = search::rrf([$vec, $bm], ${Math.max(k, RRF_RANK_CONSTANT)}, ${RRF_RANK_CONSTANT});
            SELECT id, text FROM rag_chunk WHERE id IN $fused.map(|$r| $r.id) AND ${usageGate};
            RETURN $fused.map(|$r| $r.id);`,
           { q: embedding, ...gateVars, ...tokenVars }
@@ -696,10 +699,15 @@ async function keepOnlyLiveTurnProvenance(
   const ids = [...new Set(toCheck.map((e) => e.toId))];
   const live = new Set<string>();
   if (ids.length > 0) {
-    const [rows] = await db.query<[unknown[]]>("SELECT VALUE id FROM turn WHERE id IN $ids;", {
+    // perf/审计(#2):record-direct 存在核对,免扫最大的 turn 表(随访谈无限增长)。
+    //   ⚠️ `FROM $ids` 对不存在记录返回 undefined 占位(与 `WHERE id IN` 的「不返回不存在行」形态
+    //   不同),故必须过滤(`r != null` 同时挡 null/undefined),使「存在的 turn id 集合」语义与旧版
+    //   完全一致(否则 recordIdToDomainId(undefined) 会误产出 "undefined" 串污染 live 集)。
+    //   mem:// 真库对拍(存在+不存在混合)+ 独立对抗验证:存在集逐一相同、ghost 不混入。
+    const [rows] = await db.query<[unknown[]]>("SELECT VALUE id FROM $ids;", {
       ids: ids.map((id) => new RecordId("turn", id))
     });
-    for (const r of rows ?? []) live.add(recordIdToDomainId(r));
+    for (const r of rows ?? []) if (r != null) live.add(recordIdToDomainId(r));
   }
   const dropped = candidates.filter((e) => doomed(e) || !live.has(e.toId));
   if (dropped.length === 0) return added;
@@ -928,7 +936,11 @@ async function buildPersistStatements(db: Surreal, prev: ProductState, next: Pro
     if (removeIds.length) {
       const dv = `del_${m.table}`;
       vars[dv] = removeIds.map((id) => new RecordId(m.table, id));
-      surql += `DELETE ${m.table} WHERE id IN $${dv};\n`;
+      // perf/审计(#1):record-direct 删除,免整表扫。$dv 已是 RecordId[],`DELETE $dv` 按 id 直取
+      //   (照本文件 :1039 既有 `DELETE $dv` 惯用法)。removeIds 源自 lastPersisted 必存在;对不存在
+      //   id 静默 no-op。mem:// 真库对拍:剩余集与旧 `WHERE id IN` 逐位一致;A5 级联(删 session→清
+      //   turn)record-direct 同样触发(已复验)。
+      surql += `DELETE $${dv};\n`;
     }
   }
 
@@ -974,7 +986,11 @@ async function buildPersistStatements(db: Surreal, prev: ProductState, next: Pro
       const xv = `x${i++}`;
       vars[`${xv}_f`] = new RecordId(e.fromTable, e.fromId);
       vars[`${xv}_t`] = new RecordId(e.toTable, e.toId);
-      surql += `DELETE ${e.edge} WHERE in = $${xv}_f AND out = $${xv}_t;\n`;
+      // perf/审计(#3):图遍历定向删,免整表扫边表(derived_from 等可积到数千条,confirm 资产/
+      //   改 relatedThemeIds/origin 翻转高频触发)。`$f->edge WHERE out=$t` 从 f 的出边直取那一条。
+      //   mem:// 真库对拍:只删 (f,t)、不误删同 f 其它出边 / 同 to 其它入边;part_of/derived_from/
+      //   belongs_to_theme 各边表均验证;删后剩余边集与旧 `WHERE in/out` 逐一相同。
+      surql += `DELETE $${xv}_f->${e.edge} WHERE out = $${xv}_t;\n`;
     }
     for (const e of added) {
       const ev = `e${i++}`;

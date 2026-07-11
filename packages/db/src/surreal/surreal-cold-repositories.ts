@@ -312,10 +312,13 @@ export function createSurrealKnowledgeIndexRepository(db: Surreal): SurrealKnowl
         }
 
         // 混合:两路纯索引 LET → search::rrf 融合 → SELECT * 取回完整块 + RETURN 名次供 JS 重排。
+        // perf/审计(#5):search::rrf 官方签名 ($lists, limit, k)——第2=limit、第3=衰减 k(默认60)。
+        //   此前 (…, RRF_RANK_CONSTANT, k) 语义倒置(60→limit、recall_k→衰减 k),已更正为
+        //   (…, Math.max(k,RRF_RANK_CONSTANT), RRF_RANK_CONSTANT):limit=大候选池、k=60 官方衰减。
         const results = await db.query<Array<unknown>>(
           `LET $vec = (SELECT id FROM knowledge_chunk WHERE embedding <|${k},${ef}|> $q);
            LET $bm  = (SELECT id FROM knowledge_chunk WHERE ${bmClause});
-           LET $fused = search::rrf([$vec, $bm], ${RRF_RANK_CONSTANT}, ${k});
+           LET $fused = search::rrf([$vec, $bm], ${Math.max(k, RRF_RANK_CONSTANT)}, ${RRF_RANK_CONSTANT});
            SELECT * FROM knowledge_chunk WHERE id IN $fused.map(|$r| $r.id);
            RETURN $fused.map(|$r| $r.id);`,
           { q: emb, ...tokenVars }
