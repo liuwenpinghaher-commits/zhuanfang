@@ -1,6 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { createInitialProductState } from "./engine";
-import { normalizeProductState } from "./storage";
+import { createEmptyProductState, createInitialProductState } from "./engine";
+import { isPristineDemoState, normalizeProductState } from "./storage";
+
+describe("P3-11: isPristineDemoState 灾备指纹", () => {
+  it("首次运行的 demo 种子判为 pristine(revision 不影响判定)", () => {
+    expect(isPristineDemoState(createInitialProductState())).toBe(true);
+    // 空库重启返回的 demo 可能带任意 revision——内容签名忽略 revision,仍须命中。
+    expect(isPristineDemoState({ ...createInitialProductState(), revision: 42 })).toBe(true);
+  });
+
+  it("清空后的空态、以及有真实改动的态都不判为 pristine", () => {
+    expect(isPristineDemoState(createEmptyProductState())).toBe(false);
+    const edited = createInitialProductState();
+    edited.profile.name = "真实用户";
+    expect(isPristineDemoState(edited)).toBe(false);
+  });
+});
 
 describe("product state storage", () => {
   it("normalizes legacy local state with new capability fields", () => {

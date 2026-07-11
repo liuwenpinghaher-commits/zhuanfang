@@ -177,6 +177,21 @@ PODCAST_AUTO_RENDER_ON_CREATE=auto
 
 个人页的数据治理区会显示当前 ProductState 的隐私库存，区分显性档案、专访笔记、认知资产、长期记忆、联网/RAG 资料、语料学习、播客生成物、运行审计记录和运营检查证据。`GET /api/state/privacy-report` 返回同一份库存；`GET /api/state/export` 的导出包会附带隐私报告；`POST /api/state/purge` 需要 `confirm=PURGE_PERSONAL_DATA`，会清空个人数据、删除已引用的 `local-object://corpus-audio/...` 本地音频原件，并保留 provider/模型运行配置和一条清空审计事件。响应里的 `artifactPurge` 会列出删除、缺失和跳过的对象文件数量。
 
+## 备份与灾难恢复
+
+R7 起 SurrealDB（`.data/surreal`）是**唯一**持久仓库，`GET /api/state/export` 的 JSON 导出包是唯一的可迁移备份。请把它当成真正的备份对待——定期导出，并核对导出包顶部的 `completeness`：
+
+- `completeness.status = complete`：热态 + 冷层（逐字稿/录音）+ 全部音频字节均在包内，可经 `POST /api/state/import`（`confirm=REPLACE_ALL_STATE`）完整恢复。
+- `completeness.status = partial`：备份不完整，`completeness.reasons` 会说清原因。常见两类：
+  - **音频超导出预算**：单个 JSON 包音频上限约 18MB（受 28MB 导入体限约束）。超出的会话记入 `audioOmittedSessions`，**不在本包内、无自动恢复路径**。要拿到全部音频，用**分卷导出** `GET /api/state/export?audioVolume=N`（`audioVolumes.total` 是总卷数，逐卷 `N=0,1,2,…` 下载即得全部字节），或逐会话下载单条音频。恢复时先导入基础包，再按需导入各音频分卷（`PRODUCT_AUDIO_EXPORT_BUDGET_BYTES` 可调分卷粒度）。
+  - **冷层读失败**（`coldStoreReadFailures > 0`）：导出时某个冷层表读失败（多半是数据目录损坏），该层数据未纳入本包，但**热态仍会尽力导出**（“能导多少导多少”）——这份包用于抢救，不是完整备份。
+
+灾难场景与终点：
+
+1. **进程启动卡死、无任何输出**：嵌入式 surrealkv 是同进程独占锁，第二个进程打开同一 `.data/surreal` 会连接超时。日志会打印 `surreal_connect_failed`（含 `dataDir` 与“疑似双开持锁”）并以退出码 1 退出。处理：确认没有第二个进程（并发 `dev:full`、`dev:full` 跑着又手动 `dev:api`、旧进程未退干净）持有该目录后重启。
+2. **权威库被清空/损坏后重启**：空库启动时 `GET /api/state` 会返回内置**示例（demo）数据**。如果浏览器端有离线未同步的改动，冲突弹窗会把这份示例当“服务器版本”呈现——UI 会打上“⚠ 服务器版本疑似示例/初始数据”指纹提示。**此时不要点“采用服务器版本”**（会用示例覆盖真实记录），应选“保留本地并同步”，或改用最近一次的 JSON 导出包 `import` 恢复。
+3. **常规恢复**：个人页数据治理区“导入”上传最近一次导出的 JSON 包即可整体替换状态；`import` 通道体限放宽到 64MB。
+
 ## 目录
 
 - `src/domain`: 业务模型、确定性引擎、资产沉淀、配置版本、质量报告。

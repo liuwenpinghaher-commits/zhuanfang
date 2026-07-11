@@ -75,7 +75,7 @@ import {
   deletePodcastEpisode,
   deleteSearchBrief
 } from "./domain/lifecycle";
-import { loadProductState, normalizeProductState, productStateContentSignature, resetProductState, saveProductState } from "./domain/storage";
+import { isPristineDemoState, loadProductState, normalizeProductState, productStateContentSignature, resetProductState, saveProductState } from "./domain/storage";
 // F-05: 持久 outbox + 三方合并 + autosave 退避。离线修改绝不能被远端旧快照静默覆盖。
 import {
   backupUnsyncedState,
@@ -919,7 +919,17 @@ export default function App() {
       // 极端误操作还能从 DevTools 取回,而不是彻底不可恢复。
       backupUnsyncedState(productStateRef.current);
       acceptAuthoritativeState(latestRemote);
-      setNotice(buildNotice("info", "已采用服务器版本", "本地冲突修改已由你明确放弃，已加载服务器最新版本。"));
+      // P3-11:采用后仍复核指纹——若最新远端仍是示例/初始态,如实警示这很可能是灾备后的空库,
+      // 而非真实数据(本地态已备份进 localStorage 最后防线,极端误操作可从 DevTools 取回)。
+      if (isPristineDemoState(latestRemote)) {
+        setNotice(buildNotice(
+          "warning",
+          "已采用服务器版本（疑似示例/初始数据）",
+          "服务器返回的内容与首次运行的示例数据一致，后端可能被重置或损坏后重启。若这不是你预期的恢复结果，本地版本已备份，请检查后端后再决定。"
+        ));
+      } else {
+        setNotice(buildNotice("info", "已采用服务器版本", "本地冲突修改已由你明确放弃，已加载服务器最新版本。"));
+      }
     } catch (err) {
       setNotice(buildNotice("warning", "暂时无法采用服务器版本", "后端当前不可用；本地 outbox 与冲突状态仍保留，请稍后重试。"));
       // I-2:后端不可达导致无法完成裁决——启动探测;恢复后用户可再点一次"采用服务器版本"。
@@ -2567,6 +2577,14 @@ export default function App() {
               <p id="sync-conflict-detail">
                 本地工作没有被覆盖。请选择保留当前本地版本并同步，或明确采用服务器版本。
               </p>
+              {/* P3-11:灾备指纹提示——服务器版本若与首次运行的示例数据逐字一致,极可能是后端
+                  数据库被清空/损坏后重启返回的初始 demo 态。此时"采用服务器版本"会用示例覆盖真实
+                  记录,必须显式警示,而不是让用户把 demo 当权威盲选。 */}
+              {isPristineDemoState(syncConflict.remoteState) && (
+                <strong className="sync-conflict-demo-warning" role="alert">
+                  ⚠ 服务器版本看起来是示例/初始数据——后端数据库可能被重置或损坏后重启。采用它会用示例数据覆盖你的本地记录。除非你确认服务器已正确恢复，否则请「保留本地并同步」。
+                </strong>
+              )}
               <span className="sync-conflict-paths" title={syncConflict.conflicts.map((item) => item.path).join("、")}>
                 涉及：{syncConflict.conflicts.slice(0, 3).map((item) => item.path).join("、")}
                 {syncConflict.conflicts.length > 3 ? ` 等 ${syncConflict.conflicts.length} 处` : ""}

@@ -951,6 +951,17 @@ export function productStateContentSignature(state: ProductState): string {
   return JSON.stringify({ ...state, revision: 0 });
 }
 
+/**
+ * P3-11:某状态是否与首次运行的示例(demo)种子内容逐字一致。
+ * 灾备场景——权威库被清空/损坏后重启,GET /api/state 会返回 createInitialProductState() 的
+ * 完整 demo 态。若此时本地有离线改动,冲突弹窗会把这份"服务器版本"当成远端权威呈现;用户若
+ * "采用服务器版本"就会用示例数据覆盖真实记录。用内容签名(忽略 revision)比对:空库重启返回的
+ * demo 无论 revision 都命中,供 UI 打上"疑似示例/初始数据"指纹提示,而不是让用户盲选。
+ */
+export function isPristineDemoState(state: ProductState): boolean {
+  return productStateContentSignature(state) === productStateContentSignature(createInitialProductState());
+}
+
 export function loadProductState(): ProductState {
   if (typeof window === "undefined") {
     return createInitialProductState();

@@ -323,6 +323,20 @@ select:focus-visible {
   white-space: nowrap;
 }
 
+/* P3-11:灾备指纹警示——服务器版本疑似示例/初始数据时显式高亮,提醒别把 demo 当权威。 */
+.sync-conflict-demo-warning {
+  display: block;
+  margin: 6px 0 2px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fef2f2;
+  border: 1px solid #fca5a5;
+  color: #b91c1c;
+  font-size: 0.82rem;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
 .sync-conflict-actions {
   display: flex;
   align-items: center;
