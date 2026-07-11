@@ -1,8 +1,9 @@
 // 审计修复(F-02/A2):E2E 存储隔离闸门。
 // Playwright 先启动 webServer(plugin setup)再跑 globalSetup,所以这里可以直接请求 API。
 // 历史事故:playwright 只设 PRODUCT_STATE_DB_PATH=memory,startServer 的 loadLocalEnvFile()
-// 继承了 .env.local 的 PRODUCT_STORE=dual-surreal,E2E 测试连上真实 dual-surreal 档位、在仓库根
-// 创建 surreal/ 目录,险些镜像覆盖真实数据。此闸门在跑任何测试前核验实际档位,不是 memory 就熔断。
+// 继承了 .env.local 的 PRODUCT_STORE=surreal(R7 前是 dual-surreal),E2E 测试连上真实 surreal
+// 档位、在仓库根 .data/ 创建 surreal/ 目录,险些覆盖真实数据。此闸门在跑任何测试前核验实际档位,
+// 不是 memory 就熔断。
 
 const API_CAPABILITIES_URL = "http://127.0.0.1:3210/api/system/capabilities";
 
@@ -29,7 +30,7 @@ export default async function globalSetup() {
         "E2E 若在非内存档位上运行,会把测试写入(乃至镜像覆盖)真实专访数据。排查:" +
         "① 3210 端口可能有一个手动启动的开发服务器被 reuseExistingServer 复用了——关掉它,让 Playwright 用隔离 env 自己拉起;" +
         "② 确认 playwright.config.ts 的 API webServer env 同时含 PRODUCT_STORE=memory 与 PRODUCT_STATE_DB_PATH=memory;" +
-        "③ 若 productStore 是 dual-surreal/sqlite,多半是 .env.local 的 PRODUCT_STORE 被 loadLocalEnvFile 继承(审计 F-02 的事故路径)。"
+        "③ 若 productStore 是 surreal,多半是 .env.local 的 PRODUCT_STORE 被 loadLocalEnvFile 继承(审计 F-02 的事故路径)。"
     );
   }
 }

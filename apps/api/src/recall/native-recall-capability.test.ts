@@ -1,52 +1,35 @@
-import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { describe, it, expect } from "vitest";
 import { asNativeRecall } from "./native-recall-capability";
-import { createDualWriteRepository } from "../dual-write-repository";
-import { createSqliteProductStateRepository } from "../../../../packages/db/src/sqlite-product-state-repository";
+import { createInMemoryProductStateRepository } from "../product-state-repository";
 import { withKnowledgeReindex } from "../server";
 import { createLlmBudget } from "../llm-budget";
 
-const dirs: string[] = [];
-function sqliteRepo() {
-  const dir = mkdtempSync(join(tmpdir(), "p2b-cap-"));
-  dirs.push(dir);
-  return createSqliteProductStateRepository({ dbPath: join(dir, "s.db") });
+// R7:sqlite/dual 已删除,注入矩阵收敛为 memory|surreal 两档。这里用内存仓库当"非原生"基底,
+// 在其上挂 recall* 方法结构等价 SurrealRepoHandle(测试用),验证 asNativeRecall 只认原生形态。
+function memoryRepo() {
+  return createInMemoryProductStateRepository();
 }
-/** sqlite 上挂 recall* → 结构等价 SurrealRepoHandle(测试用)。 */
+/** 内存仓库上挂 recall* → 结构等价 SurrealRepoHandle(测试用)。 */
 function fakeSurreal() {
-  return Object.assign(sqliteRepo(), {
+  return Object.assign(memoryRepo(), {
     recallThemeAssets: async () => ({ points: [], decisions: [], questions: [], memories: [] }),
     recallMemoriesByVector: async () => [] as Array<{ id: string; text: string }>,
     recallProvenanceTurns: async () => [] as Array<{ id: string; content: string; sessionId: string; role: string }>
   });
 }
-afterEach(() => {
-  for (const d of dirs) rmSync(d, { recursive: true, force: true });
-  dirs.length = 0;
-});
 
-describe("asNativeRecall 注入矩阵", () => {
+describe("asNativeRecall 注入矩阵(R7:memory|surreal)", () => {
   it("surreal:repo 自身可召回", () => {
     expect(asNativeRecall(fakeSurreal())).toBeDefined();
   });
-  it("sqlite:undefined(域层回落)", () => {
-    expect(asNativeRecall(sqliteRepo())).toBeUndefined();
-  });
-  it("dual(auth=sqlite):undefined(权威是 sqlite,不走原生)", () => {
-    const repo = createDualWriteRepository({ authoritative: sqliteRepo(), shadow: sqliteRepo() });
-    expect(asNativeRecall(repo)).toBeUndefined();
-  });
-  it("dual-surreal(auth=surreal):转发 authoritative", () => {
-    const repo = createDualWriteRepository({ authoritative: fakeSurreal(), shadow: sqliteRepo() });
-    expect(asNativeRecall(repo)).toBeDefined();
+  it("memory:undefined(域层回落)", () => {
+    expect(asNativeRecall(memoryRepo())).toBeUndefined();
   });
 });
 
 // P2b 生产可达性回归:路由拿到的是 withKnowledgeReindex 包装 repo。此前包装只回 4 个接口方法,
-// 把原生召回能力(及 dual 的 getAuthoritative)全部吞掉 → asNativeRecall(wrapped) 恒 undefined,
-// 原生召回在生产静默失效(fail-safe 回落掩盖)。修复 = spread 能力透传;此处钉死两种权威档位。
+// 把原生召回能力全部吞掉 → asNativeRecall(wrapped) 恒 undefined,原生召回在生产静默失效
+// (fail-safe 回落掩盖)。修复 = spread 能力透传;此处钉死两种档位。
 describe("withKnowledgeReindex 能力透传(生产接线回归)", () => {
   const reindexArgs = () =>
     [{} as Parameters<typeof withKnowledgeReindex>[1], () => undefined, createLlmBudget()] as const;
@@ -54,13 +37,8 @@ describe("withKnowledgeReindex 能力透传(生产接线回归)", () => {
     const wrapped = withKnowledgeReindex(fakeSurreal(), ...reindexArgs());
     expect(asNativeRecall(wrapped)).toBeDefined();
   });
-  it("包装 dual-surreal 形态:经 getAuthoritative 仍可达", () => {
-    const repo = createDualWriteRepository({ authoritative: fakeSurreal(), shadow: sqliteRepo() });
-    const wrapped = withKnowledgeReindex(repo, ...reindexArgs());
-    expect(asNativeRecall(wrapped)).toBeDefined();
-  });
-  it("包装 sqlite 形态:仍 undefined(不虚报能力)", () => {
-    const wrapped = withKnowledgeReindex(sqliteRepo(), ...reindexArgs());
+  it("包装 memory 形态:仍 undefined(不虚报能力)", () => {
+    const wrapped = withKnowledgeReindex(memoryRepo(), ...reindexArgs());
     expect(asNativeRecall(wrapped)).toBeUndefined();
   });
 });

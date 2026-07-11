@@ -364,7 +364,7 @@ export async function createSurrealStores(opts: SurrealConnectionOptions): Promi
   // 热态仓库不拥有连接(ownsConnection=false),由本工厂 close() 统一关一次。
   // R2b:传入 governance 配置 → 热态 handle 暴露 runGovernanceTransaction(治理事务能力)。
   // 只有 createSurrealStores 这条装配路径(冷热共用一个嵌入式连接)才配得治理事务能力;
-  // standalone 的 createSurrealProductStateRepository(dual-surreal 走它、冷层却是 sqlite)不传,
+  // standalone 的 createSurrealProductStateRepository(自开自关连接、无冷层,仅测试/工具用)不传,
   // 故其 handle 无此方法 → asGovernanceTx 探测不到 → 路由回落既有 journal/best-effort 路径。
   const productState = await buildSurrealProductStateRepositoryOnConnection(db, {
     ownsConnection: false,

@@ -30,16 +30,13 @@ export function hasGovernanceTx(x: unknown): x is GovernanceTransactionPort {
 }
 
 /**
- * 探测某个 repo 是否具备治理事务能力(与 asNativeRecall 同款注入矩阵):
- * - `surreal` 档:repo 自身(经 withKnowledgeReindex 的 `...inner` spread 透传)带
- *   runGovernanceTransaction → 直接返回。
- * - `dual`/`dual-surreal`/`sqlite`/`memory`:无此方法(dual-surreal 的 authoritative 是 standalone
- *   surreal handle,冷层却是 sqlite、不同连接,不配得真跨冷热事务,故 createSurrealStores 之外一律
- *   不暴露) → getAuthoritative 也取不到 → undefined,路由回落既有 journal/best-effort。
+ * 探测某个 repo 是否具备治理事务能力(与 asNativeRecall 同款注入矩阵)。R7 后仅两档:
+ * - `surreal` 档:只有 createSurrealStores 装配路径(冷热共用一个嵌入式连接)的 handle 才带
+ *   runGovernanceTransaction(经 withKnowledgeReindex 的 `...inner` spread 透传)→ 直接返回。
+ *   standalone createSurrealProductStateRepository(自开自关连接、无冷层)不暴露此方法。
+ * - `memory` 档:无此方法 → undefined,路由回落既有 journal/best-effort。
+ * (dual-write/dual-surreal 已随 R7 删除,不再有 getAuthoritative 委托层。)
  */
 export function asGovernanceTx(repo: unknown): GovernanceTransactionPort | undefined {
-  if (hasGovernanceTx(repo)) return repo;
-  const auth = (repo as { getAuthoritative?: () => unknown } | null)?.getAuthoritative?.();
-  if (hasGovernanceTx(auth)) return auth;
-  return undefined;
+  return hasGovernanceTx(repo) ? repo : undefined;
 }

@@ -4,8 +4,9 @@ import { isInMemoryDbPath, resolveProductStoreSelection } from "./store-selectio
 
 // 审计修复(F-02/A2):startServer 的档位解析必须是纯函数、可穷举测试——
 // 此前 "memory" sentinel 只在 buildApiServer 的默认工厂里生效,startServer 直接把
-// 字符串 "memory" 当文件路径交给 SQLite/dual 工厂,E2E 测试还会继承 .env.local 的
-// PRODUCT_STORE=dual-surreal,险些镜像覆盖真实数据。这里钉死全部解析规则。
+// 字符串 "memory" 当文件路径交给持久工厂,E2E 测试还会继承 .env.local 的 PRODUCT_STORE,
+// 险些镜像覆盖真实数据。这里钉死全部解析规则。
+// R7:档位收敛为 memory|surreal 两档;sqlite/dual/dual-surreal 归一到 surreal(见 deprecated 用例)。
 describe("resolveProductStoreSelection", () => {
   const cwd = "/fake/project";
 
@@ -36,66 +37,82 @@ describe("resolveProductStoreSelection", () => {
     expect(isInMemoryDbPath(selection.productStateDbPath)).toBe(true);
   });
 
-  it("sentinel 压过 PRODUCT_STORE=dual-surreal(测试隔离意图 > 档位继承),并记录被忽略的档位", () => {
+  it("sentinel 压过 PRODUCT_STORE=surreal(测试隔离意图 > 档位继承),并记录被忽略的档位", () => {
     const selection = resolveProductStoreSelection(
-      { PRODUCT_STORE: "dual-surreal", PRODUCT_STATE_DB_PATH: "memory" },
+      { PRODUCT_STORE: "surreal", PRODUCT_STATE_DB_PATH: "memory" },
       cwd
     );
     expect(selection.mode).toBe("memory");
-    expect(selection.ignoredProductStore).toBe("dual-surreal");
+    expect(selection.ignoredProductStore).toBe("surreal");
   });
 
-  it.each(["surreal", "dual", "dual-surreal"])("档位 %s 原样透传", (store) => {
+  it("档位 surreal 原样透传", () => {
+    const selection = resolveProductStoreSelection(
+      { PRODUCT_STORE: "surreal", PRODUCT_STATE_DB_PATH: "/real/data/product-state.db" },
+      cwd
+    );
+    expect(selection.mode).toBe("surreal");
+    expect(selection.productStateDbPath).toBe("/real/data/product-state.db");
+    expect(selection.ignoredProductStore).toBeUndefined();
+    expect(selection.deprecatedProductStore).toBeUndefined();
+  });
+
+  // R7:sqlite/dual/dual-surreal 三档已删除,归一到 surreal 并标注 deprecatedProductStore
+  // (旧 .env 不炸,启动期响亮提示改档位)。
+  it.each(["sqlite", "dual", "dual-surreal"])("已废弃档位 %s → surreal + deprecatedProductStore", (store) => {
     const selection = resolveProductStoreSelection(
       { PRODUCT_STORE: store, PRODUCT_STATE_DB_PATH: "/real/data/product-state.db" },
       cwd
     );
-    expect(selection.mode).toBe(store);
+    expect(selection.mode).toBe("surreal");
+    expect(selection.deprecatedProductStore).toBe(store);
     expect(selection.productStateDbPath).toBe("/real/data/product-state.db");
-    expect(selection.ignoredProductStore).toBeUndefined();
   });
 
   it("PRODUCT_STORE 归一化:trim + lowercase", () => {
     const selection = resolveProductStoreSelection(
-      { PRODUCT_STORE: "  DUAL-Surreal  ", PRODUCT_STATE_DB_PATH: "/real/data/product-state.db" },
+      { PRODUCT_STORE: "  SurReal  ", PRODUCT_STATE_DB_PATH: "/real/data/product-state.db" },
       cwd
     );
-    expect(selection.mode).toBe("dual-surreal");
+    expect(selection.mode).toBe("surreal");
   });
 
-  it("PRODUCT_STORE 未设置 → sqlite(保持现状)", () => {
+  it("PRODUCT_STORE 未设置 → surreal(R7 唯一持久档,默认)", () => {
     const selection = resolveProductStoreSelection(
       { PRODUCT_STATE_DB_PATH: "/real/data/product-state.db" },
       cwd
     );
-    expect(selection.mode).toBe("sqlite");
+    expect(selection.mode).toBe("surreal");
     expect(selection.productStateDbPath).toBe("/real/data/product-state.db");
+    expect(selection.deprecatedProductStore).toBeUndefined();
   });
 
-  it("PRODUCT_STORE 未知值 → sqlite(保持现状:任何未知值落默认分支)", () => {
+  it("PRODUCT_STORE 未知值 → surreal(任何未知值落默认持久档)", () => {
     const selection = resolveProductStoreSelection(
       { PRODUCT_STORE: "postgres", PRODUCT_STATE_DB_PATH: "/real/data/product-state.db" },
       cwd
     );
-    expect(selection.mode).toBe("sqlite");
+    expect(selection.mode).toBe("surreal");
+    // 未知值(非废弃档)不标 deprecated,只在 reason 里说明回落。
+    expect(selection.deprecatedProductStore).toBeUndefined();
   });
 
-  it("dbPath 缺省 → join(cwd, '.data', 'product-state.db')(保持现状)", () => {
+  it("dbPath 缺省 → join(cwd, '.data', 'product-state.db')(默认 surreal)", () => {
     const selection = resolveProductStoreSelection({}, cwd);
-    expect(selection.mode).toBe("sqlite");
+    expect(selection.mode).toBe("surreal");
     expect(selection.productStateDbPath).toBe(join(cwd, ".data", "product-state.db"));
   });
 
   it("dbPath 为空白字符串视同缺省,推导默认路径", () => {
     const selection = resolveProductStoreSelection({ PRODUCT_STATE_DB_PATH: "   " }, cwd);
-    expect(selection.mode).toBe("sqlite");
+    expect(selection.mode).toBe("surreal");
     expect(selection.productStateDbPath).toBe(join(cwd, ".data", "product-state.db"));
   });
 
-  // 回归钉死审计 F-02 实验:PRODUCT_STORE=sqlite + PRODUCT_STATE_DB_PATH=memory 曾在
-  // startServer 里把字符串 "memory" 交给 new DatabaseSync("memory"),在仓库根创建了名为
-  // memory 的 SQLite 文件。sentinel 必须解析为 memory 档位,绝不当文件路径。
-  it("回归(F-02):{PRODUCT_STORE:'sqlite', PRODUCT_STATE_DB_PATH:'memory'} → mode=memory", () => {
+  // 回归钉死审计 F-02 实验:PRODUCT_STORE=<任意档> + PRODUCT_STATE_DB_PATH=memory 曾在
+  // startServer 里把字符串 "memory" 当文件路径,在仓库根创建了名为 memory 的文件。sentinel
+  // 必须解析为 memory 档位、绝不当文件路径——即便档位值是已废弃的 sqlite 也一样(sentinel 优先)。
+  it("回归(F-02):{PRODUCT_STORE:'sqlite'(已废弃), PRODUCT_STATE_DB_PATH:'memory'} → mode=memory", () => {
     const selection = resolveProductStoreSelection(
       { PRODUCT_STORE: "sqlite", PRODUCT_STATE_DB_PATH: "memory" },
       cwd

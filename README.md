@@ -18,11 +18,11 @@
 
 - Frontend: React 18, TypeScript, Vite, lucide-react.
 - Product API: Fastify, tsx.
-- State: `npm run start:api` 默认使用 SQLite `.data/product-state.sqlite` 持久化；测试和临时演示可设置 `PRODUCT_STATE_DB_PATH=memory` 回到内存态。
+- State: `npm run start:api` 默认使用嵌入式 SurrealDB（surrealkv，数据目录 `.data/surreal`）持久化；测试和临时演示可设置 `PRODUCT_STORE=memory`（或 `PRODUCT_STATE_DB_PATH=memory`）回到内存态。R7 起 `PRODUCT_STORE` 仅 `memory|surreal` 两档，surreal 为默认唯一持久档。
 - Tests: Vitest, Playwright.
 - Optional providers: 百炼 Responses / qwen-plus-character / Qwen-Omni Realtime / CosyVoice / SenseVoice, AnySearch / Tavily / Exa / Brave Search.
 
-Redis 暂缓；Prisma 不是当前首选。项目默认使用轻量 SQLite 状态仓库，适合本地单机和后续迁移。
+Redis 暂缓；Prisma 不是当前首选。项目使用嵌入式 SurrealDB（surrealkv）作为唯一持久状态仓库，原生支持图、向量与混合检索，适合本地单机部署。
 
 ## 运行
 
@@ -66,7 +66,7 @@ npm test -- --run
 npm run test:e2e
 ```
 
-`npm run test:e2e` 会自动启动 `Product API` 和前端 dev server；测试中的 API 使用 `PRODUCT_STATE_DB_PATH=memory`，不会写入默认的 `.data/product-state.sqlite`。
+`npm run test:e2e` 会自动启动 `Product API` 和前端 dev server；测试中的 API 使用 `PRODUCT_STORE=memory` + `PRODUCT_STATE_DB_PATH=memory`（globalSetup 会核验实际档位是 memory，否则熔断），不会写入默认的 `.data/surreal` 数据目录。
 
 `*.real.test.ts` 是外部 provider smoke（从 `.env.local` 读真实 key，会真调 DashScope / AnySearch）。在持有真实 key 的机器上跑全量 vitest 而不想触发外部调用时，设 `REAL_PROVIDER_SMOKE=off`（也接受 `0`/`false`，大小写不敏感）即可让这些用例全部按"未配置 key"跳过。
 
@@ -136,7 +136,8 @@ BAILIAN_REALTIME_VAD_TYPE=server_vad
 BAILIAN_REALTIME_VAD_THRESHOLD=0.5
 BAILIAN_REALTIME_SILENCE_DURATION_MS=800
 
-PRODUCT_STATE_DB_PATH=.data/product-state.sqlite
+PRODUCT_STORE=surreal
+PRODUCT_STATE_DB_PATH=.data/product-state.db
 PRODUCT_WEB_ORIGINS=http://127.0.0.1:3220,http://localhost:3220
 CORPUS_UPLOAD_DIR=.data/corpus-audio
 CORPUS_AUDIO_PUBLIC_BASE_URL=
@@ -154,7 +155,7 @@ PODCAST_AUTO_RENDER_ON_CREATE=auto
 
 `BAILIAN_REALTIME_ENABLE_SEARCH` 控制 Realtime session.update 是否允许携带联网材料能力；开启后仍由 Product API 负责整理搜索简报和可追溯来源，浏览器不会直接接触 provider key。
 
-`PRODUCT_STATE_DB_PATH` 为空或不写时，`npm run start:api` 会默认使用 `.data/product-state.sqlite`；设置为 `memory`、`:memory:` 或 `in-memory` 时使用内存状态库，重启后回到 seed 状态。
+`PRODUCT_STATE_DB_PATH` 为空或不写时，`npm run start:api` 会默认在 `.data/product-state.db` 旁建立 SurrealDB 数据目录 `.data/surreal`；设置为 `memory`、`:memory:` 或 `in-memory`（或 `PRODUCT_STORE=memory`）时使用内存状态库，重启后回到 seed 状态。R7：`PRODUCT_STORE` 仅 `memory|surreal`，旧值 `sqlite/dual/dual-surreal` 已废弃并自动归一到 `surreal`（启动期会响亮提示改档位）。
 
 `PRODUCT_WEB_ORIGINS` 是允许访问 Product API 的浏览器来源白名单，多个 origin 用逗号分隔，例如 `http://127.0.0.1:3220,https://app.example.com`；保存后会立即影响 CORS 响应。
 
@@ -183,7 +184,7 @@ PODCAST_AUTO_RENDER_ON_CREATE=auto
 - `src/realtime`: 百炼 Realtime WebRTC 浏览器桥接。
 - `src/api`: 前端 Product API client。
 - `apps/api/src`: Fastify Product API、provider client、路由、运行配置。
-- `packages/db/src`: SQLite ProductState repository。
+- `packages/db/src`: SurrealDB ProductState repository（`surreal/` 下热态 + 三冷层 + 混合召回）与内存 repo。
 - `tests/e2e`: Playwright 验收流程。
 - `docs/superpowers`: 阶段开发方案和规格文档。
 

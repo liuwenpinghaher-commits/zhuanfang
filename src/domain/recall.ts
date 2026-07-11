@@ -3,7 +3,7 @@
  *
  * server 端(surreal 权威)预召回原生图遍历 / HNSW 向量 / 溯源的结果,组装成本纯数据结构,
  * 作为可选参数喂给保持同步的域召回函数。域层只读这个数据,不持有任何 repo / Promise / I/O。
- * 前端 / sqlite / dual(sqlite 权威)不传 → 域函数走现有纯逻辑回落。
+ * 前端 / memory 档不传 → 域函数走现有纯逻辑回落。
  */
 export interface RecallProvenanceEntry {
   /** 证据所属资产的表名(如 "point" / "decision")。 */

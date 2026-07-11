@@ -3,8 +3,8 @@
 /**
  * SurrealDB 真实数据层端到端 e2e —— 补最大缺口。
  *
- * 背景:dual-surreal 已是生产权威库(zhuanfang-surreal-cutover),但所有现有 e2e 都走 in-memory
- * repo,SurrealStore 的资产往返 / 原生 RELATE 边投影 / 图遍历召回 / 溯源 在真实端到端从未被验证。
+ * 背景:R7 后 surreal 是唯一持久档权威库,但大多现有 e2e 都走 in-memory repo,SurrealStore 的
+ * 资产往返 / 原生 RELATE 边投影 / 图遍历召回 / 溯源 在真实端到端从未被验证。
  *
  * 本测试用真实 SurrealStore(mem://,同进程)+ 真实本地 embedding(node onnxruntime)+ 离线确定性
  * finalize(env 无 key),端到端跑完整采访闭环,直查 surreal 表/边断言数据层真实工作。

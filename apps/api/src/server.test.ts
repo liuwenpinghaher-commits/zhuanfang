@@ -2,17 +2,10 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createInitialProductState } from "../../../src/domain/engine";
 import { buildApiServer, isDirectCliExecution } from "./server";
 
 describe("Product API", () => {
   const tempDirs: string[] = [];
-
-  function createDbPath() {
-    const dir = mkdtempSync(join(tmpdir(), "interview-api-db-"));
-    tempDirs.push(dir);
-    return join(dir, "state.sqlite");
-  }
 
   function createEnvPath() {
     const dir = mkdtempSync(join(tmpdir(), "interview-api-env-"));
@@ -176,14 +169,15 @@ describe("Product API", () => {
 
   // 审计修复(F-02/A2):capabilities 的 productStore 只信 startServer 解析后显式传入的档位,
   // 不再读 env.PRODUCT_STORE——E2E globalSetup 靠这个字段熔断"测试连上真实存储"。
+  // R7:档位仅 memory|surreal;这里注入 surreal 档,env 里给个内存档也不该被信任。
   it("reports the injected productStoreMode instead of trusting env.PRODUCT_STORE", async () => {
     const server = buildApiServer({
-      productStoreMode: "dual-surreal",
-      env: { PRODUCT_STORE: "sqlite" }
+      productStoreMode: "surreal",
+      env: { PRODUCT_STORE: "memory" }
     });
 
     const body = (await server.inject({ method: "GET", url: "/api/system/capabilities" })).json();
-    expect(body.productStore).toBe("dual-surreal");
+    expect(body.productStore).toBe("surreal");
   });
 
   it("returns editable runtime configuration with masked secret values", async () => {
@@ -891,29 +885,9 @@ describe("Product API", () => {
     });
   });
 
-  it("persists state through SQLite when a database path is configured", async () => {
-    const dbPath = createDbPath();
-    const state = createInitialProductState();
-    const changedState = {
-      ...state,
-      profile: {
-        ...state.profile,
-        currentFocus: "API 数据库持久化"
-      }
-    };
-    const firstServer = buildApiServer({ productStateDbPath: dbPath });
-
-    const saveResponse = await firstServer.inject({ method: "PUT", url: "/api/state", payload: changedState });
-    expect(saveResponse.statusCode).toBe(200);
-    await firstServer.close();
-
-    const secondServer = buildApiServer({ productStateDbPath: dbPath });
-    const readResponse = await secondServer.inject({ method: "GET", url: "/api/state" });
-
-    expect(readResponse.statusCode).toBe(200);
-    expect(readResponse.json().profile.currentFocus).toBe("API 数据库持久化");
-    await secondServer.close();
-  });
+  // R7:删除"buildApiServer 默认工厂经 dbPath 落 SQLite 持久化"用例——该能力已随 sqlite 冷层删除。
+  // 持久化(surreal 跨进程 reload)由 packages/db/src/surreal/surreal-product-state-repository.test.ts
+  // 的重连往返用例覆盖(surrealkv 落盘 + 新连接读回)。
 
   it("renders podcast audio through Bailian CosyVoice when the audio client is configured", async () => {
     const server = buildApiServer({

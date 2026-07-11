@@ -96,7 +96,7 @@ export async function registerStateRoutes(
     // ═══ R2b · 真事务路径(surreal 档:热态 + 三冷层同连接)═══════════════════════════════
     // 探到治理事务能力 → 热态清空 + 冷层清空在单个 BEGIN...COMMIT 内原子完成。成功=全清并推进基线;
     // 失败=整体回滚(DB/内存/基线全不动),500 + resetReceipt 标注 rolled-back(无部分提交)。
-    // 回落档(memory/sqlite/dual)探不到能力,走下方既有 best-effort 逐库路径(行为完全不变)。
+    // 回落档(memory)探不到能力,走下方既有 best-effort 逐库路径(行为完全不变)。
     const resetGov = asGovernanceTx(repository);
     if (resetGov) {
       const { cold, stores } = buildWipeColdSpec();
@@ -375,7 +375,7 @@ export async function registerStateRoutes(
     if (rawMaterialRepository && hasRawArray) {
       const built: InterviewRawMaterial[] = [];
       (body!.rawMaterials as InterviewRawMaterial[]).forEach((material, index) => {
-        // sessionId + turns(数组) + createdAt(string)——node:sqlite 对 undefined/null 会抛,
+        // sessionId + turns(数组) + createdAt(string)——冷层存储对缺失/undefined 字段会抛,
         // 必须在动存储前挡住。
         const missing: string[] = [];
         if (!material || typeof material.sessionId !== "string") missing.push("sessionId");

@@ -37,8 +37,9 @@ interface SystemCapability {
 }
 
 interface SystemRouteOptions {
-  stateStore: "memory" | "sqlite";
-  /** 审计修复(P3-47):真实权威库档位(dual-surreal 下 stateStore 仍报 sqlite 会误导运维)。 */
+  // R7:持久档从 sqlite 换成 surreal(唯一持久档);memory 为不持久档。
+  stateStore: "memory" | "surreal";
+  /** 审计修复(P3-47):真实权威库档位(memory|surreal)。R7 后与 stateStore 同值,保留字段避免改动透出契约。 */
   productStore?: string;
   env?: RuntimeEnv;
   envFilePath?: string;
@@ -414,12 +415,13 @@ export async function registerSystemRoutes(
         // green "ready" as durable SQLite), and drop the PRODUCT_STATE_DB_PATH requirement
         // that memory mode doesn't actually need.
         label: "Product State Store",
-        status: options.stateStore === "sqlite" ? "ready" : "degraded",
+        // R7:持久 = surreal 档;非 memory 即持久(唯一持久档为 SurrealDB 嵌入式 surrealkv)。
+        status: options.stateStore !== "memory" ? "ready" : "degraded",
         active: true,
-        detail: options.stateStore === "sqlite"
-          ? `SQLite 状态库已启用，数据持久化。${options.productStore && options.productStore !== "sqlite" ? `（权威库：${options.productStore}）` : ""}`
+        detail: options.stateStore !== "memory"
+          ? "SurrealDB 状态库已启用（嵌入式 surrealkv，图/向量/混合检索生效），数据持久化。"
           : "内存状态库已启用：数据不持久，重启后回到 seed 状态；导出仅为当前会话快照。",
-        requiredEnv: options.stateStore === "sqlite" ? ["PRODUCT_STATE_DB_PATH"] : [],
+        requiredEnv: options.stateStore !== "memory" ? ["PRODUCT_STATE_DB_PATH"] : [],
         lastCheckedAt: generatedAt
       },
       {
@@ -514,7 +516,7 @@ export async function registerSystemRoutes(
     return {
       generatedAt,
       configVersion: state.systemConfig.version,
-      // 审计修复(F-02/A2):透出实际生效的产品状态档位(memory/sqlite/surreal/dual/dual-surreal)。
+      // 审计修复(F-02/A2):透出实际生效的产品状态档位(R7:memory|surreal 两档)。
       // E2E globalSetup 靠它断言测试进程没有继承 .env.local 连上真实存储;缺省按 stateStore 如实回落。
       productStore: options.productStore ?? options.stateStore,
       runtime: {

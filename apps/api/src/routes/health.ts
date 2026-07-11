@@ -21,9 +21,9 @@ type GraphAuditLite = {
   nodeUnexpectedInDb: string[];
 };
 
-/** plugin factory:注入 getPersistHealth(dual-surreal/surreal 权威库的落库健康度探针)。
- *  无探针(sqlite / 测试)→ health 只回 ok。探针报连续失败 → 响应附 persist.degraded,
- *  让运维/监控能感知 dual-surreal 下权威库静默写失败(=丢数据风险)。
+/** plugin factory:注入 getPersistHealth(surreal 权威库的落库健康度探针)。
+ *  无探针(memory 档 / 测试)→ health 只回 ok。探针报连续失败 → 响应附 persist.degraded,
+ *  让运维/监控能感知 surreal 权威库静默写失败(=丢数据风险)。
  *  方案二:auditGraphConsistency 挂 /api/ops/graph-consistency——刻意不放 /api/health 前缀
  *  (该前缀 auth 豁免,审计样本含内部实体 id,不该无认证可见;且审计语义是"运维主动核对",
  *  不该被监控轮询隐式高频触发)。 */
@@ -42,12 +42,12 @@ export function registerHealthRoutes(
           : {})
       };
     });
-    // 方案二:图↔软链双表示一致性审计(公理引擎的图层对偶)。无能力档位(sqlite/dual)→ 501;
+    // 方案二:图↔软链双表示一致性审计(公理引擎的图层对偶)。无能力档位(memory)→ 501;
     // 审计自身失败 → 500 且不吞错误细节。只读、不修复——发现漂移由运维决定处置。
     server.get("/api/ops/graph-consistency", async (_request, reply) => {
       const run = auditGraphConsistency?.();
       if (!run) {
-        return reply.code(501).send({ error: "当前 PRODUCT_STORE 档位无图一致性审计能力(需 surreal / dual-surreal 权威)。" });
+        return reply.code(501).send({ error: "当前 PRODUCT_STORE 档位无图一致性审计能力(需 surreal 权威)。" });
       }
       try {
         const report = await run;

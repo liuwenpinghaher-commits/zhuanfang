@@ -5,15 +5,11 @@ import Fastify, { type FastifyRequest, type FastifyReply } from "fastify";
 import fastifyStatic from "@fastify/static";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { createSqliteProductStateRepository } from "../../../packages/db/src/sqlite-product-state-repository";
-import { createSqliteRawMaterialRepository } from "../../../packages/db/src/sqlite-raw-material-repository";
-import { createSqliteAudioRepository } from "../../../packages/db/src/sqlite-audio-repository";
-import { createSqliteKnowledgeIndexRepository } from "../../../packages/db/src/sqlite-knowledge-index-repository";
+// R7:sqlite 冷层与 dual-write/dual-surreal 已删除;持久化唯一走 surreal(startServer 经
+// createSurrealStores 注入),buildApiServer 默认工厂只构造内存仓库。
 import { loadLocalEnvFile } from "./env";
-import { isInMemoryDbPath, resolveProductStoreSelection, type ProductStoreMode } from "./store-selection";
+import { resolveProductStoreSelection, type ProductStoreMode } from "./store-selection";
 import { createInMemoryProductStateRepository, StateRevisionConflictError, type ProductStateRepository } from "./product-state-repository";
-// F-01/A1:仅类型引用(readStateOrExplain 的签名)。
-import type { ProductState } from "../../../src/domain/types";
 import { createInMemoryRawMaterialRepository, type RawMaterialRepository } from "./raw-material-repository";
 import { createInMemoryAudioRepository, type AudioRepository } from "./audio-repository";
 import { createInMemoryKnowledgeIndexRepository, type KnowledgeIndexRepository } from "./knowledge-index-repository";
@@ -89,8 +85,8 @@ interface BuildApiServerOptions {
   /**
    * 审计修复(F-02/A2):实际生效的产品状态档位(resolveProductStoreSelection 的 mode),由
    * startServer 传入并透出到 /api/system/capabilities,让 E2E globalSetup 能验证测试没连上
-   * 真实存储。不传时按 stateStore(memory/sqlite)如实推断——buildApiServer 的默认工厂只会
-   * 构造这两种,绝不按 env.PRODUCT_STORE 谎报 dual/surreal。
+   * 真实存储。R7:档位仅 memory|surreal 两档;不传时 stateStore 按内存如实上报——buildApiServer
+   * 的默认工厂只构造内存仓库,持久化(surreal)只能由 startServer 显式注入并声明 productStoreMode。
    */
   productStoreMode?: ProductStoreMode;
 }
@@ -124,7 +120,8 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   registerProductionAuth(server, runtimeEnv);
   const writeGate = registerWriteSerialization(server);
   registerErrorHandler(server);
-  const innerProductStateRepository = options.productStateRepository ?? createDefaultProductStateRepository(options.productStateDbPath);
+  // R7:默认工厂只构造内存仓库(surreal 需异步连接,只能由 startServer 经 createSurrealStores 注入)。
+  const innerProductStateRepository = options.productStateRepository ?? createDefaultProductStateRepository();
   const providerClients: ProviderClients = {};
   const refreshProviderClients = () => refreshRuntimeProviderClients(providerClients, runtimeEnv, options);
   refreshProviderClients();
@@ -144,9 +141,10 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     });
     return target;
   };
-  const effectiveDbPath = options.productStateDbPath ?? runtimeEnv.PRODUCT_STATE_DB_PATH;
-  const stateStore: "memory" | "sqlite" =
-    effectiveDbPath && !isInMemoryDbPath(effectiveDbPath) ? "sqlite" : "memory";
+  // R7:持久化只由 surreal 档提供(唯一持久档,startServer 经 createSurrealStores 注入并显式传入
+  // productStoreMode="surreal")。buildApiServer 的默认工厂只构造内存仓库,故未显式声明 surreal 档时
+  // 一律按内存如实上报——不再据 dbPath 猜测(默认工厂已不会因真实 dbPath 落盘)。
+  const stateStore: "memory" | "surreal" = options.productStoreMode === "surreal" ? "surreal" : "memory";
 
   const isProductionProfile = (runtimeEnv.DEPLOYMENT_PROFILE ?? "").trim().toLowerCase() === "production";
   // Fail-LOUD 而非 fail-open-silent:startServer() 在生产缺 token 时硬抛拒绝启动(生产硬闸);但直接用
@@ -158,26 +156,20 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
       detail: "DEPLOYMENT_PROFILE=production 但未设 PRODUCT_API_TOKEN —— 鉴权守卫未启用,所有 /api/* 无凭据即可访问。"
     }));
   }
-  // 生产 profile 却回落内存存储(通常是漏设 PRODUCT_STATE_DB_PATH) → 进程重启全部数据丢失。响亮告警。
+  // 生产 profile 却回落内存存储(通常是 PRODUCT_STORE=memory 或漏配 surreal 档) → 进程重启全部数据丢失。响亮告警。
   if (isProductionProfile && stateStore === "memory") {
     console.warn(JSON.stringify({
       event: "state_store_in_memory_in_production",
-      detail: "生产 profile 使用内存状态存储(未设 PRODUCT_STATE_DB_PATH 或为 :memory:) —— 进程重启将丢失全部数据。"
+      detail: "生产 profile 使用内存状态存储(PRODUCT_STORE=memory 或 dbPath 为 :memory:) —— 进程重启将丢失全部数据。持久化请设 PRODUCT_STORE=surreal。"
     }));
   }
-  // Raw-material cold storage lives next to the product-state db (raw-material.sqlite
-  // in the same directory). Tests / in-memory deployments stay in-memory so they
-  // never touch disk. An explicitly injected repo (tests) always wins.
+  // R7:三冷层(raw-material / audio / knowledge index)默认走内存;唯有 surreal 档由 startServer
+  // 经 createSurrealStores 注入真实冷层(与热态同一嵌入式连接)。显式注入的 repo(测试/surreal)总是优先。
   const rawMaterialRepository =
-    options.rawMaterialRepository ?? createDefaultRawMaterialRepository(effectiveDbPath);
-  // Interview raw-audio cold storage lives next to the product-state db (audio.sqlite in
-  // the same directory). Tests / in-memory deployments stay in-memory. Injected repo wins.
-  const audioRepository = options.audioRepository ?? createDefaultAudioRepository(effectiveDbPath);
-  // Knowledge index (cross-source RAG chunks) lives next to the product-state db
-  // (knowledge.sqlite in the same directory). Tests / in-memory deployments stay
-  // in-memory. Injected repo wins.
+    options.rawMaterialRepository ?? createDefaultRawMaterialRepository();
+  const audioRepository = options.audioRepository ?? createDefaultAudioRepository();
   const knowledgeIndexRepository =
-    options.knowledgeIndexRepository ?? createDefaultKnowledgeIndexRepository(effectiveDbPath);
+    options.knowledgeIndexRepository ?? createDefaultKnowledgeIndexRepository();
   const envFilePath = options.envFilePath ?? join(process.cwd(), ".env.local");
 
   // Single shared budget instance — covers all LLM entry points (interview turns,
@@ -195,17 +187,16 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     sharedBudget
   );
 
-  // E:权威库(surreal / dual-surreal)落库健康度探针 → /api/health 暴露 persist.degraded。
-  // surreal 权威直接有 getPersistHealth;dual-surreal 经 getAuthoritative 取到 surreal 权威库;sqlite/dual → undefined。
+  // E:surreal 权威库落库健康度探针 → /api/health 暴露 persist.degraded。R7:dual-write 已删除,
+  // 权威库直接有 getPersistHealth;内存档无此方法 → undefined → health 只回 ok。
   const probePersistHealth = () => {
     const repo = innerProductStateRepository as {
       getPersistHealth?: () => { consecutiveFailures: number; lastError?: string; lastErrorAt?: string };
-      getAuthoritative?: () => { getPersistHealth?: () => { consecutiveFailures: number; lastError?: string; lastErrorAt?: string } };
     };
-    return repo.getPersistHealth?.() ?? repo.getAuthoritative?.().getPersistHealth?.();
+    return repo.getPersistHealth?.();
   };
-  // 方案二:图↔软链一致性审计探针(同一注入矩阵:surreal 直接有 / dual-surreal 经 getAuthoritative /
-  // sqlite、dual → undefined → 路由回 501)。方法是 handle 闭包实现、不依赖 this,解包后直调安全。
+  // 方案二:图↔软链一致性审计探针。R7:surreal 权威直接有 auditGraphConsistency;内存档 → undefined
+  // → 路由回 501。方法是 handle 闭包实现、不依赖 this,解包后直调安全。
   type GraphAuditFn = () => Promise<{
     ok: boolean; auditedEdgeTables: string[]; expectedCount: number; actualCount: number;
     missingCount: number; unexpectedCount: number; missingInDb: string[]; unexpectedInDb: string[];
@@ -215,19 +206,18 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   const probeGraphAudit = () => {
     const repo = innerProductStateRepository as {
       auditGraphConsistency?: GraphAuditFn;
-      getAuthoritative?: () => { auditGraphConsistency?: GraphAuditFn };
     };
-    const audit = repo.auditGraphConsistency ?? repo.getAuthoritative?.().auditGraphConsistency;
+    const audit = repo.auditGraphConsistency;
     return audit?.();
   };
   void server.register(registerHealthRoutes(probePersistHealth, probeGraphAudit));
   void server.register(async (registeredServer) => {
     await registerSystemRoutes(registeredServer, productStateRepository, {
       stateStore,
-      // 审计修复(P3-47→F-02/A2):真实权威库档位透出(dual-surreal 下 stateStore 仍是 sqlite)。
-      // 改为只信 startServer 解析后传入的 mode,不再读 env.PRODUCT_STORE——嵌入/测试路径下
-      // buildApiServer 的默认工厂只构造 memory/sqlite,按 env 上报会在 sentinel 场景下撒谎。
-      // 未传时直传 undefined:`?? stateStore` 如实回落只归 system.ts 一处,避免双份兜底漂移。
+      // 审计修复(P3-47→F-02/A2):真实权威库档位透出。只信 startServer 解析后传入的 mode,不读
+      // env.PRODUCT_STORE——嵌入/测试路径下 buildApiServer 默认工厂只构造内存仓库,按 env 上报会在
+      // sentinel 场景下撒谎。R7:档位仅 memory|surreal。未传时直传 undefined:`?? stateStore` 如实
+      // 回落只归 system.ts 一处,避免双份兜底漂移。
       productStore: options.productStoreMode,
       env: runtimeEnv,
       envFilePath,
@@ -407,12 +397,11 @@ export function withKnowledgeReindex(
   budget: ReturnType<typeof createLlmBudget>
 ): ProductStateRepository {
   return {
-    // 能力透传(P2b 生产可达性修复):此前只回 4 个接口方法,把 inner(surreal handle /
-    // dual 的 getAuthoritative)的原生召回能力全部吞掉 → 路由层 asNativeRecall(wrapped)
-    // 恒 undefined,原生召回在生产静默失效、fail-safe 回落把问题掩成"一切正常"。
-    // spread 透传 own 方法(repo 各实现均为闭包方法的对象字面量,不依赖 this,解包安全),
-    // 使 asNativeRecall 的注入矩阵(surreal 直达 / dual-surreal 经 getAuthoritative)真正可达;
-    // 后声明的同名键覆盖 spread,读写语义与此前完全一致。
+    // 能力透传(P2b 生产可达性修复):此前只回 4 个接口方法,把 inner(surreal handle)的原生召回
+    // /治理事务/审计能力全部吞掉 → 路由层 asNativeRecall(wrapped) 恒 undefined,原生召回在生产静默
+    // 失效、fail-safe 回落把问题掩成"一切正常"。spread 透传 own 方法(repo 各实现均为闭包方法的对象
+    // 字面量,不依赖 this,解包安全),使 surreal 档的原生能力(recall*/runGovernanceTransaction/
+    // getPersistHealth/auditGraphConsistency)真正可达;后声明的同名键覆盖 spread,读写语义不变。
     ...inner,
     getState: () => inner.getState(),
     resetState: () => inner.resetState(),
@@ -820,42 +809,24 @@ function registerProductionAuth(server: ReturnType<typeof Fastify>, env: Record<
   });
 }
 
-function createDefaultProductStateRepository(dbPath = process.env.PRODUCT_STATE_DB_PATH) {
-  if (dbPath && !isInMemoryDbPath(dbPath)) {
-    return createSqliteProductStateRepository({ dbPath });
-  }
+// R7:默认工厂只构造内存仓库。持久化(surreal 热态 + 三冷层)需异步连接,无法在同步的 buildApiServer
+// 装配期建立,只能由 startServer 经 createSurrealStores 打开共享连接后注入。故这四个默认工厂不再看
+// dbPath——真实 dbPath 也不落盘,持久化一律走 surreal 档的显式注入路径。
+function createDefaultProductStateRepository() {
   return createInMemoryProductStateRepository();
 }
 
-function createDefaultRawMaterialRepository(productStateDbPath?: string) {
-  if (productStateDbPath && !isInMemoryDbPath(productStateDbPath)) {
-    return createSqliteRawMaterialRepository({
-      dbPath: join(dirname(productStateDbPath), "raw-material.sqlite")
-    });
-  }
+function createDefaultRawMaterialRepository() {
   return createInMemoryRawMaterialRepository();
 }
 
-function createDefaultKnowledgeIndexRepository(productStateDbPath?: string) {
-  if (productStateDbPath && !isInMemoryDbPath(productStateDbPath)) {
-    return createSqliteKnowledgeIndexRepository({
-      dbPath: join(dirname(productStateDbPath), "knowledge.sqlite")
-    });
-  }
+function createDefaultKnowledgeIndexRepository() {
   return createInMemoryKnowledgeIndexRepository();
 }
 
-function createDefaultAudioRepository(productStateDbPath?: string) {
-  if (productStateDbPath && !isInMemoryDbPath(productStateDbPath)) {
-    return createSqliteAudioRepository({
-      dbPath: join(dirname(productStateDbPath), "audio.sqlite")
-    });
-  }
+function createDefaultAudioRepository() {
   return createInMemoryAudioRepository();
 }
-
-// isInMemoryDbPath 已搬到 store-selection.ts(F-02/A2):startServer 与默认工厂必须共用同一份
-// sentinel 判定,否则 "memory" 会在 startServer 路径被当成普通文件路径交给 SQLite 工厂。
 
 export async function startServer() {
   loadLocalEnvFile();
@@ -879,20 +850,21 @@ export async function startServer() {
   // Tests call buildApiServer() directly (no dbPath) and stay in-memory/isolated.
   // 审计修复(F-02/A2):档位与路径解析收敛到纯函数 resolveProductStoreSelection——
   // dbPath sentinel(memory/:memory:/in-memory)一律解析为 memory 档位并压过 PRODUCT_STORE,
-  // 否则 E2E 只设 PRODUCT_STATE_DB_PATH=memory 时会继承 .env.local 的 dual-surreal 连上真实存储。
+  // 否则 E2E 只设 PRODUCT_STATE_DB_PATH=memory 时会继承 .env.local 的持久档位连上真实存储。
+  // R7:档位已收敛为 memory|surreal 两档(sqlite/dual/dual-surreal 已删除,旧值归一到 surreal)。
   const selection = resolveProductStoreSelection(process.env);
   const { mode: productStore, productStateDbPath } = selection;
 
-  // P1a/P1d:动态 import surreal 工厂(避开 apps/api tsconfig moduleResolution:Node 对 @surrealdb/node 的类型检查)。
-  // packages/db/tsconfig.json 用 moduleResolution:bundler 覆盖这些文件。
-  const loadSurreal = async () => {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    const mod = await (Function("p", "return import(p)") as (p: string) => Promise<{
-      createSurrealProductStateRepository: (opts: { url: string }) => Promise<ProductStateRepository>;
-    }>)(new URL("../../../packages/db/src/surreal/surreal-product-state-repository.ts", import.meta.url).pathname);
-    const dataDir = join(dirname(productStateDbPath), "surreal");
-    return mod.createSurrealProductStateRepository({ url: `surrealkv://${dataDir}/surreal` });
-  };
+  // R7:命中已废弃档位值(sqlite/dual/dual-surreal)时响亮告警,让运维知道旧 .env 需改为 surreal
+  // (已按 surreal 启动,不炸)。
+  if (selection.deprecatedProductStore) {
+    console.warn(JSON.stringify({
+      event: "product_store_deprecated",
+      deprecatedProductStore: selection.deprecatedProductStore,
+      detail: selection.reason
+    }));
+  }
+
   // R2a:surreal 档下热态 + 三冷层共用同一嵌入式连接(嵌入式 surrealkv 同进程独占锁,不能开第二连接)。
   // createSurrealStores 打开一个连接、applySchema 一次,返回热态仓库 + 三冷层仓库。
   const loadSurrealStores = async () => {
@@ -910,8 +882,8 @@ export async function startServer() {
   };
 
   let repository: ProductStateRepository;
-  // R2a:surreal 档注入 Surreal 冷层(与热态同连接);其余档 undefined → buildApiServer 走默认工厂
-  // (memory→内存,sqlite/dual/dual-surreal→sqlite 冷层;冷层不做双写,R7 将删这些档)。
+  // R7:档位收敛为 memory|surreal 两档。surreal 档注入 Surreal 冷层(与热态同连接);memory 档
+  // 冷层 undefined → buildApiServer 走默认内存工厂。
   let surrealColdRepos: {
     rawMaterialRepository?: RawMaterialRepository;
     audioRepository?: AudioRepository;
@@ -919,17 +891,18 @@ export async function startServer() {
   } = {};
   if (productStore === "memory") {
     // F-02/A2:in-memory 档位(sentinel 或显式 PRODUCT_STORE=memory)。productStateDbPath 此时
-    // 恒为 sentinel,buildApiServer 里的冷层默认工厂(raw/audio/knowledge)据此同走内存,零落盘。
+    // 恒为 sentinel,buildApiServer 的冷层默认工厂(raw/audio/knowledge)同走内存,零落盘。
     repository = createInMemoryProductStateRepository();
     console.warn(JSON.stringify({
       event: "product_store",
       mode: "memory",
       reason: selection.reason,
-      // sentinel 压过档位继承时响亮注明,避免运维误以为 dual-surreal 生效。
+      // sentinel 压过档位继承时响亮注明,避免运维误以为持久档生效。
       ...(selection.ignoredProductStore ? { ignoredProductStore: selection.ignoredProductStore } : {})
     }));
-  } else if (productStore === "surreal") {
-    // P1a:纯 SurrealDB,opt-in。R2a:热态 + 三冷层共用同一嵌入式连接。
+  } else {
+    // R7:surreal 是唯一持久档(未设/未知/已废弃档位均已在 resolveProductStoreSelection 归一到此)。
+    // R2a:热态 + 三冷层共用同一嵌入式连接(嵌入式 surrealkv 同进程独占锁,不能开第二连接)。
     const stores = await loadSurrealStores();
     repository = stores.productState;
     surrealColdRepos = {
@@ -937,87 +910,7 @@ export async function startServer() {
       audioRepository: stores.audio,
       knowledgeIndexRepository: stores.knowledgeIndex,
     };
-    console.warn(JSON.stringify({ event: "product_store", mode: "surreal", detail: "热态+三冷层同连接(R2a)" }));
-  } else if (productStore === "dual") {
-    // P1d:sqlite 权威 + surreal 影子。观察等价,sqlite 仍是真相、零风险。
-    const sqlite = createSqliteProductStateRepository({ dbPath: productStateDbPath });
-    const surreal = await loadSurreal();
-    const { createDualWriteRepository } = await import("./dual-write-repository");
-    repository = createDualWriteRepository({ authoritative: sqlite, shadow: surreal });
-    console.warn(JSON.stringify({ event: "product_store", mode: "dual", detail: "sqlite 权威 / surreal 影子" }));
-  } else if (productStore === "dual-surreal") {
-    // 审计修复(F-01/A1,升级 D6/P1-4):回退后再切回、或漏 migrate 直切时,surreal 处女库会成为
-    // 权威并在**首笔写**时镜像覆盖 sqlite 冷备的真实数据(mirror 后比对恒等,零告警)。旧版只
-    // console.warn——半夜自动重启没人看日志,告警挡不住覆盖。现改为启动期用 assessDualSurrealCutover
-    // (内容摘要 + 实体数 + revision 三重判据)决策:疑似"近空权威覆盖有数据冷备"默认 fail-closed,
-    // 绝不监听端口;人工确认覆盖需显式设 ALLOW_DUAL_SURREAL_AUTHORITY_MISMATCH=true。
-    // P1d:surreal 权威 + sqlite 冷备。切读 surreal,sqlite 仍写以便回退。
-    const sqlite = createSqliteProductStateRepository({ dbPath: productStateDbPath });
-    const surreal = await loadSurreal();
-    const { createDualWriteRepository } = await import("./dual-write-repository");
-    const { assessDualSurrealCutover, readCutoverMarker } = await import("./dual-surreal-cutover");
-    // F-01:读不到任一库的状态就无法做安全评估,必须失败(fail-closed 精神)。但各自 try/catch
-    // 把裸异常(如 SQLITE_CORRUPT 栈)升格为带定位与修复指引的结构化事件后再 throw——冷备损坏
-    // 半夜发生时,值班第一眼要能看出"哪个库、哪个文件、怎么办",而不是一条 SQLITE 栈。
-    const readStateOrExplain = (which: "surreal" | "sqlite", read: () => ProductState): ProductState => {
-      try {
-        return read();
-      } catch (err) {
-        console.error(JSON.stringify({
-          event: "dual_surreal_state_read_failed",
-          store: which,
-          dbPath: which === "sqlite" ? productStateDbPath : join(dirname(productStateDbPath), "surreal"),
-          error: err instanceof Error ? err.message : String(err),
-          remediation: which === "sqlite"
-            ? "sqlite 冷备读取失败(文件损坏?):修复或把损坏的 db 文件移走后重启。注意:移走后冷备为空库,启动检查会按'反向自愈'放行(镜像把权威数据补进新冷备),这是预期方向——但请先确认 surreal 权威库数据完好再移。"
-            : "surreal 权威库读取失败:检查 surreal 数据目录是否损坏/被其他进程锁住(嵌入式 surrealkv 同进程独占),修复或移走损坏目录后重跑 migrate 再启动。"
-        }));
-        throw err; // startServer 顶层 catch 会 exit(1);评估不了安全性就绝不监听端口。
-      }
-    };
-    const assessment = assessDualSurrealCutover({
-      surrealState: readStateOrExplain("surreal", () => surreal.getState()),
-      sqliteState: readStateOrExplain("sqlite", () => sqlite.getState()),
-      allowMismatchEnv: process.env.ALLOW_DUAL_SURREAL_AUTHORITY_MISMATCH
-    });
-    if (assessment.action === "fail-closed") {
-      // marker 仅诊断("上次迁移完成于 X / 从未迁移"),不参与放行判定——过期 marker 不能证明
-      // 当下两库一致,凭它绕过 digest 检查恰好放行本修复要堵的覆盖路径(见 readCutoverMarker 注释)。
-      const marker = readCutoverMarker(join(dirname(productStateDbPath), "surreal"));
-      console.error(JSON.stringify({
-        event: "dual_surreal_authority_mismatch_fail_closed",
-        rule: assessment.rule,
-        reason: assessment.reason,
-        ...assessment.detail,
-        // marker 的 counts 是 migrate 脚本口径(6 数组明细),与上面 detail 的 userEntityCount
-        // (16 数组)口径不同——只透传明细不做求和,避免两个名同义异的总数并排误导运维。
-        cutoverMarker: marker ? { migratedAt: marker.migratedAt, sourceSqliteRevision: marker.sourceSqliteRevision, counts: marker.counts } : "从未迁移(未发现 cutover-marker.json)",
-        remediation: [
-          "①运行 node scripts/migrate-sqlite-to-surreal.mjs(经 npx tsx)完成 sqlite→surreal 迁移后再切 dual-surreal;",
-          "②确属人工恢复、要以 surreal 当前内容为准覆盖 sqlite 冷备时,显式设 ALLOW_DUAL_SURREAL_AUTHORITY_MISMATCH=true 放行。"
-        ]
-      }));
-      // startServer 顶层 catch 会 exit(1)——服务在监听端口之前终止,冷备数据不会被首笔写覆盖。
-      throw new Error(`dual-surreal 权威库可疑,拒绝启动(F-01 fail-closed):${assessment.reason}`);
-    }
-    if (assessment.action === "proceed-with-override") {
-      console.warn(JSON.stringify({
-        event: "dual_surreal_authority_mismatch_override",
-        rule: assessment.rule,
-        detail: "警告:ALLOW_DUAL_SURREAL_AUTHORITY_MISMATCH=true 已放行近空权威切换——首笔写将以 surreal 当前内容覆盖 sqlite 冷备。确认这是人工恢复的预期行为。",
-        reason: assessment.reason,
-        ...assessment.detail
-      }));
-    } else if (assessment.rule === "divergent") {
-      // 规则 c(rule 一等字段分发,不解析 reason 文案/不比对截断 digest 反推):
-      // 普通影子漂移保持"响亮但不熔断"的现状语义(镜像自愈 + shadow 健康度上报兜底)。
-      console.warn(JSON.stringify({ event: "dual_surreal_shadow_divergence_at_startup", rule: assessment.rule, reason: assessment.reason, ...assessment.detail }));
-    }
-    repository = createDualWriteRepository({ authoritative: surreal, shadow: sqlite });
-    console.warn(JSON.stringify({ event: "product_store", mode: "dual-surreal", detail: "surreal 权威 / sqlite 冷备" }));
-  } else {
-    // 默认:sqlite(不变;未知 PRODUCT_STORE 值已在 resolveProductStoreSelection 归一为 sqlite)。
-    repository = createSqliteProductStateRepository({ dbPath: productStateDbPath });
+    console.warn(JSON.stringify({ event: "product_store", mode: "surreal", reason: selection.reason, detail: "热态+三冷层同连接(R2a)" }));
   }
   // F-02 事故收口(2026-07-10):Playwright 定向实跑中,navigation.spec 的陈旧 mock 未拦截,
   // PATCH /api/system/config 打到 webServer 起的真实 API——buildApiServer 默认 envFilePath 是
@@ -1030,9 +923,8 @@ export async function startServer() {
   // It self-gates per tick on systemConfig.research.autoScheduleEnabled (default off),
   // so users can toggle it on at runtime without a restart.
   const server = buildApiServer({
-    productStateDbPath,
     productStateRepository: repository,
-    // R2a:surreal 档注入 Surreal 冷层(与热态同连接);其余档为空 → 默认工厂据 dbPath 选 memory/sqlite。
+    // R7:surreal 档注入 Surreal 冷层(与热态同连接);memory 档为空 → buildApiServer 走默认内存工厂。
     ...surrealColdRepos,
     // F-02/A2:把实际生效档位透出到 /api/system/capabilities,供 E2E globalSetup 校验隔离。
     productStoreMode: productStore,

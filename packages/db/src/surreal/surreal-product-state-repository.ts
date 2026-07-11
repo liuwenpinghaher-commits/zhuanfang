@@ -138,8 +138,8 @@ function singletonChanged(prev: ProductState, next: ProductState, stateKey: stri
  *  knowledge.ts:205(chatSessions)/note-feedback.ts:53(memoryCorrections)/
  *  podcast.ts:100,212,331,443(podcastEpisodes)/corpus.ts:179-193(corpusImports/Insights/
  *  playbookPatches)/engine.ts:616(configVersions)。blob 时代整体序列化天然保序;真表化后
- *  SELECT 无 ORDER BY 按 record id 升序返回 → 重启即反序(用户可见列表倒挂)+ dual 启动
- *  digest 每次重启报一次漂移噪声。故 loadState 对这 9 表按 createdAt DESC 重排(id DESC
+ *  SELECT 无 ORDER BY 按 record id 升序返回 → 重启即反序(用户可见列表倒挂)。故 loadState
+ *  对这 9 表按 createdAt DESC 重排(id DESC
  *  决胜同毫秒,尽力确定性),与 prepend 语义一致。
  *  既有 12 表(memoryRecords/searchBriefs 等)的同类重载序问题**预先存在**,本阶段刻意不动
  *  (改动面控制),记档待下阶段统一治理。 */
@@ -155,7 +155,7 @@ function sortNewestFirst(entities: Array<Record<string, unknown>>): Array<Record
   });
 }
 
-/** E:权威库异步落库健康度。dual-surreal 下 surreal 是权威库,持续 persist 失败=静默丢数据,
+/** E:权威库异步落库健康度。surreal 是唯一持久档权威库,持续 persist 失败=静默丢数据,
  *  须经此暴露给 /api/health。consecutiveFailures>0 即上次落库未成功(基线未推进,正自愈重试)。 */
 export interface PersistHealth {
   consecutiveFailures: number;
@@ -192,7 +192,7 @@ export interface SurrealRepoHandle extends ProductStateRepository {
    *  undefined,路由回落既有 journal/best-effort。串入 persist 队列(不与 persist 交错)。
    *  local-object 文件删除留在事务外(文件系统无法入事务),由路由在事务前后处理。 */
   runGovernanceTransaction?(hot: GovernanceHotSpec, cold: GovernanceColdSpec): Promise<ProductState>;
-  /** E:权威库落库健康度(连续失败计数/最后错误)。/api/health 用以感知 dual-surreal 静默丢数据。 */
+  /** E:权威库落库健康度(连续失败计数/最后错误)。/api/health 用以感知 surreal 权威库静默丢数据。 */
   getPersistHealth(): PersistHealth;
   /** 关闭底层连接(测试/关闭用)。 */
   close(): Promise<void>;
@@ -313,11 +313,11 @@ export async function buildSurrealProductStateRepositoryOnConnection(
   // diff 基线:上次成功落库的状态(非内存 state)。失败不更新 → 下次 diff 自动补回漏掉的增量(自愈)。
   // 处女库(无 state_meta):loadState 捏造 createInitialProductState 作内存态,但 DB 里并没有它——
   // 基线若也设成捏造态就是【基线谎言】:此后所有 diff 都以为种子实体已在库,演示资产/其边永不落库
-  // (原生 recallThemeAssets 漏召回、dual 双写发散;图审计冒烟实测抓到)。基线设空 + 下方立即
+  // (原生 recallThemeAssets 漏召回;图审计冒烟实测抓到)。基线设空 + 下方立即
   // enqueue 首次落库,让 DB 真实收敛到内存态。
   let lastPersisted: ProductState = loaded.fromDb ? loaded.state : createEmptyProductState();
   let persistQueue: Promise<void> = Promise.resolve();
-  // E:权威库落库健康度。成功清零、失败累积——dual-surreal 下持续写不进=静默丢数据,必须可观测。
+  // E:权威库落库健康度。成功清零、失败累积——surreal 权威库持续写不进=静默丢数据,必须可观测。
   let persistHealth: PersistHealth = { consecutiveFailures: 0 };
   // R2b(M1 修复):治理事务在途计数(计数而非 boolean——两个治理调用嵌套时 boolean 会被先完成者提前
   // 清零)。runGovernanceTransaction 在**函数体内同步** ++(不在 .then 里,否则 counter 迟于并发写读到
@@ -342,7 +342,7 @@ export async function buildSurrealProductStateRepositoryOnConnection(
       })
       .catch((err) => {
         // fail-loud:基线不动,下次 persist 以旧基线 diff、补回本次漏写(自愈)。
-        // 连续失败计数随告警一起出——dual-surreal 下持续写不进权威库=静默丢数据,/api/health 须能感知。
+        // 连续失败计数随告警一起出——surreal 权威库持续写不进=静默丢数据,/api/health 须能感知。
         persistHealth = {
           consecutiveFailures: persistHealth.consecutiveFailures + 1,
           lastError: String(err),
@@ -1060,7 +1060,7 @@ async function buildPersistStatements(db: Surreal, prev: ProductState, next: Pro
 
 /** R1b 保留期清理:删除各流水表 cutoff 之前的历史条目(复合 id range 删除,零索引)。
  *  每表的有效 cutoff 取 min(保留期 cutoff, 内存窗口内最旧条目)——绝不删仍在内存窗口内的行,
- *  否则重启后窗口凭空缩水 + dual 影子每次启动报发散噪声。`table:..[$c]` 开区间尾:
+ *  否则重启后窗口凭空缩水。`table:..[$c]` 开区间尾:
  *  只删 ts 严格早于 cutoff 的行(1 元素边界数组按前缀序小于任何 [同 ts, id],实测 3.0.2 可用)。 */
 async function pruneStreamsBefore(db: Surreal, cutoffIso: string, memState: ProductState): Promise<void> {
   // 坏格式 cutoff 早退(no-op + 警告):非法字符串在字典序比较下不可预期(可能大于一切合法 ISO,

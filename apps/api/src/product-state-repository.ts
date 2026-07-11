@@ -43,7 +43,7 @@ export interface ReplaceStateOptions {
   /**
    * 回归审查 R4-3:跳过 withKnowledgeReindex 的增量重索引。用于 import/purge——它们随后会
    * 显式全量 rebuild/清空(含冷层逐字稿),包装层的增量 reindex 是重复嵌入(浪费预算,收敛一致但冗余)。
-   * 仅 withKnowledgeReindex 读取;底层 sqlite/surreal/dual repo 忽略此字段。
+   * 仅 withKnowledgeReindex 读取;底层 surreal/memory repo 忽略此字段。
    */
   skipReindex?: boolean;
 }

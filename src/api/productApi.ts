@@ -171,7 +171,8 @@ export interface SystemCapabilitiesResponse {
   configVersion: string;
   runtime: {
     service: string;
-    stateStore: "memory" | "sqlite";
+    // R7:持久档从 sqlite 换成 surreal(唯一持久档);memory 为不持久档。
+    stateStore: "memory" | "surreal";
   };
   capabilities: SystemCapability[];
 }
