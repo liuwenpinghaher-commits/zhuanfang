@@ -8,11 +8,13 @@ interface ThemesViewProps {
   review: ReturnType<typeof buildMonthlyReview>;
   yearlyReview: ReturnType<typeof buildYearlyReview>;
   radar: ReturnType<typeof buildCognitiveRadar>;
+  /** P3-08:LLM 复盘不可用、退回确定性本地复盘时为 true——如实标注,别让用户误以为是 LLM 综述。 */
+  reviewsDegraded?: boolean;
   onStart: (mode?: InterviewMode) => void;
   onOpenTrack?: (id: string) => void;
 }
 
-export function ThemesView({ state, review, yearlyReview, radar, onStart, onOpenTrack }: ThemesViewProps) {
+export function ThemesView({ state, review, yearlyReview, radar, reviewsDegraded, onStart, onOpenTrack }: ThemesViewProps) {
   return (
     <section className="view-stack">
       <HeaderBlock
@@ -23,6 +25,9 @@ export function ThemesView({ state, review, yearlyReview, radar, onStart, onOpen
       />
       <section className="panel">
         <div className="panel-title"><Brain size={18} /><h2>本月回顾</h2></div>
+        {reviewsDegraded && (
+          <p className="review-degraded-hint" role="status">本地生成(LLM 复盘暂不可用,已用确定性回顾兜底)。</p>
+        )}
         <div className="review-grid">
           <ReviewItem label="一直在谈" value={review.topTheme} />
           <ReviewItem label="正在变化" value={review.changedView} />

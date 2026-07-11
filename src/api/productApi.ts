@@ -383,7 +383,12 @@ export interface InterruptRealtimeVoiceSessionResponse {
 }
 
 export interface GeneratePodcastEpisodeRequest {
-  noteId: string;
+  // P3-05:sourceType/sourceId 本就被后端消费(note 之外的 theme/search-brief/knowledge-debt 源),
+  // 此前不在类型里、前端靠 as any 走私 → 编译期契约失效。补进契约:noteId 仅 note 源必带,
+  // 其它源用 sourceType+sourceId。
+  noteId?: string;
+  sourceType?: PodcastEpisode["sourceType"];
+  sourceId?: string;
   format: PodcastEpisode["format"];
   voice: string;
 }

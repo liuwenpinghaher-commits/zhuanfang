@@ -1,7 +1,7 @@
 import { BookOpen, Clock, Plus, Play, Sparkles, Target, TrendingUp } from "lucide-react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import { buildTimeline } from "../../domain/timeline";
-import type { buildInterviewCard, buildMonthlyReview } from "../../domain/engine";
+import type { buildInterviewCard } from "../../domain/engine";
 import type { InterviewMode, ProductState } from "../../domain/types";
 
 const modeOptions: Array<{ id: InterviewMode; label: string; detail: string }> = [
@@ -44,13 +44,13 @@ function formatAt(iso: string): string {
 interface HomeViewProps {
   state: ProductState;
   card: ReturnType<typeof buildInterviewCard>;
-  monthlyReview: ReturnType<typeof buildMonthlyReview>;
+  // P3-08:曾有 monthlyReview prop 但组件从不消费(死 prop),已移除。复盘在 ThemesView 呈现。
   onStart: (mode?: InterviewMode) => void;
   onOpenTrack?: (themeId: string) => void;
   onNavigate?: (view: string) => void;
 }
 
-export function HomeView({ state, card, monthlyReview: _monthlyReview, onStart, onOpenTrack, onNavigate }: HomeViewProps) {
+export function HomeView({ state, card, onStart, onOpenTrack, onNavigate }: HomeViewProps) {
   const timelineEvents = buildTimeline(state, 20);
 
   function handleEventClick(ev: (typeof timelineEvents)[number]) {

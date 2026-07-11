@@ -172,6 +172,9 @@ export default function App() {
   const [apiPersistenceEnabled, setApiPersistenceEnabled] = useState(false);
   const [systemCapabilities, setSystemCapabilities] = useState<SystemCapabilitiesResponse | null>(null);
   const [serverReviews, setServerReviews] = useState<ReviewsResponse | null>(null);
+  // P3-08:LLM 复盘取不到时静默退回确定性本地复盘——旅程8失败此前零信号。用此标记让复盘视图
+  // 如实标注"本地生成(LLM 复盘暂不可用)",而不是让用户误以为看的是 LLM 综述。
+  const [reviewsDegraded, setReviewsDegraded] = useState(false);
   const [importing, setImporting] = useState(false);
   const [runtimeConfig, setRuntimeConfig] = useState<SystemConfigResponse | null>(null);
   const [runtimeConfigSaving, setRuntimeConfigSaving] = useState(false);
@@ -190,6 +193,10 @@ export default function App() {
   // 同步防重入:setStartingInterview 是异步 state,挡不住"创建请求在途时"的二次触发(双击 /
   // 快速重渲染),会创建多个空 session。startInterview 入口用这个 ref 同步短路。
   const startingRef = useRef(false);
+  // P3-19:录音开关同步防重入。开始录音的连接建立(创建 voice session + 连 ASR/TTS WS)是异步的,
+  // recording state 要等连接就绪才置 true——期间双击/快速重渲染会开出两条 pipeline、两个 getUserMedia
+  // (mic 泄漏)。与 startingRef 同构:进"开始"分支前同步短路,连接流程 settle 后在 finally 复位。
+  const togglingRef = useRef(false);
   // 同步防重入:/end 要调真实 LLM 做档案抽取(数秒),用户等不及会重复点"结束"。没有这个 guard,
   // 第一次成功 completed 后,后续点击全部 409(已结束)→ "结束失败"提示覆盖成功 → 诱导继续点。
   const finishingRef = useRef(false);
@@ -845,10 +852,12 @@ export default function App() {
       .then((reviews) => {
         if (!cancelled) {
           setServerReviews(reviews);
+          setReviewsDegraded(false);
         }
       })
       .catch(() => {
-        // Offline / no API key: keep the deterministic fallback.
+        // Offline / no API key / LLM 综述失败:保留确定性本地回退,但如实标注降级(P3-08)。
+        if (!cancelled) setReviewsDegraded(true);
       });
     return () => {
       cancelled = true;
@@ -992,16 +1001,37 @@ export default function App() {
   }
 
   function withMemoryAction(run: () => Promise<ProductState>) {
-    run()
+    // P3-03:返回链——让 MemoryGovernanceView 的 loading/done/error 状态机能真正 await 到完成
+    //(此前返回 undefined,await 立即 resolve → loading/done 瞬时假信号、error 永不触发、防重入窗口≈0)。
+    // P3-02:区分业务冲突(409/422/404:记忆状态已变,重试无益)与后端离线,不再一律"需要后端在线"。
+    // rethrow 让 await 侧(approve/reject/编辑候选)的 catch 落到 error 状态;fire-and-forget 侧
+    //(deprecate/delete)在各自调用点 .catch 兜底,避免未处理 rejection。
+    return run()
       .then((next) => adoptServerState(next))
-      .catch(() => setNotice(buildNotice("warning", "操作失败", "记忆治理需要后端在线。")));
+      .catch((err) => {
+        const conflict = err instanceof ApiError && (err.status === 409 || err.status === 422 || err.status === 404);
+        setNotice(buildNotice(
+          "warning",
+          conflict ? "操作未生效" : "操作失败",
+          conflict ? "该记忆的状态已变化(可能已被处理或清理),请刷新后重试。" : "记忆治理需要后端在线。"
+        ));
+        throw err;
+      });
   }
   function confirmDecision(id: string) {
     setConfirmingDecisionId(id);
     productApiClient
       .confirmDecision(id)
       .then((next) => adoptServerState(next))
-      .catch(() => setNotice(buildNotice("warning", "操作失败", "确认决策需要后端在线。")))
+      // P3-02:区分业务冲突(409/422/404:决策已确认或状态已变)与后端离线,不再一律"需要后端在线"。
+      .catch((err) => {
+        const conflict = err instanceof ApiError && (err.status === 409 || err.status === 422 || err.status === 404);
+        setNotice(buildNotice(
+          "warning",
+          conflict ? "操作未生效" : "操作失败",
+          conflict ? "该决策的状态已变化(可能已确认),请刷新后重试。" : "确认决策需要后端在线。"
+        ));
+      })
       .finally(() => setConfirmingDecisionId(undefined));
   }
 
@@ -1011,12 +1041,13 @@ export default function App() {
   const deprecateRecord = (id: string) => {
     // 撤销会让记忆退出访谈与对话召回——状态突变需显式确认，与全站破坏性操作约定一致。
     if (!window.confirm("确定撤销这条长期记忆吗？撤销后它将不再进入访谈与资产对话的召回。")) return;
-    return withMemoryAction(() => productApiClient.deprecateMemoryRecord(id));
+    // fire-and-forget(onClick 不 await):notice 已由 withMemoryAction 弹出,这里 .catch 兜底防未处理 rejection。
+    return withMemoryAction(() => productApiClient.deprecateMemoryRecord(id)).catch(() => {});
   };
   const deleteRecord = (id: string) => {
     // 删除一条已确认长期记忆不可撤销，必须二次确认，避免误点单击即永久丢失。
     if (!window.confirm("确定永久删除这条长期记忆吗？此操作不可撤销。")) return;
-    return withMemoryAction(() => productApiClient.deleteMemoryRecord(id));
+    return withMemoryAction(() => productApiClient.deleteMemoryRecord(id)).catch(() => {});
   };
   const editMemoryRecord = async (recordId: string, text: string) => {
     // 修正后端会自动重算 embedding。用 adoptServerState 采纳权威态，避免冗余 PUT。
@@ -1495,12 +1526,12 @@ export default function App() {
 
     try {
       const apiRun = await productApiClient.generatePodcastEpisode({
-        noteId: podcastSourceType === "note" ? effectiveSourceId : undefined,
+        ...(podcastSourceType === "note" ? { noteId: effectiveSourceId } : {}),
         sourceType: podcastSourceType,
         sourceId: effectiveSourceId,
         format: "solo",
         voice: podcastVoice
-      } as any);
+      });
       adoptServerState(apiRun.state);
       setApiPersistenceEnabled(true);
       setPodcastNoteId(effectiveSourceId);
@@ -1557,35 +1588,14 @@ export default function App() {
     // race where a prior saveState failure left the server holding a stale script.
     const scriptToSynthesize = podcastEditingScript || episode.script;
 
-    // Best-effort: also update local state optimistically so the UI reflects the new script
-    // even before the server round-trip completes.
-    const applyScriptToState = (base: typeof productState) => ({
-      ...base,
-      podcastEpisodes: base.podcastEpisodes.map((ep) =>
-        ep.id === episodeId
-          ? { ...ep, script: scriptToSynthesize, scriptReviewStatus: "用户确认" as const }
-          : ep
-      )
-    });
-    setProductState(applyScriptToState(productState));
-
-    // Best-effort persistence (non-blocking). If this fails, the synthesize call below
-    // still carries the correct script, so failure here does NOT abort synthesis.
-    productApiClient.saveState(applyScriptToState(productState)).then(
-      ({ state: persisted, conflicted }) => {
-        setProductState(conflicted ? applyScriptToState(persisted) : persisted);
-        setApiPersistenceEnabled(true);
-      },
-      () => { setApiPersistenceEnabled(false); }
-    );
-
-    // Call the synthesize endpoint with the current script attached. The server will
-    // use this script for TTS rendering AND persist it, so the result is always
-    // consistent with what the user confirmed — regardless of whether saveState above
-    // succeeded.
+    // P3-09:此前先裸 setProductState 乐观更新、再 fire-and-forget 整包 saveState(PUT),然后又调
+    // synthesize——而 synthesize 本身就带着 scriptToSynthesize 在服务端确认脚本 + 持久化(见下)。
+    // 那条 saveState 是纯写放大:PUT 一份和 synthesize 即将持久化的同一脚本,还触发 autosave echo。
+    // 收敛不丢数据(synthesize 是权威),故删除旁路 PUT,统一由 synthesize 结果走 adoptServerState。
     try {
       const { state: synthState, episode: synthEpisode } = await productApiClient.synthesizePodcastEpisode(episodeId, scriptToSynthesize);
-      setProductState(synthState);
+      adoptServerState(synthState);   // 采纳权威态(revision 已 bump,不触发 echo PUT)
+      setApiPersistenceEnabled(true);
       setPodcastEditingScript("");
       const isRendered = synthEpisode.audioRenderStatus === "rendered";
       setNotice(
@@ -1765,8 +1775,19 @@ export default function App() {
       setRuntimeConfig(result.config);
       setSystemCapabilities(capabilities);
       setNotice(buildNotice("success", "运行配置已保存", `已更新 ${result.settingsUpdated.length} 项服务端配置。`));
-    } catch {
-      setNotice(buildNotice("danger", "运行配置保存失败", "请确认 Product API 正在运行，且本地 env 文件可写。"));
+    } catch (err) {
+      // P3-07:422 是服务端校验拒绝,body.error 带具体中文原因(如某项配置非法);此前一律吞成
+      // "env 文件可写"误导排查方向。有服务端原因就如实透出,只有网络/未知才回退到通用提示。
+      const serverReason = err instanceof ApiError && err.body && typeof err.body === "object"
+        ? (err.body as { error?: unknown }).error
+        : undefined;
+      setNotice(buildNotice(
+        "danger",
+        "运行配置保存失败",
+        typeof serverReason === "string" && serverReason
+          ? serverReason
+          : "请确认 Product API 正在运行，且本地 env 文件可写。"
+      ));
     } finally {
       setRuntimeConfigSaving(false);
     }
@@ -2195,6 +2216,9 @@ export default function App() {
       closeRealtimeVoiceSession();
       return;
     }
+    // P3-19:连接建立窗口内的二次触发直接短路(停止路径在上方,幂等 close,无需守卫)。
+    if (togglingRef.current) return;
+    togglingRef.current = true;
 
     try {
       const voiceSession = await productApiClient.createRealtimeVoiceSession({
@@ -2534,6 +2558,9 @@ export default function App() {
       return;
     } catch {
       setApiPersistenceEnabled(false);
+    } finally {
+      // P3-19:连接流程 settle(成功就绪 / 失败 / 早返回)后复位,让后续开关正常工作。
+      togglingRef.current = false;
     }
 
     setRealtimeVoiceSession(null);
@@ -2664,7 +2691,6 @@ export default function App() {
           <HomeView
             state={productState}
             card={card}
-            monthlyReview={monthlyReview}
             onStart={launchInterview}
             onOpenTrack={openTrack}
             onNavigate={(v) => setView(v as Parameters<typeof setView>[0])}
@@ -2844,7 +2870,7 @@ export default function App() {
             }}
           />
         )}
-        {view === "themes" && <ThemesView state={productState} review={monthlyReview} yearlyReview={yearlyReview} radar={radar} onStart={launchInterview} onOpenTrack={openTrack} />}
+        {view === "themes" && <ThemesView state={productState} review={monthlyReview} yearlyReview={yearlyReview} radar={radar} reviewsDegraded={reviewsDegraded} onStart={launchInterview} onOpenTrack={openTrack} />}
         {view === "track" && (
           <TrackWorkspaceView
             workspace={buildTrackWorkspace(productState, selectedTrackId ?? "")}

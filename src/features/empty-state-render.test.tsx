@@ -30,7 +30,6 @@ describe("empty-state render guards", () => {
         <HomeView
           state={s}
           card={buildInterviewCard(s)}
-          monthlyReview={buildMonthlyReview(s)}
           onStart={() => {}}
         />
       )
@@ -43,7 +42,6 @@ describe("empty-state render guards", () => {
       <HomeView
         state={s}
         card={buildInterviewCard(s)}
-        monthlyReview={buildMonthlyReview(s)}
         onStart={() => {}}
       />
     );
@@ -57,7 +55,6 @@ describe("empty-state render guards", () => {
       <HomeView
         state={s}
         card={buildInterviewCard(s)}
-        monthlyReview={buildMonthlyReview(s)}
         onStart={() => {}}
       />
     );
@@ -72,7 +69,6 @@ describe("empty-state render guards", () => {
         <HomeView
           state={s}
           card={buildInterviewCard(s)}
-          monthlyReview={buildMonthlyReview(s)}
           onStart={() => {}}
           onOpenTrack={() => {}}
           onNavigate={() => {}}

@@ -12,8 +12,10 @@ import type { WriteGate } from "./server";
  * 形状:getState() → mutate(纯函数,基于最新快照重算) → replaceState(next, {expectedRevision})。
  * 撞 StateRevisionConflictError(并发写抢先 bump 了 revision)→ 重读最新态、重新执行 mutate、重试,
  * 有界(默认 3 次重试);撞 GovernanceInFlightError(治理事务在途)→ 直接上抛(statusCode=409,
- * 全局 setErrorHandler 自动映射,前端已有 409 处理);重试耗尽 → 把最后一次冲突错误标上
+ * 全局 setErrorHandler 自动映射);重试耗尽 → 把最后一次冲突错误标上
  * statusCode=409 后如实上抛(不掩盖为成功,不静默 last-write-wins)。
+ * P3-02:前端各 CAS 消费点(App withMemoryAction / confirmDecision / applyPlaybookPatch·revertPlaybookPatch)
+ * 现区分 409/422/404 业务冲突(状态已变,提示刷新重试)与网络离线,不再把冲突一刀切吞成"需要后端在线"。
  *
  * ── 为什么 commit 仍要经 writeGate.runExclusive(D3 反向 clobber 不变量)────────────────
  * 遗留长路由(/turns、/end、consolidate、candidates approve、podcast、chat、corpus、import…)

@@ -1771,6 +1771,13 @@ select:focus-visible {
   gap: 12px;
 }
 
+/* P3-08:LLM 复盘降级(退回本地确定性回顾)时的如实标注。 */
+.review-degraded-hint {
+  margin: 0 0 10px;
+  font-size: 0.78rem;
+  color: #b45309;
+}
+
 .radar-grid,
 .yearly-grid {
   display: grid;
