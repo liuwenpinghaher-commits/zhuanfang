@@ -5,6 +5,7 @@ import {
   GovernanceInFlightError,
   type ProductStateRepository
 } from "../product-state-repository";
+import { StateRevisionConflictError } from "../product-state-repository";
 import { createEmptyProductState, createInitialProductState } from "../../../../src/domain/engine";
 import type { MemoryCandidate, ProductState } from "../../../../src/domain/types";
 import type { BailianEmbeddingClient } from "../providers/bailian";
@@ -130,6 +131,28 @@ describe("R3 试点路由 CAS 换轨(全栈)", () => {
     }
   });
 
+  it("CAS 耗尽 → 全局 handler 按 instanceof 映射 409(M2:helper 不再 per-throw 打 statusCode)", async () => {
+    // repo 的 replaceState 恒抛 StateRevisionConflictError → runStateCommand 重试耗尽后原样上抛,
+    // 到达全局 setErrorHandler 被 instanceof 分支映射成 409。证明 M2 的映射下沉端到端成立。
+    const inner = createInMemoryProductStateRepository(seedWithCandidates(["c1"]));
+    const alwaysConflict: ProductStateRepository = {
+      ...inner,
+      getState: () => inner.getState(),
+      replaceState() {
+        throw new StateRevisionConflictError(1, 999);
+      }
+    };
+    const server = buildApiServer({ productStateRepository: alwaysConflict, env: {} });
+    await server.ready();
+    try {
+      const res = await server.inject({ method: "PATCH", url: "/api/memory-candidates/c1", payload: { text: "改后" } });
+      expect(res.statusCode).toBe(409); // 不是 500——全局 handler 识别 StateRevisionConflictError
+      expect(res.json().error).toContain("revision");
+    } finally {
+      await server.close();
+    }
+  });
+
   it("豁免名单:试点路由豁免;宽事务(整包 PUT//end/治理/approve/consolidate)不豁免", () => {
     // 试点(豁免)
     expect(isWriteGateExempt("POST", "/api/assets/decisions/d1/confirm")).toBe(true);
@@ -201,4 +224,183 @@ describe("R3 试点路由 CAS 换轨(全栈)", () => {
       await server.close();
     }
   });
+});
+
+// ═══ R3(I1)· 豁免 CAS 路由的 writeGate 接线 × 8 参数化守卫 ══════════════════════════════
+// 动机:豁免表↔路由 CAS↔注册传 writeGate 是三向约定,任一处静默漏配(尤其"注册时漏传
+// writeGate")都会让该路由的 commit 绕过全局写门、裸落进长持锁写的读写窗口 → 无声反向 clobber
+// (最隐蔽的失败模式)。此测试对每条豁免 CAS 路由构造 D3 窗口,断言其 commit【确实经写门序列化】:
+//   构造:用 topicHint 携哨兵的 create-session 长写在 embed 处永久挂起、持有全局写 slot;
+//   ①有效写不排队进 handler,但其 CAS commit 必须【卡在写门后】(长写释放前不 settle)——
+//     若漏传 writeGate,commit 会在长写挂起期间裸执行、提前 settle → 本断言变红;
+//   ②放行长写后,长写(整态 replaceState 无 expectedRevision)与试点写【双双存活】——
+//     若漏传 writeGate,长写 resume 会以读时旧基整态回滚掉试点写 → 落库校验变红。
+// 两道断言正交,任一命中即证明"漏传 writeGate→绕门 clobber"。哨兵只让 create-session 的 topic
+// embed 挂起;试点路由自身若有 embed(PATCH 记忆记录),其文本不含哨兵 → 即时 resolve,不受影响。
+
+const HANG_SENTINEL = "R3_D3_HANG_SENTINEL";
+
+function memoryRecord(id: string, text: string) {
+  return {
+    id,
+    text,
+    status: "confirmed" as const,
+    sourceType: "interview_session" as const,
+    sourceId: "s1",
+    evidenceQuote: "",
+    sensitivity: "normal" as const,
+    createdAt: "2026-07-11T00:00:00.000Z",
+    updatedAt: "2026-07-11T00:00:00.000Z"
+  };
+}
+
+function playbookPatch(id: string, status: "proposed" | "applied") {
+  return {
+    id,
+    title: "先索要具体时刻",
+    description: "抽象评价先落到具体事件",
+    sourceInsightId: "insight-1",
+    status,
+    rules: ["当用户使用抽象评价时，先追问一个具体时刻。"],
+    ruleTypes: ["concrete-moment" as const],
+    impact: "medium" as const,
+    createdAt: "2026-06-01T00:00:00.000Z",
+    ...(status === "applied" ? { appliedAt: "2026-06-19T00:00:00.000Z" } : {})
+  };
+}
+
+interface WiringCase {
+  label: string;
+  build: () => ProductState;
+  method: "POST" | "PATCH" | "DELETE";
+  url: string;
+  payload?: unknown;
+  /** 断言试点写的成果确实落库(未被长写整态回滚)。 */
+  verify: (state: ProductState) => void;
+}
+
+function buildWiringCases(): WiringCase[] {
+  const cases: WiringCase[] = [];
+
+  // 1. 决策确认(createInitialProductState 自带待确认决策)
+  {
+    const state = createInitialProductState();
+    const decision = state.decisions.find((d) => d.confirmationStatus === "待用户确认")!;
+    cases.push({
+      label: "POST /api/assets/decisions/:id/confirm",
+      build: () => createInitialProductState(),
+      method: "POST",
+      url: `/api/assets/decisions/${decision.id}/confirm`,
+      verify: (s) => expect(s.decisions.find((d) => d.id === decision.id)?.confirmationStatus).toBe("用户确认")
+    });
+  }
+  // 2. playbook apply(proposed → applied)
+  cases.push({
+    label: "POST /api/playbook-patches/:id/apply",
+    build: () => ({ ...createEmptyProductState(), playbookPatches: [playbookPatch("r3-patch-proposed", "proposed")] }),
+    method: "POST",
+    url: "/api/playbook-patches/r3-patch-proposed/apply",
+    verify: (s) => expect(s.playbookPatches.find((p) => p.id === "r3-patch-proposed")?.status).toBe("applied")
+  });
+  // 3. playbook revert(applied → reverted)
+  cases.push({
+    label: "POST /api/playbook-patches/:id/revert",
+    build: () => ({ ...createEmptyProductState(), playbookPatches: [playbookPatch("r3-patch-applied", "applied")] }),
+    method: "POST",
+    url: "/api/playbook-patches/r3-patch-applied/revert",
+    verify: (s) => expect(s.playbookPatches.find((p) => p.id === "r3-patch-applied")?.status).toBe("reverted")
+  });
+  // 4. PATCH 记忆记录(带 embed:文本无哨兵 → 即时 resolve,commit 仍须经门)
+  cases.push({
+    label: "PATCH /api/memory-records/:id",
+    build: () => ({ ...createEmptyProductState(), memoryRecords: [memoryRecord("r3-rec", "旧记忆")] }),
+    method: "PATCH",
+    url: "/api/memory-records/r3-rec",
+    payload: { text: "改后记忆" },
+    verify: (s) => expect(s.memoryRecords.find((r) => r.id === "r3-rec")?.text).toBe("改后记忆")
+  });
+  // 5. DELETE 记忆记录
+  cases.push({
+    label: "DELETE /api/memory-records/:id",
+    build: () => ({ ...createEmptyProductState(), memoryRecords: [memoryRecord("r3-rec-del", "待删")] }),
+    method: "DELETE",
+    url: "/api/memory-records/r3-rec-del",
+    verify: (s) => expect(s.memoryRecords.find((r) => r.id === "r3-rec-del")).toBeUndefined()
+  });
+  // 6. 废弃记忆记录(confirmed → deprecated)
+  cases.push({
+    label: "POST /api/memory-records/:id/deprecate",
+    build: () => ({ ...createEmptyProductState(), memoryRecords: [memoryRecord("r3-rec-dep", "待废弃")] }),
+    method: "POST",
+    url: "/api/memory-records/r3-rec-dep/deprecate",
+    payload: { reason: "过时" },
+    verify: (s) => expect(s.memoryRecords.find((r) => r.id === "r3-rec-dep")?.status).toBe("deprecated")
+  });
+  // 7. PATCH 记忆候选文本
+  cases.push({
+    label: "PATCH /api/memory-candidates/:id",
+    build: () => seedWithCandidates(["r3-cand"]),
+    method: "PATCH",
+    url: "/api/memory-candidates/r3-cand",
+    payload: { text: "改后候选" },
+    verify: (s) => expect(s.memoryCandidates.find((c) => c.id === "r3-cand")?.text).toBe("改后候选")
+  });
+  // 8. 拒绝记忆候选(pending → rejected)
+  cases.push({
+    label: "POST /api/memory-candidates/:id/reject",
+    build: () => seedWithCandidates(["r3-cand-rej"]),
+    method: "POST",
+    url: "/api/memory-candidates/r3-cand-rej/reject",
+    payload: { reviewNote: "不采纳" },
+    verify: (s) => expect(s.memoryCandidates.find((c) => c.id === "r3-cand-rej")?.status).toBe("rejected")
+  });
+
+  return cases;
+}
+
+describe("R3(I1)豁免 CAS 路由 × writeGate 接线守卫", () => {
+  const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  for (const c of buildWiringCases()) {
+    it(`${c.label} 的 CAS commit 经写门序列化(漏传 writeGate 即变红)`, async () => {
+      const repo = createInMemoryProductStateRepository(c.build());
+      // 哨兵 embedding client:仅 create-session 的 topic(含哨兵)挂起并持锁;其余 embed 即时 resolve。
+      let releaseHang!: (v: number[][]) => void;
+      const hang = new Promise<number[][]>((resolve) => {
+        releaseHang = resolve;
+      });
+      const embeddingClient = {
+        providerId: "d3-wiring-test",
+        embed: (texts: string[]) =>
+          texts.some((t) => t.includes(HANG_SENTINEL)) ? hang : Promise.resolve(texts.map(() => [0.1, 0.2]))
+      } as unknown as BailianEmbeddingClient;
+      const server = buildApiServer({ productStateRepository: repo, env: {}, embeddingClient });
+      await server.ready();
+      try {
+        // ① 锁内长写(create-session,topicHint 携哨兵)抓住全局写 slot 并在 embed 处永久挂起。
+        const longWrite = server.inject({ method: "POST", url: "/api/interview-sessions", payload: { topicHint: HANG_SENTINEL } });
+        await tick(30); // 让 preHandler 拿到 slot 并推进到 await embed
+
+        // ② 试点有效写:handler 不排队(豁免),但其 CAS commit 必须卡在写门后 → 长写释放前不 settle。
+        const pilotWrite = server.inject({ method: c.method, url: c.url, payload: c.payload as never });
+        let settled = false;
+        void pilotWrite.then(() => {
+          settled = true;
+        });
+        await tick(60);
+        expect(settled).toBe(false); // ★漏传 writeGate → commit 裸执行提前 settle,此断言变红
+
+        // ③ 放行长写 → 长写(整态无 expectedRevision)与试点写双双存活(无反向 clobber)。
+        releaseHang([[0.1, 0.2]]);
+        const [longRes, pilotRes] = await Promise.all([longWrite, pilotWrite]);
+        expect(longRes.statusCode).toBe(200);
+        expect(pilotRes.statusCode).toBe(200);
+        const finalState = repo.getState();
+        expect(finalState.sessions.length).toBe(1); // 长写成果在
+        c.verify(finalState); // ★漏传 writeGate → 长写 resume 整态回滚试点写,此断言变红
+      } finally {
+        await server.close();
+      }
+    });
+  }
 });

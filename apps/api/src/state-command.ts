@@ -46,7 +46,13 @@ import type { WriteGate } from "./server";
  *    由调用方决定 404/409/422 语义。
  */
 export interface StateCommandOptions {
-  /** CAS 冲突后的最大重试次数(不含首次尝试),默认 3。 */
+  /**
+   * CAS 冲突后的最大重试次数(不含首次尝试),默认 3。
+   * 为什么是 3:冲突只发生在"另一写方在本命令的读→写微秒级同步窗口内也提交了一笔"。命令 commit
+   * 是门内连续同步块(无 await),同一时刻至多一个写方在推进,冲突源只能是"上一个刚释放门的写方
+   * 恰好 bump 了 revision"——每次重试都读到全新基线,连撞 N 次的概率随 N 指数衰减到可忽略。3 次给
+   * 足退让空间又保证有界(耗尽即响亮 409,不无限自旋)。负值被下方 Math.max(0,…) 钳到 0(至少跑一次)。
+   */
   maxRetries?: number;
   /**
    * 全局写门(server.ts registerWriteSerialization 的返回值)。被豁免出 preHandler 写锁的路由
@@ -62,7 +68,8 @@ export async function runStateCommand(
   mutate: (state: ProductState) => ProductState | null,
   opts: StateCommandOptions = {}
 ): Promise<ProductState | null> {
-  const maxRetries = opts.maxRetries ?? 3;
+  // M4:钳负值——maxRetries<0 会让循环一次不跑,lastConflict 恒 undefined,耗尽分支解引用即 NPE。
+  const maxRetries = Math.max(0, opts.maxRetries ?? 3);
   const label = opts.label ?? "state-command";
   let lastConflict: StateRevisionConflictError | undefined;
 
@@ -91,7 +98,9 @@ export async function runStateCommand(
       throw err; // 其它错误(域层不变量/持久层故障)原样冒泡,不吞
     }
   }
-  // 重试耗尽:如实 409(路由层经全局 setErrorHandler 映射;错误 message 携 expected/actual revision)。
-  // 在实例上补 statusCode 而不改错误类:PUT /api/state 等既有调用方对该类的显式 catch 语义不受影响。
-  throw Object.assign(lastConflict!, { statusCode: 409 });
+  // 重试耗尽:原样上抛 StateRevisionConflictError(message 携 expected/actual revision)。
+  // M2:映射 409 的职责下沉到全局 setErrorHandler(server.ts:`instanceof StateRevisionConflictError → 409`)——
+  // 无需 per-throw 在实例上打 statusCode。全局 handler 只兜未捕获错误;PUT /api/state 手动预检 revision、
+  // replaceState 不传 expectedRevision,永不抛该类,天然不经此路径,不受影响。
+  throw lastConflict!;
 }

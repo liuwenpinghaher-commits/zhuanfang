@@ -69,14 +69,25 @@ describe("runStateCommand(R3 CAS 重试)", () => {
     expect(seenRevisions[1]!).toBeGreaterThan(seenRevisions[0]!);
   });
 
-  it("重试耗尽:抛 StateRevisionConflictError 且实例带 statusCode=409(全局 handler 可映射)", async () => {
+  it("重试耗尽:原样抛 StateRevisionConflictError(M2:不再 per-throw 打 statusCode,映射下沉全局 handler)", async () => {
     const inner = createInMemoryProductStateRepository(seedState());
     const repo = conflictNTimes(inner, 99); // 永远冲突
     const mutate = vi.fn((state: ProductState) => ({ ...state }));
     const err = await runStateCommand(repo, mutate, { maxRetries: 2 }).catch((e) => e);
     expect(err).toBeInstanceOf(StateRevisionConflictError);
-    expect((err as { statusCode?: number }).statusCode).toBe(409);
+    // M2:helper 不再在实例上打 statusCode——409 由 server.ts 全局 setErrorHandler 按 instanceof 映射
+    // (全栈映射见 r3-cas-pilot.test.ts 的"CAS 耗尽 → 全局 handler 映射 409")。
+    expect((err as { statusCode?: number }).statusCode).toBeUndefined();
     expect(mutate).toHaveBeenCalledTimes(3); // 1 首次 + 2 重试,有界
+  });
+
+  it("M4:maxRetries 负值被钳到 0(至少跑一次,不 NPE),耗尽抛 StateRevisionConflictError", async () => {
+    const inner = createInMemoryProductStateRepository(seedState());
+    const repo = conflictNTimes(inner, 99); // 永远冲突
+    const mutate = vi.fn((state: ProductState) => ({ ...state }));
+    const err = await runStateCommand(repo, mutate, { maxRetries: -5 }).catch((e) => e);
+    expect(err).toBeInstanceOf(StateRevisionConflictError); // 不是 TypeError(undefined 解引用)
+    expect(mutate).toHaveBeenCalledTimes(1); // 钳到 0 重试 = 仅首次一次
   });
 
   it("GovernanceInFlightError 直接透传,不重试", async () => {

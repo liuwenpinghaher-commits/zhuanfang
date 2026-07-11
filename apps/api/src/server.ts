@@ -11,7 +11,7 @@ import { createSqliteAudioRepository } from "../../../packages/db/src/sqlite-aud
 import { createSqliteKnowledgeIndexRepository } from "../../../packages/db/src/sqlite-knowledge-index-repository";
 import { loadLocalEnvFile } from "./env";
 import { isInMemoryDbPath, resolveProductStoreSelection, type ProductStoreMode } from "./store-selection";
-import { createInMemoryProductStateRepository, type ProductStateRepository } from "./product-state-repository";
+import { createInMemoryProductStateRepository, StateRevisionConflictError, type ProductStateRepository } from "./product-state-repository";
 // F-01/A1:仅类型引用(readStateOrExplain 的签名)。
 import type { ProductState } from "../../../src/domain/types";
 import { createInMemoryRawMaterialRepository, type RawMaterialRepository } from "./raw-material-repository";
@@ -494,6 +494,14 @@ export interface WriteGate {
 // R3 试点路由(state-command.ts runStateCommand):handler 里的校验/embedding 在锁外并行,
 // 终写=「读-算-写连续同步块 + expectedRevision CAS」经写门排队——微秒级持锁,热点写不再
 // 端到端互相排队(P4 减半);治理在途如实 409。
+//
+// M4 · 段边界:豁免默认按段级精确匹配,不用裸 startsWith。裸前缀(如 `/api/memory-records/`)会把
+// **未来**同前缀新增的路由(如带 embedding 的 PATCH /:id/annotate)自动豁免出全局写锁,而它可能
+// 尚未做 D3 改造(embed 在读写窗口内、以旧基写回)→ 无声反向 clobber,正是最隐蔽的失败模式。
+// 故:能精确到具体动作的用 `exactPath`/末段判定;`:id` 型用 `idUnder`(仅匹配 prefix+单段,拒绝
+// 再有下级段)。★铁律:新增任何同前缀路由,必须显式回到本表评估 D3(handler 临界区是否有 await
+// 外部 IO / 终写是否经写门),再决定加不加豁免——绝不靠"碰巧被前缀网住"。auto-run 是唯一保留裸
+// 前缀者(它精确指向单一长联网端点族,无同前缀兄弟路由)。
 interface WriteGateExemption {
   /** 限定 HTTP method;缺省 = 任意 mutating method。 */
   method?: string;
@@ -502,6 +510,13 @@ interface WriteGateExemption {
   /** 为什么豁免是安全的(见上方统一语义;此处只记路由特有理由)。 */
   reason: string;
 }
+// prefix 必须以 "/" 结尾;仅匹配 prefix + 恰好一个非空段(其内不再含 "/")——即 `.../:id` 本身,
+// 不匹配 `.../:id/子动作`。这把"未来同前缀慢 IO 子路由被自动豁免"的隐患挡在编译期之外。
+const idUnder = (prefix: string) => (p: string): boolean => {
+  if (!p.startsWith(prefix)) return false;
+  const rest = p.slice(prefix.length);
+  return rest.length > 0 && !rest.includes("/");
+};
 const WRITE_GATE_EXEMPTIONS: WriteGateExemption[] = [
   {
     // auto-run 是可达 90s 的长联网 mutating 请求。若占用全局写 slot 整个请求期间,会把所有其它写
@@ -514,15 +529,17 @@ const WRITE_GATE_EXEMPTIONS: WriteGateExemption[] = [
   {
     // 回归审查 R6-6 → R3:PATCH 记忆记录 handler 会 await embedding(慢网络 IO,数百 ms)。
     // embed 在锁外先算,同步 RMW 已换轨 runStateCommand(CAS commit 经写门)——低频编辑不再
-    // 持全局 slot 整个 embed 期间阻塞其它写。
+    // 持全局 slot 整个 embed 期间阻塞其它写。M4:段级精确到 `.../:id`,未来 `.../:id/annotate`
+    // 等慢 IO 子路由不再被自动豁免(须显式评估 D3 后再入表)。
     method: "PATCH",
-    matches: (p) => p.startsWith("/api/memory-records/"),
+    matches: idUnder("/api/memory-records/"),
     reason: "R3 试点:embed 锁外,同步 RMW 走 CAS(commit 经写门)"
   },
   {
     // R3 试点:删除记忆记录——纯同步小 RMW(无外部 IO),mutate 基于最新态重找实体,CAS commit 经写门。
+    // M4:段级精确到 `.../:id`(DELETE 无同前缀子路由,收窄纯为一致性与未来防呆)。
     method: "DELETE",
-    matches: (p) => p.startsWith("/api/memory-records/"),
+    matches: idUnder("/api/memory-records/"),
     reason: "R3 试点:纯同步小 RMW,走 CAS(commit 经写门)"
   },
   {
@@ -546,11 +563,12 @@ const WRITE_GATE_EXEMPTIONS: WriteGateExemption[] = [
     reason: "R3 试点:纯同步小 RMW,走 CAS(commit 经写门)"
   },
   {
-    // R3 试点:记忆候选文本编辑——纯同步小 RMW。注意:同前缀的 POST /approve【不】豁免
-    // (handler 在读写之间 await embedding 且以旧基写回,豁免前需先按 R6-6 模式改造,留给后续);
-    // POST /api/memory/consolidate 前缀不同(/api/memory/),天然不匹配,仍整段持锁(LLM 在临界区)。
+    // R3 试点:记忆候选文本编辑——纯同步小 RMW。M4:段级精确到 `.../:id`——同前缀的 POST
+    // /:id/approve(读写之间 await embedding 且以旧基写回)本就是 POST 且带子段,双重不命中;
+    // 未来任何 PATCH /:id/子动作 也不再被自动豁免。POST /api/memory/consolidate 前缀不同(/api/memory/),
+    // 天然不匹配,仍整段持锁(LLM 在临界区)。
     method: "PATCH",
-    matches: (p) => p.startsWith("/api/memory-candidates/"),
+    matches: idUnder("/api/memory-candidates/"),
     reason: "R3 试点:纯同步小 RMW,走 CAS(commit 经写门)"
   },
   {
@@ -683,6 +701,13 @@ function registerWriteSerialization(server: ReturnType<typeof Fastify>): WriteGa
 // hints, or secrets never reach the client (CLAUDE.md: never leak internal errors).
 function registerErrorHandler(server: ReturnType<typeof Fastify>) {
   server.setErrorHandler((error: Error & { statusCode?: number }, request: FastifyRequest, reply: FastifyReply) => {
+    // R3(M2):CAS 命令重试耗尽 → StateRevisionConflictError 冒到这里,映射成 409 如实告知冲突。
+    // 此映射集中在全局 handler,runStateCommand 不再 per-throw 打 statusCode。全局 handler 只兜"未捕获
+    // 错误";PUT /api/state 手动预检 revision + replaceState 不传 expectedRevision,永不抛该类、永不经此。
+    // (GovernanceInFlightError 走下方 statusCode=409 分支,已自带 statusCode,无需在此列举。)
+    if (error instanceof StateRevisionConflictError) {
+      return reply.code(409).send({ error: error.message });
+    }
     const statusCode = typeof error.statusCode === "number" ? error.statusCode : 500;
     if (statusCode >= 400 && statusCode < 500) {
       return reply.code(statusCode).send({ error: error.message });
