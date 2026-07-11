@@ -7,6 +7,7 @@
 DEFINE INDEX IF NOT EXISTS memory_emb ON memory    FIELDS embedding HNSW DIMENSION 1024 DIST COSINE;
 DEFINE INDEX IF NOT EXISTS rag_emb    ON rag_chunk FIELDS embedding HNSW DIMENSION 1024 DIST COSINE;
 
+-- 注:R4a(010_r4a_ngram.surql)后此 analyzer 已 OVERWRITE 为 ngram(1,3) 并 REBUILD memory_ft/rag_ft;下行是初始态。
 DEFINE ANALYZER IF NOT EXISTS zh TOKENIZERS class FILTERS ngram(2,2), lowercase;
 DEFINE INDEX IF NOT EXISTS memory_ft ON memory    FIELDS text FULLTEXT ANALYZER zh BM25;
 DEFINE INDEX IF NOT EXISTS rag_ft    ON rag_chunk FIELDS text FULLTEXT ANALYZER zh BM25;

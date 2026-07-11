@@ -162,6 +162,46 @@ describe("surreal native recall: 混合检索(HNSW + BM25 + search::rrf,③)", (
     expect(emptyQueryText.map((h) => h.id)).toEqual(["me_near"]);  // 空白 queryText 也退化
   });
 
+  it("R4a 单字召回:单字 queryText 拉回关键词块(ngram(2,2) 对单字切 0 token、此路恒空,(1,3) 才可达)", async () => {
+    const repo = await makeMem();
+    const base = createInitialProductState();
+    // me_kw 含单字「赌」但向量最远(vec(-1));另造噪声让纯 HNSW 在小 k 下必漏 me_kw。
+    // 旧 ngram(2,2):search::analyze('zh','赌') 切不出任何 token → BM25 路空 → me_kw 永不被拉回。
+    // 新 ngram(1,3):单字产 1-gram「赌」→ BM25 命中 me_kw。这是 R0-S5 的核心收益,真库实证。
+    const noise = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6].map((s, i) => memWithEmbedding(`me_noise_${i}`, `无关内容${i}`, vec(s)));
+    repo.replaceState({ ...base, memoryRecords: [
+      memWithEmbedding("me_near", "关于授权放权的深度思考", vec(1)),
+      memWithEmbedding("me_kw", "他喜欢赌一把大的", vec(-1)),
+      ...noise
+    ] });
+    await repo.flush();
+    const kSmall = 2;
+    const hnswOnly = await repo.recallMemoriesByVector(vec(1), kSmall);
+    expect(hnswOnly.map((h) => h.id)).not.toContain("me_kw");          // 基线:向量最远,纯 HNSW k=2 漏
+    const hybrid = await repo.recallMemoriesByVector(vec(1), kSmall, { queryText: "赌" });
+    expect(hybrid.map((h) => h.id)).toContain("me_kw");                // 单字 BM25 拉回(升级前不可能)
+  });
+
+  it("R4a 1-gram 噪声治理:多字 queryText 不因单字 gram 误召无关块(择优丢单字)", async () => {
+    const repo = await makeMem();
+    const base = createInitialProductState();
+    // me_kw 含专名「区块链」;me_dist 只与「区块链」共享单字「链」(产业链),不含专名,且【无 embedding】
+    // → HNSW 不可达,只能由 BM25 路召回。旧「全 gram」下单字「链」会把 me_dist 误拉进候选;
+    // R4a 择优(含多字 gram 则丢单字)后「链」被丢,me_dist 不再被误召——1-gram 噪声治理的确定性断言。
+    const meDist = { id: "me_dist", text: "关注上下游产业链整合", status: "confirmed" as const,
+      sourceType: "profile" as const, sourceId: "p", evidenceQuote: "", sensitivity: "normal" as const,
+      createdAt: "2026-06-27T00:00:00.000Z", updatedAt: "2026-06-27T00:00:00.000Z" };  // 刻意无 embedding
+    repo.replaceState({ ...base, memoryRecords: [
+      memWithEmbedding("me_kw", "团队评估区块链技术选型", vec(-1)),
+      meDist as unknown as (typeof base.memoryRecords)[number]
+    ] });
+    await repo.flush();
+    const hybrid = await repo.recallMemoriesByVector(vec(1), 10, { queryText: "区块链" });
+    const ids = hybrid.map((h) => h.id);
+    expect(ids).toContain("me_kw");        // 专名多字 gram(区块/区块链/块链)命中
+    expect(ids).not.toContain("me_dist");  // 仅共享单字「链」+无 embedding → 择优丢单字后两路皆不达
+  });
+
   it("fail-safe:queryText 有词但 BM25 零命中 → 退化为向量召回(不破坏)", async () => {
     const repo = await makeMem();
     const base = createInitialProductState();

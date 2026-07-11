@@ -46,7 +46,7 @@ DEFINE FIELD IF NOT EXISTS data               ON audio TYPE bytes;
 -- sourceType/sourceId/text/keywords/createdAt + embedding option<array<float>>(+ title/embeddingProvider)。
 -- ⚠️ 派生「可重建」域:与 rag_chunk(RAG 块)是不同域(八源知识索引 vs RAG 检索块),刻意不合并。
 -- HNSW(DIMENSION 1024 DIST COSINE,== EMBEDDING_DIMENSION,apply-schema 守卫防漂移)+ BM25 全文
--- (ANALYZER zh,与 003 既有 memory_ft/rag_ft 同款 ngram(2,2))——本迁移只建表建索引,原生召回接线 R2c。
+-- (ANALYZER zh——本迁移写入时为 003 的 ngram(2,2);R4a/010 后已 OVERWRITE 为 ngram(1,3) 并 REBUILD kc_ft)——本迁移只建表建索引,原生召回接线 R2c。
 DEFINE TABLE IF NOT EXISTS knowledge_chunk SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS sourceType        ON knowledge_chunk TYPE string;
 DEFINE FIELD IF NOT EXISTS sourceId          ON knowledge_chunk TYPE string;

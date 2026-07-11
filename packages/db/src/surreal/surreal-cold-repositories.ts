@@ -12,6 +12,7 @@ import type { AudioRepository } from "../../../../apps/api/src/audio-repository"
 import type { KnowledgeIndexRepository } from "../../../../apps/api/src/knowledge-index-repository";
 import { createSurrealConnection, type SurrealConnectionOptions } from "./connect";
 import { applySchema } from "./apply-schema";
+import { selectBm25QueryTokens } from "./constants";
 import {
   buildSurrealProductStateRepositoryOnConnection,
   runWithTransientRetry,
@@ -177,14 +178,6 @@ export interface SurrealKnowledgeIndexRepository extends KnowledgeIndexRepositor
   searchHybrid(query: { text: string; embedding?: number[]; limit: number }): Promise<KnowledgeChunk[]>;
 }
 
-/** R2c:searchHybrid 的 BM25 query token 上限。chat 的 message 是用户自由输入(上限 3 万余字),
- *  zh analyzer ngram(2,2) 会切出海量 token——逐 token OR 的 SurrealQL 语句不能无界膨胀。
- *  去重后取前 32 个(范例 recallRagChunks 的 queryText 是受控短议程文本,无需此钳制;这里必须有)。
- *  量化锚点:32 个 `text @@ $tN` 谓词 ≈ 语句体积数百字节 + 每次召回至多 32 次全文索引查找(毫秒级),
- *  覆盖 query 头部约 33 个汉字的去重 bigram(连续 n 字产 n-1 个 2-gram)——足以覆盖一句真实提问;
- *  超长 query 的语义信号主要由 HNSW 向量路承担,BM25 取前缀 token 已足够拉回关键词降级块。 */
-const MAX_BM25_QUERY_TOKENS = 32;
-
 export function createSurrealKnowledgeIndexRepository(db: Surreal): SurrealKnowledgeIndexRepository {
   // epoch 照搬 sqlite/in-memory:进程内单调计数,deleteAll 递增(不持久化)。
   let epoch = 0;
@@ -299,8 +292,9 @@ export function createSurrealKnowledgeIndexRepository(db: Surreal): SurrealKnowl
       try {
         const tokensRes = await db.query<[string[]]>("RETURN search::analyze('zh', $t);", { t: queryText });
         const rawTokens = Array.isArray(tokensRes?.[0]) ? (tokensRes[0] as unknown[]).map(String).filter(Boolean) : [];
-        // 去重 + 钳制(见 MAX_BM25_QUERY_TOKENS):去重不改 OR 语义,钳制防用户长文本撑爆语句。
-        const tokens = [...new Set(rawTokens)].slice(0, MAX_BM25_QUERY_TOKENS);
+        // R4a 择优+钳制(统一口径,见 constants.ts selectBm25QueryTokens):去重→含多字 gram 则丢单字
+        // 1-gram(纯单字查询保留)→ 上限 32。chat message 是自由输入(3 万字),(1,3) 下钳制尤其必须。
+        const tokens = selectBm25QueryTokens(rawTokens);
         // fail-safe:query 切不出 token(纯符号/emoji 等)→ 无 BM25 可加,退化纯 HNSW。
         if (tokens.length === 0) return hnswOnly();
 

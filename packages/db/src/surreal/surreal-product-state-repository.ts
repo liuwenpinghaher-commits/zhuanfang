@@ -8,6 +8,7 @@ import { stableStringify } from "../../../../src/domain/stateDigest";
 import type { InterviewAudio, InterviewRawMaterial, ProductState } from "../../../../src/domain/types";
 import { createSurrealConnection, type SurrealConnectionOptions } from "./connect";
 import { applySchema } from "./apply-schema";
+import { selectBm25QueryTokens } from "./constants";
 import { NODE_MAPPINGS, STREAM_MAPPINGS, toRecord, fromRecord, type StreamMapping } from "./node-mapper";
 import { collectEdges, turnRecordsOf, type EdgeSpec } from "./edge-mapper";
 import { diffById, diffEdges } from "./diff";
@@ -561,7 +562,10 @@ export async function buildSurrealProductStateRepositoryOnConnection(
         //    `LET` 绑定时索引路径失效、子查询恒空(同 P2a 的 KNN 脆弱性)。故两路保持「纯索引」,
         //    A4 门控移到**最终取回 SELECT**(强度等同:confirmed + sensitivity)。
         const tokensRes = await db.query<[string[]]>("RETURN search::analyze('zh', $t);", { t: queryText });
-        const tokens = Array.isArray(tokensRes?.[0]) ? (tokensRes[0] as unknown[]).map(String).filter(Boolean) : [];
+        const analyzed = Array.isArray(tokensRes?.[0]) ? (tokensRes[0] as unknown[]).map(String).filter(Boolean) : [];
+        // R4a 择优+钳制(统一口径,见 constants.ts selectBm25QueryTokens):去重→含多字 gram 则丢单字
+        // 1-gram(纯单字查询保留)→ 上限 32。ngram(1,3) 下若灌 1-gram,多字查询候选/延迟暴涨(实测)。
+        const tokens = selectBm25QueryTokens(analyzed);
         // fail-safe:query 切不出 token → 无 BM25 可加,退化纯 HNSW。
         if (tokens.length === 0) return hnswOnly();
 
@@ -616,7 +620,9 @@ export async function buildSurrealProductStateRepositoryOnConnection(
 
       try {
         const tokensRes = await db.query<[string[]]>("RETURN search::analyze('zh', $t);", { t: queryText });
-        const tokens = Array.isArray(tokensRes?.[0]) ? (tokensRes[0] as unknown[]).map(String).filter(Boolean) : [];
+        const analyzed = Array.isArray(tokensRes?.[0]) ? (tokensRes[0] as unknown[]).map(String).filter(Boolean) : [];
+        // R4a 择优+钳制(统一口径,见 constants.ts selectBm25QueryTokens):与 memory 路逐字同款。
+        const tokens = selectBm25QueryTokens(analyzed);
         if (tokens.length === 0) return hnswOnly();
 
         const tokenVars: Record<string, unknown> = {};

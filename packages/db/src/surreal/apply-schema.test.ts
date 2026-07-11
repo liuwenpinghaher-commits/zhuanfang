@@ -16,7 +16,7 @@ describe("applySchema", () => {
   it("在空库上应用全部 migrations(返回已应用文件名)", async () => {
     const d = await freshDb();
     const applied = await applySchema(d);
-    expect(applied).toEqual(["001_nodes.surql", "002_relations.surql", "003_index.surql", "004_p1a_rest_meta.surql", "005_p3_cascade.surql", "006_p4_cascade_note_scope.surql", "007_r1a_entities.surql", "008_r1b_event_streams.surql", "009_r2a_cold.surql"]);
+    expect(applied).toEqual(["001_nodes.surql", "002_relations.surql", "003_index.surql", "004_p1a_rest_meta.surql", "005_p3_cascade.surql", "006_p4_cascade_note_scope.surql", "007_r1a_entities.surql", "008_r1b_event_streams.surql", "009_r2a_cold.surql", "010_r4a_ngram.surql"]);
   });
 
   it("L1:关系表 ENFORCED——RELATE 指向不存在端点节点应被引擎拒绝(DB 层引用完整性兜底)", async () => {
@@ -33,7 +33,27 @@ describe("applySchema", () => {
     expect(second).toEqual([]); // 全部已应用
     const [ledger] = await d.query<[{ name: string }[]]>("SELECT name FROM _migration;");
     const names = (ledger ?? []).map((r) => r.name).sort();
-    expect(names).toEqual(["001_nodes.surql", "002_relations.surql", "003_index.surql", "004_p1a_rest_meta.surql", "005_p3_cascade.surql", "006_p4_cascade_note_scope.surql", "007_r1a_entities.surql", "008_r1b_event_streams.surql", "009_r2a_cold.surql"]);
+    expect(names).toEqual(["001_nodes.surql", "002_relations.surql", "003_index.surql", "004_p1a_rest_meta.surql", "005_p3_cascade.surql", "006_p4_cascade_note_scope.surql", "007_r1a_entities.surql", "008_r1b_event_streams.surql", "009_r2a_cold.surql", "010_r4a_ngram.surql"]);
+  });
+
+  it("R4a:010 迁移后 zh analyzer 升为 ngram(1,3),三个 BM25 索引重建后单字可切词", async () => {
+    const d = await freshDb();
+    await applySchema(d);
+    // analyzer filter 已是 ngram(1,3)(010 OVERWRITE 生效)。
+    const [info] = await d.query<[{ analyzers: Record<string, string> }]>("INFO FOR DB;");
+    // 3.0.2 回读的 analyzer 定义为大写规范化(如 "...FILTERS NGRAM(1,3), LOWERCASE"),用小写比对。
+    expect(String(info?.analyzers?.zh ?? "").toLowerCase()).toContain("ngram(1,3)");
+    // 三个 zh BM25 索引齐全(memory_ft / rag_ft / kc_ft)——010 REBUILD 的全集。
+    const [mem] = await d.query<[{ indexes: Record<string, string> }]>("INFO FOR TABLE memory;");
+    const [rag] = await d.query<[{ indexes: Record<string, string> }]>("INFO FOR TABLE rag_chunk;");
+    const [kc] = await d.query<[{ indexes: Record<string, string> }]>("INFO FOR TABLE knowledge_chunk;");
+    expect(Object.keys(mem?.indexes ?? {})).toContain("memory_ft");
+    expect(Object.keys(rag?.indexes ?? {})).toContain("rag_ft");
+    expect(Object.keys(kc?.indexes ?? {})).toContain("kc_ft");
+    // 端到端:单字全文查询命中(ngram(2,2) 下 `search::analyze` 对单字切 0 token、`@@` 恒不命中)。
+    await d.query("CREATE memory:mk SET text='他喜欢赌一把大的', status='confirmed', sourceType='profile', sourceId='p', sensitivity='normal';");
+    const [hit] = await d.query<[unknown[]]>("SELECT VALUE id FROM memory WHERE text @@ '赌';");
+    expect((hit ?? []).length, "ngram(1,3) 下单字「赌」应命中").toBe(1);
   });
 
   it("INFO FOR DB:13 节点表 + entity_kind + 8 边表 + R1a 11 实体表 + R1b 4 流水表齐全", async () => {
