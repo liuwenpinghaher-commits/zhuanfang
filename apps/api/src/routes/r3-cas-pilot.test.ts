@@ -404,3 +404,38 @@ describe("R3(I1)豁免 CAS 路由 × writeGate 接线守卫", () => {
     });
   }
 });
+
+// N-13:apply 路由接线前端后支持"用户编辑后的规则集"(EditablePatchCard 可改 rules 再应用)。
+describe("N-13 playbook apply overrideRules 透传", () => {
+  it("body.overrideRules 非空 → 用编辑后的规则替换补丁原始规则(去空白/去空条)", async () => {
+    const repo = createInMemoryProductStateRepository({
+      ...createEmptyProductState(),
+      playbookPatches: [playbookPatch("p-ovr", "proposed")]
+    });
+    const server = buildApiServer({ productStateRepository: repo, env: {} });
+    const res = await server.inject({
+      method: "POST",
+      url: "/api/playbook-patches/p-ovr/apply",
+      headers: { "content-type": "application/json" },
+      payload: { overrideRules: ["改后规则A", "  改后规则B  ", "  "] }
+    });
+    expect(res.statusCode).toBe(200);
+    const patch = repo.getState().playbookPatches.find((p) => p.id === "p-ovr");
+    expect(patch?.status).toBe("applied");
+    expect(patch?.rules).toEqual(["改后规则A", "改后规则B"]);
+    await server.close();
+  });
+
+  it("无 body / 无 overrideRules → 保留补丁原始规则", async () => {
+    const repo = createInMemoryProductStateRepository({
+      ...createEmptyProductState(),
+      playbookPatches: [playbookPatch("p-orig", "proposed")]
+    });
+    const server = buildApiServer({ productStateRepository: repo, env: {} });
+    const res = await server.inject({ method: "POST", url: "/api/playbook-patches/p-orig/apply" });
+    expect(res.statusCode).toBe(200);
+    const patch = repo.getState().playbookPatches.find((p) => p.id === "p-orig");
+    expect(patch?.rules).toEqual(["当用户使用抽象评价时，先追问一个具体时刻。"]);
+    await server.close();
+  });
+});

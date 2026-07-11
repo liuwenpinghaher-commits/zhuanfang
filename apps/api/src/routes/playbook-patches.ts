@@ -20,6 +20,12 @@ export async function registerPlaybookPatchRoutes(
 ) {
   server.post("/api/playbook-patches/:id/apply", async (request, reply) => {
     const patchId = getPatchId(request.params);
+    // N-13:接线前端后,apply 支持用户编辑后的规则集(前端 EditablePatchCard 可改 rules 再应用)。
+    // 缺省/非数组 → undefined(approvePlaybookPatch 视作"无覆盖",保留补丁原始规则)。
+    const bodyRules = (request.body as { overrideRules?: unknown } | undefined)?.overrideRules;
+    const overrideRules = Array.isArray(bodyRules)
+      ? bodyRules.filter((r): r is string => typeof r === "string")
+      : undefined;
     let failure: { code: number; error: string } | null = null;
     let applied: PlaybookPatch | undefined;
     const persisted = await runStateCommand(
@@ -36,7 +42,7 @@ export async function registerPlaybookPatchRoutes(
           failure = { code: 409, error: "Only proposed PlaybookPatch records can be applied." };
           return null;
         }
-        const nextState = approvePlaybookPatch(state, patch.id);
+        const nextState = approvePlaybookPatch(state, patch.id, overrideRules);
         applied = findPatch(nextState, patch.id);
         return nextState;
       },

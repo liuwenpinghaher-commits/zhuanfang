@@ -63,6 +63,11 @@ export interface ProductApiClient {
     message: string
   ): Promise<{ state: ProductState; sessionId: string; answer: string; citations: ChatCitation[] }>;
   confirmDecision(id: string): Promise<ProductState>;
+  /** Apply a proposed PlaybookPatch (optionally with user-edited rules). Server is authoritative
+   *  (CAS-guarded state machine); returns the persisted state. Throws on 404/409. */
+  applyPlaybookPatch(id: string, overrideRules?: string[]): Promise<ProductState>;
+  /** Revert an applied PlaybookPatch. Throws 404/422 (only applied records can be reverted). */
+  revertPlaybookPatch(id: string): Promise<ProductState>;
   approveMemoryCandidate(id: string): Promise<ProductState>;
   rejectMemoryCandidate(id: string, reviewNote?: string): Promise<ProductState>;
   consolidateMemory(): Promise<{ state: ProductState; deprecated: number }>;
@@ -707,6 +712,18 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
     },
     async confirmDecision(id) {
       const response = (await requestJson(`/api/assets/decisions/${id}/confirm`, { method: "POST" })) as { state: ProductState };
+      return normalizeProductState(response.state);
+    },
+    async applyPlaybookPatch(id, overrideRules) {
+      const response = (await requestJson(`/api/playbook-patches/${id}/apply`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(overrideRules && overrideRules.length > 0 ? { overrideRules } : {})
+      })) as { state: ProductState };
+      return normalizeProductState(response.state);
+    },
+    async revertPlaybookPatch(id) {
+      const response = (await requestJson(`/api/playbook-patches/${id}/revert`, { method: "POST" })) as { state: ProductState };
       return normalizeProductState(response.state);
     },
     async approveMemoryCandidate(id) {

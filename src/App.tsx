@@ -18,8 +18,6 @@ import {
 import { FormEvent, MutableRefObject, useEffect, useMemo, useRef, useState } from "react";
 import {
   analyzeImportedInterview,
-  approvePlaybookPatch,
-  revertPlaybookPatch,
   buildCognitiveRadar,
   buildInterviewCard,
   buildInterviewResumeCard,
@@ -1705,23 +1703,43 @@ export default function App() {
     setNotice(buildNotice("warning", "语料分析已删除", "已应用的引擎补丁仍会保留。"));
   }
 
+  // N-13:apply/revert 接后端 CAS 路由(与 confirmDecision 同款权威态语义),不再前端本地 mutate+
+  // autosave 那条与后端语义分叉的平行路径。后端对非法流转响亮回 409/422 → .catch 如实提示,
+  // 顺带根治 P3-01(revert 对非 applied 补丁的"假成功"):不再无脑报成功。采纳后端权威态(revision
+  // 已 bump),避免下一次乐观 PUT 撞 409。
   function applyPlaybookPatch(patchId: string, overrideRules?: string[]) {
-    // 回归审查 R7-F1 纵深防御:approvePlaybookPatch 对非 proposed 补丁返回同一 state(无变化)。此前
-    // 无条件报 success + 跳转 → 对已撤销/已应用补丁"假成功"。UI 已隐藏终态的应用按钮,这里再兜一层:
-    // 无变化不报成功、不跳转,如实提示。
-    const next = approvePlaybookPatch(productState, patchId, overrideRules);
-    if (next === productState) {
-      setNotice(buildNotice("warning", "无法应用", "该补丁已处置(已应用或已撤销),不能重复应用。"));
-      return;
-    }
-    setProductState(next);
-    setNotice(buildNotice("success", "PlaybookPatch 已应用", "系统配置已记录新的访谈策略版本。"));
-    setView("config");
+    productApiClient
+      .applyPlaybookPatch(patchId, overrideRules)
+      .then((next) => {
+        adoptServerState(next);
+        setNotice(buildNotice("success", "PlaybookPatch 已应用", "系统配置已记录新的访谈策略版本。"));
+        setView("config");
+      })
+      .catch((err) => {
+        const conflict = err instanceof ApiError && (err.status === 409 || err.status === 404);
+        setNotice(buildNotice(
+          "warning",
+          conflict ? "无法应用" : "操作失败",
+          conflict ? "该补丁已处置(已应用或已撤销)或不存在,不能重复应用。" : "应用补丁需要后端在线。"
+        ));
+      });
   }
 
   function revertPatch(patchId: string) {
-    setProductState(revertPlaybookPatch(productState, patchId));
-    setNotice(buildNotice("info", "已撤销应用", "该访谈策略补丁已回退，后续访谈不再套用它。"));
+    productApiClient
+      .revertPlaybookPatch(patchId)
+      .then((next) => {
+        adoptServerState(next);
+        setNotice(buildNotice("info", "已撤销应用", "该访谈策略补丁已回退，后续访谈不再套用它。"));
+      })
+      .catch((err) => {
+        const conflict = err instanceof ApiError && (err.status === 422 || err.status === 404);
+        setNotice(buildNotice(
+          "warning",
+          conflict ? "无法撤销" : "操作失败",
+          conflict ? "只有已应用的补丁可以撤销。" : "撤销补丁需要后端在线。"
+        ));
+      });
   }
 
   function cleanupGeneratedArtifacts() {
