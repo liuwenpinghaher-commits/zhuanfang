@@ -320,14 +320,18 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     // optionally summarize merged clusters into pending HITL candidates.
     await registerMemoryCandidateRoutes(registeredServer, productStateRepository, withLiveProviderClients({
       // 审计修复(P1-6):补上全库 13 个 LLM 调用点中唯一漏网的预算接线。
-      llmBudget: sharedBudget
+      llmBudget: sharedBudget,
+      // R3:PATCH /:id 与 POST /:id/reject 已豁免全局写锁,CAS commit 经写门(approve/consolidate 仍持锁)。
+      writeGate
     }));
   });
   void server.register(async (registeredServer) => {
-    await registerAssetRoutes(registeredServer, productStateRepository);
+    // R3:决策确认已豁免全局写锁,CAS commit 经写门。
+    await registerAssetRoutes(registeredServer, productStateRepository, { writeGate });
   });
   void server.register(async (registeredServer) => {
-    await registerPlaybookPatchRoutes(registeredServer, productStateRepository);
+    // R3:apply/revert 已豁免全局写锁,CAS commit 经写门。
+    await registerPlaybookPatchRoutes(registeredServer, productStateRepository, { writeGate });
   });
   void server.register(async (registeredServer) => {
     await registerRagRoutes(registeredServer, productStateRepository, withLiveProviderClients({
@@ -481,6 +485,93 @@ export interface WriteGate {
   runExclusive<T>(label: string, fn: () => Promise<T> | T): Promise<T>;
 }
 
+// ═══ R3 · 全局写锁豁免名单(声明式)══════════════════════════════════════════════════════
+// 豁免的统一语义:**只豁免"handler 期间不整段持有全局写 slot",绝不豁免"终写绕过串行化"**。
+// 每条被豁免路由的终写仍必须满足二者其一,否则会落进某个长持锁写(如 /end ~330s)的
+// 读-await-写窗口中间被整态回滚(D3 反向 clobber 不变量,本仓库已付过 D3/R3-A/R3-B 三轮学费):
+//   a) 终写经 writeGate.runExclusive 与在途持锁写互斥(auto-run 终写、R3 试点路由的 CAS commit);
+//   b) 或路由自身持锁(不在本名单 = 默认整段持锁)。
+// R3 试点路由(state-command.ts runStateCommand):handler 里的校验/embedding 在锁外并行,
+// 终写=「读-算-写连续同步块 + expectedRevision CAS」经写门排队——微秒级持锁,热点写不再
+// 端到端互相排队(P4 减半);治理在途如实 409。
+interface WriteGateExemption {
+  /** 限定 HTTP method;缺省 = 任意 mutating method。 */
+  method?: string;
+  /** 按 pathname 匹配(已剥 querystring)。 */
+  matches: (pathname: string) => boolean;
+  /** 为什么豁免是安全的(见上方统一语义;此处只记路由特有理由)。 */
+  reason: string;
+}
+const WRITE_GATE_EXEMPTIONS: WriteGateExemption[] = [
+  {
+    // auto-run 是可达 90s 的长联网 mutating 请求。若占用全局写 slot 整个请求期间,会把所有其它写
+    // (reset/用户操作)串行阻塞到它后面 → 后端"卡死不自恢复"(实测 GET 读不卡、reset 写卡满、无
+    // event_loop_lag)。联网期间不碰 state,最终写已改为"重读 latest + 原子合并"且经
+    // writeGate.runExclusive(search.ts commitFinal),并发由 autoRunInFlight 自管。
+    matches: (p) => p.startsWith("/api/research/auto-run"),
+    reason: "长联网请求;终写=重读 latest 原子合并,经写门(D3)"
+  },
+  {
+    // 回归审查 R6-6 → R3:PATCH 记忆记录 handler 会 await embedding(慢网络 IO,数百 ms)。
+    // embed 在锁外先算,同步 RMW 已换轨 runStateCommand(CAS commit 经写门)——低频编辑不再
+    // 持全局 slot 整个 embed 期间阻塞其它写。
+    method: "PATCH",
+    matches: (p) => p.startsWith("/api/memory-records/"),
+    reason: "R3 试点:embed 锁外,同步 RMW 走 CAS(commit 经写门)"
+  },
+  {
+    // R3 试点:删除记忆记录——纯同步小 RMW(无外部 IO),mutate 基于最新态重找实体,CAS commit 经写门。
+    method: "DELETE",
+    matches: (p) => p.startsWith("/api/memory-records/"),
+    reason: "R3 试点:纯同步小 RMW,走 CAS(commit 经写门)"
+  },
+  {
+    // R3 试点:废弃记忆记录——纯同步小 RMW,同上。
+    method: "POST",
+    matches: (p) => p.startsWith("/api/memory-records/") && p.endsWith("/deprecate"),
+    reason: "R3 试点:纯同步小 RMW,走 CAS(commit 经写门)"
+  },
+  {
+    // R3 试点:决策确认(前端唯一走服务端的资产写,带权威语义)——纯同步小 RMW,CAS 内含
+    // "已确认→409"前置校验,同实体并发确认恰好一胜一 409(契约见 assets.ts)。
+    method: "POST",
+    matches: (p) => p.startsWith("/api/assets/decisions/") && p.endsWith("/confirm"),
+    reason: "R3 试点:纯同步小 RMW,走 CAS(commit 经写门)"
+  },
+  {
+    // R3 试点:playbook 补丁状态流转(apply/revert)——纯同步小 RMW(proposed→applied→reverted
+    // 状态机在域层纯函数内),CAS 前置校验拦非法流转。
+    method: "POST",
+    matches: (p) => p.startsWith("/api/playbook-patches/") && (p.endsWith("/apply") || p.endsWith("/revert")),
+    reason: "R3 试点:纯同步小 RMW,走 CAS(commit 经写门)"
+  },
+  {
+    // R3 试点:记忆候选文本编辑——纯同步小 RMW。注意:同前缀的 POST /approve【不】豁免
+    // (handler 在读写之间 await embedding 且以旧基写回,豁免前需先按 R6-6 模式改造,留给后续);
+    // POST /api/memory/consolidate 前缀不同(/api/memory/),天然不匹配,仍整段持锁(LLM 在临界区)。
+    method: "PATCH",
+    matches: (p) => p.startsWith("/api/memory-candidates/"),
+    reason: "R3 试点:纯同步小 RMW,走 CAS(commit 经写门)"
+  },
+  {
+    // R3 试点:记忆候选拒绝——纯同步小 RMW(pending→rejected),同上;approve 不在名单内。
+    method: "POST",
+    matches: (p) => p.startsWith("/api/memory-candidates/") && p.endsWith("/reject"),
+    reason: "R3 试点:纯同步小 RMW,走 CAS(commit 经写门)"
+  }
+];
+
+/**
+ * R3:写锁豁免判定(供 preHandler 与测试使用)。整包 PUT /api/state、interview /end、治理路由
+ * (reset/purge/import)、语音/长联网路由等一律不在名单内 → 默认整段持锁(宽事务本该串行)。
+ */
+export function isWriteGateExempt(method: string, url: string): boolean {
+  const pathname = url.split("?")[0] ?? url;
+  return WRITE_GATE_EXEMPTIONS.some(
+    (rule) => (rule.method === undefined || rule.method === method) && rule.matches(pathname)
+  );
+}
+
 function registerWriteSerialization(server: ReturnType<typeof Fastify>): WriteGate {
   let writeQueue: Promise<void> = Promise.resolve();
   const releases = new WeakMap<FastifyRequest, () => void>();
@@ -491,18 +582,8 @@ function registerWriteSerialization(server: ReturnType<typeof Fastify>): WriteGa
     if (!MUTATING_METHODS.has(request.method)) {
       return;
     }
-    // 豁免:auto-run 是可达 90s 的长联网 mutating 请求。若占用全局写 slot 整个请求期间,会把所有其它写
-    // (reset/用户操作)串行阻塞到它后面 → 后端"卡死不自恢复"(实测 GET 读不卡、reset 写卡满、无 event_loop_lag)。
-    // auto-run 联网期间并不碰 state(只 read-at-start + 最后一次 replaceState),且其最终写已改为"重读 latest
-    // + 原子合并"(search.ts:auto-run),连续同步不被打断、不会 clobber 并发写;并发由 autoRunInFlight 自管。安全豁免。
-    if (request.url.startsWith("/api/research/auto-run")) {
-      return;
-    }
-    // 回归审查 R6-6:PATCH 记忆记录 handler 会 await embedding(慢网络 IO,数百 ms)。它已改为 embed 在
-    // 锁外先算、只把同步 RMW 包进 writeGate.runExclusive(重读 latest 原子合并,并发安全),故豁免其全局
-    // preHandler 写锁——低频编辑不再持全局 slot 整个 embed 期间阻塞其它写。仅 PATCH 豁免(DELETE/deprecate
-    // 无 embed、快速同步,继续走全局锁)。
-    if (request.method === "PATCH" && request.url.startsWith("/api/memory-records/")) {
+    // R3:声明式豁免名单(每条的安全论证见 WRITE_GATE_EXEMPTIONS 各条目注释)。
+    if (isWriteGateExempt(request.method, request.url)) {
       return;
     }
     const label = `${request.method} ${request.url}`;

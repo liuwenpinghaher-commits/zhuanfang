@@ -2,41 +2,83 @@ import type { FastifyInstance } from "fastify";
 import { approvePlaybookPatch, revertPlaybookPatch } from "../../../../src/domain/engine";
 import type { PlaybookPatch, ProductState } from "../../../../src/domain/types";
 import type { ProductStateRepository } from "../product-state-repository";
+import { runStateCommand } from "../state-command";
+import type { WriteGate } from "../server";
 
-export async function registerPlaybookPatchRoutes(server: FastifyInstance, repository: ProductStateRepository) {
+interface PlaybookPatchRouteOptions {
+  /** R3:CAS commit 经写门与在途长持锁写互斥(D3 不变量,见 state-command.ts)。 */
+  writeGate?: WriteGate;
+}
+
+// R3 试点:apply/revert 是纯同步的小状态机流转(proposed→applied→reverted),从"全局写锁
+// 整段持有"换轨为 runStateCommand CAS 重试。前置校验在 mutate 内基于最新态重算——并发
+// 双 apply 同一补丁 = 确定性一胜一 409(后者重算时看到 status 已流转)。
+export async function registerPlaybookPatchRoutes(
+  server: FastifyInstance,
+  repository: ProductStateRepository,
+  options: PlaybookPatchRouteOptions = {}
+) {
   server.post("/api/playbook-patches/:id/apply", async (request, reply) => {
-    const state = repository.getState();
-    const patch = findPatch(state, getPatchId(request.params));
-    if (!patch) {
-      return reply.code(404).send({ error: "PlaybookPatch not found." });
+    const patchId = getPatchId(request.params);
+    let failure: { code: number; error: string } | null = null;
+    let applied: PlaybookPatch | undefined;
+    const persisted = await runStateCommand(
+      repository,
+      (state) => {
+        failure = null;
+        applied = undefined;
+        const patch = findPatch(state, patchId);
+        if (!patch) {
+          failure = { code: 404, error: "PlaybookPatch not found." };
+          return null;
+        }
+        if (patch.status !== "proposed") {
+          failure = { code: 409, error: "Only proposed PlaybookPatch records can be applied." };
+          return null;
+        }
+        const nextState = approvePlaybookPatch(state, patch.id);
+        applied = findPatch(nextState, patch.id);
+        return nextState;
+      },
+      { writeGate: options.writeGate, label: `command:playbook-apply:${patchId ?? "unknown"}` }
+    );
+    if (!persisted) {
+      const f = failure ?? { code: 500, error: "PlaybookPatch was not applied." };
+      return reply.code(f.code).send({ error: f.error });
     }
-    if (patch.status !== "proposed") {
-      return reply.code(409).send({ error: "Only proposed PlaybookPatch records can be applied." });
-    }
-
-    const nextState = approvePlaybookPatch(state, patch.id);
-    const appliedPatch = findPatch(nextState, patch.id);
     // state 必须是 replaceState 返回的权威态(revision 已 bump),否则客户端下一次乐观 PUT 必 409。
-    const persisted = repository.replaceState(nextState);
-
-    return { patch: appliedPatch, state: persisted };
+    return { patch: applied, state: persisted };
   });
 
   server.post("/api/playbook-patches/:id/revert", async (request, reply) => {
-    const state = repository.getState();
-    const patch = findPatch(state, getPatchId(request.params));
-    if (!patch) {
-      return reply.code(404).send({ error: "PlaybookPatch not found." });
+    const patchId = getPatchId(request.params);
+    let failure: { code: number; error: string } | null = null;
+    let reverted: PlaybookPatch | undefined;
+    const persisted = await runStateCommand(
+      repository,
+      (state) => {
+        failure = null;
+        reverted = undefined;
+        const patch = findPatch(state, patchId);
+        if (!patch) {
+          failure = { code: 404, error: "PlaybookPatch not found." };
+          return null;
+        }
+        if (patch.status !== "applied") {
+          failure = { code: 422, error: "Only applied PlaybookPatch records can be reverted." };
+          return null;
+        }
+        const nextState = revertPlaybookPatch(state, patch.id);
+        reverted = findPatch(nextState, patch.id);
+        return nextState;
+      },
+      { writeGate: options.writeGate, label: `command:playbook-revert:${patchId ?? "unknown"}` }
+    );
+    if (!persisted) {
+      const f = failure ?? { code: 500, error: "PlaybookPatch was not reverted." };
+      return reply.code(f.code).send({ error: f.error });
     }
-    if (patch.status !== "applied") {
-      return reply.code(422).send({ error: "Only applied PlaybookPatch records can be reverted." });
-    }
-
-    const nextState = revertPlaybookPatch(state, patch.id);
-    const revertedPatch = findPatch(nextState, patch.id);
-    const persisted = repository.replaceState(nextState);
-
-    return { patch: revertedPatch, state: persisted };
+    return { patch: reverted, state: persisted };
   });
 }
 

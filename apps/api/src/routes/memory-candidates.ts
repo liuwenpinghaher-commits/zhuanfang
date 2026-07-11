@@ -11,6 +11,8 @@ import type { MemoryCandidate, MemoryRecord, ProductState } from "../../../../sr
 import type { ProductStateRepository } from "../product-state-repository";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import { MAX_EMBED_CHARS } from "./knowledge";
+import { runStateCommand } from "../state-command";
+import type { WriteGate } from "../server";
 import type { BailianChatClient, BailianEmbeddingClient } from "../providers/bailian";
 
 interface RejectMemoryCandidatePayload {
@@ -37,6 +39,9 @@ interface MemoryCandidateRouteOptions {
   bailianChatClient?: BailianChatClient;
   /** 审计修复(P1-6):consolidate 摘要须过共享预算(memory_consolidate 桶,滑窗恢复)。 */
   llmBudget?: LlmBudget;
+  /** R3:PATCH /:id 与 POST /:id/reject 换轨 CAS 后,commit 经此写门与在途长持锁写互斥
+   *  (D3 不变量,见 state-command.ts);approve/consolidate 不换轨(临界区有外部 IO),仍整段持锁。 */
+  writeGate?: WriteGate;
 }
 
 export async function registerMemoryCandidateRoutes(
@@ -44,16 +49,9 @@ export async function registerMemoryCandidateRoutes(
   repository: ProductStateRepository,
   options: MemoryCandidateRouteOptions = {}
 ) {
+  // R3 试点:候选文本编辑是纯同步小 RMW,换轨 runStateCommand CAS(payload 校验在 CAS 外,
+  // 实体查找/pending 校验在 mutate 内基于最新态重算)。
   server.patch("/api/memory-candidates/:id", async (request, reply) => {
-    const state = repository.getState();
-    const candidate = findCandidate(state, getCandidateId(request.params));
-    if (!candidate) {
-      return reply.code(404).send({ error: "Memory candidate not found." });
-    }
-    if (candidate.status !== "pending") {
-      return reply.code(409).send({ error: "Memory candidate is not pending." });
-    }
-
     const text = normalizeOptionalString(normalizeObject<UpdateMemoryCandidatePayload>(request.body).text);
     if (!text) {
       return reply.code(422).send({ error: "Memory candidate text is required." });
@@ -62,14 +60,40 @@ export async function registerMemoryCandidateRoutes(
       return reply.code(422).send({ error: `Memory candidate text exceeds the ${MEMORY_CANDIDATE_TEXT_MAX_CHARS}-character limit.` });
     }
 
-    const nextState = updateMemoryCandidateText(state, candidate.id, text);
-    const updatedCandidate = findCandidate(nextState, candidate.id);
+    const candidateId = getCandidateId(request.params);
+    let failure: { code: number; error: string } | null = null;
+    let updatedCandidate: MemoryCandidate | undefined;
+    const persisted = await runStateCommand(
+      repository,
+      (state) => {
+        failure = null;
+        updatedCandidate = undefined;
+        const candidate = findCandidate(state, candidateId);
+        if (!candidate) {
+          failure = { code: 404, error: "Memory candidate not found." };
+          return null;
+        }
+        if (candidate.status !== "pending") {
+          failure = { code: 409, error: "Memory candidate is not pending." };
+          return null;
+        }
+        const nextState = updateMemoryCandidateText(state, candidate.id, text);
+        updatedCandidate = findCandidate(nextState, candidate.id);
+        return nextState;
+      },
+      { writeGate: options.writeGate, label: `command:memory-candidate-patch:${candidateId ?? "unknown"}` }
+    );
+    if (!persisted) {
+      const f = failure ?? { code: 404, error: "Memory candidate not found." };
+      return reply.code(f.code).send({ error: f.error });
+    }
     // state 必须是 replaceState 返回的权威态(revision 已 bump),否则客户端下一次乐观 PUT 必 409。
-    const persisted = repository.replaceState(nextState);
-
     return { candidate: updatedCandidate, state: persisted };
   });
 
+  // R3 有意不换轨:approve 在读态与写态之间 await embedding(慢网络 IO 在临界区)且以读时基写回,
+  // 豁免写锁前须先按 R6-6/PATCH 记忆记录的模式改造(embed 挪到锁外 + mutate 内基于最新态重算)。
+  // 低频 HITL 操作,收益小、改造是新的行为面,留在全局写锁内(整段持锁 = 读写窗口独占,现状安全)。
   server.post("/api/memory-candidates/:id/approve", async (request, reply) => {
     const state = repository.getState();
     const candidate = findCandidate(state, getCandidateId(request.params));
@@ -99,21 +123,37 @@ export async function registerMemoryCandidateRoutes(
     return { candidate: reviewedCandidate, record, state: persisted };
   });
 
+  // R3 试点:候选拒绝(pending→rejected)是纯同步小 RMW,换轨 CAS;并发双 reject/与 approve
+  // 竞争同一候选 = 后到者在 mutate 重算时看到 status 已流转 → 确定性 409。
   server.post("/api/memory-candidates/:id/reject", async (request, reply) => {
-    const state = repository.getState();
-    const candidate = findCandidate(state, getCandidateId(request.params));
-    if (!candidate) {
-      return reply.code(404).send({ error: "Memory candidate not found." });
-    }
-    if (candidate.status !== "pending") {
-      return reply.code(409).send({ error: "Memory candidate is not pending." });
-    }
-
+    const candidateId = getCandidateId(request.params);
     const reviewNote = normalizeOptionalString(normalizeObject<RejectMemoryCandidatePayload>(request.body).reviewNote);
-    const nextState = rejectMemoryCandidate(state, candidate.id, reviewNote);
-    const reviewedCandidate = findCandidate(nextState, candidate.id);
-    const persisted = repository.replaceState(nextState);
-
+    let failure: { code: number; error: string } | null = null;
+    let reviewedCandidate: MemoryCandidate | undefined;
+    const persisted = await runStateCommand(
+      repository,
+      (state) => {
+        failure = null;
+        reviewedCandidate = undefined;
+        const candidate = findCandidate(state, candidateId);
+        if (!candidate) {
+          failure = { code: 404, error: "Memory candidate not found." };
+          return null;
+        }
+        if (candidate.status !== "pending") {
+          failure = { code: 409, error: "Memory candidate is not pending." };
+          return null;
+        }
+        const nextState = rejectMemoryCandidate(state, candidate.id, reviewNote);
+        reviewedCandidate = findCandidate(nextState, candidate.id);
+        return nextState;
+      },
+      { writeGate: options.writeGate, label: `command:memory-candidate-reject:${candidateId ?? "unknown"}` }
+    );
+    if (!persisted) {
+      const f = failure ?? { code: 404, error: "Memory candidate not found." };
+      return reply.code(f.code).send({ error: f.error });
+    }
     return { candidate: reviewedCandidate, state: persisted };
   });
 
@@ -123,6 +163,8 @@ export async function registerMemoryCandidateRoutes(
   // available we ALSO summarize each merged cluster into a single pending
   // candidate so the human can optionally promote one clean phrasing (HITL).
   // Summarization is best-effort: any failure / no client degrades to dedup-only.
+  // R3 有意不换轨:读态与写态之间有最多 4×60s 的串行 LLM(慢 IO 在临界区)且全量记忆宽事务,
+  // 本该串行——留在全局写锁内(路径 /api/memory/ 与候选前缀不同,天然不在豁免名单)。
   server.post("/api/memory/consolidate", async () => {
     const state = repository.getState();
     const before = state.memoryRecords;
