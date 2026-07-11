@@ -9,6 +9,7 @@ import { createInMemoryRawMaterialRepository } from "../raw-material-repository"
 import { createInMemoryAudioRepository } from "../audio-repository";
 import { createInMemoryKnowledgeIndexRepository } from "../knowledge-index-repository";
 import type { InterviewAudio, InterviewRawMaterial, ProductState } from "../../../../src/domain/types";
+import { createInitialProductState } from "../../../../src/domain/engine";
 
 describe("state routes", () => {
   it("rejects a stale whole-state PUT with 409 and returns the current state", async () => {
@@ -574,6 +575,53 @@ describe("state routes", () => {
       expect(purgeRes.statusCode).toBe(200);
       // 知识索引随全量 purge 一并清空（它是派生、可重建的)
       expect((await knowledgeIndexRepository.listAll()).length).toBe(0);
+      await server.close();
+    });
+
+    it("N-12:purge(interviews) wipe 整表后重建存活来源的块(记忆不因清专访而丢失可召回)", async () => {
+      const ts = "2026-06-21T00:00:00.000Z";
+      const seeded: ProductState = {
+        ...createInitialProductState(),
+        sessions: [],
+        memoryRecords: [
+          {
+            id: "mem-survive",
+            text: "受访者反复强调先小范围验证再扩大",
+            status: "confirmed",
+            sourceType: "profile",
+            sourceId: "p",
+            evidenceQuote: "",
+            createdAt: ts,
+            updatedAt: ts,
+            relatedThemeIds: []
+          }
+        ]
+      };
+      const knowledgeIndexRepository = createInMemoryKnowledgeIndexRepository();
+      // 预置一条 transcript 块(专访源);interviews wipe 会清整表(八源),修复前不重建 → 存活记忆块也没了。
+      await knowledgeIndexRepository.put({
+        id: "kc-transcript",
+        sourceType: "transcript",
+        sourceId: "old-session#0",
+        title: "旧专访片段",
+        text: "旧专访逐字稿",
+        keywords: [],
+        createdAt: ts
+      });
+      const server = buildApiServer({
+        productStateRepository: createInMemoryProductStateRepository(seeded),
+        knowledgeIndexRepository
+      });
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/state/purge",
+        payload: { confirm: "PURGE_PERSONAL_DATA", scope: "interviews" }
+      });
+      expect(res.statusCode).toBe(200);
+      const chunks = await knowledgeIndexRepository.listAll();
+      // 专访 transcript 块随清空消失;存活记忆块被重建回来(N-12 修复前此处为空 → chat 召不回任何存活素材)。
+      expect(chunks.some((c) => c.sourceType === "transcript")).toBe(false);
+      expect(chunks.some((c) => c.sourceType === "memory" && c.sourceId === "mem-survive")).toBe(true);
       await server.close();
     });
   });

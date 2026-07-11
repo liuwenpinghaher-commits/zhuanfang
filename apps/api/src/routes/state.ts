@@ -737,6 +737,24 @@ export async function registerStateRoutes(
         .filter(([, outcome]) => outcome.startsWith("failed"))
         .map(([name]) => name);
 
+    // N-12:scoped purge 会 wipe 整张 knowledge_chunk 表(八源全清),但只有 transcript 源的块
+    // 该随专访清空——存活来源(已确认记忆/导入语料/资产派生)的块也被清了,且增量重索引不会补
+    // (存活来源未变更)。assets 档早有此同步全量重建先例(P3-38);interviews 两条成功路径此前
+    // 遗漏 → 清空后 chat 不再引用任何存活素材,零信号。这里抽出共用重建,wipe 后从存活热态重建。
+    const rebuildSurvivingKnowledge = async (nextState: ProductState): Promise<void> => {
+      if (!knowledgeIndexRepository) return;
+      try {
+        await rebuildKnowledgeIndex(nextState, {   // R2a:rebuildKnowledgeIndex 已异步化
+          knowledgeRepo: knowledgeIndexRepository,
+          ...(rawMaterialRepository ? { rawMaterialRepo: rawMaterialRepository } : {}),
+          ...(options.embeddingClient ? { embeddingClient: options.embeddingClient } : {}),
+          budget: options.llmBudget ?? createLlmBudget()
+        });
+      } catch (err) {
+        console.warn(JSON.stringify({ event: "purge_knowledge_rebuild_failed", error: err instanceof Error ? err.message : String(err) }));
+      }
+    };
+
     // Partial scopes don't touch on-disk audio (only interviews carry artifacts, and the
     // historical artifact-deletion behavior is tied to the full wipe). Keep full-wipe behavior
     // byte-for-byte (single audit event + artifact deletion) so existing restores/tests hold.
@@ -813,6 +831,9 @@ export async function registerStateRoutes(
       const { cold, stores } = buildWipeColdSpec();
       try {
         const nextState = await purgeGovInterviews.runGovernanceTransaction({ kind: "replace", next: iScopedState }, cold);
+        // N-12:wipe 清了整张 knowledge_chunk 表(八源),从存活热态重建存活来源的块(事务已提交,
+        // inFlightCount 归零,重建的冷层 put 不再被 N-03 守卫挡)。
+        await rebuildSurvivingKnowledge(nextState);
         return { ...nextState, deletedScope: iScope, deletedCount: iCount, purgeReceipt: { partialFailure: false, hotStateCommitted: true, stores } };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -831,17 +852,8 @@ export async function registerStateRoutes(
     const nextState = repository.replaceState(scopedState);
     // 审计修复(P3-38):assets 档的知识索引清理此前只靠异步增量 diff(失败/进程退出即永久残留
     // 已清资产的可召回块)。与 all/interviews 对齐:同步全量重建(存活的会话/素材块随重建回来)。
-    if (scope === "assets" && knowledgeIndexRepository) {
-      try {
-        await rebuildKnowledgeIndex(nextState, {   // R2a:rebuildKnowledgeIndex 已异步化
-          knowledgeRepo: knowledgeIndexRepository,
-          ...(rawMaterialRepository ? { rawMaterialRepo: rawMaterialRepository } : {}),
-          ...(options.embeddingClient ? { embeddingClient: options.embeddingClient } : {}),
-          budget: options.llmBudget ?? createLlmBudget()
-        });
-      } catch (err) {
-        console.warn(JSON.stringify({ event: "purge_knowledge_rebuild_failed", error: err instanceof Error ? err.message : String(err) }));
-      }
+    if (scope === "assets") {
+      await rebuildSurvivingKnowledge(nextState);
     }
     // The interviews scope clears all sessions from hot state; their cold-layer raw materials /
     // recorded audio / derived knowledge index are keyed by those sessions and would otherwise
@@ -860,6 +872,9 @@ export async function registerStateRoutes(
           purgeReceipt
         });
       }
+      // N-12:与 assets/governance 路径对齐——wipe 清了整张 knowledge_chunk 表,从存活热态重建
+      // 存活来源(记忆/语料/资产)的块,否则清空后 chat 不再引用任何存活素材且零信号。
+      await rebuildSurvivingKnowledge(nextState);
       return { ...nextState, deletedScope, deletedCount, purgeReceipt };
     }
     // 其余分档(profile/assets)不涉及冷层三库(assets 的索引一致性由上方同步 rebuild 负责,
