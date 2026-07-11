@@ -23,14 +23,25 @@ export default async function globalSetup() {
     );
   }
 
-  // body 判空:响应体是 JSON null 时也走同一条可读的熔断报错,而非 TypeError。
-  if ((body ?? {}).productStore !== "memory") {
+  // N-15:E2E_REAL=1 时 real 族跑 surreal 权威档(数据目录已由 playwright.config 隔离到 tmp);
+  // 默认族仍须是 memory。两种模式各自断言实际档位,错档位一律熔断。
+  const expected = process.env.E2E_REAL === "1" ? "surreal" : "memory";
+  const actual = (body ?? {}).productStore;
+  if (actual !== expected) {
+    if (expected === "surreal") {
+      throw new Error(
+        `[E2E 隔离闸门·real] E2E_REAL=1 预期 productStore="surreal",实际报告 ${JSON.stringify(actual)}。` +
+          "real 族需 surreal 权威档(数据已隔离到 tmp,见 playwright.config)。排查:" +
+          "① 3210 端口若有手动开发服务器,real 模式已设 reuseExistingServer=false 不复用——先关掉占端口的进程;" +
+          "② 确认未手动把 PRODUCT_STORE 覆盖成 memory。"
+      );
+    }
     throw new Error(
-      `[E2E 隔离闸门] 测试险些连上真实存储档位:/api/system/capabilities 报告 productStore=${JSON.stringify((body ?? {}).productStore)},预期 "memory"。` +
+      `[E2E 隔离闸门] 测试险些连上真实存储档位:/api/system/capabilities 报告 productStore=${JSON.stringify(actual)},预期 "memory"。` +
         "E2E 若在非内存档位上运行,会把测试写入(乃至镜像覆盖)真实专访数据。排查:" +
         "① 3210 端口可能有一个手动启动的开发服务器被 reuseExistingServer 复用了——关掉它,让 Playwright 用隔离 env 自己拉起;" +
         "② 确认 playwright.config.ts 的 API webServer env 同时含 PRODUCT_STORE=memory 与 PRODUCT_STATE_DB_PATH=memory;" +
-        "③ 若 productStore 是 surreal,多半是 .env.local 的 PRODUCT_STORE 被 loadLocalEnvFile 继承(审计 F-02 的事故路径)。"
+        "③ 若 productStore 是 surreal,多半是 .env.local 的 PRODUCT_STORE 被 loadLocalEnvFile 继承(审计 F-02 的事故路径),或误设了 E2E_REAL=1。"
     );
   }
 }

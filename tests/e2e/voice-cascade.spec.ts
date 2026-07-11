@@ -9,6 +9,11 @@ import { resetServerState } from "./helpers";
 const API = "http://127.0.0.1:3210";
 const FIXTURE = "tests/e2e/fixtures/voice/sample.json";
 
+// N-15:真语音端到端(办法 B)需真实 DashScope ASR key,否则整条 cascade 无法转写、必然失败。
+// 之前文档声称有 E2E_REAL_VOICE 门控但代码里不存在。这里落实门控:缺真实语音 key 就 skip(而非
+// 红失败)。跑法:E2E_REAL=1 + 环境提供 DASHSCOPE_API_KEY(或 BAILIAN_API_KEY),见 playwright.config。
+const HAS_REAL_VOICE_KEY = Boolean(process.env.DASHSCOPE_API_KEY || process.env.BAILIAN_API_KEY);
+
 async function active(page: Page) {
   const st = await (await page.request.get(`${API}/api/state`)).json();
   return (st.sessions ?? []).find((s: { status: string }) => s.status === "active") as
@@ -17,6 +22,7 @@ async function active(page: Page) {
 }
 
 test("语音办法B端到端:fakeMic→真实 ASR→主持人追问→写进专访", async ({ context }) => {
+  test.skip(!HAS_REAL_VOICE_KEY, "缺真实语音 provider key(DASHSCOPE_API_KEY/BAILIAN_API_KEY);语音办法B端到端需真实 ASR,跳过。");
   test.setTimeout(120_000);
   const t0 = Date.now();
   const log = (m: string) => console.log(`[+${Math.round((Date.now() - t0) / 1000)}s] ${m}`);
