@@ -8,7 +8,7 @@ import { stableStringify } from "../../../../src/domain/stateDigest";
 import type { InterviewAudio, InterviewRawMaterial, ProductState } from "../../../../src/domain/types";
 import { createSurrealConnection, type SurrealConnectionOptions } from "./connect";
 import { applySchema } from "./apply-schema";
-import { selectBm25QueryTokens } from "./constants";
+import { selectBm25QueryTokens, buildBm25Clause, reorderByRrfRank, RRF_RANK_CONSTANT } from "./constants";
 import { NODE_MAPPINGS, STREAM_MAPPINGS, toRecord, fromRecord, type StreamMapping } from "./node-mapper";
 import { collectEdges, turnRecordsOf, type EdgeSpec } from "./edge-mapper";
 import { diffById, diffEdges } from "./diff";
@@ -569,13 +569,12 @@ export async function buildSurrealProductStateRepositoryOnConnection(
         // fail-safe:query 切不出 token → 无 BM25 可加,退化纯 HNSW。
         if (tokens.length === 0) return hnswOnly();
 
-        const tokenVars: Record<string, unknown> = {};
-        const bmClause = tokens.map((tok, i) => { tokenVars[`t${i}`] = tok; return `text @@ $t${i}`; }).join(" OR ");
+        const { clause: bmClause, vars: tokenVars } = buildBm25Clause(tokens);
 
         const results = await db.query<Array<Array<Record<string, unknown>>>>(
           `LET $vec = (SELECT id FROM memory WHERE embedding <|${k},${ef}|> $q);
            LET $bm  = (SELECT id FROM memory WHERE ${bmClause});
-           LET $fused = search::rrf([$vec, $bm], 60, ${k});
+           LET $fused = search::rrf([$vec, $bm], ${RRF_RANK_CONSTANT}, ${k});
            SELECT id, text FROM memory
              WHERE id IN $fused.map(|$r| $r.id)
                AND status = 'confirmed'
@@ -625,8 +624,7 @@ export async function buildSurrealProductStateRepositoryOnConnection(
         const tokens = selectBm25QueryTokens(analyzed);
         if (tokens.length === 0) return hnswOnly();
 
-        const tokenVars: Record<string, unknown> = {};
-        const bmClause = tokens.map((tok, i) => { tokenVars[`t${i}`] = tok; return `text @@ $t${i}`; }).join(" OR ");
+        const { clause: bmClause, vars: tokenVars } = buildBm25Clause(tokens);
 
         if (!embedding) {
           // BM25-only:无向量时关键词路单独可用——无嵌入的降级摄入块(HNSW 索引不含它们)由此可达。
@@ -643,7 +641,7 @@ export async function buildSurrealProductStateRepositoryOnConnection(
         const results = await db.query<Array<unknown>>(
           `LET $vec = (SELECT id FROM rag_chunk WHERE embedding <|${k},${ef}|> $q);
            LET $bm  = (SELECT id FROM rag_chunk WHERE ${bmClause});
-           LET $fused = search::rrf([$vec, $bm], 60, ${k});
+           LET $fused = search::rrf([$vec, $bm], ${RRF_RANK_CONSTANT}, ${k});
            SELECT id, text FROM rag_chunk WHERE id IN $fused.map(|$r| $r.id) AND ${usageGate};
            RETURN $fused.map(|$r| $r.id);`,
           { q: embedding, ...gateVars, ...tokenVars }
@@ -652,8 +650,7 @@ export async function buildSurrealProductStateRepositoryOnConnection(
         // fail-safe:融合为空 / 全被 usage 门控滤掉 → 退化纯 HNSW,绝不返空召回。
         if (rows.length === 0) return hnswOnly();
         const order = ((results[results.length - 1] ?? []) as unknown[]).map((rid) => recordIdToDomainId(rid));
-        const rank = new Map(order.map((rid, idx) => [rid, idx] as const));
-        return rows.sort((a, b) => (rank.get(a.id) ?? order.length) - (rank.get(b.id) ?? order.length));
+        return reorderByRrfRank(rows, order);
       } catch (err) {
         // fail-safe:search::rrf / BM25 报错 → 退化纯 HNSW(有 embedding)或 [](无),记降级日志。
         console.warn(JSON.stringify({ event: "surreal_rag_recall_degraded", error: err instanceof Error ? err.message : String(err) }));
@@ -754,7 +751,8 @@ function summarizePersistDiff(prev: ProductState, next: ProductState): Record<st
 }
 
 /** 方案二:参与审计的边表 = edge-mapper 投影的全部边,排除 part_of(append-only 豁免,见接口注释)。
- *  promoted_from/corrects 是 schema 预留死表(edge-mapper 不投影、persist 不写),无审计意义。 */
+ *  promoted_from/corrects 是【已确认无消费者的历史预留死表】(edge-mapper 不投影、persist 不写、
+ *  恒空),故不入审计;非"悬置待定"。若将来接线,照 002_relations.surql 注释的复活路径同步补入此表。 */
 const AUDITED_EDGE_TABLES = ["belongs_to_theme", "about_theme", "derived_from", "contradicts", "evolves_into"] as const;
 const AUDIT_SAMPLE_LIMIT = 20;
 

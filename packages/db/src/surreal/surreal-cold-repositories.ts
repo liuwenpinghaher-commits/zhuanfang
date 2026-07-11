@@ -12,7 +12,7 @@ import type { AudioRepository } from "../../../../apps/api/src/audio-repository"
 import type { KnowledgeIndexRepository } from "../../../../apps/api/src/knowledge-index-repository";
 import { createSurrealConnection, type SurrealConnectionOptions } from "./connect";
 import { applySchema } from "./apply-schema";
-import { selectBm25QueryTokens } from "./constants";
+import { selectBm25QueryTokens, buildBm25Clause, reorderByRrfRank, RRF_RANK_CONSTANT } from "./constants";
 import {
   buildSurrealProductStateRepositoryOnConnection,
   runWithTransientRetry,
@@ -267,9 +267,9 @@ export function createSurrealKnowledgeIndexRepository(db: Surreal): SurrealKnowl
      *    HNSW 索引不含,由 BM25 路可达);query 切不出 token → 纯 HNSW。
      *  epoch 是进程内计数、不落库(表无 epoch 列),召回无需也无法按代际过滤——清空即物理删,
      *  陈旧代际的块不可能存在于表内(R8-1 守卫拦的是"清空后回写",与读路径无关)。
-     *  记档(rule-of-three 已触发,独立小重构,不在 R2c 面内):memory / rag_chunk / knowledge_chunk
-     *  三实例的混合召回机械件(search::analyze 切 token→bmClause 拼接、rrf 名次 JS 重排、k/ef 钳制)
-     *  已是第三份手抄——宜提炼共享纯函数 helper(如 buildBm25Clause/orderByRrfRank),三处消费。 */
+     *  R2c 机械件已提炼(constants.ts):bmClause 拼接 → buildBm25Clause、rrf 名次 JS 重排 →
+     *  reorderByRrfRank、rrf 常量 60 → RRF_RANK_CONSTANT,三处消费(memory/rag/knowledge)。
+     *  k/ef 钳制因三处口径各异保留 inline(见 constants.ts selectBm25QueryTokens 注释)。 */
     async searchHybrid({ text, embedding, limit }) {
       // k/ef 走字面量插值(KNN 坑)→ 必须先数字化钳制(NaN/0/负数/小数 → 合法正整数)。
       const k = Math.max(1, Math.floor(Number.isFinite(limit) ? limit : 1));
@@ -298,8 +298,7 @@ export function createSurrealKnowledgeIndexRepository(db: Surreal): SurrealKnowl
         // fail-safe:query 切不出 token(纯符号/emoji 等)→ 无 BM25 可加,退化纯 HNSW。
         if (tokens.length === 0) return hnswOnly();
 
-        const tokenVars: Record<string, unknown> = {};
-        const bmClause = tokens.map((tok, i) => { tokenVars[`t${i}`] = tok; return `text @@ $t${i}`; }).join(" OR ");
+        const { clause: bmClause, vars: tokenVars } = buildBm25Clause(tokens);
 
         if (!emb) {
           // BM25-only:无向量时关键词路单独可用——嵌入失败/离线摄入的无嵌入块由此可达。
@@ -316,7 +315,7 @@ export function createSurrealKnowledgeIndexRepository(db: Surreal): SurrealKnowl
         const results = await db.query<Array<unknown>>(
           `LET $vec = (SELECT id FROM knowledge_chunk WHERE embedding <|${k},${ef}|> $q);
            LET $bm  = (SELECT id FROM knowledge_chunk WHERE ${bmClause});
-           LET $fused = search::rrf([$vec, $bm], 60, ${k});
+           LET $fused = search::rrf([$vec, $bm], ${RRF_RANK_CONSTANT}, ${k});
            SELECT * FROM knowledge_chunk WHERE id IN $fused.map(|$r| $r.id);
            RETURN $fused.map(|$r| $r.id);`,
           { q: emb, ...tokenVars }
@@ -325,8 +324,7 @@ export function createSurrealKnowledgeIndexRepository(db: Surreal): SurrealKnowl
         // fail-safe:融合为空(rrf 在该 query 下无产出)→ 退化纯 HNSW,绝不无声空召回。
         if (rows.length === 0) return hnswOnly();
         const order = ((results[results.length - 1] ?? []) as unknown[]).map((rid) => domainIdOf(rid));
-        const rank = new Map(order.map((rid, idx) => [rid, idx] as const));
-        return rows.sort((a, b) => (rank.get(a.id) ?? order.length) - (rank.get(b.id) ?? order.length));
+        return reorderByRrfRank(rows, order);
       } catch (err) {
         // fail-safe:search::rrf / BM25 在该环境不可用或报错 → 退化纯 HNSW,记降级日志。
         console.warn(JSON.stringify({ event: "surreal_knowledge_recall_degraded", error: err instanceof Error ? err.message : String(err) }));

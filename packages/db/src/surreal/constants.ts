@@ -15,8 +15,7 @@ export const SURREAL_DB = "main";
  *  cap=48→64 处出现延迟悬崖(533ms→2007ms);而旧 memory/rag(queryText=topicHint,此前【无】去重/钳制)
  *  在 (1,3) 下 uncapped 会直冲 2s+。故 (1,3) 下必须在【消费侧】统一治理 token 集。
  *
- *  统一口径(memory/rag/knowledge 三处 inline 同款逻辑——R2c 已记档此为 rule-of-three 机械件"可提炼",
- *  但本阶段刻意不提炼 helper,仅共享本常量 + 保持逻辑逐字一致):
+ *  统一口径(memory/rag/knowledge 三处混合召回共享,保持逻辑逐字一致):
  *   ① 去重:重复 `text @@ $t` 谓词冗余,去重不改 OR 语义。
  *   ② 择优:token 集里【只要存在 ≥2 字 gram,就丢弃纯单字 1-gram】;仅当全是单字(查询本身是单字/
  *      纯单字串)才保留 1-gram。R4a 复核实证此规则:单字召回 100% 保留(卡 416/420、赌 177/180),
@@ -36,10 +35,37 @@ export const MAX_BM25_QUERY_TOKENS = 32;
 /** R4a · BM25 查询 token 择优+钳制(memory/rag/knowledge 三处混合召回共享,保证口径逐字一致)。
  *  入参是 `search::analyze('zh', queryText)` 的原始 token 串;返回:去重 →(含多字 gram 则丢单字
  *  1-gram、纯单字查询保留)→ 钳制到 MAX_BM25_QUERY_TOKENS 的 token 数组。完整依据见上方常量注释。
- *  说明:这【只】共享 R4a 新引入的 token 择优/钳制口径(易漂移、必须一致);R2c 记档的三实例机械件
- *  (bmClause 拼接 + rrf 名次 JS 重排 + k/ef 钳制)本阶段【不】提炼,仍是三处各自 inline。 */
+ *  说明:这共享 R4a 引入的 token 择优/钳制口径(易漂移、必须一致);R2c 记档的其余机械件已一并提炼为
+ *  buildBm25Clause / reorderByRrfRank / RRF_RANK_CONSTANT(见下),三处消费。k/ef 钳制因三处口径各异
+ *  (memory 不钳 k、rag/knowledge 钳法不同)且 `ef=Math.max(k*4,40)` 过于琐碎,保留各自 inline。 */
 export function selectBm25QueryTokens(analyzed: readonly string[]): string[] {
   const dedup = [...new Set(analyzed.map(String).filter(Boolean))];
   const multi = dedup.filter((t) => [...t].length >= 2);
   return (multi.length > 0 ? multi : dedup).slice(0, MAX_BM25_QUERY_TOKENS);
+}
+
+/** R2c · 三处混合召回(memory_ft / rag_ft / kc_ft)的机械件提炼(rule-of-three,均为逐字节等价)。
+ *  只抽【无门控/无表名/无列差异】的纯机械部分——门控(A4/usage/无)、取列(SELECT * vs {id,text})、
+ *  表名、BM25-only 分支有无仍是本体差异,留在各调用点,绝不参数化进字符串拼接。 */
+
+/** search::rrf 的排名衰减常量(RRF 公式 1/(constant+rank) 的 constant;此处不用符号 k 以免与召回 limit k 混淆)。
+ *  三处混合召回字面量同为 60,提为常量消重并单点记录取值依据(60 为 RRF 通用经验值)。 */
+export const RRF_RANK_CONSTANT = 60;
+
+/** BM25 OR 谓词串构造:token 列表 → `text @@ $t0 OR text @@ $t1 OR ...` + 对应参数绑定 `{t0,t1,...}`。
+ *  三处逐字同款(此前各自 inline 手抄)。谓词列 `text` 三张表一致(memory/rag_chunk/knowledge_chunk 均有 text 列)。
+ *  返回 { clause, vars }:clause 直接插入 WHERE、vars 展开进 query 参数——生成的 SQL 文本与旧 inline 逐字节相同。 */
+export function buildBm25Clause(tokens: readonly string[]): { clause: string; vars: Record<string, unknown> } {
+  const vars: Record<string, unknown> = {};
+  const clause = tokens.map((tok, i) => { vars[`t${i}`] = tok; return `text @@ $t${i}`; }).join(" OR ");
+  return { clause, vars };
+}
+
+/** search::rrf 融合名次 JS 侧重排:`WHERE id IN $fused.map(...)` 取回不保序,按融合名次(order 内下标)升序重排。
+ *  rag / knowledge 两处逐字同款(memory 路有域层三因子精排兜底、刻意不在此重排,故非三处)。
+ *  order 为已转换的 domain id 序(不同表的 id→domainId 转换函数各异,留在调用点做);未命中名次者沉到末尾(order.length)。
+ *  就地排序返回同一数组引用,行为与旧 inline 逐字等价。 */
+export function reorderByRrfRank<T extends { id: string }>(rows: T[], order: readonly string[]): T[] {
+  const rank = new Map(order.map((rid, idx) => [rid, idx] as const));
+  return rows.sort((a, b) => (rank.get(a.id) ?? order.length) - (rank.get(b.id) ?? order.length));
 }

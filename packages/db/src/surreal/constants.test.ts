@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { selectBm25QueryTokens, MAX_BM25_QUERY_TOKENS } from "./constants";
+import {
+  selectBm25QueryTokens,
+  MAX_BM25_QUERY_TOKENS,
+  buildBm25Clause,
+  reorderByRrfRank,
+  RRF_RANK_CONSTANT,
+} from "./constants";
 
 // R4a · BM25 查询 token 择优/钳制口径(三处混合召回共享)。确定性单测,不碰 DB。
 // 依据见 constants.ts 注释;规则:去重 →(含 ≥2 字 gram 则丢单字 1-gram、纯单字查询保留)→ 上限钳制。
@@ -38,5 +44,68 @@ describe("selectBm25QueryTokens(R4a 择优+钳制口径)", () => {
   it("空 / 空串 token → 空数组(消费侧据此退化纯 HNSW)", () => {
     expect(selectBm25QueryTokens([])).toEqual([]);
     expect(selectBm25QueryTokens([""])).toEqual([]);       // filter(Boolean) 滤掉空串(analyzer 不产纯空白 token)
+  });
+});
+
+// R2c · 三处混合召回机械件提炼后的纯函数锁定测试。断言【逐字节等价】:生成的 SQL 谓词串与参数、
+// rrf 重排序,均与提炼前三处 inline 手抄产出完全一致——召回正确性依赖 SQL 语句形态精确不变。
+describe("buildBm25Clause(BM25 OR 谓词串构造,三处混合召回共享)", () => {
+  it("多 token:逐 token `text @@ $tN` 用 ` OR ` 串联,参数按 t0/t1/... 绑定", () => {
+    const { clause, vars } = buildBm25Clause(["强化", "学习", "配比"]);
+    // 与旧 inline `.map((tok,i)=>{tokenVars[`t${i}`]=tok; return `text @@ $t${i}`}).join(" OR ")` 逐字节相同。
+    expect(clause).toBe("text @@ $t0 OR text @@ $t1 OR text @@ $t2");
+    expect(vars).toEqual({ t0: "强化", t1: "学习", t2: "配比" });
+  });
+
+  it("单 token:无 OR,单谓词 + 单参数", () => {
+    const { clause, vars } = buildBm25Clause(["卡"]);
+    expect(clause).toBe("text @@ $t0");
+    expect(vars).toEqual({ t0: "卡" });
+  });
+
+  it("空 token 列表:空串 clause + 空 vars(调用方在此之前已 length===0 退化,不会走到)", () => {
+    const { clause, vars } = buildBm25Clause([]);
+    expect(clause).toBe("");
+    expect(vars).toEqual({});
+  });
+
+  it("参数键序与 token 序一致(索引即键名,无碰撞)", () => {
+    const { vars } = buildBm25Clause(["a", "b", "c", "d"]);
+    expect(Object.keys(vars)).toEqual(["t0", "t1", "t2", "t3"]);
+  });
+});
+
+describe("reorderByRrfRank(rrf 融合名次 JS 重排,rag/knowledge 共享)", () => {
+  it("按 order 内下标升序重排 rows(order 即 rrf 融合名次序)", () => {
+    // DB `WHERE id IN $fused.map(...)` 取回不保序;order 是 $fused 的名次序。
+    const rows = [{ id: "c" }, { id: "a" }, { id: "b" }];
+    const order = ["a", "b", "c"];
+    expect(reorderByRrfRank(rows, order).map((r) => r.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("未命中名次者沉到末尾(order.length),彼此保持原相对序(sort 稳定)", () => {
+    const rows = [{ id: "x" }, { id: "a" }, { id: "y" }];
+    const order = ["a"]; // 只有 a 在融合序里;x、y 无名次 → 均记 order.length=1,相对序不变
+    expect(reorderByRrfRank(rows, order).map((r) => r.id)).toEqual(["a", "x", "y"]);
+  });
+
+  it("就地排序返回同一数组引用(与旧 inline `rows.sort(...)` 行为一致)", () => {
+    const rows = [{ id: "b" }, { id: "a" }];
+    const out = reorderByRrfRank(rows, ["a", "b"]);
+    expect(out).toBe(rows); // 同引用
+    expect(out.map((r) => r.id)).toEqual(["a", "b"]);
+  });
+
+  it("保留行对象的额外字段(泛型 T 透传,不只 id)", () => {
+    const rows = [{ id: "b", text: "T2" }, { id: "a", text: "T1" }];
+    expect(reorderByRrfRank(rows, ["a", "b"])).toEqual([{ id: "a", text: "T1" }, { id: "b", text: "T2" }]);
+  });
+});
+
+describe("RRF_RANK_CONSTANT", () => {
+  it("== 60(三处 search::rrf 第二参字面量提取,插值后 SQL 逐字节仍为 60)", () => {
+    expect(RRF_RANK_CONSTANT).toBe(60);
+    // 插值锁定:`search::rrf([$vec, $bm], ${RRF_RANK_CONSTANT}, ${k})` 渲染回原字面量形态。
+    expect(`search::rrf([$vec, $bm], ${RRF_RANK_CONSTANT}, ${5})`).toBe("search::rrf([$vec, $bm], 60, 5)");
   });
 });
