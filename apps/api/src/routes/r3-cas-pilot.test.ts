@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildApiServer, isWriteGateExempt } from "../server";
+import { buildApiServer, isWriteGateExempt, WRITE_SLOT_MAX_HOLD_MS, END_WRITE_PHASE_BUDGET_MS } from "../server";
 import {
   createInMemoryProductStateRepository,
   GovernanceInFlightError,
@@ -153,6 +153,15 @@ describe("R3 试点路由 CAS 换轨(全栈)", () => {
     }
   });
 
+  it("P3-10:持锁上限须盖过 /end 最长合法写预算(强放余量 >0,不变量不再只活在注释)", () => {
+    // invariant:sum(/end 各阶段超时) ≤ 持锁上限。否则合法长写会被强放,以旧基整态覆盖窗口内并发写
+    // (反向 clobber)。此前只有注释口头保证;这里钉死,预算上调越界即红。
+    expect(END_WRITE_PHASE_BUDGET_MS).toBe(330_000); // 抽取60+finalize180+矛盾60+embed2×15
+    expect(WRITE_SLOT_MAX_HOLD_MS).toBeGreaterThanOrEqual(END_WRITE_PHASE_BUDGET_MS);
+    // 强放余量(上限 - 预算)必须为正——留出真死锁兜底空间;当前恰 30s。
+    expect(WRITE_SLOT_MAX_HOLD_MS - END_WRITE_PHASE_BUDGET_MS).toBeGreaterThan(0);
+  });
+
   it("豁免名单:试点路由豁免;宽事务(整包 PUT//end/治理/approve/consolidate)不豁免", () => {
     // 试点(豁免)
     expect(isWriteGateExempt("POST", "/api/assets/decisions/d1/confirm")).toBe(true);
@@ -174,6 +183,12 @@ describe("R3 试点路由 CAS 换轨(全栈)", () => {
     expect(isWriteGateExempt("POST", "/api/interview-sessions/s1/turns")).toBe(false);
     expect(isWriteGateExempt("POST", "/api/memory-candidates/c1/approve")).toBe(false); // embed 在临界区
     expect(isWriteGateExempt("POST", "/api/memory/consolidate")).toBe(false); // LLM 在临界区
+    // P3-17:声纹注册/删除、构建语音指令——无 state 终写(纯外呼/嵌入),已豁免免整段持锁。
+    expect(isWriteGateExempt("POST", "/api/realtime-voice/voices")).toBe(true);
+    expect(isWriteGateExempt("DELETE", "/api/realtime-voice/voices/v1")).toBe(true);
+    expect(isWriteGateExempt("POST", "/api/interview-sessions/s1/voice-instructions")).toBe(true);
+    // 但 voices 的 GET(非 mutating,天然不过写门)与同前缀 sessions 子动作(/end/turns)仍不豁免。
+    expect(isWriteGateExempt("POST", "/api/interview-sessions/s1/end")).toBe(false);
   });
 
   it("D3 场景:长持锁写在途——试点 handler 不排队(422 立即返回),有效写经写门排后、两笔都不丢", async () => {

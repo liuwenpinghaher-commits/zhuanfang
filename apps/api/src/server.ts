@@ -471,7 +471,12 @@ const WRITE_SLOT_WAIT_WARN_MS = 10_000;   // 等锁超过此时长开始点名�
 // +embedding(2×15s)≈330s;consolidate 已由 MAX_SUMMARY_CLUSTERS 限规模到上限内(见 memory-candidates)。
 // 故上限提到 360s 覆盖 /end;真僵尸(断连腰斩)仍被 close 钩子即时放行,本上限只兜"永挂 await"极端
 // (合法写不再触发它 → 消除"强放-覆盖")。多出的 120s 仅在真死锁时多冻结,close 钩子已覆盖常见断连。
-const WRITE_SLOT_MAX_HOLD_MS = 360_000;   // 持锁上限:盖过最长合法写(/end~330s),使合法长写不被强放-覆盖
+export const WRITE_SLOT_MAX_HOLD_MS = 360_000;   // 持锁上限:盖过最长合法写(/end~330s),使合法长写不被强放-覆盖
+// P3-10:把"上限须盖过 /end 最长合法写"从注释里的口头不变量变成可守护的常量。/end 各阶段预算:
+// 记忆抽取 60s + finalize 180s + 矛盾精判 60s + embedding 2×15s = 330s。invariant:预算 ≤ 持锁上限
+// (差额即"强放余量",当前 30s)。END_WRITE_PHASE_BUDGET_MS 上调越界会被 server 守护测试逮红,
+// 而不是等生产里合法长写被强放-覆盖才发现。
+export const END_WRITE_PHASE_BUDGET_MS = 60_000 + 180_000 + 60_000 + 2 * 15_000;   // = 330_000
 export interface WriteGate {
   /** 内部写方(调度器/auto-run 终写)经此与 HTTP 串行写互斥;fn 应保持短小(读-合并-写)。 */
   runExclusive<T>(label: string, fn: () => Promise<T> | T): Promise<T>;
@@ -568,6 +573,26 @@ const WRITE_GATE_EXEMPTIONS: WriteGateExemption[] = [
     method: "POST",
     matches: (p) => p.startsWith("/api/memory-candidates/") && p.endsWith("/reject"),
     reason: "R3 试点:纯同步小 RMW,走 CAS(commit 经写门)"
+  },
+  {
+    // P3-17:声纹注册——外呼 voiceEnrollmentClient(数秒),【无任何 ProductState 终写】。
+    // 此前整段持全局写锁,把用户 autosave/reset 等真正的写全冻在这几秒后面。纯外呼无终写→豁免。
+    method: "POST",
+    matches: (p) => p === "/api/realtime-voice/voices",
+    reason: "P3-17:无 state 终写(纯外呼声纹注册),持锁无意义"
+  },
+  {
+    // P3-17:删除声纹——外呼 deleteVoice,无 state 终写,同上。
+    method: "DELETE",
+    matches: idUnder("/api/realtime-voice/voices/"),
+    reason: "P3-17:无 state 终写(纯外呼删声纹),持锁无意义"
+  },
+  {
+    // P3-17:构建实时语音指令——await embedQueryText(慢嵌入 IO,数百 ms)后只读拼指令返回,
+    // 【无 replaceState】。此前整段持锁把嵌入耗时算进全局写串行,纯读+外呼→豁免。
+    method: "POST",
+    matches: (p) => p.startsWith("/api/interview-sessions/") && p.endsWith("/voice-instructions"),
+    reason: "P3-17:无 state 终写(纯读+嵌入外呼),持锁无意义"
   }
 ];
 

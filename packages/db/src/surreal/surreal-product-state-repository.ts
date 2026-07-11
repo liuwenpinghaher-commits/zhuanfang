@@ -67,6 +67,15 @@ export const DATETIME_DEFAULT_COLS: Record<string, readonly string[]> = {
   knowledge_chunk: ["createdAt"],
 };
 
+/** P3-12:可选 datetime 列(option<datetime>,无 DEFAULT)。与 DATETIME_DEFAULT_COLS 的区别:
+ *  缺值时【不】now-兜底(那会把未完成的 active session 误盖成"已完成"),而是从 CONTENT 里省略
+ *  → SCHEMAFULL option<datetime> 落 NONE。仅当 rest 里存在合法值时才投影为 typed 列(值本身由
+ *  clampPersistableEnums.optIsoDate 已保证合法/undefined)。此前 session.completedAt 定义了却从不
+ *  投影(恒 NONE、死列),"新增实体列 5 步清单"的投影步被漏;补此机制让它成为真·可查询列。 */
+export const OPTIONAL_DATETIME_COLS: Record<string, readonly string[]> = {
+  session: ["completedAt"],
+};
+
 /** 把记录补成"可被 UPSERT CONTENT 全量覆盖"的形态:
  *  ① `rest` 必有(turn 表 rest 也 DEFAULT {},CONTENT 覆盖不重跑 DEFAULT);
  *  ② 该表所有 DEFAULT datetime 列补成 Date(值取自 rest 里同名 ISO,无则 now)。 */
@@ -78,6 +87,18 @@ function fillUpsertDefaults(table: string, rec: Record<string, unknown>): Record
     rec[col] = existing instanceof Date ? existing
       : (typeof existing === "string" || typeof existing === "number") ? new Date(existing)
       : new Date();
+  }
+  // P3-12:可选 datetime 列——有合法值才投影为 typed 列,缺值则从 CONTENT 省略(落 NONE),
+  // 绝不 now-兜底(否则未完成会话被误盖成已完成)。
+  for (const col of OPTIONAL_DATETIME_COLS[table] ?? []) {
+    const existing = rec[col] ?? rest[col];
+    if (existing instanceof Date) {
+      rec[col] = existing;
+    } else if ((typeof existing === "string" && !Number.isNaN(Date.parse(existing))) || typeof existing === "number") {
+      rec[col] = new Date(existing);
+    } else {
+      delete rec[col];   // 缺失/非法 → CONTENT 不含该键 → option<datetime> 落 NONE
+    }
   }
   return rec;
 }
@@ -1113,10 +1134,22 @@ async function pruneStreamsBefore(db: Surreal, cutoffIso: string, memState: Prod
     console.warn(JSON.stringify({ event: "surreal_event_stream_prune_invalid_cutoff", cutoffIso }));
     return;
   }
+  // P3-14:逐表 try/catch——某张流水表 DELETE 失败(引擎瞬态/单表损坏)此前会让异常冒泡、
+  // 中断整个循环,后续表永不清理(无界增长)。改为一表失败只记该表、继续清其余表;末尾把失败
+  // 表清单汇总成一条 error 级日志(prune 是卫生工作、不阻塞业务写,但"哪些表没清成"必须可观测)。
+  const failedTables: string[] = [];
   for (const m of STREAM_MAPPINGS) {
     const arr = ((memState as unknown as Record<string, unknown>)[m.stateKey] as Array<Record<string, unknown> & { id: string }>) ?? [];
     const memOldest = arr.length > 0 ? streamTs(arr[arr.length - 1], m) : undefined;
     const effective = memOldest !== undefined && memOldest < cutoffIso ? memOldest : cutoffIso;
-    await db.query(`DELETE ${m.table}:..[$c];`, { c: effective });
+    try {
+      await db.query(`DELETE ${m.table}:..[$c];`, { c: effective });
+    } catch (err) {
+      failedTables.push(m.table);
+      console.warn(JSON.stringify({ event: "surreal_event_stream_prune_table_failed", table: m.table, error: String(err) }));
+    }
+  }
+  if (failedTables.length > 0) {
+    console.error(JSON.stringify({ event: "surreal_event_stream_prune_incomplete", failedTables }));
   }
 }

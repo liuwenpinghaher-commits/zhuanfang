@@ -16,11 +16,16 @@ export async function registerAudioRoutes(
 ): Promise<void> {
   server.post("/api/sessions/:id/audio", async (request, reply) => {
     const id = (request.params as { id?: string }).id ?? "";
-    // 审计修复(P2-16/C2):上传不校验会话存在 → 孤儿音频行只有 full purge 能清;且 doNotSave
-    // 会话在 /end 时整体不落 state(finalize 有意丢弃),其录音本不该留存——按会话存在性拒收,
-    // "不保存"承诺自然覆盖最敏感的原声。
-    if (!productRepo.getInterviewSession(id)) {
+    // 审计修复(P2-16/C2):上传不校验会话存在 → 孤儿音频行只有 full purge 能清。按会话存在性拒收。
+    const session = productRepo.getInterviewSession(id);
+    if (!session) {
       return reply.code(404).send({ error: "Interview session not found." });
+    }
+    // P3-18:doNotSave 会话在 /end 时整体不落 state(finalize 有意丢弃),其录音本不该留存。
+    // 但录音原声是 /end 之前经本端点直传的——存在性校验挡不住(会话此刻仍在)。这里显式拒收,
+    // 让"不保存"承诺覆盖最敏感的原声,而不是留下只有 full purge 能清的孤儿原声。
+    if (session.doNotSave) {
+      return reply.code(422).send({ error: "This session is marked do-not-save; audio uploads are rejected." });
     }
     const role = readRole(request);
     const body = request.body as { audioBase64?: unknown; mime?: unknown; durationMs?: unknown; recordingStartedAt?: unknown } | undefined;

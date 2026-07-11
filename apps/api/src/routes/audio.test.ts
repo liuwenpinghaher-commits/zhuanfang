@@ -13,7 +13,28 @@ function repoWithSession(id = "s1") {
   });
 }
 
+function repoWithDoNotSaveSession(id = "s-dns") {
+  const base = createInitialProductState();
+  return createInMemoryProductStateRepository({
+    ...base,
+    sessions: [{ id, mode: "daily", strength: "standard", status: "active", title: "隐私会话", startedAt: "2026-06-27T00:00:00.000Z", turns: [], doNotSave: true }] as never
+  });
+}
+
 describe("audio routes", () => {
+  it("P3-18:doNotSave 会话上传音频 → 422 拒收(不留孤儿原声)", async () => {
+    const audioRepository = createInMemoryAudioRepository();
+    const server = buildApiServer({ env: {}, audioRepository, productStateRepository: repoWithDoNotSaveSession() });
+    const res = await server.inject({
+      method: "POST",
+      url: "/api/sessions/s-dns/audio",
+      payload: { audioBase64: Buffer.from([1, 2, 3]).toString("base64"), mime: "audio/webm" }
+    });
+    expect(res.statusCode).toBe(422);
+    // 确认真的没落库(承诺"不保存"覆盖最敏感的原声)。
+    expect(await audioRepository.get("s-dns")).toBeUndefined();
+  });
+
   it("POST /api/sessions/:id/audio 上传 → 200 + ok + byteSize,落入注入的 repo", async () => {
     const audioRepository = createInMemoryAudioRepository();
     const server = buildApiServer({ env: {}, audioRepository, productStateRepository: repoWithSession() });

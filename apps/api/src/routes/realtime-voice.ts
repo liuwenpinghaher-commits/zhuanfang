@@ -730,7 +730,8 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
 
         dashscopeWs.on("close", (code: number, reason: Buffer) => {
           if (closed) return;
-          ws.close(1000, reason.toString() || "dashscope closed");
+          // P3-21:透传上游关闭码(钳到可发送区间)+ 截断 reason 到 123 字节,不再硬编码 1000/抛 RangeError。
+          ws.close(sanitizeCloseCode(code), truncateCloseReason(reason.toString() || "dashscope closed"));
           cleanup();
         });
 
@@ -750,7 +751,8 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
           cleanup();
         });
       } catch (err) {
-        ws.close(4002, `Failed to connect to DashScope: ${err instanceof Error ? err.message : "unknown"}`);
+        // P3-21:连接失败 message 可能超 123 字节 → 截断,避免 ws.close 抛 RangeError 掩盖真实错误。
+        ws.close(4002, truncateCloseReason(`Failed to connect to DashScope: ${err instanceof Error ? err.message : "unknown"}`));
       }
     });
   });
@@ -944,6 +946,22 @@ function getSessionId(params: unknown) {
   }
   const id = (params as { id?: unknown }).id;
   return typeof id === "string" && id ? id : undefined;
+}
+
+// P3-21:WS 关闭码只有 1000 与 3000–4999 可由应用主动发送(1005/1006/1015 等为本地保留码,
+// 发送会抛)。透传上游码时先钳到可发送区间,不可发送的(如 1006 异常关闭)回落 1000——码的
+// 语义信息由 reason 保留。
+function sanitizeCloseCode(code: number): number {
+  return code === 1000 || (code >= 3000 && code <= 4999) ? code : 1000;
+}
+// P3-21:WS 关闭 reason 上限 123 字节(UTF-8);超长 ws.close 会抛 RangeError。按字节安全截断,
+// 回退到不切碎多字节字符的边界。
+function truncateCloseReason(reason: string): string {
+  const buf = Buffer.from(reason, "utf8");
+  if (buf.length <= 123) return reason;
+  let end = 123;
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) end -= 1;
+  return buf.subarray(0, end).toString("utf8");
 }
 
 function normalizeObject<T>(value: unknown): Partial<T> {

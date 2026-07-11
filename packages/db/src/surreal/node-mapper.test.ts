@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { NODE_MAPPINGS, STREAM_MAPPINGS, toRecord, fromRecord, mappingFor } from "./node-mapper";
-import { META_KEYS, SINGLETON_TABLES, DATETIME_DEFAULT_COLS } from "./surreal-product-state-repository";
+import { META_KEYS, SINGLETON_TABLES, DATETIME_DEFAULT_COLS, OPTIONAL_DATETIME_COLS } from "./surreal-product-state-repository";
 import { createInitialProductState } from "../../../../src/domain/engine";
 import { NUMERIC_BOOL_CLAMPED_COLS, ARRAY_FLOAT_CLAMPED_COLS, DATETIME_CLAMPED_COLS, EMBEDDING_DIMENSION } from "../../../../src/domain/storage";
 import { readFileSync, readdirSync } from "node:fs";
@@ -82,6 +82,30 @@ describe("node-mapper", () => {
       }
     }
     expect(missing, `这些 DEFAULT datetime 列未登记进 DATETIME_DEFAULT_COLS,UPSERT 覆盖会静默失败: ${missing.join(", ")}`).toEqual([]);
+  });
+
+  // P3-12 防漂移守卫:node-mapped 表上每个 `option<datetime>`(无 DEFAULT)列都必须被"投影"——
+  // 要么在 core(直接落列)、要么在 DATETIME_DEFAULT_COLS/OPTIONAL_DATETIME_COLS(从 rest 补值)。
+  // 否则就是 session.completedAt 那样的死列(定义了却恒 NONE),真值只在 rest、typed 列不可查。
+  // 把"新增 option<datetime> 列忘了投影"从静默死列变成响亮失败(镜像 DATETIME_DEFAULT_COLS 守卫)。
+  it("OPTIONAL_DATETIME_COLS/core 覆盖所有 node-mapped 表的 option<datetime> 列(防死列)", () => {
+    const migDir = join(dirname(fileURLToPath(import.meta.url)), "migrations");
+    const re = /DEFINE FIELD (?:IF NOT EXISTS\s+)?(\w+)\s+ON\s+(\w+)\s+TYPE option<datetime>/g;
+    const coreByTable = new Map(NODE_MAPPINGS.map((m) => [m.table, new Set(m.core)] as const));
+    const dead: string[] = [];
+    for (const f of readdirSync(migDir).filter((x) => x.endsWith(".surql"))) {
+      const sql = readFileSync(join(migDir, f), "utf8");
+      for (const m of sql.matchAll(re)) {
+        const [, col, tbl] = m;
+        const core = coreByTable.get(tbl);
+        if (!core) continue; // 只管 node-mapped 表(单例/冷层/流水各有独立持久路径)
+        const projected = core.has(col)
+          || (DATETIME_DEFAULT_COLS[tbl] ?? []).includes(col)
+          || (OPTIONAL_DATETIME_COLS[tbl] ?? []).includes(col);
+        if (!projected) dead.push(`${tbl}.${col} (${f})`);
+      }
+    }
+    expect(dead, `这些 option<datetime> 列从未被投影(死列,恒 NONE),须进 core 或 OPTIONAL_DATETIME_COLS: ${dead.join(", ")}`).toEqual([]);
   });
 
   // N-01 防漂移守卫:每个 migration 里的**标量**数值/bool typed **core** 列(TYPE int/float/number/
