@@ -187,22 +187,48 @@ export async function registerStateRoutes(
 
   // P0-2: Export. The rehearsal report now carries `exportPackage` (full ProductState),
   // so the downloaded JSON is genuinely restorable via POST /api/state/import below.
-  server.get("/api/state/export", async (_request, reply) => {
+  server.get("/api/state/export", async (request, reply) => {
     const state = repository.getState();
     const report = buildBackupRestoreRehearsalReport(state);
-    // Cold-layer raw material lives outside ProductState (its own SQLite store), so the
-    // hot-state rehearsal report doesn't see it. Bundle it here so a downloaded export is a
-    // complete backup and the matching import below can restore the cold layer too.
-    const rawMaterials: InterviewRawMaterial[] = (await rawMaterialRepository?.list()) ?? [];   // R2a:仓库接口已异步化
-    // Audio blobs are large; `audioSessions` records *which* sessions have audio (the full
-    // set, by ID), so an operator can see the recorded-audio footprint and reconcile a purge.
-    const audioSessions: string[] = (await audioRepository?.listSessionIds()) ?? [];
-    // Bundle the actual bytes (base64) so the export is restorable — but cap the total to stay
-    // under the request body limit (28MB). We walk sessions in a stable order (createdAt asc,
-    // matching the repo's listAll ordering) and accumulate base64 length; once a session would
-    // push the running total over the budget it (and any later one) is omitted and recorded in
-    // `audioOmittedSessions` instead, so a complete restore is still possible via re-export/sync.
-    const AUDIO_EXPORT_BUDGET_BYTES = 18 * 1024 * 1024;
+    // N-09:冷层读 per-store fail-safe。此前三处冷层读任一抛错 → 整个导出 500,恰在最需要
+    // 备份时(冷层表损坏)把内存里完好的热态也一并挡在导出之外。灾难恢复语义是"能导多少导多少":
+    // 每个冷层读各自 try/catch,失败置空 + 记名到 coldReadFailures,completeness 据此判 partial。
+    const coldReadFailures: string[] = [];
+    const readCold = async <T>(name: string, read: () => Promise<T>, empty: T): Promise<T> => {
+      try {
+        return await read();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        // audio 读两次(listSessionIds + listAll),任一失败去重记名一次。
+        if (!coldReadFailures.includes(name)) coldReadFailures.push(name);
+        console.error(JSON.stringify({ event: "export_cold_layer_read_failed", store: name, error: message }));
+        return empty;
+      }
+    };
+    // Cold-layer raw material lives outside ProductState (its own store), so the hot-state
+    // rehearsal report doesn't see it. Bundle it here so a downloaded export is a complete backup.
+    const rawMaterials: InterviewRawMaterial[] = rawMaterialRepository
+      ? await readCold("raw-material", () => rawMaterialRepository.list(), [])   // R2a:仓库接口已异步化
+      : [];
+    // `audioSessions` records *which* sessions have audio (the full set, by ID), so an operator
+    // can see the recorded-audio footprint and reconcile a purge.
+    const audioSessions: string[] = audioRepository
+      ? await readCold("audio", () => audioRepository.listSessionIds(), [])
+      : [];
+    // N-08:音频分卷导出。R7 删同步 sqlite 冷备后,此 JSON export 是唯一备份;单包 18MB 音频预算
+    // (受 28MB 体限约束)会把超出部分【确定性】省略——旧注释声称"re-export/sync 仍可完整恢复"是
+    // 假的(重新导出用同一预算、同一 createdAt asc 顺序,省略的是同一批)。改为真正的分卷通道:
+    // ?audioVolume=N 把音频按预算切成连续分卷,运维可逐卷下载拿到【全部】音频字节;不属于本卷的
+    // 会话记入 audioOmittedSessions(completeness 判 partial 并提示用分卷/逐会话下载补全)。
+    // 缺省 18MB(留在 28MB 体限内);PRODUCT_AUDIO_EXPORT_BUDGET_BYTES 可调小(测试/运维分卷粒度)。
+    const budgetEnv = Number(process.env.PRODUCT_AUDIO_EXPORT_BUDGET_BYTES);
+    const AUDIO_EXPORT_BUDGET_BYTES = Number.isFinite(budgetEnv) && budgetEnv > 0
+      ? Math.floor(budgetEnv)
+      : 18 * 1024 * 1024;
+    const requestedVolumeRaw = Number((request.query as { audioVolume?: unknown } | undefined)?.audioVolume);
+    const requestedVolume = Number.isFinite(requestedVolumeRaw) && requestedVolumeRaw > 0
+      ? Math.floor(requestedVolumeRaw)
+      : 0;
     const audios: Array<{
       sessionId: string;
       role: InterviewAudio["role"];
@@ -212,17 +238,25 @@ export async function registerStateRoutes(
       audioBase64: string;
     }> = [];
     const audioOmittedSessions: string[] = [];
-    let audioBudgetUsed = 0;
-    const allAudio = ((await audioRepository?.listAll()) ?? []).slice().sort((a, b) =>   // R2a:仓库接口已异步化
-      a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0
-    );
+    const allAudio = (audioRepository
+      ? await readCold("audio", () => audioRepository.listAll(), [] as InterviewAudio[])   // R2a:仓库接口已异步化
+      : []
+    ).slice().sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
+    // 把排好序的音频切成连续分卷:每装满一份预算进下一卷。单条超预算的音频独占一卷(不会被
+    // 永久锁在备份外)。只有落在 requestedVolume 的会话进本包,其余记为本包未含(omitted)。
+    let currentVolume = 0;
+    let volumeBytesUsed = 0;
     for (const a of allAudio) {
       const audioBase64 = Buffer.from(a.audio).toString("base64");
-      if (audioBudgetUsed + audioBase64.length > AUDIO_EXPORT_BUDGET_BYTES) {
+      if (volumeBytesUsed > 0 && volumeBytesUsed + audioBase64.length > AUDIO_EXPORT_BUDGET_BYTES) {
+        currentVolume += 1;
+        volumeBytesUsed = 0;
+      }
+      volumeBytesUsed += audioBase64.length;
+      if (currentVolume !== requestedVolume) {
         audioOmittedSessions.push(a.sessionId);
         continue;
       }
-      audioBudgetUsed += audioBase64.length;
       const entry: {
         sessionId: string;
         role: InterviewAudio["role"];
@@ -239,7 +273,10 @@ export async function registerStateRoutes(
       }
       audios.push(entry);
     }
-    const bundleCore = { ...report, rawMaterials, audioSessions, audios, audioOmittedSessions };
+    // allAudio 非空时卷数 = 最后卷号 + 1;为空时 0 卷。
+    const audioVolumeCount = allAudio.length > 0 ? currentVolume + 1 : 0;
+    const audioVolumes = { total: audioVolumeCount, current: requestedVolume };
+    const bundleCore = { ...report, rawMaterials, audioSessions, audios, audioOmittedSessions, audioVolumes };
     // F-06:摘要覆盖热态 + 冷层清单 + 实际打包音频,不只沿用 report.package.stateDigest
     // (后者只证明 ProductState,无法发现冷层/音频导出损坏)。compat/completeness 是摘要的
     // 派生元数据,为避免自引用不纳入 digest。
@@ -270,7 +307,8 @@ export async function registerStateRoutes(
         audios,
         audioOmittedSessions,
         importCompatibility,
-        checks: report.checks
+        checks: report.checks,
+        coldStoreFailures: coldReadFailures   // N-09:冷层读失败纳入完整性判定(partial + reason)
       });
       return `${prefix},"importCompatibility":${JSON.stringify(importCompatibility)},"completeness":${JSON.stringify(completeness)}}`;
     };

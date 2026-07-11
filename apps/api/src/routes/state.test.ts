@@ -737,6 +737,66 @@ describe("state routes", () => {
       expect(body.completeness.reasons.join(" ")).toContain("1 段录音");
       await server.close();
     });
+
+    it("N-08:?audioVolume=N 分卷导出——逐卷可取到全部音频字节", async () => {
+      const audioRepo = createInMemoryAudioRepository();
+      // 3 段 3 字节音频,createdAt asc;预算调到 4B(base64 长度 4)→ 每段独占一卷,共 3 卷。
+      for (let i = 0; i < 3; i += 1) {
+        await audioRepo.put({
+          sessionId: `v${i}`,
+          role: "interviewee",
+          audio: new Uint8Array([i, i, i]),
+          mime: "audio/webm",
+          byteSize: 3,
+          createdAt: `2026-06-21T10:00:0${i}.000Z`
+        });
+      }
+      const prev = process.env.PRODUCT_AUDIO_EXPORT_BUDGET_BYTES;
+      process.env.PRODUCT_AUDIO_EXPORT_BUDGET_BYTES = "4";
+      try {
+        const server = buildApiServer({ audioRepository: audioRepo });
+        // 卷 0(默认):只含 v0,其余记为本包未含;总卷数 3。
+        const vol0 = (await server.inject({ method: "GET", url: "/api/state/export" })).json();
+        expect(vol0.audios.map((a: { sessionId: string }) => a.sessionId)).toEqual(["v0"]);
+        expect(vol0.audioOmittedSessions).toEqual(expect.arrayContaining(["v1", "v2"]));
+        expect(vol0.audioVolumes).toEqual({ total: 3, current: 0 });
+        expect(vol0.completeness.status).toBe("partial");
+        // 分卷提示写进 completeness reason(可行动)。
+        expect(vol0.completeness.reasons.join(" ")).toContain("分卷导出");
+        // 卷 1、卷 2:分别取到 v1、v2 → 逐卷合起来即全部字节。
+        const vol1 = (await server.inject({ method: "GET", url: "/api/state/export?audioVolume=1" })).json();
+        expect(vol1.audios.map((a: { sessionId: string }) => a.sessionId)).toEqual(["v1"]);
+        expect(vol1.audioVolumes).toEqual({ total: 3, current: 1 });
+        const vol2 = (await server.inject({ method: "GET", url: "/api/state/export?audioVolume=2" })).json();
+        expect(vol2.audios.map((a: { sessionId: string }) => a.sessionId)).toEqual(["v2"]);
+        expect(Array.from(Buffer.from(vol2.audios[0].audioBase64, "base64"))).toEqual([2, 2, 2]);
+        await server.close();
+      } finally {
+        if (prev === undefined) delete process.env.PRODUCT_AUDIO_EXPORT_BUDGET_BYTES;
+        else process.env.PRODUCT_AUDIO_EXPORT_BUDGET_BYTES = prev;
+      }
+    });
+
+    it("N-09:冷层读失败不 500——能导多少导多少 + completeness 标 partial 记失败冷层", async () => {
+      // 故障注入:让音频冷层读(listSessionIds/listAll)抛错,模拟表损坏(恰在最需备份时)。
+      const failingAudioRepo = {
+        ...createInMemoryAudioRepository(),
+        listSessionIds: async (): Promise<string[]> => { throw new Error("cold audio table corrupt"); },
+        listAll: async (): Promise<never[]> => { throw new Error("cold audio table corrupt"); }
+      };
+      const server = buildApiServer({ audioRepository: failingAudioRepo });
+      const res = await server.inject({ method: "GET", url: "/api/state/export" });
+      // 冷层损坏时仍要能导出(热态在内存完好)——绝不因冷层读失败把整个备份通道堵死。
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.audios).toEqual([]);
+      expect(body.audioSessions).toEqual([]);
+      expect(body.completeness.status).toBe("partial");
+      expect(body.completeness.complete).toBe(false);
+      expect(body.completeness.coldStoreReadFailures).toBeGreaterThan(0);
+      expect(body.completeness.reasons.join(" ")).toContain("冷层读取失败");
+      await server.close();
+    });
   });
 
   // ═══════════════════════════════════════════════════════════════════════════════

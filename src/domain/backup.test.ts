@@ -68,8 +68,23 @@ describe("backup", () => {
       includedAudioSessions: 1,
       omittedAudioSessions: 0,
       failedChecks: 0,
-      externalArtifactWarnings: 0
+      externalArtifactWarnings: 0,
+      coldStoreReadFailures: 0
     });
+  });
+
+  it("N-09:冷层读失败时不得判 complete——降为 partial 并列出失败冷层", () => {
+    const assessment = assessStateExportCompleteness({
+      audioSessions: ["s1"],
+      audios: [{ sessionId: "s1" }],
+      audioOmittedSessions: [],
+      importCompatibility: { bytes: 1024, importBodyLimitBytes: 2048, exceedsImportLimit: false },
+      coldStoreFailures: ["audio"]
+    });
+    expect(assessment.status).toBe("partial");
+    expect(assessment.complete).toBe(false);
+    expect(assessment.coldStoreReadFailures).toBe(1);
+    expect(assessment.reasons.join(" ")).toContain("冷层读取失败");
   });
 
   it("音频被预算省略时判为 partial，并明确遗漏数量", () => {

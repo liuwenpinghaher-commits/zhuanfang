@@ -80,6 +80,8 @@ export interface StateExportCompleteness {
   omittedAudioSessions: number;
   failedChecks: number;
   externalArtifactWarnings: number;
+  /** N-09:导出时读失败的冷层数量(raw/audio/knowledge)。>0 即备份必然缺数据,status 不得为 complete。 */
+  coldStoreReadFailures: number;
 }
 
 /** Product API `/api/state/export` 的真实响应，而非仅含热态的演练报告窄类型。 */
@@ -89,6 +91,8 @@ export interface StateExportBundle extends BackupRestoreRehearsalReport {
   audioSessions: string[];
   audios: StateExportAudioEntry[];
   audioOmittedSessions: string[];
+  /** N-08:音频分卷。total=按导出预算切出的总卷数,current=本包所属卷(?audioVolume=N)。 */
+  audioVolumes: { total: number; current: number };
   /** 除 bundleDigest / importCompatibility / completeness 外主体的稳定摘要。 */
   bundleDigest: string;
   importCompatibility: StateImportCompatibility;
@@ -101,6 +105,8 @@ export function assessStateExportCompleteness(input: {
   audioOmittedSessions: string[];
   importCompatibility: StateImportCompatibility;
   checks?: BackupRehearsalCheck[];
+  /** N-09:导出时读取失败的冷层名(如 ["audio"])。为空表示三冷层均已成功读取。 */
+  coldStoreFailures?: string[];
 }): StateExportCompleteness {
   const declaredAudioIds = new Set(input.audioSessions);
   const includedAudioIds = new Set(input.audios.map((audio) => audio.sessionId));
@@ -117,12 +123,23 @@ export function assessStateExportCompleteness(input: {
   const externalArtifactWarnings = checks.filter(
     (check) => check.id === "local-object-artifacts" && check.status !== "passed"
   );
+  const coldStoreFailures = input.coldStoreFailures ?? [];
   const reasons: string[] = [];
   if (explicitlyOmittedIds.size > 0) {
-    reasons.push(`有 ${explicitlyOmittedIds.size} 段录音因导出预算未写入 JSON 包。`);
+    // N-08:如实说清——被预算省略的音频【不在本备份包内】,且没有自动恢复路径。
+    // 重新导出会以同一预算、同一顺序省略同一批(不是"下次能补")。可行的手动通道:
+    // 逐会话下载(GET /api/state/audio/:sessionId),或用 ?audioVolume=N 分卷导出后续音频。
+    reasons.push(
+      `有 ${explicitlyOmittedIds.size} 段录音因导出预算未写入本 JSON 包,且不在本次备份内、无自动恢复路径;` +
+        `如需完整音频,请逐会话下载或使用分卷导出(?audioVolume=N)。`
+    );
   }
   if (unaccountedAudioIds.length > 0) {
     reasons.push(`有 ${unaccountedAudioIds.length} 个录音会话已声明但音频未打包、也未记录省略原因。`);
+  }
+  if (coldStoreFailures.length > 0) {
+    // N-09:冷层读失败 = 备份必然缺该层数据(恰在最需要备份时——目录损坏——最可能发生)。
+    reasons.push(`冷层读取失败,以下数据未纳入备份:${coldStoreFailures.join("、")}。`);
   }
   if (input.importCompatibility.exceedsImportLimit) {
     reasons.push(
@@ -137,7 +154,7 @@ export function assessStateExportCompleteness(input: {
   }
   const status: StateExportCompletenessStatus = input.importCompatibility.exceedsImportLimit || failed.length > 0
     ? "not-directly-importable"
-    : omittedAudioSessions > 0 || externalArtifactWarnings.length > 0
+    : omittedAudioSessions > 0 || externalArtifactWarnings.length > 0 || coldStoreFailures.length > 0
       ? "partial"
       : "complete";
   return {
@@ -152,7 +169,8 @@ export function assessStateExportCompleteness(input: {
     includedAudioSessions,
     omittedAudioSessions,
     failedChecks: failed.length,
-    externalArtifactWarnings: externalArtifactWarnings.length
+    externalArtifactWarnings: externalArtifactWarnings.length,
+    coldStoreReadFailures: coldStoreFailures.length
   };
 }
 

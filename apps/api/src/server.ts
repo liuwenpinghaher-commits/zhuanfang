@@ -988,7 +988,23 @@ export async function startServer() {
   } else {
     // R7:surreal 是唯一持久档(未设/未知/已废弃档位均已在 resolveProductStoreSelection 归一到此)。
     // R2a:热态 + 三冷层共用同一嵌入式连接(嵌入式 surrealkv 同进程独占锁,不能开第二连接)。
-    const stores = await loadSurrealStores();
+    // N-07:嵌入式 surrealkv 同进程独占锁——若另一进程已持锁,connect 会静默永挂。
+    // createSurrealConnection 已加超时抛 SurrealConnectTimeoutError;这里指认数据目录后 exit 1,
+    // 让运维一眼看到"疑似双开"而非盯着无输出的挂死进程猜。
+    let stores: Awaited<ReturnType<typeof loadSurrealStores>>;
+    try {
+      stores = await loadSurrealStores();
+    } catch (error) {
+      const dataDir = join(dirname(productStateDbPath), "surreal");
+      const timedOut = error instanceof Error && error.name === "SurrealConnectTimeoutError";
+      console.error(JSON.stringify({
+        event: "surreal_connect_failed",
+        dataDir,
+        suspectedCause: timedOut ? "另一进程可能正持有该数据目录的独占锁(双开)" : "连接/初始化失败",
+        detail: error instanceof Error ? error.message : String(error)
+      }));
+      process.exit(1);
+    }
     repository = stores.productState;
     storesClose = stores.close;   // N-10:优雅关闭时 flush persist 队列 + 关连接
     surrealColdRepos = {
