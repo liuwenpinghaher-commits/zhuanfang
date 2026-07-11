@@ -19,7 +19,7 @@ ENV NODE_ENV=production \
     PORT=3210 \
     DEPLOYMENT_PROFILE=production \
     PRODUCT_STATIC_DIR=/app/dist \
-    PRODUCT_STATE_DB_PATH=/app/.data/product-state.sqlite \
+    PRODUCT_STATE_DB_PATH=/app/.data/product-state.db \
     CORPUS_UPLOAD_DIR=/app/.data/corpus-audio
 WORKDIR /app
 COPY package.json package-lock.json ./

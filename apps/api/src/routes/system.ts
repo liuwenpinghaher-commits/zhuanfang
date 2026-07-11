@@ -321,7 +321,9 @@ const runtimeSettingDefinitions: RuntimeSettingDefinition[] = [
     key: "PRODUCT_STATE_DB_PATH",
     section: "storage",
     label: "Product State DB Path",
-    description: "SQLite 状态库路径；切换后需要重启 API 才会更换存储后端。",
+    // P3-06:R7 后持久档是嵌入式 SurrealDB(surrealkv),数据目录建在该路径旁的 .../surreal;
+    // 设为 memory 则用内存档(重启回 seed)。此前文案沿用旧"SQLite 状态库",与现实不符。
+    description: "SurrealDB 数据目录基准路径(在其旁建 surreal/ 目录持久化);设为 memory 用内存档。修改后需重启 API 生效。",
     valueKind: "string",
     restartRequired: true
   }
@@ -411,9 +413,9 @@ export async function registerSystemRoutes(
       {
         id: "state-store",
         kind: "storage",
-        // Memory mode works but is NOT persistent — surface it as degraded (not the same
-        // green "ready" as durable SQLite), and drop the PRODUCT_STATE_DB_PATH requirement
-        // that memory mode doesn't actually need.
+        // P3-06:Memory mode works but is NOT persistent — surface it as degraded (not the same
+        // green "ready" as the durable SurrealDB store). PRODUCT_STATE_DB_PATH 有默认值
+        // (.data/product-state.db 旁建 surreal/),并非必填 → requiredEnv 不再列它(旧文案误标必需)。
         label: "Product State Store",
         // R7:持久 = surreal 档;非 memory 即持久(唯一持久档为 SurrealDB 嵌入式 surrealkv)。
         status: options.stateStore !== "memory" ? "ready" : "degraded",
@@ -421,7 +423,7 @@ export async function registerSystemRoutes(
         detail: options.stateStore !== "memory"
           ? "SurrealDB 状态库已启用（嵌入式 surrealkv，图/向量/混合检索生效），数据持久化。"
           : "内存状态库已启用：数据不持久，重启后回到 seed 状态；导出仅为当前会话快照。",
-        requiredEnv: options.stateStore !== "memory" ? ["PRODUCT_STATE_DB_PATH"] : [],
+        requiredEnv: [],
         lastCheckedAt: generatedAt
       },
       {

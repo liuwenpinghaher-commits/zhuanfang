@@ -151,6 +151,21 @@ function collectFiles(): string[] {
   for (const ent of readdirSync(e2eDir)) {
     if (ent.endsWith(".real.test.ts")) files.push(join(e2eDir, ent));
   }
+  // P3-16:此前扫描只覆盖 scripts + real.test,把 R 系列新增的产品源码日志面(persist/prune/connect/
+  // 治理/语音的 console.* 20+ 处)漏在网外。补扫产品源码 .ts(排除 .test.ts / .real.test.ts —
+  // 测试固件里有意的假 key/url 样例不该被当泄露)。同一套 (a)/(b)/(c) 规则 + EXEMPT 精确豁免。
+  const walkTs = (dir: string) => {
+    for (const ent of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, ent.name);
+      if (ent.isDirectory()) {
+        walkTs(p);
+      } else if (ent.name.endsWith(".ts") && !ent.name.endsWith(".test.ts") && !ent.name.endsWith(".d.ts")) {
+        files.push(p);
+      }
+    }
+  };
+  walkTs(join(repoRoot, "apps/api/src"));
+  walkTs(join(repoRoot, "packages/db/src"));
   return files;
 }
 

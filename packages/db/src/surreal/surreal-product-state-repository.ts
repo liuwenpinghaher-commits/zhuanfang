@@ -1084,7 +1084,9 @@ async function buildPersistStatements(db: Surreal, prev: ProductState, next: Pro
     // removeIds 被误判为滑出 → 不触发全表清扫,prev 窗口行残留 DB 至 90d 保留期。这是纯 diff
     // 判别的固有信息论歧义(该形态的 prev→next diff 与真滑出逐字节相同);生产方向少见(常见
     // "旧备份盖新活库"不满足"全部新于",清扫正确)、scoped purge 不触碰流水数组不可达此路径;
-    // 根治需 replaceState 携带显式治理信号,留待 R3 实体命令阶段。
+    // P3-22:独立待办(不再挂靠已收窄定案的 R3)——根治需 replaceState 携带显式"这是整库替换/import"
+    // 的治理信号,让流水清扫走"按世代全清"而非纯 diff 判别;当前维持记档不扩修(触发面窄、有 90d
+    // 保留期兜底、隐私边界不受影响)。
     const oldestKeptTs = nextArr.length > 0 ? streamTs(nextArr[nextArr.length - 1], m) : "";
     const isSlideOut = (id: string): boolean => {
       if (m.window === undefined || nextArr.length < m.window) return false;

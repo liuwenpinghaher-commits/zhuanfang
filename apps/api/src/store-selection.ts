@@ -80,7 +80,9 @@ export function resolveProductStoreSelection(
       mode: "surreal",
       productStateDbPath,
       deprecatedProductStore: store,
-      reason: `PRODUCT_STORE=${store} 档位已于 R7 废弃(sqlite 冷层/dual-write/dual-surreal 已删除),已按唯一持久档 surreal 启动;请把 .env 改为 PRODUCT_STORE=surreal`
+      // P3-15:明确告知存量 sqlite 数据不会被读取/迁移——旧 sqlite 档用户升级后以【空 surreal 库】启动
+      // (只连 .data/surreal,绝不读旧 .data/product-state.db),否则运维会误以为历史数据自动搬家了。
+      reason: `PRODUCT_STORE=${store} 档位已于 R7 废弃(sqlite 冷层/dual-write/dual-surreal 已删除),已按唯一持久档 surreal 启动;请把 .env 改为 PRODUCT_STORE=surreal。注意:旧 sqlite 数据不会被自动读取或迁移,系统只连 .data/surreal,如需保留历史数据请先用旧版本导出 JSON 再 import`
     };
   }
   return {

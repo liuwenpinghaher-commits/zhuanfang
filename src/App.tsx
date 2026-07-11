@@ -2070,6 +2070,21 @@ export default function App() {
           ? (err.body as { state: unknown; purgeReceipt: PurgeReceipt })
           : undefined;
       if (!partialBody) {
+        // P3-04:R2b 治理事务整体回滚(500 + rolledBack,无 state)——热态/冷层未删(数据完好),
+        // 但 local-object 文件层是非事务的、已被删除。此前落到通用错误、artifactPurge 不可见,用户不知
+        // "文件已删而状态未删"。如实告知:状态已回滚,但已删的本地音频文件无法随回滚恢复。
+        const rollbackBody =
+          err instanceof ApiError && err.status === 500 && err.body && typeof err.body === "object" &&
+          (err.body as { rolledBack?: unknown }).rolledBack === true
+            ? (err.body as { artifactPurge?: { deleted?: number } })
+            : undefined;
+        if (rollbackBody) {
+          const deleted = rollbackBody.artifactPurge?.deleted ?? 0;
+          const artifactNote = deleted > 0
+            ? `已删除 ${deleted} 个本地音频文件(文件层非事务,无法随回滚恢复)。`
+            : "";
+          throw new Error(`清空已整体回滚,数据未删除,请查看服务端日志后重试。${artifactNote}`);
+        }
         // 网络失败(后端没确认任何删除)/其他 4xx(服务端拒绝、什么都没删):不动本地状态,
         // 原样抛给 ProfileView 的 catch 如实展示(见 describeGovernanceError)——绝不谎报清空。
         throw err;

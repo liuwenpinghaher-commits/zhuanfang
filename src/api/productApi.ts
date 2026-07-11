@@ -447,14 +447,18 @@ export class ApiError extends Error {
 }
 
 /**
- * F-03:reset 单库清理结果三态,与后端 apps/api/src/routes/state.ts 的 reset 端点对齐:
+ * F-03:reset 单库清理结果,与后端 apps/api/src/routes/state.ts 的 reset/purge 端点对齐:
  * "cleared" | "not-configured" | "failed: <原因>"(not-configured 不算失败)。
+ * P3-04:补 "rolled-back"——R2b 治理事务整体回滚时后端 rolledBackStores() 返回该值(冷热同回滚,
+ * 一库不落),此前不在联合内 → 类型漂移(消费方 switch/展示逻辑对它一无所知)。
  */
-export type ResetStoreOutcome = "cleared" | "not-configured" | `failed: ${string}`;
+export type ResetStoreOutcome = "cleared" | "not-configured" | "rolled-back" | `failed: ${string}`;
 
 /** F-03:POST /api/state/reset 的逐库清理回执。 */
 export interface ResetReceipt {
   partialFailure: boolean;
+  /** P3-04:R2b 治理事务整体回滚时 true(热态未提交、无部分提交);stores 全 "rolled-back"。 */
+  rolledBack?: boolean;
   stores: Record<string, ResetStoreOutcome>;
 }
 
@@ -493,6 +497,8 @@ export interface PurgeReceipt {
    * (走 acceptAuthoritativeState)并如实列出未删除的库——见 src/App.tsx purgeData。
    */
   hotStateCommitted?: boolean;
+  /** P3-04:R2b 治理事务整体回滚时 true(热态/冷层未提交);stores 全 "rolled-back"。 */
+  rolledBack?: boolean;
   stores: Record<string, ResetStoreOutcome>;
 }
 
