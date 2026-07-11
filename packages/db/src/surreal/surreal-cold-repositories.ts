@@ -10,12 +10,15 @@ import type {
 import type { RawMaterialRepository } from "../../../../apps/api/src/raw-material-repository";
 import type { AudioRepository } from "../../../../apps/api/src/audio-repository";
 import type { KnowledgeIndexRepository } from "../../../../apps/api/src/knowledge-index-repository";
+import { GovernanceInFlightError } from "../../../../apps/api/src/product-state-repository";
 import { createSurrealConnection, type SurrealConnectionOptions } from "./connect";
 import { applySchema } from "./apply-schema";
 import { selectBm25QueryTokens, buildBm25Clause, reorderByRrfRank, RRF_RANK_CONSTANT } from "./constants";
 import {
   buildSurrealProductStateRepositoryOnConnection,
   runWithTransientRetry,
+  createGovernanceContext,
+  type GovernanceContext,
   type SurrealRepoHandle,
 } from "./surreal-product-state-repository";
 import {
@@ -43,6 +46,26 @@ import {
  */
 
 const DEFAULT_ROLE: InterviewAudioRole = "interviewee";
+
+/**
+ * N-03:冷层直写治理守卫。治理事务(reset/purge/import)在途时,任何**新增/替换类**冷层直写
+ * (raw/audio/knowledge 的 put、knowledge 的 replaceSource)一律拒绝——抛 GovernanceInFlightError
+ * (statusCode=409,与热态 M1 守卫同款语义,server.ts 全局 handler 自动映射 409)。
+ *
+ * 为什么冷层也要守:批次 A 的 M1 守卫只罩热态整状态写(replaceState/resetState),而冷层三库直读直写、
+ * 与治理事务**共用同一嵌入式连接**(见文件头 createSurrealStores 注释)。治理大事务超 360s 写门强放后,
+ * 排队的录音上传 / raw PUT / 后台知识回写会趁隙进门:治理清空提交后,这些"清空前构建、清空后落库"的
+ * 写把私密录音/逐字稿/索引块 UPSERT 回权威库 → 隐私假清空。共享 governanceInFlightCount(挂在 createSurrealStores
+ * 的共享上下文对象上,治理与冷层同读)即可让冷层写在治理在途时同步拒绝。
+ *
+ * 为何只守 put/replaceSource、不守 delete*:delete/deleteBySource/deleteAll 是**移除**数据,永远不构成
+ * "治理后残留"的隐私违背(反而与治理清空同向);守 delete 只会误伤在治理在途时仍在跑的合法清理
+ * (如降冷 reindex 循环里的 deleteBySource)徒增噪声。治理事务自身清空走 db.query 原生 SQL(不经这些仓库
+ * 方法),故不自我拒绝。ctx 缺省(standalone/测试无共享上下文)时不守——那条路径无冷热同连接的并发面。
+ */
+function assertNoGovernanceInFlight(ctx: GovernanceContext | undefined): void {
+  if (ctx && ctx.inFlightCount > 0) throw new GovernanceInFlightError();
+}
 
 /** SurrealDB 记录 id → 领域 id 字符串(复合 id 取整个 .id;单段取字符串)。 */
 function domainIdOf(id: unknown): string {
@@ -75,7 +98,7 @@ function toBytes(v: unknown): Uint8Array {
 
 // ─────────────────────────────── raw_material ───────────────────────────────
 
-export function createSurrealRawMaterialRepository(db: Surreal): RawMaterialRepository {
+export function createSurrealRawMaterialRepository(db: Surreal, governanceCtx?: GovernanceContext): RawMaterialRepository {
   const idOf = (sessionId: string) => rawMaterialRecordId(sessionId);   // R2b:与治理事务共用 cold-shapes
   const mapRow = (row: Record<string, unknown>): InterviewRawMaterial => ({
     sessionId: domainIdOf(row.id),
@@ -94,6 +117,7 @@ export function createSurrealRawMaterialRepository(db: Surreal): RawMaterialRepo
       return (rows ?? []).map(mapRow);
     },
     async put(material) {
+      assertNoGovernanceInFlight(governanceCtx);   // N-03:治理在途拒绝逐字稿回写(隐私假清空)
       await runWithTransientRetry(async () => {
         // R2b:载荷形状由 cold-shapes 单一真值提供(治理事务复用同一形状)。
         await db.query("UPSERT $rid CONTENT $c;", {
@@ -113,7 +137,7 @@ export function createSurrealRawMaterialRepository(db: Surreal): RawMaterialRepo
 
 // ─────────────────────────────────── audio ──────────────────────────────────
 
-export function createSurrealAudioRepository(db: Surreal): AudioRepository {
+export function createSurrealAudioRepository(db: Surreal, governanceCtx?: GovernanceContext): AudioRepository {
   const idOf = (sessionId: string, role: InterviewAudioRole) => audioRecordId(sessionId, role);   // R2b:与治理事务共用 cold-shapes
   const mapRow = (row: Record<string, unknown>): InterviewAudio => {
     const result: InterviewAudio = {
@@ -141,6 +165,7 @@ export function createSurrealAudioRepository(db: Surreal): AudioRepository {
       return (rows?.length ?? 0) > 0;
     },
     async put(a) {
+      assertNoGovernanceInFlight(governanceCtx);   // N-03:治理在途拒绝录音回写(触发链:360s 写门强放后排队的录音上传趁隙进门)
       // 大对象(MB 级 bytes)直接落库,绝不缓存内存(见文件头注释)。
       // R2b:载荷形状由 cold-shapes 单一真值提供(治理事务复用同一形状)。
       const { role, content } = audioContentOf(a);
@@ -178,7 +203,7 @@ export interface SurrealKnowledgeIndexRepository extends KnowledgeIndexRepositor
   searchHybrid(query: { text: string; embedding?: number[]; limit: number }): Promise<KnowledgeChunk[]>;
 }
 
-export function createSurrealKnowledgeIndexRepository(db: Surreal): SurrealKnowledgeIndexRepository {
+export function createSurrealKnowledgeIndexRepository(db: Surreal, governanceCtx?: GovernanceContext): SurrealKnowledgeIndexRepository {
   // epoch 照搬 sqlite/in-memory:进程内单调计数,deleteAll 递增(不持久化)。
   let epoch = 0;
   const idOf = (chunkId: string) => new RecordId(KNOWLEDGE_CHUNK_TABLE, chunkId);
@@ -218,9 +243,12 @@ export function createSurrealKnowledgeIndexRepository(db: Surreal): SurrealKnowl
     db.query("UPSERT $rid CONTENT $c;", { rid: idOf(c.id), c: contentOf(c) });
   return {
     async put(c) {
+      assertNoGovernanceInFlight(governanceCtx);   // N-03:治理在途拒绝知识块回写(后台嵌入/重建趁隙复活已清索引)
       await runWithTransientRetry(() => putChunk(c));
     },
     async replaceSource(sourceType, sourceId, chunks) {
+      assertNoGovernanceInFlight(governanceCtx);   // N-03:同上——replaceSource 也是新增/替换类写
+
       // 单事务原子替换,与 sqlite 的 BEGIN/COMMIT 契约一致——中途崩溃/并发读绝不会看到"该来源被
       // 清空"的中间态。规避 3.x「同事务删建同 id」坑(R1b 已验证手法):不先全删再建,而是
       // DELETE ... AND id NOT IN $keep(只删本次不保留的旧块)+ 逐条 UPSERT(keep=本次 chunkId 集,
@@ -357,19 +385,25 @@ export interface SurrealStores {
 export async function createSurrealStores(opts: SurrealConnectionOptions): Promise<SurrealStores> {
   const db = await createSurrealConnection(opts);
   await applySchema(db);
+  // N-03/N-05:治理并发共享上下文——一个对象,治理事务(热态 handle)与三冷层仓库全部共读同一份
+  // inFlightCount/generation。这是让冷层直写也能感知"治理在途"、让后台长任务感知"治理代际"的共享点。
+  const governanceCtx = createGovernanceContext();
   // 冷层三库(与热态同连接;R2b 治理事务要跨冷热单事务)。knowledgeIndex 先建,好把 bumpEpoch
   // 交给治理事务(SQL 直清知识表后须显式代际递增,见 SurrealKnowledgeIndexRepository)。
-  const rawMaterial = createSurrealRawMaterialRepository(db);
-  const audio = createSurrealAudioRepository(db);
-  const knowledgeIndex = createSurrealKnowledgeIndexRepository(db);
+  // N-03:三库都收共享 governanceCtx → put/replaceSource 在治理在途时同步拒写。
+  const rawMaterial = createSurrealRawMaterialRepository(db, governanceCtx);
+  const audio = createSurrealAudioRepository(db, governanceCtx);
+  const knowledgeIndex = createSurrealKnowledgeIndexRepository(db, governanceCtx);
   // 热态仓库不拥有连接(ownsConnection=false),由本工厂 close() 统一关一次。
   // R2b:传入 governance 配置 → 热态 handle 暴露 runGovernanceTransaction(治理事务能力)。
   // 只有 createSurrealStores 这条装配路径(冷热共用一个嵌入式连接)才配得治理事务能力;
   // standalone 的 createSurrealProductStateRepository(自开自关连接、无冷层,仅测试/工具用)不传,
   // 故其 handle 无此方法 → asGovernanceTx 探测不到 → 路由回落既有 journal/best-effort 路径。
+  // N-03/N-05:热态 handle 也收同一 governanceCtx(治理在途计数在此升降、治理代际在此递增)。
   const productState = await buildSurrealProductStateRepositoryOnConnection(db, {
     ownsConnection: false,
     governance: { onKnowledgeIndexWiped: () => knowledgeIndex.bumpEpoch() },
+    governanceContext: governanceCtx,
   });
   return {
     productState,

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createInitialProductState, createSessionDraft } from "../domain/engine";
-import { createProductApiClient } from "./productApi";
+import { createProductApiClient, ApiError } from "./productApi";
 
 describe("product api client", () => {
   it("loads and normalizes product state from the API", async () => {
@@ -101,6 +101,32 @@ describe("product api client", () => {
     });
     expect(result.conflicted).toBe(false);
     expect(result.state.profile.name).toBe("Mia");
+  });
+
+  it("N-06:stale-revision 409(带权威 current)→ conflicted:true,采纳服务端 current(既有行为不变)", async () => {
+    const current = { ...createInitialProductState(), revision: 7 };
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ error: "stale revision", current }), { status: 409 }));
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+
+    const result = await client.saveState(createInitialProductState());
+    expect(result.conflicted).toBe(true);
+    expect(result.state.revision).toBe(7); // 采纳服务端权威 current
+  });
+
+  it("★N-06:治理进行中 409(无 current,仅 {error})→ 抛 ApiError(409),绝不把 undefined 喂 normalize 捏造 demo 态", async () => {
+    // GovernanceInFlightError 经全局 handler 只回 { error },无 current。修前:body.current=undefined →
+    // normalizeProductState(undefined) → 完整 demo 态,前端误当"服务器版本",选它即丢真数据。修后:硬错误。
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ error: "A governance operation (reset/purge/import) is in progress" }), { status: 409 }));
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+
+    await expect(client.saveState(createInitialProductState())).rejects.toBeInstanceOf(ApiError);
+    await expect(client.saveState(createInitialProductState())).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("★N-06:409 且 current 非对象(null/字符串)→ 同样按硬错误抛,不采纳畸形 current", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ error: "bad", current: null }), { status: 409 }));
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+    await expect(client.saveState(createInitialProductState())).rejects.toBeInstanceOf(ApiError);
   });
 
   // N-02:落库降级信号改由 getHealth 轮询驱动 banner(route-agnostic,覆盖全部"200+异步落库"写路径),

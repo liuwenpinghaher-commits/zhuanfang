@@ -763,7 +763,15 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         body: JSON.stringify(state)
       });
       if (response.status === 409) {
-        const body = (await response.json()) as { current: ProductState };
+        // N-06:只有 stale-revision 409 携带权威 current(state.ts PUT /api/state 恒带 { current: stored });
+        // GovernanceInFlightError 409(治理进行中)只有 { error },无 current。缺 current 时**绝不**把 undefined
+        // 喂给 normalizeProductState——那会捏造一份完整 demo 态,前端误当"服务端权威",冲突弹窗里"服务器版本"
+        // 就是演示数据,用户选它即丢真实数据(灾难恢复空库重启的 stale-409 同理)。缺 current 按硬错误抛,
+        // 走既有"非离线 4xx"路径(App autosave catch 显示"治理进行中/稍后自动重试",不撕毁持久化、不误当离线)。
+        const body = (await response.json().catch(() => ({}))) as { current?: unknown };
+        if (!body || typeof body.current !== "object" || body.current === null) {
+          throw new ApiError(409, "/api/state", body);
+        }
         return { state: normalizeProductState(body.current), conflicted: true };
       }
       if (!response.ok) {

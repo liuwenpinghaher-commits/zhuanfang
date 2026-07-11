@@ -53,10 +53,20 @@ export interface ProductStateRepository {
   resetState(): ProductState;
   replaceState(state: ProductState, opts?: ReplaceStateOptions): ProductState;
   getInterviewSession(id: string): InterviewSession | null;
+  /**
+   * N-05:治理代际——每次整库替换/清空(reset;surreal 档还含 purge/import 治理事务)递增。后台长任务
+   * (auto-run 简报生成、调度器 tick)在起点捕获,终写前比对:代际已变即联网期间发生过治理,基于治理前
+   * 状态生成的产出必须丢弃,否则会把含旧主题名的简报写回已清空的库(reset 后干净库冒出旧简报)。
+   * 可选:仅 surreal handle 与内存档实现;缺失(=undefined)时调用方回落既有行为(向后兼容)。
+   */
+  getGovernanceGeneration?(): number;
 }
 
 export function createInMemoryProductStateRepository(initialState: ProductState = createInitialProductState()): ProductStateRepository {
   let state = initialState;
+  // N-05:内存档的治理代际。resetState 是内存档唯一的"整库清空"入口 → 在此递增,让 auto-run/scheduler
+  // 的 stale-generation 守卫在内存档也生效(surreal 档另在治理事务成功时递增,覆盖 reset/purge/import)。
+  let governanceGeneration = 0;
 
   return {
     getState() {
@@ -66,8 +76,12 @@ export function createInMemoryProductStateRepository(initialState: ProductState 
       // mutate-then-read bug that fails against the real (SQLite) store.
       return cloneState(state);
     },
+    getGovernanceGeneration() {
+      return governanceGeneration;
+    },
     resetState() {
       state = createEmptyProductState();
+      governanceGeneration += 1;   // N-05:reset = 一次治理清空
       return cloneState(state);
     },
     replaceState(nextState, opts) {

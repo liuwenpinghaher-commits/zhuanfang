@@ -34,7 +34,7 @@ function formatBytes(bytes: number): string {
 // 让用户知道具体哪些条目坏了,而不是笼统的"导入失败"。
 function describeGovernanceError(err: unknown, fallback: string): string {
   if (err instanceof ApiError && err.body && typeof err.body === "object") {
-    const body = err.body as { error?: unknown; invalidRawMaterials?: unknown; invalidAudios?: unknown };
+    const body = err.body as { error?: unknown; detail?: unknown; invalidRawMaterials?: unknown; invalidAudios?: unknown };
     if (typeof body.error === "string" && body.error.length > 0) {
       const details: string[] = [];
       for (const [label, list] of [
@@ -51,6 +51,11 @@ function describeGovernanceError(err: unknown, fallback: string): string {
             .join("；");
           details.push(`非法${label}条目：${sample}${list.length > 3 ? `（共 ${list.length} 条）` : ""}`);
         }
+      }
+      // N-11:治理 500 的原始报文已被服务端门控进 body.detail(仅非生产存在;生产 body 无 detail)。
+      // 存在即附上便于本地调试;生产下只显示 generic 中文 body.error(绝不泄漏 SurrealDB 字段值片段)。
+      if (typeof body.detail === "string" && body.detail.length > 0) {
+        details.push(body.detail);
       }
       return details.length > 0 ? `${body.error} ${details.join("；")}` : body.error;
     }

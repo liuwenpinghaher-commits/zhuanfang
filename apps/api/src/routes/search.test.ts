@@ -522,3 +522,107 @@ describe("审计修复(P2-24):refresh 降级不覆盖真实内容", () => {
     await app2.close();
   });
 });
+
+// ---------------------------------------------------------------------------
+// POST /api/research/auto-run — N-05 治理代际丢弃(auto-run 联网期间 reset → 产出丢弃)
+//
+// auto-run 已豁免全局写串行化(联网可达 90s,期间不持写锁),这段时间里用户可能 reset/purge/import。
+// 若发生过治理,本轮基于**治理前**主题生成的简报绝不能写回已清空的库(否则 reset 后干净库冒出含旧
+// 主题名的简报)。用闸门 client 把 auto-run 卡在 in-flight,期间 resetState()(内存档 getGovernanceGeneration+1),
+// 放行后终写应比对代际发现已变 → 丢弃全部产出、记 research_output_discarded_stale_generation,干净库无简报。
+// ---------------------------------------------------------------------------
+describe("POST /api/research/auto-run — N-05 治理代际丢弃", () => {
+  function createGatedSearchClient() {
+    const gates: Array<() => void> = [];
+    const arrivalWaiters: Array<{ target: number; resolve: () => void }> = [];
+    let callCount = 0;
+    function notifyArrival() {
+      for (let i = arrivalWaiters.length - 1; i >= 0; i -= 1) {
+        if (callCount >= arrivalWaiters[i].target) { arrivalWaiters[i].resolve(); arrivalWaiters.splice(i, 1); }
+      }
+    }
+    return {
+      get callCount() { return callCount; },
+      releaseNext() { const g = gates.shift(); if (g) g(); },
+      releaseAll() { while (gates.length) gates.shift()!(); },
+      waitForCall(target?: number): Promise<void> {
+        const want = target ?? callCount + 1;
+        if (callCount >= want) return Promise.resolve();
+        return new Promise<void>((resolve) => { arrivalWaiters.push({ target: want, resolve }); });
+      },
+      client: {
+        async createSearchBrief(input: { topic: string }) {
+          callCount += 1; notifyArrival();
+          await new Promise<void>((resolve) => { gates.push(resolve); });
+          return {
+            topic: input.topic, provider: "bailian" as const, status: "ready" as const,
+            summary: `Gated ${input.topic}`, facts: [`fact ${input.topic}`], controversies: [], opposingViews: [],
+            interviewAngles: [], discussionTopics: [], sourceAngles: [],
+            sources: [{ id: `s-${input.topic}`, title: input.topic, url: `https://x.local/${encodeURIComponent(input.topic)}`, publisher: "P", publishedAt: "2026-06-19T00:00:00.000Z", snippet: "s", relevanceScore: 0.9, usage: "interview-context" as const }],
+          };
+        },
+      },
+    };
+  }
+
+  it("★auto-run 联网在途 reset(代际改变)→ 终写丢弃全部 generated 产出;干净库无简报", async () => {
+    const gated = createGatedSearchClient();
+    const app = Fastify();
+    // 非空 state:demo 主题使 buildProactiveSearchAgenda 出非空 agenda → auto-run 真进入 generateBriefForTopic 的 await。
+    const repo = createInMemoryProductStateRepository(createInitialProductState());
+    await registerSearchRoutes(app, repo, { bailianSearchClient: gated.client });
+    await app.ready();
+
+    const warnings: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(String(args[0] ?? "")); };
+    try {
+      // 起点代际 0(内存档新建)。启动 auto-run,不 await——卡在第一个 gated createSearchBrief。
+      const req = app.inject({ method: "POST", url: "/api/research/auto-run" });
+      await gated.waitForCall(1);
+      expect(gated.callCount).toBe(1);
+
+      // 联网在途时用户 reset:内存档 resetState 使 getGovernanceGeneration 从 0→1(整库清空)。
+      repo.resetState();
+      expect(repo.getGovernanceGeneration?.()).toBe(1);
+
+      // 放行 auto-run 的全部挂起联网调用,等它完成终写。
+      gated.releaseAll();
+      // agenda 可能不止一条,逐一放行直至 req resolve。
+      const settle = (async () => { for (let i = 0; i < 10; i += 1) { gated.releaseAll(); await new Promise((r) => setTimeout(r, 5)); } })();
+      const res = await req;
+      await settle;
+      expect(res.statusCode).toBe(200);
+
+      // 关键:干净库(reset 后)不含任何本轮 generated 简报——代际已变,产出被整体丢弃。
+      const persisted = repo.getState();
+      expect(persisted.searchBriefs).toHaveLength(0);
+      // 丢弃事件被记录(证明走了 N-05 分支,而非碰巧空)。
+      expect(warnings.some((w) => w.includes("research_output_discarded_stale_generation"))).toBe(true);
+    } finally {
+      console.warn = origWarn;
+      await app.close();
+    }
+  });
+
+  it("对照:auto-run 期间无治理(代际不变)→ 产出正常写回", async () => {
+    const gated = createGatedSearchClient();
+    const app = Fastify();
+    const repo = createInMemoryProductStateRepository(createInitialProductState());
+    await registerSearchRoutes(app, repo, { bailianSearchClient: gated.client });
+    await app.ready();
+    try {
+      const req = app.inject({ method: "POST", url: "/api/research/auto-run" });
+      await gated.waitForCall(1);
+      // 不做任何治理(代际保持起点值)。
+      const settle = (async () => { for (let i = 0; i < 10; i += 1) { gated.releaseAll(); await new Promise((r) => setTimeout(r, 5)); } })();
+      const res = await req;
+      await settle;
+      expect(res.statusCode).toBe(200);
+      // 未发生治理 → 产出照常落库(至少一条 generated 简报)。
+      expect(repo.getState().searchBriefs.length).toBeGreaterThan(0);
+    } finally {
+      await app.close();
+    }
+  });
+});

@@ -224,6 +224,10 @@ export async function registerSearchRoutes(
     try {
     const now = new Date().toISOString();
     const state = repository.getState();
+    // N-05:捕获治理代际。auto-run 已豁免全局写串行化(联网可达 90s,期间不持写锁),这段时间里用户可能
+    // reset/purge/import。若发生过治理,本轮基于**治理前**主题生成的简报绝不能写回已清空的库(否则 reset
+    // 后干净库冒出含旧主题名的简报)。终写前比对代际,已变即丢弃全部产出。
+    const startGeneration = repository.getGovernanceGeneration?.();
     const planned = planResearchAgendaRun(state, now);
     const agendaItems = planned.agendaItems.slice(0, 3);
     const staleTrackedBriefIds = planned.staleTrackedBriefIds.slice(0, 3);
@@ -277,6 +281,14 @@ export async function registerSearchRoutes(
     // 审计修复(D3):终写经全局写门排队——豁免只豁免"联网期间不持锁",最终读-合并-写必须与
     // 串行写互斥,否则会落在某个长持锁写(如 /end)的读写窗口内被整态回滚(反向 clobber)。
     const commitFinal = () => {
+      // N-05:终写前(已在 writeGate 独占块内,与治理成功递增代际的时刻可比对)复查代际。已变=联网期间
+      // 发生过 reset/purge/import,整库已换,本轮 generated/refreshed 全部基于陈旧状态 → 整体丢弃、记事件,
+      // 不回写。(若治理恰在此刻在途,下方 replaceState 还会被 M1 守卫拒 → 409,由端点冒泡,亦不复活。)
+      const currentGeneration = repository.getGovernanceGeneration?.();
+      if (startGeneration !== undefined && currentGeneration !== startGeneration) {
+        console.warn(JSON.stringify({ event: "research_output_discarded_stale_generation", source: "auto-run", startGeneration, currentGeneration }));
+        return { persisted: repository.getState(), duplicateCount: 0 };
+      }
       const latest = repository.getState();
       const briefById = new Map(latest.searchBriefs.map((b) => [b.id, b]));
       // 回归审查 R3-A:与调度器 commit 对齐——refreshed(刷新既有简报)只在该 id 仍存在于 latest 时回写,

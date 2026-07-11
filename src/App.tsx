@@ -639,7 +639,11 @@ export default function App() {
               error: String(err)
             })
           );
-          const retryable = isNetworkError(err) || (err instanceof ApiError && err.status >= 500);
+          // N-06:治理进行中的 409(GovernanceInFlightError)是**瞬态**——治理秒级结算(360s 写门为硬顶),
+          // 视为可重试(有界退避重发),绝不撕毁持久化/误当离线。stale-revision 409 不会走到这里(saveState
+          // 在带 current 时返回 conflicted、不抛),故此处的 409 即"治理进行中/无 current 的硬错误 409"。
+          const governanceInFlight = err instanceof ApiError && err.status === 409;
+          const retryable = isNetworkError(err) || (err instanceof ApiError && err.status >= 500) || governanceInFlight;
           if (retryable && autosaveRetryTimerRef.current === null) {
             const delayMs = nextBackoffMs(autosaveFailuresRef.current);
             autosaveRetryTimerRef.current = setTimeout(() => {
@@ -651,6 +655,9 @@ export default function App() {
           }
           if (err instanceof ApiError && err.status === 413) {
             setNotice(buildNotice("warning", "本地改动尚未同步到服务器", "数据体积超出服务器限制；离线 outbox 已保留，请先导出备份并清理超大内容。"));
+          } else if (governanceInFlight) {
+            // N-06:清空/导入/重置进行中——本地改动已进 outbox,治理结算后按退避自动重试同步;不误报"后端离线"。
+            setNotice(buildNotice("warning", "服务器正在执行数据治理", "清空/导入/重置进行中，你的本地改动已保留，将在其完成后自动重试同步。"));
           } else if (autosaveFailuresRef.current === 2) {
             setNotice(
               buildNotice("warning", "本地改动尚未同步到服务器", "连续保存失败，请检查后端是否在运行；离线 outbox 已保存，并会按间隔自动重试。")
@@ -2123,13 +2130,16 @@ export default function App() {
         notice = buildNotice("warning", "仅本地视图已重置", "后端未确认删除：服务端与冷层数据可能仍在，恢复连接后请重新执行清空。");
       } else {
         // 其他 4xx/5xx(如 422):服务端拒绝且什么都没删——不动本地状态,直接报错返回。
-        const serverMessage =
-          err instanceof ApiError && err.body && typeof err.body === "object" && typeof (err.body as { error?: unknown }).error === "string"
-            ? (err.body as { error: string }).error
-            : err instanceof Error
-              ? err.message
-              : String(err);
-        setNotice(buildNotice("danger", "清空失败", `服务端未执行清空：${serverMessage}`));
+        // N-11:优先显示服务端 generic 中文 error(治理 500 已门控:生产不含 SurrealDB 原始报文);
+        // detail 仅非生产 profile 存在(服务端 governanceErrorDetail 门控),存在即附上便于本地调试。
+        const errBody = err instanceof ApiError && err.body && typeof err.body === "object" ? (err.body as { error?: unknown; detail?: unknown }) : undefined;
+        const serverMessage = errBody && typeof errBody.error === "string"
+          ? errBody.error
+          : err instanceof Error
+            ? err.message
+            : String(err);
+        const serverDetail = errBody && typeof errBody.detail === "string" ? errBody.detail : undefined;
+        setNotice(buildNotice("danger", "清空失败", serverDetail ? `服务端未执行清空：${serverMessage}（${serverDetail}）` : `服务端未执行清空：${serverMessage}`));
         return;
       }
     }

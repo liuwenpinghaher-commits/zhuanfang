@@ -142,6 +142,12 @@ export async function reindexOnStateChange(
       }
     }
     for (const ref of diff.changed) {
+      // N-04:回写循环内每源复查代际——嵌入后到逐源 replaceSource 期间若 reset/purge 提交清空索引
+      // (bumpEpoch),剩余源不得再写回(否则复活已清私密块)。单次前置检查(epochAtEmbed)挡不住中途清空。
+      if (await knowledgeRepo.epoch() !== epochAtEmbed) {
+        console.warn(JSON.stringify({ event: "reindex_discarded_stale_epoch", phase: "midloop" }));
+        return;
+      }
       const k = `${ref.sourceType}::${ref.sourceId}`;
       await knowledgeRepo.replaceSource(ref.sourceType, ref.sourceId, bySource.get(k) ?? []);
     }
@@ -219,6 +225,11 @@ export async function reindexTranscript(
       }
     }
     for (const [sid, list] of bySource) {
+      // N-04:每源复查代际(同 reindexOnStateChange)——中途 reset/purge 清空即停,不复活已清逐字稿块。
+      if (await knowledgeRepo.epoch() !== epochAtEmbed) {
+        console.warn(JSON.stringify({ event: "reindex_transcript_discarded_stale_epoch", sessionId, phase: "midloop" }));
+        return;
+      }
       await knowledgeRepo.replaceSource("transcript", sid, list);
     }
   } catch (err) {
@@ -285,7 +296,14 @@ export async function rebuildKnowledgeIndex(
         console.warn(JSON.stringify({ event: "knowledge_embed_discarded_stale_epoch", rebuildEpoch, current: await deps.knowledgeRepo.epoch() }));
         return;
       }
+      // N-04:循环**内**每块复查代际——上面的单次检查只挡"嵌入期间已清空",挡不住"回写循环跑到一半时
+      // 治理提交(DELETE knowledge_chunk + bumpEpoch)"。此时剩余块会继续 put 回已清空的索引 → chat 召回
+      // "已清空"的私人内容。fire-and-forget 不持写门锁,"导入大资料→立刻 reset"真实可撞;每块前复查即断。
       for (const chunk of embedded) {
+        if (await deps.knowledgeRepo.epoch() !== rebuildEpoch) {
+          console.warn(JSON.stringify({ event: "knowledge_embed_discarded_stale_epoch", rebuildEpoch, phase: "midloop" }));
+          return;
+        }
         if (chunk.embedding && chunk.embedding.length > 0) {
           await deps.knowledgeRepo.put(chunk);
         }

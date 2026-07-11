@@ -163,6 +163,24 @@ export interface PersistHealth {
   lastErrorAt?: string;
 }
 
+/**
+ * N-03/N-05:治理并发共享上下文。治理事务(热态 + 三冷层)与冷层直读直写共用**同一个嵌入式连接**
+ * (见 createSurrealStores 注释),因此必须共享同一"治理在途"标志与"治理代际",否则批次 A 的 M1
+ * 守卫只罩住热态整状态写(replaceState/resetState),冷层直写(audio/raw/knowledge put)与后台长任务
+ * (auto-run 简报、知识重嵌)会绕过守卫在 reset/purge 后把数据/衍生物写回"已清空"的权威库(隐私假清空)。
+ * - inFlightCount:治理事务在途计数(>0 时并发整状态写与冷层直写一律拒 GovernanceInFlightError/409)。
+ *   计数而非 boolean——两个治理调用嵌套时 boolean 会被先完成者提前清零。
+ * - generation:每次治理事务成功递增(reset/purge/import 都算)。后台长任务(可达 90s 联网)在起点捕获
+ *   代际,落库前若代际已变(其间发生过治理)则丢弃基于治理前状态生成的陈旧产出(N-05)。
+ */
+export interface GovernanceContext {
+  inFlightCount: number;
+  generation: number;
+}
+export function createGovernanceContext(): GovernanceContext {
+  return { inFlightCount: 0, generation: 0 };
+}
+
 /** R2b 治理事务:热态整状态如何得到下一态。
  *  - reset:createEmptyProductState()(revision 0),与 resetState() 完全同语义。
  *  - replace:normalizeProductState({...next, revision: current+1}),与 replaceState() 完全同语义
@@ -194,6 +212,9 @@ export interface SurrealRepoHandle extends ProductStateRepository {
   runGovernanceTransaction?(hot: GovernanceHotSpec, cold: GovernanceColdSpec): Promise<ProductState>;
   /** E:权威库落库健康度(连续失败计数/最后错误)。/api/health 用以感知 surreal 权威库静默丢数据。 */
   getPersistHealth(): PersistHealth;
+  /** N-05:治理代际(reset/purge/import 每次成功 ++)。后台长任务(auto-run/scheduler)起点捕获,
+   *  终写前比对——代际已变即治理在途期间发生过整库替换,基于治理前状态生成的产出必须丢弃。 */
+  getGovernanceGeneration(): number;
   /** 关闭底层连接(测试/关闭用)。 */
   close(): Promise<void>;
   /** 仅测试/诊断用:直查底层 db(读边等)。生产路径不应依赖。 */
@@ -304,6 +325,9 @@ export async function buildSurrealProductStateRepositoryOnConnection(
      *  onKnowledgeIndexWiped:治理事务用一条 SQL 直清知识表(不经仓库 deleteAll),提交成功后回调
      *  此钩子递增知识索引 epoch,让 R8-1 竞态守卫丢弃"清空前构建、清空后落库"的陈旧后台嵌入。 */
     governance?: { onKnowledgeIndexWiped: () => void };
+    /** N-03/N-05:共享治理上下文(createSurrealStores 传入同一个对象给热态 + 三冷层)。缺省则各自
+     *  新建一份(standalone/向后兼容:standalone 无治理能力、无冷层直写并发面,自持一份即可)。 */
+    governanceContext?: GovernanceContext;
   }
 ): Promise<SurrealRepoHandle> {
 
@@ -319,11 +343,13 @@ export async function buildSurrealProductStateRepositoryOnConnection(
   let persistQueue: Promise<void> = Promise.resolve();
   // E:权威库落库健康度。成功清零、失败累积——surreal 权威库持续写不进=静默丢数据,必须可观测。
   let persistHealth: PersistHealth = { consecutiveFailures: 0 };
-  // R2b(M1 修复):治理事务在途计数(计数而非 boolean——两个治理调用嵌套时 boolean 会被先完成者提前
-  // 清零)。runGovernanceTransaction 在**函数体内同步** ++(不在 .then 里,否则 counter 迟于并发写读到
-  // 旧 state 才升起、护栏失效),executeGovernanceTransaction 结算的 finally 里 --。replaceState/resetState
-  // 见到 >0 即抛 GovernanceInFlightError,拒绝并发整状态写抢在治理提交前后写回旧快照(数据复活)。
-  let governanceInFlightCount = 0;
+  // R2b(M1 修复)/ N-03 / N-05:治理并发共享上下文(计数而非 boolean——两个治理调用嵌套时 boolean 会被
+  // 先完成者提前清零)。runGovernanceTransaction 在**函数体内同步** ++inFlightCount(不在 .then 里,否则
+  // counter 迟于并发写读到旧 state 才升起、护栏失效),executeGovernanceTransaction 结算的 finally 里 --。
+  // replaceState/resetState 见到 >0 即抛 GovernanceInFlightError,拒绝并发整状态写抢在治理提交前后写回
+  // 旧快照(数据复活)。N-03:createSurrealStores 把同一个 ctx 也传给三冷层仓库,冷层直写据此同样拒写。
+  // N-05:治理成功递增 generation,后台长任务据此丢弃陈旧产出。缺省新建一份(standalone 无并发面)。
+  const governanceCtx = cfg.governanceContext ?? createGovernanceContext();
 
   function enqueuePersist(snapshot: ProductState) {
     persistQueue = persistQueue
@@ -443,22 +469,26 @@ export async function buildSurrealProductStateRepositoryOnConnection(
     lastPersisted = nextHot;
     persistHealth = { consecutiveFailures: 0 };   // 成功的写:清零健康度(与 persist 成功路径一致)
     if (knowledgeWiped) cfg.governance?.onKnowledgeIndexWiped();   // 递增知识 epoch(R8-1 竞态守卫)
+    // N-05:治理成功 → 代际 ++(同步赋值,与 state/lastPersisted 推进在同一无 await 窗口)。auto-run/
+    // scheduler 终写前比对代际,已变则丢弃基于治理前状态生成的陈旧简报(见 routes/search、research-scheduler)。
+    governanceCtx.generation += 1;
     return structuredClone(state);
   }
 
   return {
     getState() { return structuredClone(state); },
     getPersistHealth() { return { ...persistHealth }; },
+    getGovernanceGeneration() { return governanceCtx.generation; },   // N-05
     resetState() {
       // M1:治理事务在途 → 拒绝并发整状态写(否则读旧 state、排到治理之后、以新基线复活个人数据)。
-      if (governanceInFlightCount > 0) throw new GovernanceInFlightError();
+      if (governanceCtx.inFlightCount > 0) throw new GovernanceInFlightError();
       state = computeResetNextState();
       enqueuePersist(state);
       return structuredClone(state);
     },
     replaceState(next: ProductState, replaceOpts?: ReplaceStateOptions) {
       // M1:同上——治理在途拒绝并发整状态写。执行处 GovernanceInFlightError.statusCode=409 → HTTP 409。
-      if (governanceInFlightCount > 0) throw new GovernanceInFlightError();
+      if (governanceCtx.inFlightCount > 0) throw new GovernanceInFlightError();
       state = computeReplaceNextState(next, replaceOpts);
       enqueuePersist(state);
       return structuredClone(state);
@@ -471,12 +501,12 @@ export async function buildSurrealProductStateRepositoryOnConnection(
             // 并发 replaceState/resetState 一律被拒;executeGovernanceTransaction 结算(成功已推进基线 /
             // 失败已回滚)后在 finally 里落下计数。executeGovernanceTransaction 自身走 db.query 不调
             // replaceState,故不自我拒绝。
-            governanceInFlightCount += 1;
+            governanceCtx.inFlightCount += 1;
             // 串入 persist 队列:治理事务绝不与挂起的 persist 交错(否则热态 diff 基线在半途被改)。
             // 失败不毒化队列尾(tail 吞掉),但把失败原样传给调用方(返回 run,非 tail)。
             const run = persistQueue
               .then(() => executeGovernanceTransaction(hot, cold))
-              .finally(() => { governanceInFlightCount -= 1; });
+              .finally(() => { governanceCtx.inFlightCount -= 1; });
             persistQueue = run.then(() => undefined, () => undefined);
             return run;
           },

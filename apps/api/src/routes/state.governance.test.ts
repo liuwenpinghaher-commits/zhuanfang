@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import Fastify from "fastify";
 import { registerStateRoutes } from "./state";
 import { buildApiServer, withKnowledgeReindex } from "../server";
@@ -239,5 +239,60 @@ describe("R2b 治理路由 · 整体回滚 → 500 + 回执标注(无部分提�
       ])
     );
     await server.close();
+  });
+});
+
+describe("N-11 治理路由错误详情门控(生产 generic / 非生产 detail;SurrealDB 报文可含字段值片段)", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  // createMockGovRepo({ fail: true }) 抛 Error("injected governance tx failure (simulated rollback)"),
+  // 模拟 SurrealDB coerce/ASSERT 原始报文(生产绝不能直透客户端,细节留 server console)。
+
+  it("非生产:reset 回滚 500 → error 为 generic 中文;detail 携带原始报文(便于本地调试)", async () => {
+    vi.stubEnv("DEPLOYMENT_PROFILE", "development");
+    const server = await buildServer(createMockGovRepo({ fail: true }));
+    const res = await server.inject({ method: "POST", url: "/api/state/reset", payload: { confirm: "RESET_ALL_DATA" } });
+    expect(res.statusCode).toBe(500);
+    const body = res.json();
+    expect(body.error).toBe("清空失败(已整体回滚,无部分提交),请查看服务端日志。");
+    expect(body.error).not.toContain("injected");                 // 原始报文绝不进 error 字段
+    expect(body.detail).toContain("injected governance tx failure"); // 非生产:detail 带原始报文
+    await server.close();
+  });
+
+  it("★生产:reset 回滚 500 → error 仍 generic 中文,detail 缺席(整个 body 不含 SurrealDB 原始报文)", async () => {
+    vi.stubEnv("DEPLOYMENT_PROFILE", "production");
+    const server = await buildServer(createMockGovRepo({ fail: true }));
+    const res = await server.inject({ method: "POST", url: "/api/state/reset", payload: { confirm: "RESET_ALL_DATA" } });
+    expect(res.statusCode).toBe(500);
+    const body = res.json();
+    expect(body.error).toBe("清空失败(已整体回滚,无部分提交),请查看服务端日志。");
+    expect(body.detail).toBeUndefined();                          // 生产:绝不回传原始报文
+    expect(JSON.stringify(body)).not.toContain("injected");       // 全 body 都不含原始报文
+    await server.close();
+  });
+
+  it("★生产:purge(all) 回滚 500 → 同门控;import 回滚 500 → 同门控(failedStep 库名保留、非敏感)", async () => {
+    vi.stubEnv("DEPLOYMENT_PROFILE", "production");
+    const purgeServer = await buildServer(createMockGovRepo({ fail: true }));
+    const purgeRes = await purgeServer.inject({ method: "POST", url: "/api/state/purge", payload: { confirm: "PURGE_PERSONAL_DATA" } });
+    expect(purgeRes.statusCode).toBe(500);
+    const purgeBody = purgeRes.json();
+    expect(purgeBody.error).toContain("清空失败");
+    expect(purgeBody.detail).toBeUndefined();
+    expect(JSON.stringify(purgeBody)).not.toContain("injected");
+    await purgeServer.close();
+
+    const importServer = await buildServer(createMockGovRepo({ fail: true }));
+    const importRes = await importServer.inject({
+      method: "POST", url: "/api/state/import",
+      payload: { confirm: "REPLACE_ALL_STATE", state: { profile: { name: "x" } }, rawMaterials: [{ sessionId: "s1", turns: [], createdAt: "2026-06-21T00:00:00.000Z" }], audios: [] },
+    });
+    expect(importRes.statusCode).toBe(500);
+    const importBody = importRes.json();
+    expect(importBody.error).toContain("导入失败");
+    expect(importBody.detail).toBeUndefined();
+    expect(importBody.failedStep).toBe("transaction"); // 库名/步骤名非敏感,保留
+    expect(JSON.stringify(importBody)).not.toContain("injected");
+    await importServer.close();
   });
 });

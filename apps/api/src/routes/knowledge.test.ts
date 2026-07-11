@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildApiServer } from "../server";
-import { createInMemoryKnowledgeIndexRepository } from "../knowledge-index-repository";
+import { createInMemoryKnowledgeIndexRepository, type KnowledgeIndexRepository } from "../knowledge-index-repository";
 import { embedChunks, reindexOnStateChange } from "./knowledge";
 import { createLlmBudget } from "../llm-budget";
 import { createInitialProductState } from "../../../../src/domain/engine";
@@ -148,6 +148,32 @@ describe("reindexOnStateChange", () => {
     await repo.put({ ...makeChunk("k"), sourceType: "memory", sourceId: "m1" });
     await reindexOnStateChange(base, base, repo, undefined, createLlmBudget());
     expect(await repo.listAll()).toHaveLength(1);
+  });
+
+  it("N-04:回写循环中途 reset/purge 清空索引(epoch 递增)→ 剩余来源不再写回(不复活已清私密块)", async () => {
+    const base = createInitialProductState();
+    // 两条新 memory → diff.changed 含 m1、m2 两个来源,写回循环逐源 replaceSource(≥2 次迭代)。
+    const prev: ProductState = { ...base, memoryRecords: [] };
+    const next: ProductState = { ...base, memoryRecords: [rec("m1", "私密一"), rec("m2", "私密二")] };
+
+    // 可控 epoch 的假索引:首次 replaceSource 即模拟"并发 reset/purge 提交清空索引"(bumpEpoch=epoch+1),
+    // 使第二源在循环内 epoch 复查命中(1≠捕获的 0)→ 剩余源被丢弃。记录实际写入来源以断言。
+    let epoch = 0;
+    const written: string[] = [];
+    const repo: KnowledgeIndexRepository = {
+      async put() {},
+      async replaceSource(_t, id) { written.push(id); epoch += 1; }, // 首次写回即"被清空"
+      async deleteBySource() {},
+      async deleteAll() { epoch += 1; },
+      async listAll() { return []; },
+      async epoch() { return epoch; }
+    };
+
+    await reindexOnStateChange(prev, next, repo, undefined, createLlmBudget());
+
+    // 修前:循环只在开头查一次 epoch → 两源都 replaceSource(written=[m1,m2]),把 reset 前构建的私密块
+    // 写回已清空索引 → chat 再召回"已清空"的私人内容。修后:每源循环前复查 epoch,第二源即断,只写第一源。
+    expect(written).toEqual(["m1"]);
   });
 
   it("删除一条 importSource → 其 material 孤儿块被清除(终审#1)", async () => {

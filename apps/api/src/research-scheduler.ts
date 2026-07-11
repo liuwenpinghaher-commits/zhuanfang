@@ -58,6 +58,9 @@ export function startResearchScheduler(options: ResearchSchedulerOptions): Resea
     try {
       const now = new Date().toISOString();
       const state = options.repository.getState();
+      // N-05:捕获治理代际(同 HTTP auto-run)。tick 联网期间若发生 reset/purge/import,本轮基于治理前
+      // 状态生成的简报绝不能写回已清空的库;终写前比对代际,已变即整体丢弃。
+      const startGeneration = options.repository.getGovernanceGeneration?.();
       const plan = planResearchAgendaRun(state, now);
       const agendaItems = plan.agendaItems.slice(0, MAX_AGENDA_PER_TICK);
       const staleTrackedBriefIds = plan.staleTrackedBriefIds.slice(0, MAX_REFRESH_PER_TICK);
@@ -101,6 +104,13 @@ export function startResearchScheduler(options: ResearchSchedulerOptions): Resea
       // 终写:重读 latest,仅把本 tick 产出按 id 叠加(用户期间的新建/删除/编辑全保留),
       // 并经全局写门与在途 HTTP 写互斥(审计修复 D4:此前完全绕开串行化)。
       const commit = () => {
+        // N-05:终写前复查代际(同 HTTP auto-run)。已变=tick 期间发生过治理,整库已换,本轮产出全部
+        // 基于陈旧状态 → 整体丢弃、记事件,不回写(否则 reset 后干净库冒出含旧主题名的简报)。
+        const currentGeneration = options.repository.getGovernanceGeneration?.();
+        if (startGeneration !== undefined && currentGeneration !== startGeneration) {
+          console.warn(JSON.stringify({ event: "research_output_discarded_stale_generation", source: "scheduler", startGeneration, currentGeneration }));
+          return;
+        }
         const latest = options.repository.getState();
         const byId = new Map(latest.searchBriefs.map((b) => [b.id, b]));
         for (const b of produced) {

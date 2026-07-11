@@ -34,8 +34,11 @@ const aud = (id: string): InterviewAudio => ({ sessionId: id, role: "interviewee
 const chunk = (id: string): KnowledgeChunk => ({ id, sourceType: "note", sourceId: "s1", title: "t", text: "x", keywords: [], createdAt: "2026-06-22T00:00:00.000Z" });
 // 越枚举 role → audio.role 的 schema ASSERT 拒绝 → 冷层 UPSERT 在事务内抛(真 SurrealDB 失败,非 mock)。
 const badAudio = (id: string): InterviewAudio => ({ ...aud(id), role: "bogus" as InterviewAudio["role"] });
-// 维度错(3 ≠ HNSW 1024)→ memory 节点 UPSERT 在事务内抛(热态写失败)。
-const badMemory = () => ({ id: "m_bad", subjectId: "self", text: "坏记忆", category: "fact", status: "confirmed", sensitivity: "normal", confidence: 0.9, embedding: [1, 2, 3], createdAt: "2026-07-10T00:00:00.000Z", updatedAt: "2026-07-10T00:00:00.000Z" });
+// 热态写失败注入。原先靠 embedding 维度错(3 ≠ HNSW 1024)在事务内抛;N-01-embedding 落地后,
+// clampPersistableEnums(optFloatArray)会把非 1024 维 embedding 钳成 NONE → 不再 wedge。改用**空 record id**:
+// SurrealDB 结构性拒绝空 id("Found  for the Record ID but this is not a valid id"),与所有数据卫生钳制
+// (embedding/enum/datetime)正交、穿透 normalize,仍在治理事务里触发热态写失败(整体回滚,代际不递增)。
+const badMemory = () => ({ id: "", text: "坏记忆", status: "confirmed", sourceType: "profile", sourceId: "s", evidenceQuote: "", sensitivity: "normal", createdAt: "2026-07-10T00:00:00.000Z", updatedAt: "2026-07-10T00:00:00.000Z" });
 
 const wipeAll = { rawMaterial: { action: "wipe" as const }, audio: { action: "wipe" as const }, knowledgeIndex: { action: "wipe" as const } };
 const noteIds = async (repo: SurrealRepoHandle): Promise<string[]> => {
@@ -275,5 +278,99 @@ describe("R2b 治理事务 · M1 并发写护栏(治理在途拒绝并发整状�
     const r = await makeStandalone();
     expect(() => r.replaceState(r.getState())).not.toThrow();
     expect(() => r.resetState()).not.toThrow();
+  });
+});
+
+describe("N-03 冷层直写守卫(治理在途拒绝 put/replaceSource,防隐私假清空)", () => {
+  it("★治理在途 → 冷层 put/replaceSource 抛 GovernanceInFlightError;结算后无残留(而热态 replaceState 早已被 M1 拒)", async () => {
+    const s = await makeStores();
+    await s.productState.flush();
+
+    // 复现前提:治理前冷层是干净的(下面写的若漏进,就是治理提交后的残留)。
+    expect(await s.audio.listAll()).toHaveLength(0);
+    expect(await s.rawMaterial.list()).toHaveLength(0);
+
+    // 启动治理 reset(不 await)——inFlightCount 在函数体内同步升起,与三冷层共享同一 ctx。
+    const gov = s.productState.runGovernanceTransaction!({ kind: "reset" }, wipeAll);
+
+    // 同一 tick(治理执行体尚在 microtask 队列、inFlightCount=1)内并发冷层直写:模拟 360s 写门强放后
+    // 排队的录音上传 / raw PUT / 后台知识回写趁隙进门。共享守卫必须与热态 M1 同步拒绝(隐私假清空的正解)。
+    const rejections = Promise.all([
+      expect(s.audio.put(aud("leak"))).rejects.toBeInstanceOf(GovernanceInFlightError),
+      expect(s.rawMaterial.put(raw("leak"))).rejects.toBeInstanceOf(GovernanceInFlightError),
+      expect(s.knowledgeIndex.put(chunk("leak"))).rejects.toBeInstanceOf(GovernanceInFlightError),
+      expect(s.knowledgeIndex.replaceSource("note", "leak", [chunk("leak2")])).rejects.toBeInstanceOf(GovernanceInFlightError),
+    ]);
+    await rejections;
+
+    await gov; // 治理提交、基线推进、inFlightCount 落下
+    await s.productState.flush();
+
+    // 关键断言:治理提交后三冷层同为空——被拒的冷层写没有把私密录音/逐字稿/索引块复活回权威库。
+    expect(await s.audio.listAll()).toHaveLength(0);
+    expect(await s.rawMaterial.list()).toHaveLength(0);
+    expect(await s.knowledgeIndex.listAll()).toHaveLength(0);
+  });
+
+  it("守卫精确:治理结算后冷层写恢复(非永久封锁,不误伤正常路径);治理前的写也照常通过", async () => {
+    const s = await makeStores();
+    await s.productState.flush();
+
+    // 治理前:冷层写正常通过(守卫只在 inFlightCount>0 时生效)。
+    await s.audio.put(aud("before"));
+    expect(await s.audio.has("before")).toBe(true);
+
+    // 一次完整治理(wipe)。
+    await s.productState.runGovernanceTransaction!({ kind: "reset" }, wipeAll);
+    await s.productState.flush();
+    expect(await s.audio.has("before")).toBe(false); // 被治理清空
+
+    // 治理后:冷层写再次正常通过——守卫已随 inFlightCount 落下解除。
+    await s.audio.put(aud("after"));
+    expect(await s.audio.has("after")).toBe(true);
+  });
+
+  it("delete 类写不被守卫误伤(移除数据永不构成'治理后残留',守 delete 只会误伤在途清理)", async () => {
+    const s = await makeStores();
+    await s.productState.flush();
+    await s.audio.put(aud("d1"));
+
+    const gov = s.productState.runGovernanceTransaction!({ kind: "reset" }, wipeAll);
+    // delete/deleteAll/deleteBySource 在治理在途时不抛(它们与治理清空同向,不是隐私违背)。
+    await expect(s.audio.delete("d1")).resolves.not.toThrow();
+    await gov;
+    await s.productState.flush();
+    expect(await s.audio.listAll()).toHaveLength(0);
+  });
+});
+
+describe("N-05 治理代际(getGovernanceGeneration:后台长任务据此丢弃陈旧产出)", () => {
+  it("初始为 0;每次治理事务成功递增(reset/purge/import 都算)", async () => {
+    const s = await makeStores();
+    await s.productState.flush();
+    expect(s.productState.getGovernanceGeneration()).toBe(0);
+
+    await s.productState.runGovernanceTransaction!({ kind: "reset" }, wipeAll);
+    expect(s.productState.getGovernanceGeneration()).toBe(1);
+
+    const purged = { ...s.productState.getState(), notes: [] } as ProductState;
+    await s.productState.runGovernanceTransaction!({ kind: "replace", next: purged }, wipeAll);
+    expect(s.productState.getGovernanceGeneration()).toBe(2);
+
+    await s.productState.runGovernanceTransaction!({ kind: "replace", next: { ...s.productState.getState(), points: [] } as ProductState }, {});
+    expect(s.productState.getGovernanceGeneration()).toBe(3);
+  });
+
+  it("失败的治理事务(整体回滚)不递增代际——只有真正发生的整库替换才计数", async () => {
+    const s = await makeStores();
+    await s.productState.flush();
+    const g0 = s.productState.getGovernanceGeneration();
+    await expect(
+      s.productState.runGovernanceTransaction!(
+        { kind: "replace", next: { ...s.productState.getState(), memoryRecords: [badMemory()] } as unknown as ProductState },
+        wipeAll
+      )
+    ).rejects.toThrow();
+    expect(s.productState.getGovernanceGeneration()).toBe(g0); // 回滚 → 代际不动
   });
 });
