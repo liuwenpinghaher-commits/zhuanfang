@@ -17,40 +17,27 @@ import {
 } from "lucide-react";
 import { FormEvent, MutableRefObject, useEffect, useMemo, useRef, useState } from "react";
 import {
-  analyzeImportedInterview,
   buildCognitiveRadar,
   buildInterviewCard,
   buildInterviewResumeCard,
-  buildMonthlyReview,
   buildRealtimeTurnState,
-  buildSearchBrief,
-  createSearchBriefFromInput,
   buildSystemStatus,
-  buildYearlyReview,
   createQuestionFromNote,
   createKnowledgeDebtFromSearchBrief,
   createPointFromSearchBrief,
   createQuestionFromSearchBrief,
-  createSessionDraft,
-  finalizeSession,
-  generatePodcastEpisode,
-  generatePodcastEpisodeFromKnowledgeDebt,
-  generatePodcastEpisodeFromSearchBrief,
-  generatePodcastEpisodeFromTheme,
   markMemoryCorrection,
   receiveUserTurn,
   searchProductAssets,
   toggleAssetImportance,
   buildRealtimeVoiceInstructions,
   updateDecisionStatus,
-  updateInterviewControl,
   updateKnowledgeDebtStatus,
   updatePointStatus,
   updateQuestionStatus
 } from "./domain/engine";
 import { addAnnotation, removeAnnotation } from "./domain/raw-material";
 import { deleteImportSource } from "./domain/material";
-import { executeSearchProvider } from "./capabilities/search";
 import { createIdleCapabilityTask, failCapabilityTask, startCapabilityTask } from "./capabilities/task";
 import { productApiClient, isNetworkError, ApiError, type PersistHealthLite, type PurgeReceipt, type ResetReceipt, type ReviewsResponse } from "./api/productApi";
 import type { ColdLayerMode, RealtimeVoiceSessionResponse, StateImportResult, SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigUpdateRequest, VoiceInfo } from "./api/productApi";
@@ -73,7 +60,7 @@ import {
   deletePodcastEpisode,
   deleteSearchBrief
 } from "./domain/lifecycle";
-import { isPristineDemoState, loadProductState, normalizeProductState, productStateContentSignature, resetProductState, saveProductState } from "./domain/storage";
+import { CACHE_CORRUPTION_MARKER_KEY, isPristineDemoState, loadProductState, normalizeProductState, productStateContentSignature, resetProductState, saveProductState } from "./domain/storage";
 // F-05: 持久 outbox + 三方合并 + autosave 退避。离线修改绝不能被远端旧快照静默覆盖。
 import {
   backupUnsyncedState,
@@ -174,7 +161,7 @@ export default function App() {
   const [serverReviews, setServerReviews] = useState<ReviewsResponse | null>(null);
   // P3-08:LLM 复盘取不到时静默退回确定性本地复盘——旅程8失败此前零信号。用此标记让复盘视图
   // 如实标注"本地生成(LLM 复盘暂不可用)",而不是让用户误以为看的是 LLM 综述。
-  const [reviewsDegraded, setReviewsDegraded] = useState(false);
+  const [reviewsError, setReviewsError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [runtimeConfig, setRuntimeConfig] = useState<SystemConfigResponse | null>(null);
   const [runtimeConfigSaving, setRuntimeConfigSaving] = useState(false);
@@ -820,13 +807,12 @@ export default function App() {
   const card = useMemo(() => buildInterviewCard(productState, activeSearchBriefId), [activeSearchBriefId, productState]);
   // Resume: surface the most-recent unfinished (active) session so it isn't stranded.
   const resumeCard = useMemo(() => buildInterviewResumeCard(productState), [productState]);
-  const localMonthlyReview = useMemo(() => buildMonthlyReview(productState), [productState]);
-  const localYearlyReview = useMemo(() => buildYearlyReview(productState), [productState]);
+  // 认知雷达是本地确定性真实计数（非 LLM 叙事），始终可算可渲染。
   const localRadar = useMemo(() => buildCognitiveRadar(productState), [productState]);
-  // Prefer LLM-synthesized reviews when available; the deterministic memos above
-  // render instantly and act as the offline / no-key fallback.
-  const monthlyReview = serverReviews?.monthly ?? localMonthlyReview;
-  const yearlyReview = serverReviews?.yearly ?? localYearlyReview;
+  // LLM 综述只认服务端产出——不可用就把真实原因暴露给用户（reviewsError），
+  // 绝不用本地确定性模板叙事顶替冒充。
+  const monthlyReview = serverReviews?.monthly ?? null;
+  const yearlyReview = serverReviews?.yearly ?? null;
   const radar = serverReviews?.radar ?? localRadar;
 
   // Re-fetch LLM reviews only when the asset set actually changes (not on every
@@ -846,18 +832,19 @@ export default function App() {
     }
     reviewSignatureRef.current = signature;
     setServerReviews(null);
+    setReviewsError(null);
     let cancelled = false;
     productApiClient
       .getReviews()
       .then((reviews) => {
         if (!cancelled) {
           setServerReviews(reviews);
-          setReviewsDegraded(false);
+          setReviewsError(null);
         }
       })
-      .catch(() => {
-        // Offline / no API key / LLM 综述失败:保留确定性本地回退,但如实标注降级(P3-08)。
-        if (!cancelled) setReviewsDegraded(true);
+      .catch((err) => {
+        // LLM 综述失败：如实把服务端原因暴露给用户，绝不用本地模板叙事顶替。
+        if (!cancelled) setReviewsError(err instanceof Error ? err.message : String(err));
       });
     return () => {
       cancelled = true;
@@ -946,6 +933,48 @@ export default function App() {
     } finally {
       setSyncResolving(false);
     }
+  }
+
+  // 本地缓存损坏如实告知（loadProductState 在 useState 初始化器里发现 JSON 损坏时
+  // 只能落 sessionStorage 标记）：挂载后检查标记 → 明确提示，不把"本地数据损坏"
+  // 掩盖成"看起来正常的初始数据"。服务端在线时首次同步会恢复权威数据。
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const corruptedAt = window.sessionStorage.getItem(CACHE_CORRUPTION_MARKER_KEY);
+      if (corruptedAt) {
+        window.sessionStorage.removeItem(CACHE_CORRUPTION_MARKER_KEY);
+        setNotice(buildNotice(
+          "danger",
+          "本地缓存已损坏",
+          "浏览器缓存的数据无法解析，已回退到初始状态。后端在线时会在首次同步恢复服务器数据；若后端也不可用，请勿继续编辑以免混淆。"
+        ));
+      }
+    } catch {
+      // sessionStorage 不可用:无标记可读,console 里已有 local_cache_corrupted 信号。
+    }
+  }, []);
+
+  // 语音路径每轮 pre_signals / 指令刷新失败：实时对话不中断（显式实时策略），
+  // 但失败必须可观测——结构化日志逐次记录，连续第 2 次失败向用户提示一次
+  // "读不到最新资料"，绝不让记忆召回静默滞留在开场快照。成功后计数归零。
+  const voiceRecallFailuresRef = useRef(0);
+  const voiceStaleNoticeShownRef = useRef(false);
+  function voiceRecallRefreshFailed(kind: "pre_signals" | "voice_instructions", err: unknown) {
+    voiceRecallFailuresRef.current += 1;
+    console.warn(JSON.stringify({
+      event: "voice_recall_refresh_failed",
+      kind,
+      consecutive: voiceRecallFailuresRef.current,
+      error: err instanceof Error ? err.message : String(err)
+    }));
+    if (voiceRecallFailuresRef.current >= 2 && !voiceStaleNoticeShownRef.current) {
+      voiceStaleNoticeShownRef.current = true;
+      setNotice(buildNotice("warning", "语音记忆刷新失败", "暂时读取不到你最新的资料，后续追问可能引用不到最近内容。"));
+    }
+  }
+  function voiceRecallRefreshSucceeded() {
+    voiceRecallFailuresRef.current = 0;
   }
 
   // 语音路径（omni/livekit）record-turn 落库失败：保留本地 fork 保证对话连续性，
@@ -1275,28 +1304,20 @@ export default function App() {
       setView("interview");
       return;
     } catch (err) {
-      if (!isNetworkError(err)) {
-        // Server is up but rejected the request — don't fork to a phantom offline session.
-        setNotice(buildNotice("warning", "无法开始专访", "服务返回错误，请稍后重试。"));
-        return;
+      // 失败即如实暴露——专访追问/归档都依赖服务端 LLM，离线本地草稿会话（确定性引擎
+      // 模板追问冒充 AI 追问）已剔除。后端不可达就是不能用。
+      const message = err instanceof Error && err.message ? err.message : "请检查服务后重试。";
+      if (isNetworkError(err)) {
+        setApiPersistenceEnabled(false);
+        scheduleReconnectProbe();
+        setNotice(buildNotice("danger", "无法开始专访", "后端不可达，专访功能不可用。恢复连接后请重试。"));
+      } else {
+        setNotice(buildNotice("danger", "无法开始专访", message));
       }
-      setApiPersistenceEnabled(false);
-      // I-2(补审查):离线草稿 session 是独立 useState,不立刻改 productState,autosave 兜底
-      // 探测接不到;这里显式启动探测,才配得上下方「后端恢复后会自动合并同步」的承诺。
-      scheduleReconnectProbe();
-      // F-05: 文案与真实实现一致——离线编辑进入持久 outbox，当前页有界探测后端；
-      // 恢复后自动三方合并，真正冲突才停下来让用户裁决。
-      setNotice(
-        buildNotice("info", "已进入离线模式", "本次专访已进入浏览器离线队列；后端恢复后会自动合并同步，期间请勿清除浏览器数据。")
-      );
     } finally {
       startingRef.current = false;
       setStartingInterview(false);
     }
-
-    setSession(createSessionDraft(productState, mode, productState.profile.preferredStrength, { searchBriefId }));
-    closeRealtimeVoiceSession();
-    setView("interview");
   }
 
   async function createSearchMaterial(provider: SearchProviderId = productState.systemConfig.search.activeProvider) {
@@ -1318,39 +1339,17 @@ export default function App() {
       setApiPersistenceEnabled(true);
       setActiveSearchBriefId(apiRun.brief.id);
       setSearchTopic(apiRun.brief.topic);
-      setNotice(
-        apiRun.task.status === "degraded"
-          ? buildNotice("warning", "搜索已降级完成", apiRun.task.degradedReason)
-          : buildNotice("success", "搜索简报已生成", `已选中「${apiRun.brief.topic}」，可以带入下一次专访。`)
-      );
-      return;
+      setNotice(buildNotice("success", "搜索简报已生成", `已选中「${apiRun.brief.topic}」，可以带入下一次专访。`));
     } catch (err) {
-      if (!isNetworkError(err)) {
-        // Server is up but rejected the request — don't fork to a local demo brief.
-        setSearchTask(failCapabilityTask(runningTask, "服务返回错误，请稍后重试。"));
-        setNotice(buildNotice("warning", "搜索失败", "服务返回错误，请稍后重试。"));
-        return;
+      // 失败即如实暴露（后端不可达/服务返回错误都一样）——
+      // 不再离线本地捏造简报并用与真实成功相同的提示冒充。
+      const message = err instanceof Error && err.message ? err.message : "请检查服务与配置后重试。";
+      if (isNetworkError(err)) {
+        setApiPersistenceEnabled(false);
       }
-      setApiPersistenceEnabled(false);
+      setSearchTask(failCapabilityTask(runningTask, message));
+      setNotice(buildNotice("danger", "搜索简报生成失败", message));
     }
-
-    const run = await executeSearchProvider(searchRequest);
-    setSearchTask(run.task);
-
-    if (run.task.status === "failed") {
-      setNotice(buildNotice("danger", "搜索 provider 调用失败", run.task.error ?? "请检查配置后重试。"));
-      return;
-    }
-
-    const { brief, nextState } = createSearchBriefFromInput(productState, run.result);
-    setProductState(nextState);
-    setActiveSearchBriefId(brief.id);
-    setSearchTopic(brief.topic);
-    setNotice(
-      run.task.status === "degraded"
-        ? buildNotice("warning", "搜索已降级完成", run.task.degradedReason)
-        : buildNotice("success", "搜索简报已生成", `已选中「${brief.topic}」，可以带入下一次专访。`)
-    );
   }
 
   function retrySearchMaterial() {
@@ -1422,31 +1421,14 @@ export default function App() {
       setApiPersistenceEnabled(true);
       setActiveSearchBriefId(response.brief.id);
       setNotice(buildNotice("success", "自动简报已生成", `已选中「${response.brief.topic}」，可以带入下一次专访。`));
-      return;
     } catch (err) {
-      if (!isNetworkError(err)) {
-        // Server is up but rejected — don't pass off a local placeholder brief as success.
-        setNotice(buildNotice("warning", "自动简报失败", "服务返回错误，请稍后重试。"));
-        return;
+      // 失败即如实暴露——不再本地捏造占位简报（哪怕带"本地占位"标注也是假数据入库）。
+      const message = err instanceof Error && err.message ? err.message : "请检查服务与配置后重试。";
+      if (isNetworkError(err)) {
+        setApiPersistenceEnabled(false);
       }
-      setApiPersistenceEnabled(false);
+      setNotice(buildNotice("danger", "自动简报生成失败", message));
     }
-
-    // Local fallback: derive the topic from the requested theme/debt so "从主题 X"
-    // doesn't silently produce an unrelated fixed brief; flag it as an offline placeholder.
-    const fallbackTopic = themeId
-      ? productState.themes.find((theme) => theme.id === themeId)?.name
-      : debtId
-        ? productState.debts.find((debt) => debt.id === debtId)?.concept
-        : undefined;
-    const { brief, nextState } = buildSearchBrief(
-      productState,
-      fallbackTopic ?? "本周值得讨论的 AI 产品变化",
-      productState.systemConfig.search.activeProvider
-    );
-    setProductState(nextState);
-    setActiveSearchBriefId(brief.id);
-    setNotice(buildNotice("warning", "自动简报已生成（本地占位）", `后端不可用，已用本地占位简报「${brief.topic}」，联网后可刷新获取真实资料。`));
   }
 
   async function refreshBrief(briefId: string) {
@@ -1456,9 +1438,12 @@ export default function App() {
       adoptServerState(response.state);
       setApiPersistenceEnabled(true);
       setNotice(buildNotice("success", "外部调研已刷新", `「${response.brief.topic}」的研究内容已更新。`));
-    } catch {
-      setApiPersistenceEnabled(false);
-      setNotice(buildNotice("warning", "刷新失败", "无法连接到后端，刷新未完成。"));
+    } catch (err) {
+      const message = err instanceof Error && err.message ? err.message : "刷新未完成，请重试。";
+      if (isNetworkError(err)) {
+        setApiPersistenceEnabled(false);
+      }
+      setNotice(buildNotice("danger", "刷新失败", `${message}（原简报未变。）`));
     } finally {
       setRefreshingBriefId(null);
     }
@@ -1538,43 +1523,14 @@ export default function App() {
       setPodcastEditingScript(apiRun.episode.script);
       setNotice(buildNotice("success", "播客脚本已生成", `使用声音配置：${apiRun.episode.voice}`));
       setView("podcast");
-      return;
     } catch (err) {
-      if (!isNetworkError(err)) {
-        // Server is up but rejected — don't pass off a locally-generated script as success.
-        setNotice(buildNotice("warning", "播客脚本生成失败", "服务返回错误，请稍后重试。"));
-        return;
+      // 失败即如实暴露——不再在后端不可达时本地捏造脚本并用与真实成功相同的提示冒充。
+      const message = err instanceof Error && err.message ? err.message : "请检查服务与配置后重试。";
+      if (isNetworkError(err)) {
+        setApiPersistenceEnabled(false);
       }
-      setApiPersistenceEnabled(false);
+      setNotice(buildNotice("danger", "播客脚本生成失败", message));
     }
-
-    let result: { episode: any; nextState: ProductState };
-    if (podcastSourceType === "search-brief") {
-      result = generatePodcastEpisodeFromSearchBrief(productState, effectiveSourceId, {
-        format: "solo",
-        voice: podcastVoice
-      });
-    } else if (podcastSourceType === "theme") {
-      result = generatePodcastEpisodeFromTheme(productState, effectiveSourceId, {
-        format: "solo",
-        voice: podcastVoice
-      });
-    } else if (podcastSourceType === "knowledge-debt") {
-      result = generatePodcastEpisodeFromKnowledgeDebt(productState, effectiveSourceId, {
-        format: "solo",
-        voice: podcastVoice
-      });
-    } else {
-      result = generatePodcastEpisode(productState, effectiveSourceId, {
-        format: "solo",
-        voice: podcastVoice
-      });
-    }
-    setProductState(result.nextState);
-    setPodcastNoteId(effectiveSourceId);
-    setPodcastEditingScript(result.episode.script);
-    setNotice(buildNotice("success", "播客脚本已生成", `使用声音配置：${podcastVoice}`));
-    setView("podcast");
   }
 
   async function synthesizePodcastSpeech(episodeId: string) {
@@ -1593,18 +1549,15 @@ export default function App() {
     // 那条 saveState 是纯写放大:PUT 一份和 synthesize 即将持久化的同一脚本,还触发 autosave echo。
     // 收敛不丢数据(synthesize 是权威),故删除旁路 PUT,统一由 synthesize 结果走 adoptServerState。
     try {
-      const { state: synthState, episode: synthEpisode } = await productApiClient.synthesizePodcastEpisode(episodeId, scriptToSynthesize);
+      const { state: synthState } = await productApiClient.synthesizePodcastEpisode(episodeId, scriptToSynthesize);
       adoptServerState(synthState);   // 采纳权威态(revision 已 bump,不触发 echo PUT)
       setApiPersistenceEnabled(true);
       setPodcastEditingScript("");
-      const isRendered = synthEpisode.audioRenderStatus === "rendered";
-      setNotice(
-        isRendered
-          ? buildNotice("success", "语音合成完成", `播客 "${episode.title}" 音频已渲染。`)
-          : buildNotice("warning", "语音合成降级", `播客 "${episode.title}" 脚本已确认，但 TTS 渲染失败，可稍后重试。`)
-      );
-    } catch {
-      setNotice(buildNotice("danger", "语音合成失败", `播客 "${episode.title}" TTS 请求失败，脚本已保留。`));
+      setNotice(buildNotice("success", "语音合成完成", `播客 "${episode.title}" 音频已渲染。`));
+    } catch (err) {
+      // 后端合成失败已如实 502/503（脚本在服务端保留），把真实原因暴露给用户。
+      const message = err instanceof Error && err.message ? err.message : "TTS 请求失败。";
+      setNotice(buildNotice("danger", "语音合成失败", `${message}（脚本已保留，可重试。）`));
     }
   }
 
@@ -1634,27 +1587,16 @@ export default function App() {
       setApiPersistenceEnabled(true);
       setNotice(buildNotice("success", "语料分析已完成", "已生成可确认的访谈策略补丁。"));
       setView("corpus");
-      return;
     } catch (err) {
-      if (!isNetworkError(err)) {
-        // Server is up but rejected — don't pass off a local offline analysis as success.
-        setNotice(buildNotice("warning", "语料分析失败", "服务返回错误，请稍后重试。"));
-        return;
+      // 失败即如实暴露——不再在后端不可达时用本地关键词模板分析冒充 LLM 分析结果。
+      const message = err instanceof Error && err.message ? err.message : "请检查服务与配置后重试。";
+      if (isNetworkError(err)) {
+        setApiPersistenceEnabled(false);
       }
-      setApiPersistenceEnabled(false);
+      setNotice(buildNotice("danger", "语料分析失败", message));
     } finally {
       setCorpusAnalyzing(false);
     }
-
-    const { nextState } = analyzeImportedInterview(productState, {
-      title: input.title,
-      mediaType: input.mediaType,
-      content: input.content,
-      sourceUrl: input.sourceUrl
-    });
-    setProductState(nextState);
-    setNotice(buildNotice("success", "语料分析已完成", "已生成可确认的访谈策略补丁。"));
-    setView("corpus");
   }
 
   async function transcribeCorpusAudio() {
@@ -1669,7 +1611,7 @@ export default function App() {
     setCorpusMediaType("audio");
     setCorpusTranscribing(true);
 
-    // 公网 URL 走真转写（SenseVoice）；本地文件没有可行的内联转写路径，后端会诚实降级。
+    // 公网 URL 走真转写（SenseVoice）；本地文件后端会如实 422（能力边界：SenseVoice 只收公网 URL）。
     const request = sourceUrl
       ? { title, sourceUrl, languageHint: "zh" }
       : { title, sourceUrl: "", languageHint: "zh", audioBase64: corpusAudioBase64, fileName: corpusAudioFileName };
@@ -1677,16 +1619,15 @@ export default function App() {
     try {
       const apiRun = await productApiClient.transcribeCorpusAudio(request);
       setCorpusContent(apiRun.transcription.text);
-      setNotice(
-        apiRun.transcription.status === "ready"
-          ? buildNotice("success", "音频转写已完成", `已生成 ${apiRun.transcription.model} 转写稿，可继续分析。`)
-          : buildNotice("warning", "音频转写已降级", apiRun.transcription.degradedReason)
-      );
-      return;
-    } catch {
-      setApiPersistenceEnabled(false);
-      setCorpusContent(buildLocalAudioTranscriptionDraft(sourceUrl || `本地文件「${corpusAudioFileName}」`));
-      setNotice(buildNotice("warning", "音频转写暂不可用", "Product API 未连接，已生成可编辑的手工转写模板。"));
+      setNotice(buildNotice("success", "音频转写已完成", `已生成 ${apiRun.transcription.model} 转写稿，可继续分析。`));
+    } catch (err) {
+      // 失败/能力边界即如实暴露——不再生成占位"手工转写模板"冒充转写稿。
+      // 用户仍可直接在语料输入框手动粘贴转写文本（正常输入路径，无需模板）。
+      const message = err instanceof Error && err.message ? err.message : "转写未完成，请重试。";
+      if (isNetworkError(err)) {
+        setApiPersistenceEnabled(false);
+      }
+      setNotice(buildNotice("danger", "音频转写失败", message));
     } finally {
       setCorpusTranscribing(false);
     }
@@ -1834,22 +1775,17 @@ export default function App() {
       setSession(apiRun.session);
       adoptServerState(apiRun.state);
       setApiPersistenceEnabled(true);
-      return;
-    } catch {
-      if (apiPersistenceEnabled) {
-        // Online but API call failed transiently — do NOT fork client session;
-        // restore input so the user can retry.
-        setNotice(buildNotice("warning", "未送达", "本轮未送到服务端，请重试。"));
-        setInterviewInput(content);
-        return;
+    } catch (err) {
+      // 失败即如实暴露、恢复输入让用户重试——离线本地"确定性引擎追问"已剔除。
+      const message = err instanceof Error && err.message ? err.message : "本轮未送到服务端，请重试。";
+      if (isNetworkError(err)) {
+        setApiPersistenceEnabled(false);
       }
-      setApiPersistenceEnabled(false);
+      setNotice(buildNotice("danger", "本轮未送达", message));
+      setInterviewInput(content);
     } finally {
       setSubmittingTurn(false);
     }
-
-    // Genuinely offline fallback — only reached when !apiPersistenceEnabled.
-    setSession(receiveUserTurn(session, content));
   }
 
   async function finishInterview() {
@@ -1937,24 +1873,18 @@ export default function App() {
         setView("notes");
         return;
       }
-      if (!isNetworkError(err)) {
-        setNotice(buildNotice("warning", "结束失败", "服务返回错误，请稍后重试。本次未生成档案。"));
-        return;
+      // 失败即如实暴露——会话保持打开可重试，离线本地确定性 finalize（模板轻量档案）已剔除。
+      const message = err instanceof Error && err.message ? err.message : "请稍后重试。本次未生成档案。";
+      if (isNetworkError(err)) {
+        setApiPersistenceEnabled(false);
+        setNotice(buildNotice("danger", "结束失败", "后端不可达，无法归档。会话已保留，恢复连接后请重试。"));
+      } else {
+        setNotice(buildNotice("danger", "结束失败", `${message}`));
       }
-      setApiPersistenceEnabled(false);
     } finally {
       finishingRef.current = false;
       setFinishingInterview(false);
     }
-
-    // Offline path (network error only): the deterministic finalize produces a
-    // lightweight note with NO extracted assets — say so honestly, not "资产已更新".
-    const result = finalizeSession(productState, session);
-    setProductState(result.nextState);
-    setSession(null);
-    closeRealtimeVoiceSession();
-    setNotice(buildNotice("warning", "已保存轻量档案", "后端不可用，仅保留双轨笔记，未做 AI 资产抽取。"));
-    setView("notes");
   }
 
   async function applyInterviewControl(action: InterviewControlAction) {
@@ -1970,17 +1900,14 @@ export default function App() {
       adoptServerState(apiRun.state);
       setApiPersistenceEnabled(true);
       setNotice(buildNotice("info", "访谈控制已应用", `下一轮会按「${controlLabel}」调整。`));
-      return;
     } catch (err) {
-      if (!isNetworkError(err)) {
-        setNotice(buildNotice("warning", "控制未生效", "服务返回错误，请稍后重试。"));
-        return;
+      // 失败即如实暴露——离线本地控制分叉已剔除（会话是服务端权威的，本地改了也不生效）。
+      const message = err instanceof Error && err.message ? err.message : "请稍后重试。";
+      if (isNetworkError(err)) {
+        setApiPersistenceEnabled(false);
       }
-      setApiPersistenceEnabled(false);
+      setNotice(buildNotice("danger", "控制未生效", message));
     }
-
-    setSession(updateInterviewControl(session, action));
-    setNotice(buildNotice("info", "访谈控制已应用", `下一轮会按「${controlLabel}」调整。`));
   }
 
   function saveNoteQuestion(noteId: string, index: number) {
@@ -2508,26 +2435,24 @@ export default function App() {
                     productApiClient
                       .generateInterviewPreSignals(voiceSid)
                       .then((res) => {
+                        voiceRecallRefreshSucceeded();
                         setSession((prev) => (prev ? { ...prev, interactionPreSignals: res.preSignals } : prev));
                         if ("updatePreSignals" in connection) connection.updatePreSignals(res.preSignals);
                       })
-                      .catch(() => {
-                        // keep existing signals on failure
-                      });
+                      .catch((err) => voiceRecallRefreshFailed("pre_signals", err));
                     // 🔴-1: recompute the omni voice model's instructions against THIS
                     // turn's utterance so its memory recall tracks the conversation
                     // (the realtime session set instructions only once at open — an
                     // opening-time snapshot). Push the refreshed string via
-                    // session.update. Non-blocking; silent on failure so a recall
-                    // hiccup never disrupts the live voice experience.
+                    // session.update. Non-blocking（实时策略）但失败可观测,
+                    // 连续失败会向用户提示（见 voiceRecallRefreshFailed）。
                     productApiClient
                       .refreshVoiceInstructions(voiceSid, text)
                       .then((res) => {
+                        voiceRecallRefreshSucceeded();
                         if ("updateInstructions" in connection) connection.updateInstructions(res.instructions);
                       })
-                      .catch(() => {
-                        // keep the existing (opening-time) instructions on failure
-                      });
+                      .catch((err) => voiceRecallRefreshFailed("voice_instructions", err));
                   }
                 },
                 onAssistantTranscript: (text, isFinal) => {
@@ -2535,6 +2460,15 @@ export default function App() {
                   setSession((prev) =>
                     prev ? appendAssistantTranscriptFinal(prev, text, assistantTranscriptTurnRef) : prev
                   );
+                },
+                // 重连过程对用户可见（此前 3 次重连期间 UI 仍显示"聆听中"，用户不知连接已断）。
+                onReconnecting: (attempt, maxAttempts) => {
+                  setVoiceStatus("connecting");
+                  setNotice(buildNotice("warning", "语音连接中断", `正在重连（第 ${attempt}/${maxAttempts} 次）…`));
+                },
+                onReconnected: () => {
+                  setVoiceStatus("listening");
+                  setNotice(buildNotice("success", "语音连接已恢复", "可以继续对话。"));
                 },
                 onError: (err) => {
                   setNotice(buildNotice("warning", "语音连接异常", err.message));
@@ -2885,7 +2819,7 @@ export default function App() {
             }}
           />
         )}
-        {view === "themes" && <ThemesView state={productState} review={monthlyReview} yearlyReview={yearlyReview} radar={radar} reviewsDegraded={reviewsDegraded} onStart={launchInterview} onOpenTrack={openTrack} />}
+        {view === "themes" && <ThemesView state={productState} review={monthlyReview} yearlyReview={yearlyReview} radar={radar} reviewsError={reviewsError} onStart={launchInterview} onOpenTrack={openTrack} />}
         {view === "track" && (
           <TrackWorkspaceView
             workspace={buildTrackWorkspace(productState, selectedTrackId ?? "")}
@@ -3018,17 +2952,9 @@ export function appendAssistantTranscriptFinal(
   return { ...session, turns };
 }
 
-function buildLocalAudioTranscriptionDraft(sourceUrl: string) {
-  return [
-    `主持人：这段音频来自 ${sourceUrl}，当前还没有完成自动转写。`,
-    "被访者：请在这里补充被访者的关键原话、停顿和情绪变化。",
-    "主持人：补齐后我会分析这段专访如何索要具体时刻、推进反方观点和控制节奏。"
-  ].join("\n");
-}
-
 // F-03/B2 notice 辅助:把 reset/purge 回执里 failed 的库翻译成用户可读的中文清单。
 // reset 与 purge 的 stores 三态口径一致(cleared/not-configured/failed: <原因>),共用一份翻译。
-// 纯函数,放模块级避免组件每次 render 重建(同 buildLocalAudioTranscriptionDraft 先例)。
+// 纯函数,放模块级避免组件每次 render 重建。
 function describeStoreReceiptFailures(receipt: ResetReceipt | PurgeReceipt): string {
   const labels: Record<string, string> = {
     "raw-material": "逐字稿冷层",

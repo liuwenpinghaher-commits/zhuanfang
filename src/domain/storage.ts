@@ -962,6 +962,11 @@ export function isPristineDemoState(state: ProductState): boolean {
   return productStateContentSignature(state) === productStateContentSignature(createInitialProductState());
 }
 
+/** 本地缓存损坏标记（sessionStorage）。loadProductState 在 useState 初始化器里跑,
+ *  没法直接弹 notice——用标记让 App 挂载后如实告知用户,绝不把"本地数据损坏"
+ *  静默掩盖成"看起来正常的初始数据"。 */
+export const CACHE_CORRUPTION_MARKER_KEY = "interview-product:cache-corrupted";
+
 export function loadProductState(): ProductState {
   if (typeof window === "undefined") {
     return createInitialProductState();
@@ -974,7 +979,16 @@ export function loadProductState(): ProductState {
 
   try {
     return normalizeProductState(JSON.parse(raw));
-  } catch {
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: "local_cache_corrupted",
+      error: error instanceof Error ? error.message : String(error)
+    }));
+    try {
+      window.sessionStorage.setItem(CACHE_CORRUPTION_MARKER_KEY, new Date().toISOString());
+    } catch {
+      // sessionStorage 不可用（隐私模式等）:只剩 console 信号。
+    }
     return createInitialProductState();
   }
 }

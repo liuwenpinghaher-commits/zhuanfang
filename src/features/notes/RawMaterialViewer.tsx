@@ -84,6 +84,9 @@ export function RawMaterialViewer({
   const [highlightTurnId, setHighlightTurnId] = useState<string | null>(null);
   const [audioMeta, setAudioMeta] = useState<SessionAudioMeta | null>(null);
   const [audioBlobUrl, setAudioBlobUrl] = useState<string | null>(null);
+  // 音频元数据/回放拉取的真实错误（404=确实无音频 → null 不算错误;5xx/网络错误必须暴露,
+  // 不能把"有录音但读不到"掩盖成"无音频"的空态）。
+  const [audioLoadError, setAudioLoadError] = useState<string | null>(null);
   // 主持人(interviewer)录音独立一路：单独的 meta + blob URL。
   const [hostAudioMeta, setHostAudioMeta] = useState<SessionAudioMeta | null>(null);
   const [hostAudioBlobUrl, setHostAudioBlobUrl] = useState<string | null>(null);
@@ -119,22 +122,25 @@ export function RawMaterialViewer({
     };
   }, [sessionId, getRawMaterial]);
 
-  // 并行拉取整场录音元数据（best-effort：很多会话走文本路无音频，失败一律静默）。
+  // 并行拉取整场录音元数据。404（确实无音频）由 API 层归一为 exists:false/null；
+  // 这里的 catch 是真实错误（5xx/网络）——如实置错误态，不掩盖成"无音频"。
   useEffect(() => {
     if (!getAudioMeta) {
       return;
     }
     let cancelled = false;
     setAudioMeta(null);
+    setAudioLoadError(null);
     getAudioMeta(sessionId)
       .then((meta) => {
         if (!cancelled) {
           setAudioMeta(meta);
         }
       })
-      .catch(() => {
+      .catch((err) => {
         if (!cancelled) {
           setAudioMeta(null);
+          setAudioLoadError(err instanceof Error && err.message ? err.message : "录音信息读取失败");
         }
       });
     return () => {
@@ -322,6 +328,11 @@ export function RawMaterialViewer({
 
   return (
     <div ref={containerRef} className="panel" style={{ marginTop: "0.75rem", display: "flex", flexDirection: "column", gap: "0.85rem" }}>
+      {audioLoadError && (
+        <p className="field-help" role="alert" style={{ color: "var(--danger, #e5484d)" }}>
+          录音读取失败：{audioLoadError}（这不代表本场没有录音，请稍后重试。）
+        </p>
+      )}
       {showAudio && playbackSrc && (
         <section
           className="field-stack"
