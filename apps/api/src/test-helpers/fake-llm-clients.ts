@@ -90,7 +90,7 @@ type FakeCapability =
 
 function detectCapability(prompt: string): FakeCapability {
   if (prompt.includes("双轨笔记") && prompt.includes("keyQuote")) return "finalize";
-  if (prompt.includes("pre_signals") || prompt.includes("interactionPreSignals") || prompt.includes("开场信号")) return "preSignals";
+  if (prompt.includes("交互预判器") || prompt.includes("<pre_signals>")) return "preSignals";
   if (prompt.includes("轮转判定器") || prompt.includes("是否已经说完")) return "turnComplete";
   if (prompt.includes("长期记住") && prompt.includes("candidates")) return "memoryExtraction";
   if (prompt.includes("认知关系审校员")) return "cognitiveRelations";
@@ -152,12 +152,18 @@ const CANNED: Record<FakeCapability, string> = {
     ],
     profileSuggestions: []
   }),
-  preSignals: JSON.stringify({
-    emotionalTone: "engaged",
-    hesitation: "low",
-    knowledgeGap: "none",
-    recommendedPace: "steady"
-  }),
+  // generatePreSignals 走 extractPreSignals 的 <pre_signals> 标签解析器(非 JSON)。
+  preSignals: [
+    "<pre_signals>",
+    "depth_direction:",
+    "  concept: 测试深挖方向",
+    "  reason: 对话反复出现该主题",
+    "  guidance: 能展开讲讲那次经历吗？",
+    "backchannel: 嗯,对,是的",
+    "interrupt: 不对,等一下",
+    "sensitivity: medium",
+    "</pre_signals>"
+  ].join("\n"),
   turnComplete: JSON.stringify({ done: true, reason: "表达完整（fake）" }),
   memoryExtraction: JSON.stringify({
     candidates: [

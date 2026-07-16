@@ -521,6 +521,7 @@ export async function registerInterviewSessionRoutes(
     const role: "user" | "assistant" = body.role === "assistant" ? "assistant" : "user";
     const turn: InterviewTurn = {
       id: makeId("turn"),
+      sessionId: session.id,
       role,
       content,
       intent: role === "user" ? "语音用户输入" : "语音助手回应",

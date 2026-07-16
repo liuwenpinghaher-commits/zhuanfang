@@ -94,6 +94,7 @@ function buildAssistantTurn(session: InterviewSession, userText: string): Interv
 
   return {
     id: makeId("turn-assistant"),
+    sessionId: session.id,
     role: "assistant",
     content,
     intent,
@@ -176,6 +177,7 @@ export function receiveUserTurnWithAssistant(
   const timestamp = nowIso();
   const userTurn: InterviewTurn = {
     id: makeId("turn-user"),
+    sessionId: session.id,
     role: "user",
     content: trimmed,
     intent: "用户表达",
@@ -189,6 +191,7 @@ export function receiveUserTurnWithAssistant(
       userTurn,
       {
         id: makeId("turn-assistant"),
+        sessionId: session.id,
         role: "assistant",
         content: assistant.content,
         intent: assistant.intent,
@@ -219,6 +222,7 @@ export function updateInterviewControl(session: InterviewSession, action: Interv
       ...session.turns,
       {
         id: makeId("turn-control"),
+        sessionId: session.id,
         role: "assistant",
         content: feedback.content,
         intent: "控制反馈",
@@ -342,6 +346,7 @@ export function addTurn(session: InterviewSession, input: AddTurnInput): Intervi
   const strategy = coerceStrategyId(input.strategy);
   const turn: InterviewTurn = {
     id: makeId(`turn-${input.role}`),
+    sessionId: session.id,
     role: input.role,
     content: input.content,
     intent: input.intent ?? (input.role === "user" ? "用户表达" : "主持人发言"),

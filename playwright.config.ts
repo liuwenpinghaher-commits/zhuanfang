@@ -45,9 +45,16 @@ const apiEnv: Record<string, string> = REAL
       // PRODUCT_ENV_FILE 把 config 写盘路径隔离到 tmp——即使将来再有 mock 漏拦,写坏的也
       // 只是一次性测试文件,永远不是仓库根 .env.local。
       PRODUCT_ENV_FILE: join(tmpdir(), "zhuanfang-e2e.env.local"),
-      DASHSCOPE_API_KEY: "",
+      // 真实性重构(2026-07-16):生产剔除全部离线兜底,LLM/搜索/TTS/ASR 无 key 即 503——
+      // 默认族不再依赖"无 key 走确定性兜底",改为把造假推到【外部网络边界】:
+      // key 用占位值让 client 正常装配,base URL 全部指向本地 fake-provider-server.mjs
+      // (webServer[0] 拉起),生产代码 100% 走真实代码路径。
+      DASHSCOPE_API_KEY: "e2e-fake-key",
       BAILIAN_API_KEY: "",
-      ANYSEARCH_API_KEY: "",
+      ANYSEARCH_API_KEY: "e2e-fake-key",
+      BAILIAN_BASE_URL: "http://127.0.0.1:3230",
+      BAILIAN_AUDIO_BASE_URL: "http://127.0.0.1:3230",
+      ANYSEARCH_BASE_URL: "http://127.0.0.1:3230",
       TAVILY_API_KEY: "",
       EXA_API_KEY: "",
       BRAVE_SEARCH_API_KEY: "",
@@ -72,6 +79,14 @@ export default defineConfig({
     trace: "on-first-retry"
   },
   webServer: [
+    // 默认族的外部网络边界替身(fake DashScope/AnySearch);real 族(E2E_REAL=1)不使用它
+    // (base URL 不指向它),但进程无害地闲置。
+    {
+      command: "node tests/e2e/fake-provider-server.mjs",
+      reuseExistingServer: true,
+      timeout: 30_000,
+      url: "http://127.0.0.1:3230/health"
+    },
     {
       command: "npm run start:api",
       // real 模式强制自起隔离进程:绝不复用可能连着真实 .data/ 的开发服务器(红线)。

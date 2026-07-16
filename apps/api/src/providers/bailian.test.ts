@@ -22,6 +22,8 @@ describe("bailian provider client", () => {
         JSON.stringify({
           output_text: JSON.stringify({
             summary: "百炼联网搜索整合后的主题摘要。",
+            // 真实性契约(A-14):summary/facts 是核心字段,缺失即抛错——mock 必须给全。
+            facts: ["事实一", "事实二"],
             discussionTopics: ["讨论主题 A", "讨论主题 B"],
             sourceAngles: ["来源角度 A"],
             sources: [
@@ -84,6 +86,7 @@ describe("bailian provider client", () => {
         JSON.stringify({
           output_text: JSON.stringify({
             summary: "摘要。",
+            facts: ["事实一"],
             sources: [
               { title: "无链接来源", publisher: "Some Publisher", snippet: "片段" }
             ]

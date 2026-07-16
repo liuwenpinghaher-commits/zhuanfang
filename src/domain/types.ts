@@ -267,6 +267,9 @@ export interface InterviewGuideOptions {
 
 export interface InterviewTurn {
   id: string;
+  /** 所属会话 id。域层构造时即打上（持久层 turn 表以它建 part_of 边）；
+   *  旧数据可能缺失，由 normalize 读回时补齐（clamp 会记 persistable_values_clamped）。 */
+  sessionId?: string;
   role: "user" | "assistant";
   content: string;
   intent: string;

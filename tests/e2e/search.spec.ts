@@ -1,8 +1,8 @@
 import { expect, test } from "@playwright/test";
 import { expectNoHorizontalOverflow, openView, resetDemoState } from "./helpers";
 
-test("creates an AnySearch degraded brief with structured material and can delete it", async ({ page }) => {
-  // AnySearch real API can take ~20s per call
+test("creates a successful AnySearch brief with structured material and can delete it", async ({ page }) => {
+  // AnySearch goes through the fake provider (127.0.0.1:3230); generous timeout for the full pipeline.
   test.setTimeout(90000);
   await resetDemoState(page);
   await openView(page, "外部调研", "主动搜集热点、素材和可讨论主题");
@@ -13,14 +13,17 @@ test("creates an AnySearch degraded brief with structured material and can delet
   await page.locator("#search-provider").selectOption("anysearch");
   await page.getByRole("button", { name: "生成简报" }).click();
 
-  // AnySearch calls the real API; allow up to 30s. Notice varies: degraded → "搜索已降级完成",
-  // success → "搜索简报已生成". Status badge: degraded → "需复核", success → "可用".
-  await expect(page.getByText(/搜索已降级完成|搜索简报已生成/)).toBeVisible({ timeout: 30000 });
+  // 真实性重构：AnySearch 走假 provider 是真成功——不再有"搜索已降级完成/需复核"的降级出口。
+  await expect(page.getByText("搜索简报已生成")).toBeVisible({ timeout: 30000 });
 
-  // Locate the newly created brief by its topic heading to avoid matching other briefs in demo state
-  const newBrief = page.locator("article.record-row").filter({ hasText: "AI 产品商业化热点" });
+  // Locate the newly created brief by topic + provider badge — other briefs (e.g. auto-run generated
+  // bailian ones) may contain the same topic text, so the topic alone is ambiguous.
+  const newBrief = page
+    .locator("article.record-row")
+    .filter({ hasText: "AI 产品商业化热点" })
+    .filter({ hasText: "anysearch" });
   await expect(newBrief).toBeVisible({ timeout: 5000 });
-  await expect(newBrief.getByText(/anysearch · (可用|需复核)/)).toBeVisible();
+  await expect(newBrief.getByText("anysearch · 可用")).toBeVisible();
   // "Provider：anysearch" lives in the task-status panel (above the brief list), not inside the brief article
   await expect(page.getByText("Provider：anysearch", { exact: true })).toBeVisible();
   // Scoped to the new brief to avoid strict-mode violation from other briefs with same section titles

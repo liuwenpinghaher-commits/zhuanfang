@@ -53,33 +53,12 @@ test("analyzes imported audio interview transcripts with source metadata", async
 });
 
 test("transcribes an audio source before corpus analysis", async ({ page }) => {
-  // Corpus insights API calls the real LLM (~27s); allow generous timeout.
+  // 真实性重构：转写不再 mock 本产品 API——后端真实走假 SenseVoice（提交任务→轮询→
+  // 拉转写 JSON）全流程，产出 fake-provider-server.mjs 的 canned 转写文本。
   test.setTimeout(90000);
   const sampleTitle = `自动转写音频样本-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
   const sourceUrl = `https://example.com/interview-auto-${Date.now()}-${Math.random().toString(16).slice(2, 6)}.mp3`;
   await resetDemoState(page);
-  await page.route("http://127.0.0.1:8787/api/corpus/transcriptions", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        transcription: {
-          providerId: "bailian-sensevoice",
-          model: "sensevoice-v1",
-          status: "ready",
-          title: sampleTitle,
-          sourceUrl,
-          text: [
-            "主持人：能不能讲一个具体会议？",
-            "被访者：他们只等我拍板。",
-            "主持人：如果反过来看，是不是机制奖励了等待？"
-          ].join("\n"),
-          taskId: "task-e2e",
-          createdAt: "2026-06-10T00:00:00.000Z"
-        }
-      })
-    });
-  });
   await openView(page, "语料学习", "从外部专访中学习提问逻辑");
 
   await page.getByLabel("样本类型").selectOption("audio");
@@ -87,8 +66,10 @@ test("transcribes an audio source before corpus analysis", async ({ page }) => {
   await page.getByLabel("公网音频 URL").fill(sourceUrl);
   await page.getByRole("button", { name: "生成转写稿" }).click();
 
-  await expect(page.getByText("音频转写已完成")).toBeVisible();
-  await expect(page.getByLabel("音频转写稿或摘要")).toHaveValue(/机制奖励了等待/);
+  // 真转写流程含任务轮询，放宽等待；文本来自 canned 转写(cleanSenseVoiceText 会把换行折叠为空格)。
+  await expect(page.getByText("音频转写已完成")).toBeVisible({ timeout: 30000 });
+  await expect(page.getByLabel("音频转写稿或摘要")).toHaveValue(/那天下午你在哪里/);
+  await expect(page.getByLabel("音频转写稿或摘要")).toHaveValue(/先暴露问题再修复/);
 
   await page.getByRole("button", { name: "分析并生成建议" }).click();
 
@@ -116,7 +97,10 @@ test("generates and deletes a podcast episode from the first note", async ({ pag
   const podcastEpisode = page.locator("article.podcast-episode").filter({ hasText: voice });
   await expect(podcastEpisode).toHaveCount(1, { timeout: 10000 });
   await expect(podcastEpisode.getByText(`ready · ${voice}`)).toBeVisible();
-  await expect(podcastEpisode.getByText("本地占位", { exact: true })).toBeVisible();
+  // 真实性重构：假 CosyVoice TTS 真渲染成功 → 音频为可播放 URL，不再有"本地占位"降级出口；
+  // 脚本正文来自 canned LLM 产物。
+  await expect(podcastEpisode.getByText("可播放音频", { exact: true })).toBeVisible();
+  await expect(podcastEpisode.getByText(/这是为测试生成的播客脚本正文/)).toBeVisible();
   await expectNoHorizontalOverflow(page);
 
   page.once("dialog", async (dialog) => {

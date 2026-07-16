@@ -323,37 +323,30 @@ export function createBailianSearchClient(options: BailianSearchClientOptions): 
 
       const payload = (await response.json()) as BailianResponsesOutput;
       const parseResult = parseSearchJson(extractOutputText(payload));
-      // 审计修复(P2-25):解析失败 → needs-review(模板兜底内容仍返回,但如实标降级供复核)。
-      const parsedOutput = parseResult ?? {};
+      // 真实性原则(A-14):解析失败/缺核心字段 → 抛错(调用方如实 502),不再用模板占位文案
+      // 冒充 status:"ready" 的调研结论落库。
+      if (parseResult === null) {
+        throw new Error("百炼联网搜索返回不可解析的结果（已记 bailian_search_parse_failed 日志）。");
+      }
+      const summary = typeof parseResult.summary === "string" ? parseResult.summary.trim() : "";
+      const facts = normalizeStringList(parseResult.facts, []);
+      if (!summary || facts.length === 0) {
+        throw new Error("百炼联网搜索结果缺少 summary/facts 核心字段。");
+      }
 
       return {
         topic: input.topic,
         provider: "bailian",
-        status: parseResult === null ? "needs-review" : "ready",
-        summary:
-          typeof parsedOutput.summary === "string" && parsedOutput.summary.trim()
-            ? parsedOutput.summary.trim()
-            : `${input.topic} 的百炼联网搜索结果已生成，需要在专访中结合个人上下文使用。`,
-        facts: normalizeStringList(parsedOutput.facts, [
-          `${input.topic} 的百炼联网结果需要回到用户自己的具体业务场景中验证。`
-        ]),
-        controversies: normalizeStringList(parsedOutput.controversies, [
-          "争议：外部热点能提供线索，但不能替代用户自己的判断证据。"
-        ]),
-        opposingViews: normalizeStringList(parsedOutput.opposingViews ?? parsedOutput.opposing_views, [
-          "反方观点：如果缺少可复盘行动，热点素材可能只是认知噪音。"
-        ]),
-        interviewAngles: normalizeStringList(parsedOutput.interviewAngles ?? parsedOutput.interview_angles, [
-          `专访角度：${input.topic} 和用户最近的真实选择有什么关系？`
-        ]),
-        discussionTopics: normalizeStringList(parsedOutput.discussionTopics, [
-          `专访切入：${input.topic} 对你当前判断的真实影响是什么？`,
-          "哪些外部信息值得作为访谈追问材料，哪些只是噪音？"
-        ]),
-        sourceAngles: normalizeStringList(parsedOutput.sourceAngles, [
-          "优先把联网信息作为追问线索，而不是直接写成用户结论。"
-        ]),
-        sources: normalizeSources(parsedOutput.sources, input)
+        status: "ready",
+        summary,
+        facts,
+        // 次级维度:LLM 没产出即为诚实的空,不再回填模板文案。
+        controversies: normalizeStringList(parseResult.controversies, []),
+        opposingViews: normalizeStringList(parseResult.opposingViews ?? parseResult.opposing_views, []),
+        interviewAngles: normalizeStringList(parseResult.interviewAngles ?? parseResult.interview_angles, []),
+        discussionTopics: normalizeStringList(parseResult.discussionTopics, []),
+        sourceAngles: normalizeStringList(parseResult.sourceAngles, []),
+        sources: normalizeSources(parseResult.sources, input)
       };
     }
   };
