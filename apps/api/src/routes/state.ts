@@ -93,11 +93,30 @@ export async function registerStateRoutes(
     if (typeof incomingRevision !== "number" || incomingRevision !== stored.revision) {
       return reply.code(409).send({ error: "stale revision", current: stored });
     }
-    // N-02:PUT 响应保持纯净、不再装饰 persist 降级信号。落库降级(persist.degraded)是**共享异步
-    // persistQueue 的属性,与触发路由无关**——只在 PUT 上采样会漏掉那些只做资产确认/记忆编辑而从不
-    // PUT /api/state 的用户。改由前端低频轮询 route-agnostic 的 GET /api/health(health.ts 暴露
-    // persist.degraded)驱动持久顶栏 banner,覆盖全部"200+异步落库"写路径。
-    return repository.replaceState(normalizeProductState(request.body));
+    // A-19:PUT 是外部畸形数据的主要入口——clamp 若需要改写(非法枚举/坏日期/坏向量等),
+    // 如实 422 列明细拒收,不再静默把用户数据钳成默认值(1970 哨兵/空串/丢向量)落库。
+    const violations: string[] = [];
+    const normalized = normalizeProductState(request.body, { onClamped: (v) => violations.push(...v) });
+    if (violations.length > 0) {
+      return reply.code(422).send({
+        error: "状态包含无法持久化的非法字段值，已整体拒绝写入（未做任何变更）。",
+        violations
+      });
+    }
+    const next = repository.replaceState(normalized);
+    // A-18:主写通道等待本笔真实落库结果。失败 → 503 + 附权威内存态(客户端同步 revision 用),
+    // 明确告知"已接受但未落库、重启会丢";repo 侧已熔断后续写并后台自动重试。
+    // (N-02 的 health 轮询 banner 继续覆盖其余"200+异步落库"细粒度路由。)
+    try {
+      await repository.confirmPersisted?.();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return reply.code(503).send({
+        error: `写入已被接受但未能落库：${message}。服务端已暂停接受新写并在后台自动重试；在恢复前的改动重启会丢失。`,
+        state: next
+      });
+    }
+    return next;
   });
   server.post("/api/state/reset", async (request, reply) => {
     const body = request.body as { confirm?: unknown } | undefined;

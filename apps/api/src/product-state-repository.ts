@@ -60,6 +60,11 @@ export interface ProductStateRepository {
    * 可选:仅 surreal handle 与内存档实现;缺失(=undefined)时调用方回落既有行为(向后兼容)。
    */
   getGovernanceGeneration?(): number;
+  /**
+   * A-18:等待最后一笔整状态写的真实落库结果,失败 reject。仅持久档(surreal)实现;
+   * 内存档无持久层(该配置本身经 /api/system 以 degraded 如实暴露),缺失即无需确认。
+   */
+  confirmPersisted?(): Promise<void>;
 }
 
 export function createInMemoryProductStateRepository(initialState: ProductState = createInitialProductState()): ProductStateRepository {
