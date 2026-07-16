@@ -620,8 +620,12 @@ export async function buildSurrealProductStateRepositoryOnConnection(
         // R4a 择优+钳制(统一口径,见 constants.ts selectBm25QueryTokens):去重→含多字 gram 则丢单字
         // 1-gram(纯单字查询保留)→ 上限 32。ngram(1,3) 下若灌 1-gram,多字查询候选/延迟暴涨(实测)。
         const tokens = selectBm25QueryTokens(analyzed);
-        // fail-safe:query 切不出 token → 无 BM25 可加,退化纯 HNSW。
-        if (tokens.length === 0) return hnswOnly();
+        // 语义性空:query 切不出 token(纯符号/空白)→ BM25 天然不适用,走纯 HNSW。
+        // 非失败,但必须可观测(此前无声)。
+        if (tokens.length === 0) {
+          console.warn(JSON.stringify({ event: "surreal_hybrid_bm25_skipped", reason: "no_tokens", queryChars: queryText.length }));
+          return hnswOnly();
+        }
 
         const { clause: bmClause, vars: tokenVars } = buildBm25Clause(tokens);
 
@@ -637,14 +641,19 @@ export async function buildSurrealProductStateRepositoryOnConnection(
         );
         // 多语句:前 3 个 LET 返回 null,取最后一条 SELECT 的结果集(不能取 results[0])。
         const fusedRows = results[results.length - 1];
-        // fail-safe:融合空(rrf 在该 query 下无产出)→ 退化纯 HNSW,绝不返空召回。
+        // 融合为空可能是 A4 门控合法滤空,也可能是 rrf 在该 query 下无产出——用纯 HNSW
+        // 复核一次(同门控的另一条真实检索路径,非伪造),并记日志使差异可查。
         const fused = (fusedRows ?? []) as Array<{ id: unknown; text: unknown }>;
-        if (fused.length === 0) return hnswOnly();
+        if (fused.length === 0) {
+          console.warn(JSON.stringify({ event: "surreal_hybrid_fusion_empty", path: "memory", queryChars: queryText.length }));
+          return hnswOnly();
+        }
         return fused.map((h) => ({ id: recordIdToDomainId(h.id), text: String(h.text ?? "") }));
       } catch (err) {
-        // fail-safe:search::rrf / BM25 在该环境不可用或报错 → 退化纯 HNSW(现状),记降级日志。
-        console.warn(JSON.stringify({ event: "surreal_hybrid_recall_degraded", error: err instanceof Error ? err.message : String(err) }));
-        return hnswOnly();
+        // 真实错误(search::rrf/BM25 在该环境不可用或报错)→ 如实上抛,由调用方暴露。
+        // 不再静默退化纯 HNSW 冒充混合召回结果。
+        console.warn(JSON.stringify({ event: "surreal_hybrid_recall_failed", error: err instanceof Error ? err.message : String(err) }));
+        throw err;
       }
     },
     async recallRagChunks(ragOpts: { embedding?: number[]; queryText?: string; k: number; usage?: "interview-context" | "memory-candidate" }) {
@@ -676,7 +685,11 @@ export async function buildSurrealProductStateRepositoryOnConnection(
         const analyzed = Array.isArray(tokensRes?.[0]) ? (tokensRes[0] as unknown[]).map(String).filter(Boolean) : [];
         // R4a 择优+钳制(统一口径,见 constants.ts selectBm25QueryTokens):与 memory 路逐字同款。
         const tokens = selectBm25QueryTokens(analyzed);
-        if (tokens.length === 0) return hnswOnly();
+        // 语义性空:切不出 token → BM25 天然不适用,走纯 HNSW(可观测,此前无声)。
+        if (tokens.length === 0) {
+          console.warn(JSON.stringify({ event: "surreal_rag_bm25_skipped", reason: "no_tokens", queryChars: queryText.length }));
+          return hnswOnly();
+        }
 
         const { clause: bmClause, vars: tokenVars } = buildBm25Clause(tokens);
 
@@ -701,14 +714,18 @@ export async function buildSurrealProductStateRepositoryOnConnection(
           { q: embedding, ...gateVars, ...tokenVars }
         );
         const rows = toHits(results[results.length - 2]);
-        // fail-safe:融合为空 / 全被 usage 门控滤掉 → 退化纯 HNSW,绝不返空召回。
-        if (rows.length === 0) return hnswOnly();
+        // 融合为空可能是 usage 门控合法滤空——用纯 HNSW 复核一次(同门控的另一条真实检索路径,
+        // 非伪造),并记日志使差异可查。
+        if (rows.length === 0) {
+          console.warn(JSON.stringify({ event: "surreal_hybrid_fusion_empty", path: "rag_chunk", queryChars: queryText.length }));
+          return hnswOnly();
+        }
         const order = ((results[results.length - 1] ?? []) as unknown[]).map((rid) => recordIdToDomainId(rid));
         return reorderByRrfRank(rows, order);
       } catch (err) {
-        // fail-safe:search::rrf / BM25 报错 → 退化纯 HNSW(有 embedding)或 [](无),记降级日志。
-        console.warn(JSON.stringify({ event: "surreal_rag_recall_degraded", error: err instanceof Error ? err.message : String(err) }));
-        return hnswOnly();
+        // 真实错误(search::rrf/BM25 报错)→ 如实上抛,由调用方暴露,不再退化掩盖。
+        console.warn(JSON.stringify({ event: "surreal_rag_recall_failed", error: err instanceof Error ? err.message : String(err) }));
+        throw err;
       }
     },
     async auditGraphConsistency() {

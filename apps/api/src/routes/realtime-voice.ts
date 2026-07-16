@@ -19,7 +19,6 @@ import {
   buildInterviewEnginePolicy,
   truncateAssistantTurn
 } from "../../../../src/domain/engine";
-import { collectAppliedPlaybookRules, collectAppliedPlaybookRuleTypes } from "../../../../src/domain/context-pack";
 import { stripSpokenAsides } from "../../../../src/domain/speech-text";
 import type {
   AiRunEvent,
@@ -96,8 +95,8 @@ interface RealtimeVoiceSessionRecord extends RealtimeVoiceConfig {
 }
 
 // 🔴-1: embed the latest user utterance for semantic memory recall in agent-context.
-// Fail-safe — undefined on no client / empty text / embed error, so recall silently
-// degrades to keyword ranking (unchanged behaviour). Mirrors embedQueryText in
+// 配置边界:无 client / 空文本 → undefined(关键词召回配置态)。运行时 embed 失败 → 抛错,
+// 由路由如实 5xx,不再静默退化成关键词召回。Mirrors embedQueryText in
 // interview-sessions.ts (kept local to avoid cross-route coupling).
 async function embedRecallQuery(
   text: string | undefined,
@@ -112,10 +111,9 @@ async function embedRecallQuery(
     const vector = vectors[0];
     return Array.isArray(vector) && vector.length > 0 ? vector : undefined;
   } catch (error) {
-    console.warn(
-      JSON.stringify({ event: "agent_context_embed_failed", error: error instanceof Error ? error.message : String(error) })
-    );
-    return undefined;
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(JSON.stringify({ event: "agent_context_embed_failed", error: message }));
+    throw new Error(`召回嵌入失败：${message}`);
   }
 }
 
@@ -189,8 +187,9 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     createdAt: undefined as string | undefined
   }));
 
-  server.get("/api/realtime-voice/voices", async () => {
+  server.get("/api/realtime-voice/voices", async (_request, reply) => {
     if (!options.voiceEnrollmentClient) {
+      // 配置边界:未配置声纹服务 → 只有系统预置音色可用(如实的能力边界,非失败)。
       return { preset: cosyvoiceFallbackPreset, custom: [] };
     }
     try {
@@ -199,9 +198,10 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       const custom = voices.filter((v) => v.targetModel && v.targetModel !== "qwen3.5-omni-plus-realtime");
       return { preset, custom };
     } catch (err) {
-      // 审计修复(P3):上游查询失败时此前零日志静默隐藏自定义克隆音色。保留回退但响亮+可判别。
-      console.warn(JSON.stringify({ event: "voice_list_degraded", error: err instanceof Error ? err.message : String(err) }));
-      return { preset: cosyvoiceFallbackPreset, custom: [], degraded: true };
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(JSON.stringify({ event: "voice_list_failed", error: message }));
+      // 上游失败如实 502——不再用预置列表冒充查询结果(那会隐藏用户的自定义克隆音色)。
+      return reply.code(502).send({ error: `音色列表查询失败：${message}` });
     }
   });
 
@@ -399,19 +399,27 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
 
     // 🔴-1 (livekit): when the Python agent passes the latest user utterance (?latestUserText=),
     // refresh memory recall (queryEmbedding) so the persona's 【可引用的历史】 tracks the
-    // conversation instead of being frozen at the opening snapshot. Fail-safe: no client /
-    // no text / embed error → keyword recall (current behaviour), never throws.
+    // conversation instead of being frozen at the opening snapshot. 配置边界:无 client/无文本 →
+    // 关键词召回。运行时失败(embed/召回错)→ 如实 502,由 agent 决定如何向用户暴露。
     const { latestUserText } = request.query as { latestUserText?: string };
-    const queryEmbedding = await embedRecallQuery(latestUserText, options.embeddingClient);
-    // P2b:surreal 权威时预召回原生图遍历/HNSW/溯源,刷新 guide(主题资产/记忆/证据原话);
-    // 非原生 repo 或无 queryEmbedding → recall undefined,buildInterviewGuide 走域层回落。
-    const nativeRecall = asNativeRecall(stateRepo);
-    const recall = nativeRecall && queryEmbedding
-      ? await prefetchRecall(nativeRecall, state, session.guide.topicHint || resolveInterviewTopicHint(state, {}), queryEmbedding, {
-          includeSensitive: state.systemConfig.memory.includeSensitiveMemoriesInContext,
-          topN: state.systemConfig.search.maxSources
-        })
-      : undefined;
+    let queryEmbedding: number[] | undefined;
+    let recall: Awaited<ReturnType<typeof prefetchRecall>> | undefined;
+    try {
+      queryEmbedding = await embedRecallQuery(latestUserText, options.embeddingClient);
+      // P2b:surreal 权威时预召回原生图遍历/HNSW/溯源,刷新 guide(主题资产/记忆/证据原话);
+      // 非原生 repo 或无 queryEmbedding → recall undefined,buildInterviewGuide 走域层回落。
+      const nativeRecall = asNativeRecall(stateRepo);
+      recall = nativeRecall && queryEmbedding
+        ? await prefetchRecall(nativeRecall, state, session.guide.topicHint || resolveInterviewTopicHint(state, {}), queryEmbedding, {
+            includeSensitive: state.systemConfig.memory.includeSensitiveMemoriesInContext,
+            topN: state.systemConfig.search.maxSources
+          })
+        : undefined;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(JSON.stringify({ event: "agent_context_recall_failed", error: message }));
+      return reply.status(502).send({ error: `agent 上下文召回失败：${message}` });
+    }
     const refreshedGuide = queryEmbedding
       ? buildInterviewGuide(state, {
           topicHint: session.guide.topicHint || undefined,
@@ -800,38 +808,10 @@ function isAllowedWsOrigin(origin: string, env: Record<string, string | undefine
 
 function buildDefaultEnginePolicy(state: ProductState): InterviewEnginePolicy {
   // P0-C: delegate to the canonical domain policy builder instead of hand-rolling the object
-  // with `qualityGuardrails: []`. This is the only place that decided the voice session's
-  // policy when no per-session policy exists, so writing an empty array here was the third
-  // failure that severed the quality-guardrail closed loop. buildInterviewEnginePolicy fills
-  // qualityGuardrails with the real remediation text the domain produces.
-  try {
-    return buildInterviewEnginePolicy(state);
-  } catch (error) {
-    // Robustness: the domain quality-report path can throw on edge-case state shapes. A voice
-    // session must still be creatable, so fall back to a config-derived policy. qualityGuardrails
-    // is honestly empty here (we couldn't compute it) — NOT a hardcoded design choice.
-    console.warn(JSON.stringify({
-      event: "engine_policy_fallback",
-      capability: "realtime_voice",
-      error: error instanceof Error ? error.message : String(error)
-    }));
-    const cfg = state.systemConfig;
-    return {
-      allowWebInInterview: cfg.search.allowWebInInterview,
-      maxFollowUpDepth: cfg.interview.maxFollowUpDepth,
-      silenceHoldMs: cfg.interview.silenceHoldMs,
-      playbookVersion: cfg.interview.playbookVersion,
-      appliedPlaybookRules: collectAppliedPlaybookRules(state),
-      appliedPlaybookRuleTypes: collectAppliedPlaybookRuleTypes(state),
-      qualityGuardrails: [],
-      memory: { ...cfg.memory },
-      guidanceEnabled: cfg.interview.guidanceEnabled ?? true,
-      guidanceFrequency: cfg.interview.guidanceFrequency ?? "medium",
-      maxGuidancePerTurn: cfg.interview.maxGuidancePerTurn ?? 2,
-      minGuidanceIntervalMs: cfg.interview.minGuidanceIntervalMs ?? 5000,
-      challengeBudgetPerSession: cfg.interview.challengeBudgetPerSession ?? 3
-    };
-  }
+  // with `qualityGuardrails: []`. buildInterviewEnginePolicy fills qualityGuardrails with the
+  // real remediation text the domain produces. 域层抛错就向上抛(由路由如实 5xx)——
+  // 不再回退"config 拼装 + 空 guardrails"的替身策略掩盖域层缺陷。
+  return buildInterviewEnginePolicy(state);
 }
 
 function resolveEnginePolicy(

@@ -4,8 +4,9 @@ import type { InterviewSession } from "../../../../src/domain/types";
 /**
  * Layer 2 of the cascade turn gate: ask the LLM whether the user has finished
  * their turn, using the last few turns as context (LiveKit's text-first EOU idea).
- * Only called when the cheap heuristic returns "ambiguous". Fails safe to done=true
- * (respond) — better to answer than to leave the user hanging.
+ * Only called when the cheap heuristic returns "ambiguous". 失败向上抛——
+ * 由路由如实 5xx；"拿不到判定就默认应答"的实时策略属于 cascade 调用方，
+ * 服务端不伪造 done:true 的分类结果。
  */
 export async function classifyTurnComplete(
   session: InterviewSession,
@@ -24,23 +25,18 @@ export async function classifyTurnComplete(
     `用户最新（可能未说完）：${transcript}\n\n` +
     `只输出 JSON：{"done": true 或 false, "reason": "简短中文理由"}`;
 
-  try {
-    const raw = await chatClient.complete({
-      messages: [
-        { role: "system", content: "你是轮转判定器，只输出 JSON，不要解释。" },
-        { role: "user", content: prompt },
-      ],
-      responseFormat: "json",
-      maxTokens: 60,
-      temperature: 0,
-    });
-    const parsed = JSON.parse(raw) as { done?: unknown; reason?: unknown };
-    return {
-      done: parsed.done === true,
-      reason: typeof parsed.reason === "string" ? parsed.reason : "",
-    };
-  } catch {
-    // Parse error, timeout, or provider failure → respond (fail safe).
-    return { done: true, reason: "endpoint classify failed → default respond" };
-  }
+  const raw = await chatClient.complete({
+    messages: [
+      { role: "system", content: "你是轮转判定器，只输出 JSON，不要解释。" },
+      { role: "user", content: prompt },
+    ],
+    responseFormat: "json",
+    maxTokens: 60,
+    temperature: 0,
+  });
+  const parsed = JSON.parse(raw) as { done?: unknown; reason?: unknown };
+  return {
+    done: parsed.done === true,
+    reason: typeof parsed.reason === "string" ? parsed.reason : "",
+  };
 }

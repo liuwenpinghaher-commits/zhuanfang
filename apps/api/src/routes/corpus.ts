@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { analyzeImportedInterview, sanitizeExternalMaterialText } from "../../../../src/domain/engine";
+import { sanitizeExternalMaterialText } from "../../../../src/domain/engine";
 import type { AudioTranscription, AudioTranscriptionInput, CorpusImportInput } from "../../../../src/domain/types";
 import { analyzeCorpusWithLlm } from "../intelligence/corpus-llm";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
@@ -45,8 +45,8 @@ export async function registerCorpusRoutes(
 
     // Local file upload branch. There is no inline-base64 transcription path on the
     // backend: SenseVoice 录音转写只接受公网 file_urls，唯一的 base64 音频能力是浏览器
-    // 侧流式实时 ASR（omni-realtime，不是一次性的“收 base64 → 返回文字”接口）。因此我们
-    // 诚实地确认收到文件并降级，绝不冒充真转写。
+    // 侧流式实时 ASR（omni-realtime，不是一次性的“收 base64 → 返回文字”接口）。这是
+    // 能力边界——如实拒绝，绝不返回占位稿冒充转写。
     if (input.audioBase64) {
       if (input.audioBase64.length > MAX_AUDIO_BASE64_BYTES) {
         return reply
@@ -55,9 +55,9 @@ export async function registerCorpusRoutes(
       }
       const approxMb = (estimateBase64Bytes(input.audioBase64) / (1024 * 1024)).toFixed(1);
       const fileLabel = input.fileName ?? "你上传的音频文件";
-      return {
-        transcription: buildLocalFileTranscription(input, fileLabel, approxMb)
-      };
+      return reply.code(422).send({
+        error: `已接收文件「${fileLabel}」（约 ${approxMb} MB），但当前转写引擎（百炼 SenseVoice）只支持可公网访问的音频 URL，本地文件无法自动转写。请直接粘贴转写稿，或改用公网音频 URL。`
+      });
     }
 
     if (!input.sourceUrl) {
@@ -69,12 +69,7 @@ export async function registerCorpusRoutes(
     }
 
     if (!options.bailianTranscriptionClient) {
-      return {
-        transcription: buildFallbackTranscription(
-          input,
-          "缺少 DASHSCOPE_API_KEY 或 BAILIAN_API_KEY，无法调用百炼 SenseVoice 录音转写。"
-        )
-      };
+      return reply.code(503).send({ error: "缺少 DASHSCOPE_API_KEY 或 BAILIAN_API_KEY，无法调用百炼 SenseVoice 录音转写。" });
     }
 
     try {
@@ -93,12 +88,9 @@ export async function registerCorpusRoutes(
       };
       return { transcription };
     } catch (error) {
-      return {
-        transcription: buildFallbackTranscription(
-          input,
-          error instanceof Error && error.message ? `百炼 SenseVoice 转写失败：${error.message}` : "百炼 SenseVoice 转写失败。"
-        )
-      };
+      const message = error instanceof Error && error.message ? error.message : "unknown error";
+      console.warn(JSON.stringify({ event: "transcription_failed", provider: "bailian-sensevoice", error: message }));
+      return reply.code(502).send({ error: `百炼 SenseVoice 转写失败：${message}` });
     }
   });
 
@@ -114,34 +106,28 @@ export async function registerCorpusRoutes(
     }
     const focus = normalizeFocus(request.body);
 
-    const state = repository.getState();
-    const allowLlm = !!options.bailianChatClient && budget.tryConsume("system");
-    if (!!options.bailianChatClient && !allowLlm) {
+    // 语料分析是 LLM 能力：不可用就如实暴露，绝不回落到关键词模板分析冒充。
+    if (!options.bailianChatClient) {
+      return reply.code(503).send({ error: "语料分析 LLM 未配置（缺少 DASHSCOPE_API_KEY），无法分析样本。" });
+    }
+    if (!budget.tryConsume("system")) {
       console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "corpus_insights" }));
+      return reply.code(429).send({ error: "本时段 LLM 预算已用尽，语料分析暂不可用，请稍后重试。" });
     }
-    const { insight, nextState } = await analyzeCorpus(state, input, allowLlm ? options.bailianChatClient : undefined, focus);
-    // state 必须是 replaceState 返回的权威态(revision 已 bump),否则客户端下一次乐观 PUT 必 409。
-    const persisted = repository.replaceState(nextState);
-    return { insight, state: persisted };
-  });
-}
 
-async function analyzeCorpus(
-  state: Parameters<typeof analyzeImportedInterview>[0],
-  input: CorpusImportInput,
-  chatClient: BailianChatClient | undefined,
-  focus?: string
-) {
-  if (chatClient) {
+    const state = repository.getState();
+    let analyzed: Awaited<ReturnType<typeof analyzeCorpusWithLlm>>;
     try {
-      return await analyzeCorpusWithLlm(state, input, chatClient, focus);
+      analyzed = await analyzeCorpusWithLlm(state, input, options.bailianChatClient, focus);
     } catch (error) {
-      console.warn(JSON.stringify({ event: "llm_fallback", capability: "corpus", error: error instanceof Error ? error.message : String(error) }));
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(JSON.stringify({ event: "llm_failed", capability: "corpus", error: message }));
+      return reply.code(502).send({ error: `语料分析失败：${message}` });
     }
-  }
-  // Deterministic path ignores focus (the templated analyzer does not use free-form
-  // guidance); it must still succeed when focus is supplied.
-  return analyzeImportedInterview(state, input);
+    // state 必须是 replaceState 返回的权威态(revision 已 bump),否则客户端下一次乐观 PUT 必 409。
+    const persisted = repository.replaceState(analyzed.nextState);
+    return { insight: analyzed.insight, state: persisted };
+  });
 }
 
 function normalizeFocus(value: unknown): string | undefined {
@@ -208,47 +194,3 @@ function isSupportedAudioSourceUrl(sourceUrl: string) {
   return /^(https?:\/\/|oss:\/\/)/.test(sourceUrl);
 }
 
-function buildFallbackTranscription(input: AudioTranscriptionInput, degradedReason: string): AudioTranscription {
-  return {
-    providerId: "local-fallback",
-    model: "manual-transcript-required",
-    status: "degraded",
-    title: input.title,
-    sourceUrl: input.sourceUrl,
-    text: [
-      `主持人：这段音频来自 ${input.sourceUrl}，当前还没有完成自动转写。`,
-      "被访者：请先补充这段专访里最关键的回答、原话和停顿。",
-      "主持人：补齐后我会重点分析它如何索要具体时刻、推动反方观点，以及控制追问节奏。"
-    ].join("\n"),
-    degradedReason,
-    createdAt: new Date().toISOString()
-  };
-}
-
-/**
- * Honest degradation for a locally uploaded audio file. We acknowledge the exact
- * file we received, then state plainly that automatic transcription needs a public
- * URL — and seed an editable draft that carries the file name into context. This is
- * a deliberate constraint of SenseVoice 录音转写 (file_urls only); we never return a
- * fabricated transcript dressed up as the real thing.
- */
-function buildLocalFileTranscription(
-  input: AudioTranscriptionInput,
-  fileLabel: string,
-  approxMb: string
-): AudioTranscription {
-  return {
-    providerId: "local-fallback",
-    model: "manual-transcript-required",
-    status: "degraded",
-    title: input.title,
-    sourceUrl: input.sourceUrl,
-    text: [
-      `主持人：这段专访音频来自本地文件「${fileLabel}」，目前还没有自动转写。`,
-      "被访者：请在这里补充被访者的关键原话、停顿和情绪变化。",
-      "主持人：补齐后我会分析这段专访如何索要具体时刻、推进反方观点和控制节奏。"
-    ].join("\n"),
-    degradedReason: `已接收文件「${fileLabel}」（约 ${approxMb} MB）。当前转写引擎（百炼 SenseVoice）需要可公网访问的音频 URL，本地文件暂不能自动转写——请直接粘贴/手敲转写稿，或改用公网音频 URL。`,
-    createdAt: new Date().toISOString()
-  };
-}

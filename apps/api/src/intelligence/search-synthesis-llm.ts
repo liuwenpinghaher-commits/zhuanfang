@@ -1,7 +1,6 @@
 // LLM synthesis of search "insights" (facts/controversies/opposing views/angles)
 // from REAL search sources, replacing the string-template insight builders.
-// Operates only on real sources; throws on failure so callers keep the
-// provider's own (templated) insights as fallback.
+// Operates only on real sources; throws on failure so callers expose the error.
 import { sanitizeExternalSource } from "../../../../src/domain/engine";
 import type { SearchBriefInput, SourceHighlight } from "../../../../src/domain/types";
 import type { BailianChatClient } from "../providers/bailian";
@@ -86,17 +85,21 @@ export async function synthesizeSearchInsights(
   };
 }
 
-/** Overlay LLM insights onto a provider's brief input, keeping its real sources. */
+/**
+ * Overlay LLM insights onto a provider's brief input, keeping its real sources.
+ * LLM 产出直接采用——空数组表示 LLM 基于来源确实没提炼出该维度（诚实的空），
+ * 绝不回填 provider 的模板占位文案冒充调研结论。
+ */
 export function applySearchInsights(input: SearchBriefInput, insights: SearchInsights): SearchBriefInput {
   return {
     ...input,
-    summary: insights.summary || input.summary,
-    facts: insights.facts.length ? insights.facts : input.facts,
-    controversies: insights.controversies.length ? insights.controversies : input.controversies,
-    opposingViews: insights.opposingViews.length ? insights.opposingViews : input.opposingViews,
-    interviewAngles: insights.interviewAngles.length ? insights.interviewAngles : input.interviewAngles,
-    discussionTopics: insights.discussionTopics.length ? insights.discussionTopics : input.discussionTopics,
-    sourceAngles: insights.sourceAngles.length ? insights.sourceAngles : input.sourceAngles,
+    summary: insights.summary,
+    facts: insights.facts,
+    controversies: insights.controversies,
+    opposingViews: insights.opposingViews,
+    interviewAngles: insights.interviewAngles,
+    discussionTopics: insights.discussionTopics,
+    sourceAngles: insights.sourceAngles,
     sourceTrace: undefined // stale trace no longer matches the new claims; let createSearchBriefFromInput rebuild
   };
 }
@@ -104,7 +107,8 @@ export function applySearchInsights(input: SearchBriefInput, insights: SearchIns
 /**
  * Enrich a provider's brief input with LLM-synthesized insights when there are
  * real sources and a chat client. bailian already synthesizes via its Responses
- * API, so it is skipped. Any failure returns the input unchanged.
+ * API, so it is skipped. Failures propagate — the caller decides how to surface
+ * them; enrichment failure is never silently passed off as an enriched brief.
  */
 export async function enrichBriefInput(
   input: SearchBriefInput,
@@ -113,10 +117,6 @@ export async function enrichBriefInput(
   if (!chatClient || input.provider === "bailian" || input.status !== "ready" || input.sources.length === 0) {
     return input;
   }
-  try {
-    const insights = await synthesizeSearchInsights(input.topic, input.sources, chatClient);
-    return applySearchInsights(input, insights);
-  } catch {
-    return input;
-  }
+  const insights = await synthesizeSearchInsights(input.topic, input.sources, chatClient);
+  return applySearchInsights(input, insights);
 }

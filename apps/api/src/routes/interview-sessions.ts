@@ -1,12 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import {
-  buildFallbackPreSignals,
   buildInterviewEnginePolicy,
   buildInterviewGuide,
   createSessionDraft,
   decideInterviewStrategy,
-  finalizeSession,
-  receiveUserTurn,
   receiveUserTurnWithAssistant,
   updateInterviewControl
 } from "../../../../src/domain/engine";
@@ -21,7 +18,7 @@ import type {
   MemoryCorrection,
   ProductState
 } from "../../../../src/domain/types";
-import { makeId, nowIso, withAiRunEvent, withAuditEvent } from "../../../../src/domain/utils";
+import { makeId, nowIso, withAuditEvent } from "../../../../src/domain/utils";
 import { stripSpokenAsides, deriveSpeechProsody } from "../../../../src/domain/speech-text";
 import { buildRealtimeVoiceInstructions } from "../../../../src/domain/voice-instructions";
 import { finalizeSessionWithLlm } from "../intelligence/finalize-llm";
@@ -106,7 +103,7 @@ export async function registerInterviewSessionRoutes(
     return result;
   }
 
-  server.post("/api/interview-sessions", async (request) => {
+  server.post("/api/interview-sessions", async (request, reply) => {
     const state = repository.getState();
     const payload = normalizeObject<CreateSessionPayload>(request.body);
     const topicHint = normalizeOptionalString(payload.topicHint);
@@ -114,19 +111,28 @@ export async function registerInterviewSessionRoutes(
     // M3c: embed the topic that drives memory recall so the new session's guide ranks
     // confirmed memories by cosine instead of substring. P2b: resolveInterviewTopicHint 与域内
     // topicHint 对齐;surreal 权威时预召回原生图遍历/HNSW/溯源,作为纯数据喂给同步 createSessionDraft。
-    // Fail-safe: 无 client/embed 错 → queryEmbedding undefined;无原生 repo → recall undefined,均走域层回落。
+    // 配置边界:无 embedding client → queryEmbedding undefined(关键词召回配置态);无原生 repo →
+    // recall undefined(域层召回)。运行时失败(embed 错/召回错)→ 如实 502,不再静默少注入召回。
     const recallTopic = resolveInterviewTopicHint(state, {
       ...(topicHint ? { topicHint } : {}),
       ...(searchBriefId ? { searchBriefId } : {})
     });
-    const queryEmbedding = await embedQueryText(recallTopic, options.embeddingClient);
-    const nativeRecall = asNativeRecall(repository);
-    const recall = nativeRecall
-      ? await prefetchRecall(nativeRecall, state, recallTopic, queryEmbedding, {
-          includeSensitive: state.systemConfig.memory.includeSensitiveMemoriesInContext,
-          topN: state.systemConfig.search.maxSources
-        })
-      : undefined;
+    let queryEmbedding: number[] | undefined;
+    let recall: Awaited<ReturnType<typeof prefetchRecall>> | undefined;
+    try {
+      queryEmbedding = await embedQueryText(recallTopic, options.embeddingClient);
+      const nativeRecall = asNativeRecall(repository);
+      recall = nativeRecall
+        ? await prefetchRecall(nativeRecall, state, recallTopic, queryEmbedding, {
+            includeSensitive: state.systemConfig.memory.includeSensitiveMemoriesInContext,
+            topN: state.systemConfig.search.maxSources
+          })
+        : undefined;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(JSON.stringify({ event: "session_create_recall_failed", error: message }));
+      return reply.code(502).send({ error: `创建会话失败（记忆召回不可用）：${message}` });
+    }
     const session = createSessionDraft(state, normalizeMode(payload.mode), normalizeStrength(payload.strength, state), {
       ...(searchBriefId ? { searchBriefId } : {}),
       ...(topicHint ? { topicHint } : {}),
@@ -192,7 +198,13 @@ export async function registerInterviewSessionRoutes(
     // recommendedMemories), so this genuinely changes which memory gets referenced.
     // Fail-safe: no client / embed failure → guide unchanged (create-time recall).
     const enginePolicy = buildInterviewEnginePolicy(state);
-    const turnEmbedding = await embedQueryText(content, options.embeddingClient);
+    let turnEmbedding: number[] | undefined;
+    try {
+      turnEmbedding = await embedQueryText(content, options.embeddingClient);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.code(502).send({ error: `本轮记忆召回嵌入失败：${message}。本轮未记录，请重试。` });
+    }
     const refreshedGuide = turnEmbedding
       ? buildInterviewGuide(state, {
           topicHint: session.guide.topicHint || undefined,
@@ -202,40 +214,36 @@ export async function registerInterviewSessionRoutes(
       : session.guide;
     const freshSession: InterviewSession = { ...session, enginePolicy, guide: refreshedGuide };
 
-    const allowLlm = !!options.bailianInterviewClient && budget.tryConsume(freshSession.id);
-    if (!!options.bailianInterviewClient && !allowLlm) {
-      console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "interview_turn", sessionId: freshSession.id }));
+    // 追问是 LLM 能力：不可用/失败就如实暴露（503/429/502），不再回退确定性策略引擎生成假追问。
+    // 失败时不落任何轮次——请求原子失败，用户可原样重试。
+    if (!options.bailianInterviewClient) {
+      return reply.code(503).send({ error: "专访追问 LLM 未配置（缺少 DASHSCOPE_API_KEY），无法生成追问。" });
     }
-    const updatedSession = await receiveTurn(
-      freshSession,
-      content,
-      allowLlm ? options.bailianInterviewClient : undefined,
-      state.memoryCorrections,
-      state.profile.explicitBoundaries
-    );
-    const { nextSession: rawNextSession, preSignals, degradedReason } = updatedSession;
+    if (!budget.tryConsume(freshSession.id)) {
+      console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "interview_turn", sessionId: freshSession.id }));
+      return reply.code(429).send({ error: "本会话 LLM 预算已用尽，追问暂不可用，请稍后重试。" });
+    }
+    let updatedSession: Awaited<ReturnType<typeof receiveTurn>>;
+    try {
+      updatedSession = await receiveTurn(
+        freshSession,
+        content,
+        options.bailianInterviewClient,
+        state.memoryCorrections,
+        state.profile.explicitBoundaries
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(JSON.stringify({ event: "llm_failed", capability: "interview_turn", sessionId: freshSession.id, error: message }));
+      return reply.code(502).send({ error: `追问生成失败：${message}。本轮未记录，请重试。` });
+    }
+    const { nextSession: rawNextSession, preSignals } = updatedSession;
     // The character model conveys manner via （…）stage-direction asides (e.g. 「（身体微倾，
     // 表现出好奇）」). Strip them out of the stored question so the transcript / finalize / memory
     // read as clean words like a real interview; distill the manner into `prosody` so the voice
     // path can still deliver it expressively. Only the just-generated assistant turn is touched.
     const nextSession = stripAsidesFromLatestAssistantTurn(rawNextSession);
-    // P1-13: when the live turn LLM degraded to the deterministic engine, record an
-    // aiRunEvent(degraded) alongside the existing console.warn so transparency/quality
-    // reports can see it. Folded into the same state we persist below (no extra write).
-    const seedState = degradedReason
-      ? withAiRunEvent(state, {
-          workflow: "interview_turn_generation",
-          providerId: "bailian-character",
-          status: "degraded",
-          entityType: "interview_session",
-          entityId: nextSession.id,
-          inputSummary: `文本专访回合降级：${content.slice(0, 60)}`,
-          outputSummary: "LLM 追问失败，已回退到确定性策略引擎生成本回合。",
-          degradedReason,
-          createdAt: nowIso()
-        })
-      : state;
-    const baseNextState = upsertSession(seedState, nextSession);
+    const baseNextState = upsertSession(state, nextSession);
 
     // M3 recency write-back: the records actually recalled into THIS turn's guide get
     // lastAccessedAt = now, so the recency factor reflects "recently used" rather than
@@ -299,44 +307,39 @@ export async function registerInterviewSessionRoutes(
       return reply.code(422).send({ error: "Interview session cannot be ended before the first user turn." });
     }
 
+    // 归档（双轨笔记+资产+记忆抽取+矛盾精判）是 LLM 能力：不可用/失败就如实暴露，
+    // 会话保持 active 可重试，绝不用确定性 finalize 生成模板笔记冒充。
+    if (!options.bailianChatClient) {
+      return reply.code(503).send({ error: "归档 LLM 未配置（缺少 DASHSCOPE_API_KEY），无法结束并归档专访。" });
+    }
+
     const baseState = {
       ...state,
       sessions: state.sessions.filter((item) => item.id !== session.id)
     };
-    // M1b: when an LLM is available, extract real long-term memory candidates from
-    // the conversation and hand them to finalize (replacing the heuristic template
-    // candidate). On budget exhaustion / extraction failure we pass nothing and
-    // mergeFinalizedState falls back to the Task-1 session heuristic.
-    // doNotSave skips extraction entirely — mergeFinalizedState would discard the
-    // candidates anyway, so spending LLM budget + a round-trip on them is pure waste.
-    const providedCandidates = session.doNotSave
-      ? undefined
-      : await extractSessionMemoryCandidates(session, options.bailianChatClient, budget);
-    const result = await finalizeInterview(baseState, session, options.bailianChatClient, providedCandidates, options.embeddingClient);
-    // P1-13: if the LLM diary degraded to the deterministic finalize, record an
-    // aiRunEvent(degraded) on the finalized state (single write below).
-    const finalizedState = result.degradedReason
-      ? withAiRunEvent(result.nextState, {
-          workflow: "interview_preparation",
-          providerId: "bailian-chat",
-          status: "degraded",
-          entityType: "interview_session",
-          entityId: session.id,
-          inputSummary: `专访收尾归档降级：${session.title}`,
-          outputSummary: "LLM 日记生成失败，已回退到确定性 finalize 生成双轨笔记与资产。",
-          degradedReason: result.degradedReason,
-          createdAt: nowIso()
-        })
-      : result.nextState;
-    // 轻量推理(欠账②):finalize 之后,对全量观点做矛盾/演化检出。规则粗筛 → LLM 精判 →
-    // 应用关系(双向 contradicts + supersedes)。fail-safe:无 LLM/超预算/无候选 → 原样返回,
-    // 绝不阻塞 finalize。确定性 finalize 路径(无 chatClient)本就不产观点资产,这里自然空跑。
-    const reasonedState = await applySessionCognitiveRelations(
-      finalizedState,
-      session.id,
-      options.bailianChatClient,
-      budget
-    );
+    let result: FinalizeResult;
+    let reasonedState: ProductState;
+    try {
+      // M1b: extract real long-term memory candidates from the conversation and hand
+      // them to finalize. doNotSave skips extraction entirely — mergeFinalizedState
+      // would discard the candidates anyway, so spending LLM budget on them is pure waste.
+      const providedCandidates = session.doNotSave
+        ? undefined
+        : await extractSessionMemoryCandidates(session, options.bailianChatClient, budget);
+      result = await finalizeSessionWithLlm(baseState, session, options.bailianChatClient, providedCandidates, options.embeddingClient);
+      // 轻量推理(欠账②):finalize 之后,对全量观点做矛盾/演化检出。规则粗筛 → LLM 精判 →
+      // 应用关系(双向 contradicts + supersedes)。失败与 finalize 一体原子中止(此时尚未持久化)。
+      reasonedState = await applySessionCognitiveRelations(
+        result.nextState,
+        session.id,
+        options.bailianChatClient,
+        budget
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(JSON.stringify({ event: "llm_failed", capability: "finalize", sessionId: session.id, error: message }));
+      return reply.code(502).send({ error: `专访归档失败：${message}。会话未结束，可重试。` });
+    }
     const completedSession = reasonedState.sessions.find((item) => item.id === session.id) ?? session;
 
     // Cold-storage offload: move this just-completed session's heavy evidence
@@ -391,30 +394,15 @@ export async function registerInterviewSessionRoutes(
     if (!session) {
       return reply.code(404).send({ error: "Interview session not found." });
     }
-    // No LLM / budget exhausted → fall back to the deterministic offline engine instead of
-    // erroring (it produces the same InteractionPreSignals shape). Previously this hard-503/502'd
-    // and the offline buildFallbackPreSignals was a dead import.
-    if (!options.bailianChatClient || !budget.tryConsume(session.id)) {
-      if (!options.bailianChatClient) {
-        // Steady-state offline (no key) — surfaced via /capabilities, not recorded per-turn here.
-        console.warn(JSON.stringify({ event: "llm_unavailable", capability: "pre_signals", sessionId: session.id }));
-        return { preSignals: buildFallbackPreSignals(session.guide), session };
-      }
-      // P1-13: budget exhausted while a client IS configured — a real degrade from a working
-      // state, so record an aiRunEvent(degraded) (the offline result is still returned).
+    // pre_signals 是 LLM 能力：不可用/失败就如实暴露（503/429/502），
+    // 不再回退确定性 buildFallbackPreSignals 冒充。调用方（语音路）自行决定无信号时的交互策略。
+    if (!options.bailianChatClient) {
+      console.warn(JSON.stringify({ event: "llm_unavailable", capability: "pre_signals", sessionId: session.id }));
+      return reply.code(503).send({ error: "pre_signals LLM 未配置（缺少 DASHSCOPE_API_KEY）。" });
+    }
+    if (!budget.tryConsume(session.id)) {
       console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "pre_signals", sessionId: session.id }));
-      repository.replaceState(withAiRunEvent(state, {
-        workflow: "interview_turn_generation",
-        providerId: "bailian-chat",
-        status: "degraded",
-        entityType: "interview_session",
-        entityId: session.id,
-        inputSummary: `语音 pre_signals 降级：${session.title}`,
-        outputSummary: "per-session LLM 预算耗尽，已回退到确定性 pre_signals。",
-        degradedReason: "per-session LLM budget exhausted",
-        createdAt: nowIso()
-      }));
-      return { preSignals: buildFallbackPreSignals(session.guide), session };
+      return reply.code(429).send({ error: "本会话 LLM 预算已用尽，pre_signals 暂不可用。" });
     }
     try {
       const preSignals = await generatePreSignals(session, options.bailianChatClient);
@@ -422,26 +410,16 @@ export async function registerInterviewSessionRoutes(
       repository.replaceState(upsertSession(state, updatedSession));
       return { preSignals, session: updatedSession };
     } catch (error) {
-      // P1-13: LLM pre_signals failed — record an aiRunEvent(degraded) alongside the warn.
-      const degradedReason = error instanceof Error ? error.message : String(error);
-      console.warn(JSON.stringify({ event: "llm_fallback", capability: "pre_signals", error: degradedReason }));
-      repository.replaceState(withAiRunEvent(state, {
-        workflow: "interview_turn_generation",
-        providerId: "bailian-chat",
-        status: "degraded",
-        entityType: "interview_session",
-        entityId: session.id,
-        inputSummary: `语音 pre_signals 降级：${session.title}`,
-        outputSummary: "LLM pre_signals 生成失败，已回退到确定性 pre_signals。",
-        degradedReason,
-        createdAt: nowIso()
-      }));
-      return { preSignals: buildFallbackPreSignals(session.guide), session };
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(JSON.stringify({ event: "llm_failed", capability: "pre_signals", error: message }));
+      return reply.code(502).send({ error: `pre_signals 生成失败：${message}` });
     }
   });
 
   // Layer 2 endpoint: is the user done speaking? (cascade calls this only on
-  // an "ambiguous" heuristic verdict.) Fails safe to done=true (respond).
+  // an "ambiguous" heuristic verdict.) 分类失败/不可用如实返回 5xx/429——
+  // 实时交互的"拿不到判定就默认应答"是调用方（cascade 前端）的显式实时策略，
+  // 不再由服务端伪造 done:true 的分类结果。
   server.post("/api/interview-sessions/:id/turn-complete", async (request, reply) => {
     const state = repository.getState();
     const session = findSession(state, getSessionId(request.params));
@@ -455,15 +433,21 @@ export async function registerInterviewSessionRoutes(
       return reply.code(422).send({ error: "transcript is required." });
     }
     if (!options.bailianChatClient) {
-      return { done: true, reason: "no chat client → default respond" };
+      return reply.code(503).send({ error: "turn-complete 分类 LLM 未配置。" });
     }
     // turn-complete 是语音路最高频的 LLM 调用，此前唯一漏过 per-session 成本闸控 → 可无界烧钱。
-    // 纳入预算；耗尽时回退到确定性"判定轮次完成、默认应答"，既封顶成本又不卡死对话。
     if (!budget.tryConsume(session.id)) {
       console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "turn_complete", sessionId: session.id }));
-      return { done: true, reason: "budget exhausted → default respond" };
+      return reply.code(429).send({ error: "本会话 LLM 预算已用尽（turn-complete 分类）。" });
     }
-    const result = await classifyTurnComplete(session, transcript, options.bailianChatClient);
+    let result: Awaited<ReturnType<typeof classifyTurnComplete>>;
+    try {
+      result = await classifyTurnComplete(session, transcript, options.bailianChatClient);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(JSON.stringify({ event: "llm_failed", capability: "turn_complete", sessionId: session.id, error: message }));
+      return reply.code(502).send({ error: `turn-complete 分类失败：${message}` });
+    }
     console.info(JSON.stringify({
       // 审计修复(P3-51):私密日记场景,用户原话不入日志——只记长度用于诊断。
       event: "cascade_turn_complete", sessionId: session.id,
@@ -558,8 +542,8 @@ export async function registerInterviewSessionRoutes(
   // pushes it via connection.updateInstructions → session.update.
   //
   // Read-only: this never mutates the session/state — it only computes and returns a
-  // string. Fail-safe: no embeddingClient / empty text / embed error → fall back to
-  // the existing session.guide (instructions unchanged, never crashes).
+  // string. 配置边界:无 embeddingClient / 空文本 → 沿用现有 session.guide。
+  // 运行时嵌入失败 → 如实 502,由语音客户端决定是否沿用旧指令（显式决策,不再服务端静默）。
   server.post("/api/interview-sessions/:id/voice-instructions", async (request, reply) => {
     const state = repository.getState();
     const session = findSession(state, getSessionId(request.params));
@@ -570,7 +554,13 @@ export async function registerInterviewSessionRoutes(
       normalizeObject<{ latestUserText?: unknown }>(request.body).latestUserText
     );
 
-    const queryEmbedding = await embedQueryText(latestUserText, options.embeddingClient);
+    let queryEmbedding: number[] | undefined;
+    try {
+      queryEmbedding = await embedQueryText(latestUserText, options.embeddingClient);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.code(502).send({ error: `语音指令刷新失败（召回嵌入不可用）：${message}` });
+    }
     const refreshedGuide = queryEmbedding
       ? buildInterviewGuide(state, {
           topicHint: session.guide.topicHint || undefined,
@@ -597,12 +587,12 @@ export async function registerInterviewSessionRoutes(
 }
 
 // M3c: embed a query string (create-time topic or a turn's user text) for semantic
-// memory recall. Fail-safe — returns undefined on no client / empty text / embed
-// error, so the interview line silently degrades to keyword recall (unchanged
-// behaviour). Embeddings are computed here (route layer); the domain stays pure.
+// memory recall. 语义边界:无 embeddingClient（未配置=关键词召回的产品配置态）/ 空文本 →
+// undefined。运行时失败（embed 报错/超时）→ 抛错,由路由如实 5xx——不再静默退化成
+// 关键词召回让召回质量无声下降。Embeddings are computed here (route layer); the domain stays pure.
 // I:嵌入查询超时上限。本地 embedding(transformers.js)首次需加载模型、无内部超时,直接 await
-// 会把"开始专访"/turn 卡住;超时即降级 undefined → fail-safe 走关键词召回。server 启动会预热本地
-// 模型(见 server.ts startServer),稳态下 embed 远快于此;真超时只在冷启动未预热完就建会话的窄窗口。
+// 会把"开始专访"/turn 卡住;超时即抛错。server 启动会预热本地模型(见 server.ts startServer),
+// 稳态下 embed 远快于此;真超时只在冷启动未预热完就建会话的窄窗口。
 const EMBED_QUERY_TIMEOUT_MS = 8000;
 
 async function embedQueryText(
@@ -624,10 +614,9 @@ async function embedQueryText(
     const vector = vectors[0];
     return Array.isArray(vector) && vector.length > 0 ? vector : undefined;
   } catch (error) {
-    console.warn(
-      JSON.stringify({ event: "interview_query_embed_failed", error: error instanceof Error ? error.message : String(error) })
-    );
-    return undefined;
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(JSON.stringify({ event: "interview_query_embed_failed", error: message }));
+    throw new Error(`召回嵌入失败：${message}`);
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -668,31 +657,6 @@ function upsertSession(state: ProductState, session: InterviewSession): ProductS
   };
 }
 
-async function finalizeInterview(
-  state: ProductState,
-  session: InterviewSession,
-  chatClient: BailianChatClient | undefined,
-  providedCandidates?: MemoryCandidate[],
-  embeddingClient?: BailianEmbeddingClient
-): Promise<FinalizeResult & { degradedReason?: string }> {
-  if (chatClient) {
-    try {
-      return await finalizeSessionWithLlm(state, session, chatClient, providedCandidates, embeddingClient);
-    } catch (error) {
-      // P1-13: capture the reason so the route records an aiRunEvent(degraded) — the LLM diary
-      // failed and we're falling back to the deterministic finalize.
-      const degradedReason = error instanceof Error ? error.message : String(error);
-      console.warn(JSON.stringify({ event: "llm_fallback", capability: "finalize", error: degradedReason }));
-      return { ...finalizeSession(state, session, providedCandidates), degradedReason };
-    }
-  }
-  return finalizeSession(state, session, providedCandidates);
-}
-
-// M1b: LLM extraction of long-term memory candidates from the actual conversation,
-// converted into session-sourced reviewable candidates. Budget-gated and fully
-// fail-safe: any miss (no client / budget exhausted / extraction error / empty
-// result) returns undefined so finalize falls back to the deterministic heuristic.
 // Strip （…）manner asides from the most recently generated assistant turn and keep the manner
 // as prosody. Touches only the last assistant turn (the one just produced); earlier turns and
 // all user turns are returned unchanged. A turn whose content has no asides is left as-is.
@@ -723,45 +687,33 @@ function stripAsidesFromLatestAssistantTurn(session: InterviewSession): Intervie
   return { ...session, turns: nextTurns };
 }
 
+// M1b: LLM extraction of long-term memory candidates from the actual conversation,
+// converted into session-sourced reviewable candidates. 失败/预算耗尽直接抛错——
+// 由 /end 的统一 catch 原子中止归档并如实 5xx/429，不再静默跳过让 mergeFinalizedState
+// 回落启发式模板候选。LLM 明确说"没有值得沉淀的记忆"时返回 []（诚实的空，不触发启发式）。
 async function extractSessionMemoryCandidates(
   session: InterviewSession,
-  chatClient: BailianChatClient | undefined,
+  chatClient: BailianChatClient,
   budget: LlmBudget
-): Promise<MemoryCandidate[] | undefined> {
-  if (!chatClient) {
-    return undefined;
-  }
+): Promise<MemoryCandidate[]> {
   if (!budget.tryConsume(session.id)) {
     console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "memory_extraction", sessionId: session.id }));
-    return undefined;
+    throw new Error("本会话 LLM 预算已用尽（记忆抽取）");
   }
   const transcript = buildSessionTranscript(session);
   if (!transcript.trim()) {
-    return undefined;
+    return [];
   }
-  try {
-    const extracted = await extractCandidateMemories(session.title, transcript, chatClient);
-    if (extracted.length === 0) {
-      return undefined;
-    }
-    return toSessionMemoryCandidates(extracted, session.id, session.title, nowIso());
-  } catch (error) {
-    console.warn(JSON.stringify({
-      event: "memory_extraction_fallback",
-      sessionId: session.id,
-      error: error instanceof Error ? error.message : String(error)
-    }));
-    return undefined;
-  }
+  const extracted = await extractCandidateMemories(session.title, transcript, chatClient);
+  return toSessionMemoryCandidates(extracted, session.id, session.title, nowIso());
 }
 
 // 轻量推理(欠账②)编排:规则粗筛同主题观点对 → LLM 精判对立/取代 → 应用关系到 state。
-// 全程 fail-safe(judgeCognitiveRelations 内部吞错、空候选不消费预算),任何缺失都返回原 state,
-// 绝不阻塞 finalize。确定性 finalize(无 chatClient)路径下 finalize 不产观点资产 → 候选为空 → 空跑。
+// 失败抛错，由 /end 的统一 catch 原子中止（尚未持久化）——不再静默返回"无关系"掩盖失败。
 async function applySessionCognitiveRelations(
   state: ProductState,
   sessionId: string,
-  chatClient: BailianChatClient | undefined,
+  chatClient: BailianChatClient,
   budget: LlmBudget
 ): Promise<ProductState> {
   const pairs = collectCandidatePointPairs(state);
@@ -784,39 +736,27 @@ function buildSessionTranscript(session: InterviewSession): string {
     .join("\n");
 }
 
+// 追问生成（LLM 必选）。失败向上抛——由 /turns 路由如实 502，本轮不落任何轮次。
+// （旧的"LLM 失败回退确定性策略引擎"已剔除：不能用就暴露，不用引擎模板追问冒充。）
 async function receiveTurn(
   session: InterviewSession,
   content: string,
-  bailianInterviewClient: BailianCharacterInterviewClient | undefined,
+  bailianInterviewClient: BailianCharacterInterviewClient,
   corrections: MemoryCorrection[] = [],
   boundaries: string[] = []
 ): Promise<{
   nextSession: InterviewSession;
   preSignals?: import("../../../../src/domain/types").InteractionPreSignals;
-  degradedReason?: string;
 }> {
-  if (!bailianInterviewClient) {
-    return { nextSession: receiveUserTurn(session, content) };
-  }
-
   // Strategy engine decides this turn's action; injected into the LLM prompt AND
   // backfilled onto the assistant turn so strategyTrace / turn.strategy / the technique
-  // badge / quality-report all have real data on the live path (not just offline).
+  // badge / quality-report all have real data on the live path.
   const strategyDecision = decideInterviewStrategy(session, content);
-  try {
-    const assistant = await bailianInterviewClient.createAssistantTurn({ session, userText: content, corrections, boundaries, strategyDecision });
-    const nextSession = receiveUserTurnWithAssistant(session, content, {
-      content: assistant.content,
-      intent: assistant.intent,
-      strategyDecision
-    });
-    return { nextSession: { ...nextSession, interactionPreSignals: assistant.preSignals }, preSignals: assistant.preSignals };
-  } catch (error) {
-    // Honest degrade signal — LLM turn failed, falling back to the deterministic engine.
-    const degradedReason = error instanceof Error ? error.message : String(error);
-    console.warn(JSON.stringify({ event: "llm_fallback", capability: "interview_turn", error: degradedReason }));
-    // P1-13: surface the degrade so the route records an aiRunEvent(degraded) (caller folds
-    // it into the same replaceState), making the fallback visible to transparency/quality.
-    return { nextSession: receiveUserTurn(session, content), degradedReason };
-  }
+  const assistant = await bailianInterviewClient.createAssistantTurn({ session, userText: content, corrections, boundaries, strategyDecision });
+  const nextSession = receiveUserTurnWithAssistant(session, content, {
+    content: assistant.content,
+    intent: assistant.intent,
+    strategyDecision
+  });
+  return { nextSession: { ...nextSession, interactionPreSignals: assistant.preSignals }, preSignals: assistant.preSignals };
 }

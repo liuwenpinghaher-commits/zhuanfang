@@ -158,20 +158,23 @@ export async function registerMemoryCandidateRoutes(
   });
 
   // M5: lightweight consolidation. De-dup near-identical confirmed records — the
-  // deterministic, offline-safe decision lives in the pure dedupeMemoryRecords;
-  // the weaker of each near-dup pair is deprecated. When a chat client is
-  // available we ALSO summarize each merged cluster into a single pending
-  // candidate so the human can optionally promote one clean phrasing (HITL).
-  // Summarization is best-effort: any failure / no client degrades to dedup-only.
+  // deterministic decision lives in the pure dedupeMemoryRecords; the weaker of
+  // each near-dup pair is deprecated. Each merged cluster is then summarized by
+  // the LLM into a single pending candidate so the human can optionally promote
+  // one clean phrasing (HITL). 摘要是整合契约的一部分：LLM 不可用/失败时整个
+  // consolidate 原子失败（503/429/502，未持久化任何变更），不再静默降级为"仅去重"。
   // R3 有意不换轨:读态与写态之间有最多 4×60s 的串行 LLM(慢 IO 在临界区)且全量记忆宽事务,
   // 本该串行——留在全局写锁内(路径 /api/memory/ 与候选前缀不同,天然不在豁免名单)。
-  server.post("/api/memory/consolidate", async () => {
+  server.post("/api/memory/consolidate", async (_request, reply) => {
     const state = repository.getState();
     const before = state.memoryRecords;
     const after = dedupeMemoryRecords(before);
 
     const clusters = collectMergedClusters(before, after);
     const deprecated = clusters.reduce((sum, cluster) => sum + cluster.losers.length, 0);
+    if (deprecated > 0 && !options.bailianChatClient) {
+      return reply.code(503).send({ error: "记忆整合摘要 LLM 未配置（缺少 DASHSCOPE_API_KEY），无法整合。" });
+    }
 
     // M1: theme attribution now lives inline on each record (record.relatedThemeIds),
     // replacing state.memoryEdges. dedupeMemoryRecords deprecates (not deletes) losers, so
@@ -185,11 +188,17 @@ export async function registerMemoryCandidateRoutes(
     let nextState: ProductState = { ...state, memoryRecords: prunedRecords };
     if (deprecated > 0) {
       const reviewedAt = nowIso();
-      // Optional LLM summaries — one pending candidate per merged cluster.
+      // LLM summaries — one pending candidate per merged cluster. 失败原子中止（尚未持久化）。
       const budget = options.llmBudget ?? createLlmBudget();
-      const summaryCandidates = options.bailianChatClient
-        ? await buildClusterSummaryCandidates(clusters, options.bailianChatClient, reviewedAt, budget)
-        : [];
+      let summaryCandidates: MemoryCandidate[];
+      try {
+        summaryCandidates = await buildClusterSummaryCandidates(clusters, options.bailianChatClient!, reviewedAt, budget);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(JSON.stringify({ event: "llm_failed", capability: "memory_consolidate", error: message }));
+        const code = message.includes("预算已用尽") ? 429 : 502;
+        return reply.code(code).send({ error: `记忆整合失败：${message}。未做任何变更，请稍后重试。` });
+      }
       nextState = {
         ...nextState,
         memoryCandidates: [...summaryCandidates, ...nextState.memoryCandidates]
@@ -254,10 +263,10 @@ function parseConsolidationKeeperId(reason: string | undefined): string | undefi
   return match?.[1];
 }
 
-// Best-effort: ask the model for one concise consolidated phrasing per cluster,
-// wrapped as a pending candidate (scored via withMemoryCandidateReview) so it
-// goes through the same HITL approve/reject controls. Any failure is swallowed —
-// consolidation must still succeed as dedup-only.
+// Ask the model for one concise consolidated phrasing per cluster, wrapped as a
+// pending candidate (scored via withMemoryCandidateReview) so it goes through the
+// same HITL approve/reject controls. 失败/预算耗尽向上抛——由 consolidate 路由
+// 原子中止并如实 5xx/429，不再吞错降级为"仅去重"。
 async function buildClusterSummaryCandidates(
   clusters: MergedCluster[],
   chatClient: BailianChatClient,
@@ -274,55 +283,46 @@ async function buildClusterSummaryCandidates(
   for (const cluster of bounded) {
     if (!budget.tryConsume("memory_consolidate")) {
       console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "memory_consolidate" }));
-      break;
+      throw new Error("本时段 LLM 预算已用尽（记忆整合摘要）");
     }
     const phrasings = [cluster.keeper.text, ...cluster.losers.map((loser) => loser.text)];
-    try {
-      const summary = (
-        await chatClient.complete({
-          messages: [
-            {
-              role: "system",
-              content:
-                "你在整理一个人的长期记忆。把下面几条意思相近的记忆，合并成一条最准确、最凝练的中文陈述。" +
-                "铁律：必须保留其中最具体的可操作锚点——具体数字/阈值、可触发的条件或机制（形如「当X则Y」「因为A所以B」「不是A而是B」）、可证伪的判断；" +
-                "宁可长一点也不要为了简洁把这些具体锚点概括成空泛的大道理或修辞。只输出这一条陈述本身，不要解释。"
-            },
-            {
-              role: "user",
-              content: phrasings.map((text, index) => `${index + 1}. ${text}`).join("\n")
-            }
-          ],
-          temperature: 0.3
-        })
-      ).trim();
-      if (!summary) {
-        continue;
-      }
-      candidates.push(
-        withMemoryCandidateReview({
-          id: makeId("memory-candidate"),
-          text: summary,
-          status: "pending",
-          sourceType: cluster.keeper.sourceType,
-          sourceId: cluster.keeper.sourceId,
-          evidenceQuote: cluster.keeper.evidenceQuote,
-          reason: "记忆整理：由多条相近记忆概括而成，待用户确认是否替换。",
-          sensitivity: cluster.keeper.sensitivity ?? "normal",
-          // Inherit the keeper's importance so approving the summary keeps显著性 (the
-          // keeper is the cluster's strongest, so this is the cluster max).
-          ...(cluster.keeper.importance != null ? { importance: cluster.keeper.importance } : {}),
-          createdAt
-        })
-      );
-    } catch (error) {
-      console.warn(
-        JSON.stringify({
-          event: "memory_consolidate_summary_failed",
-          error: error instanceof Error ? error.message : String(error)
-        })
-      );
+    const summary = (
+      await chatClient.complete({
+        messages: [
+          {
+            role: "system",
+            content:
+              "你在整理一个人的长期记忆。把下面几条意思相近的记忆，合并成一条最准确、最凝练的中文陈述。" +
+              "铁律：必须保留其中最具体的可操作锚点——具体数字/阈值、可触发的条件或机制（形如「当X则Y」「因为A所以B」「不是A而是B」）、可证伪的判断；" +
+              "宁可长一点也不要为了简洁把这些具体锚点概括成空泛的大道理或修辞。只输出这一条陈述本身，不要解释。"
+          },
+          {
+            role: "user",
+            content: phrasings.map((text, index) => `${index + 1}. ${text}`).join("\n")
+          }
+        ],
+        temperature: 0.3
+      })
+    ).trim();
+    if (!summary) {
+      throw new Error("记忆整合摘要 LLM 返回空结果");
     }
+    candidates.push(
+      withMemoryCandidateReview({
+        id: makeId("memory-candidate"),
+        text: summary,
+        status: "pending",
+        sourceType: cluster.keeper.sourceType,
+        sourceId: cluster.keeper.sourceId,
+        evidenceQuote: cluster.keeper.evidenceQuote,
+        reason: "记忆整理：由多条相近记忆概括而成，待用户确认是否替换。",
+        sensitivity: cluster.keeper.sensitivity ?? "normal",
+        // Inherit the keeper's importance so approving the summary keeps显著性 (the
+        // keeper is the cluster's strongest, so this is the cluster max).
+        ...(cluster.keeper.importance != null ? { importance: cluster.keeper.importance } : {}),
+        createdAt
+      })
+    );
   }
   return candidates;
 }

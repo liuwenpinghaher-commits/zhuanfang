@@ -1417,11 +1417,15 @@ export function createBailianEmbeddingClient(
       const payload = (await response.json()) as BailianEmbeddingOutput;
       const vecs = (payload.data ?? []).map((item) => item.embedding ?? []);
       // G 维度漂移防御:text-embedding-v3 默认即 1024(=HNSW DIMENSION)。若某天默认/配置变了,
-      // SurrealDB 的 array<float> 不校验长度,会静默写入维度不符的坏向量、召回静默失效——故非空向量
-      // 维度不符时响亮告警(不阻断:写坏向量也比静默无声好查)。须与 packages/db EMBEDDING_DIMENSION 一致。
+      // SurrealDB 的 array<float> 不校验长度,会静默写入维度不符的坏向量、召回静默失效——
+      // 故非空向量维度不符时【抛错】:坏向量绝不入库,调用方如实暴露失败。
+      // 须与 packages/db EMBEDDING_DIMENSION 一致。
       // ⚠️ 切换 EMBEDDING_PROVIDER(本地 bge ↔ 云端 v3)向量空间不同源,存量 embedding 须重算,否则跨源召回失效。
       const mismatch = vecs.find((v) => v.length > 0 && v.length !== 1024);
-      if (mismatch) console.warn(JSON.stringify({ event: "embedding_dimension_mismatch", expected: 1024, got: mismatch.length }));
+      if (mismatch) {
+        console.warn(JSON.stringify({ event: "embedding_dimension_mismatch", expected: 1024, got: mismatch.length }));
+        throw new Error(`Bailian embeddings returned a ${mismatch.length}-dim vector (expected 1024) — refusing to store a bad vector.`);
+      }
       return vecs;
     }
   };

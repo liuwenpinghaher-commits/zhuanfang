@@ -1106,7 +1106,7 @@ export interface PodcastChapter {
 }
 
 export type PodcastSourceType = "note" | "search-brief" | "theme" | "knowledge-debt";
-export type PodcastAudioRenderStatus = "pending" | "rendered" | "fallback";
+export type PodcastAudioRenderStatus = "pending" | "rendered" | "failed";
 
 export interface PodcastEpisode {
   id: string;

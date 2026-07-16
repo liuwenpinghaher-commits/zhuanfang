@@ -323,8 +323,11 @@ export function createSurrealKnowledgeIndexRepository(db: Surreal, governanceCtx
         // R4a 择优+钳制(统一口径,见 constants.ts selectBm25QueryTokens):去重→含多字 gram 则丢单字
         // 1-gram(纯单字查询保留)→ 上限 32。chat message 是自由输入(3 万字),(1,3) 下钳制尤其必须。
         const tokens = selectBm25QueryTokens(rawTokens);
-        // fail-safe:query 切不出 token(纯符号/emoji 等)→ 无 BM25 可加,退化纯 HNSW。
-        if (tokens.length === 0) return hnswOnly();
+        // 语义性空:query 切不出 token(纯符号/emoji 等)→ BM25 天然不适用,走纯 HNSW(可观测)。
+        if (tokens.length === 0) {
+          console.warn(JSON.stringify({ event: "surreal_knowledge_bm25_skipped", reason: "no_tokens", queryChars: queryText.length }));
+          return hnswOnly();
+        }
 
         const { clause: bmClause, vars: tokenVars } = buildBm25Clause(tokens);
 
@@ -352,14 +355,17 @@ export function createSurrealKnowledgeIndexRepository(db: Surreal, governanceCtx
           { q: emb, ...tokenVars }
         );
         const rows = ((results[results.length - 2] ?? []) as Array<Record<string, unknown>>).map(mapRow);
-        // fail-safe:融合为空(rrf 在该 query 下无产出)→ 退化纯 HNSW,绝不无声空召回。
-        if (rows.length === 0) return hnswOnly();
+        // 融合为空(rrf 在该 query 下无产出)→ 用纯 HNSW 复核一次(另一条真实检索路径,非伪造),记日志。
+        if (rows.length === 0) {
+          console.warn(JSON.stringify({ event: "surreal_hybrid_fusion_empty", path: "knowledge_chunk", queryChars: queryText.length }));
+          return hnswOnly();
+        }
         const order = ((results[results.length - 1] ?? []) as unknown[]).map((rid) => domainIdOf(rid));
         return reorderByRrfRank(rows, order);
       } catch (err) {
-        // fail-safe:search::rrf / BM25 在该环境不可用或报错 → 退化纯 HNSW,记降级日志。
-        console.warn(JSON.stringify({ event: "surreal_knowledge_recall_degraded", error: err instanceof Error ? err.message : String(err) }));
-        return hnswOnly();
+        // 真实错误(search::rrf/BM25 在该环境不可用或报错)→ 如实上抛,由调用方暴露,不再退化掩盖。
+        console.warn(JSON.stringify({ event: "surreal_knowledge_recall_failed", error: err instanceof Error ? err.message : String(err) }));
+        throw err;
       }
     },
   };
