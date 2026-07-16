@@ -6,7 +6,8 @@
  * in-memory state, asserting cross-route consistency.
  *
  * Constraints:
- *  - No live LLM calls: env={} (no keys) → deterministic fallbacks throughout.
+ *  - No live LLM calls: LLM 能力经 test-helpers/fake-llm-clients 在 provider 边界注入确定性
+ *    假 client，走真实 LLM 代码路径（真实性重构后生产已无离线兜底：无 client 即 503/429/502）。
  *  - No real network: external providers are never contacted.
  *  - No real server process: everything goes through server.inject.
  *  - Tests must not touch ports 8787/5173.
@@ -18,14 +19,28 @@ import { registerInterviewSessionRoutes } from "../routes/interview-sessions";
 import { registerStateRoutes } from "../routes/state";
 import { createInMemoryProductStateRepository } from "../product-state-repository";
 import { createLlmBudget } from "../llm-budget";
+import {
+  createFakeChatClient,
+  createFakeEmbeddingClient,
+  createFakeInterviewClient
+} from "../test-helpers/fake-llm-clients";
 import Fastify from "fastify";
+
+// 全套假 LLM client：让旅程走真实 LLM 代码路径（prompt 组装/解析/校验/落库全真）。
+function fakeLlmClients() {
+  return {
+    bailianChatClient: createFakeChatClient(),
+    bailianInterviewClient: createFakeInterviewClient(),
+    embeddingClient: createFakeEmbeddingClient()
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Journey 1 — full interview → diary → reviews lifecycle
 // ---------------------------------------------------------------------------
 describe("Journey 1: full interview → diary → reviews lifecycle", () => {
   it("completes an interview lifecycle and verifies cross-route consistency", async () => {
-    const server = buildApiServer({ env: {} });
+    const server = buildApiServer({ env: {}, ...fakeLlmClients() });
 
     // Step 1: Reset to empty state
     const resetRes = await server.inject({ method: "POST", url: "/api/state/reset", payload: { confirm: "RESET_ALL_DATA" } });
@@ -72,7 +87,7 @@ describe("Journey 1: full interview → diary → reviews lifecycle", () => {
       const body = turnRes.json();
       expect(body.session).toBeDefined();
       expect(body.session.id).toBe(sessionId);
-      // After each turn: user turn recorded; assistant turn added deterministically
+      // After each turn: user turn recorded; assistant turn added by the injected fake LLM client
       const userTurns = body.session.turns.filter((t: any) => t.role === "user");
       expect(userTurns.length).toBeGreaterThanOrEqual(1);
       lastTurnState = body.state;
@@ -117,7 +132,7 @@ describe("Journey 1: full interview → diary → reviews lifecycle", () => {
     expect(persistedSession).toBeDefined();
     expect(persistedSession!.status).toBe("completed");
 
-    // Step 5: GET /api/reviews → deterministic, always returns monthly/yearly/radar
+    // Step 5: GET /api/reviews → LLM 叙事（fake chat client）+ 确定性 metrics/radar
     const reviewsRes = await server.inject({ method: "GET", url: "/api/reviews" });
     expect(reviewsRes.statusCode).toBe(200);
     const reviews = reviewsRes.json();
@@ -155,7 +170,8 @@ describe("Journey 2: search → podcast → TTS resilience", () => {
   });
 
   it("generates podcast episode without TTS client — script persists, no audio URL", async () => {
-    const server = buildApiServer({ env: {} });
+    // note 路径播客脚本是 LLM 必选能力（无 chat client → 503），注入假 chat client 走真实脚本生成。
+    const server = buildApiServer({ env: {}, bailianChatClient: createFakeChatClient() });
 
     // Use the demo state's first note (server starts with demo state by default)
     const stateRes = await server.inject({ method: "GET", url: "/api/state" });
@@ -181,14 +197,20 @@ describe("Journey 2: search → podcast → TTS resilience", () => {
     await server.close();
   });
 
-  it("TTS client failure → 200, script intact, audioRenderStatus=fallback, episode persisted", async () => {
+  it("TTS client failure → 200, script intact, audioRenderStatus=failed, episode persisted", async () => {
+    // 真实性重构:TTS 失败入库为 "failed"（真错误），不再伪装成可自动恢复的 "fallback" 中间态。
+    // 创建端点先持久化脚本再尝试 TTS，因此 TTS 失败仍 200、脚本不丢。
     const failingTtsClient = {
       synthesize: vi.fn(async () => {
         throw new Error("TTS 400");
       })
     };
 
-    const server = buildApiServer({ env: {}, bailianPodcastAudioClient: failingTtsClient });
+    const server = buildApiServer({
+      env: {},
+      bailianChatClient: createFakeChatClient(),
+      bailianPodcastAudioClient: failingTtsClient
+    });
 
     // Need a note — use demo state
     const stateRes = await server.inject({ method: "GET", url: "/api/state" });
@@ -207,13 +229,14 @@ describe("Journey 2: search → podcast → TTS resilience", () => {
     expect(episode.noteId).toBe(noteId);
     expect(typeof episode.script).toBe("string");
     expect(episode.script.length).toBeGreaterThan(0);
-    expect(episode.audioRenderStatus).toBe("fallback");
+    expect(episode.audioRenderStatus).toBe("failed");
+    expect(episode.audioRenderMessage).toContain("音频渲染失败");
 
     // Episode must be persisted in state
     const stateAfterEpisode = await server.inject({ method: "GET", url: "/api/state" });
     const persistedEpisode = stateAfterEpisode.json().podcastEpisodes.find((e: any) => e.id === episode.id);
     expect(persistedEpisode).toBeDefined();
-    expect(persistedEpisode!.audioRenderStatus).toBe("fallback");
+    expect(persistedEpisode!.audioRenderStatus).toBe("failed");
     expect(typeof persistedEpisode!.script).toBe("string");
     expect(persistedEpisode!.script.length).toBeGreaterThan(0);
 
@@ -225,7 +248,8 @@ describe("Journey 2: search → podcast → TTS resilience", () => {
 // Journey 3 — memory governance HITL
 // ---------------------------------------------------------------------------
 describe("Journey 3: memory governance HITL", () => {
-  it("imports a document on no-key server → 200, candidateCount returned, doesn't 500", async () => {
+  // 真实性重构:导入抽取是 LLM 必选能力——无 chat client 不再"0 候选照常导入"，而是如实 503。
+  it("imports a document on no-key server → 503 (LLM 未配置就暴露，不再静默 0 候选导入)", async () => {
     const server = buildApiServer({ env: {} });
 
     const importRes = await server.inject({
@@ -240,34 +264,18 @@ describe("Journey 3: memory governance HITL", () => {
         sourceType: "text"
       }
     });
-    expect(importRes.statusCode).toBe(200);
-    const importBody = importRes.json();
-    expect(typeof importBody.sourceId).toBe("string");
-    expect(importBody.sourceId.length).toBeGreaterThan(0);
-    expect(typeof importBody.candidateCount).toBe("number");
-    // candidateCount may be 0 (no LLM) or more — we just assert it doesn't 500
-    expect(importBody.candidateCount).toBeGreaterThanOrEqual(0);
-    expect(importBody.state).toBeDefined();
+    expect(importRes.statusCode).toBe(503);
+    expect(importRes.json().error).toContain("未配置");
+    // 原子失败：什么都不落库
+    const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
+    expect(state.importSources.some((s: any) => s.title === "AI 产品方法论摘录")).toBe(false);
 
     await server.close();
   });
 
-  it("when import produces candidates via mock LLM, approving one moves it to memoryRecords", async () => {
-    // Build a server with a mock chat client that returns a valid memory candidate extraction
-    const mockChatClient = {
-      complete: vi.fn(async () =>
-        JSON.stringify([
-          {
-            text: "张伟在 2024 年主导了公司 AI 转型，带领团队实现了 AI 优先的开发流程。",
-            type: "fact",
-            sensitivity: "normal",
-            source: "AI 产品方法论摘录"
-          }
-        ])
-      )
-    };
-
-    const server = buildApiServer({ env: {}, bailianChatClient: mockChatClient as any });
+  it("when import produces candidates via fake LLM, approving one moves it to memoryRecords", async () => {
+    // 注入假 chat client（canned 记忆抽取固定产出 1 条候选），走真实抽取→审批路径。
+    const server = buildApiServer({ env: {}, bailianChatClient: createFakeChatClient() });
 
     const importRes = await server.inject({
       method: "POST",
@@ -281,14 +289,8 @@ describe("Journey 3: memory governance HITL", () => {
     });
     expect(importRes.statusCode).toBe(200);
     const importBody = importRes.json();
-
-    // If no candidates were extracted (mock parsing may not match extraction logic),
-    // the test still verifies the route doesn't 500.
-    if (importBody.candidateCount === 0) {
-      // No candidates to approve — this path is valid when extraction yields nothing
-      await server.close();
-      return;
-    }
+    // fake 记忆抽取确定性产出 1 条候选（不再有"抽不出→静默 0 候选"的分叉）。
+    expect(importBody.candidateCount).toBe(1);
 
     // Find the first pending candidate
     const stateAfterImport = importBody.state;
@@ -405,7 +407,8 @@ describe("Journey 5: state integrity / optimistic concurrency", () => {
 // Journey 6 — cost guard (per-session LLM budget)
 // ---------------------------------------------------------------------------
 describe("Journey 6: cost guard (per-session LLM budget)", () => {
-  it("LLM called exactly once when maxCallsPerSession=1; both turns return 200 with user turn recorded", async () => {
+  // 真实性重构:预算耗尽不再"静默跳过 LLM 仍 200"——第二轮如实 429，且本轮原子失败不落任何轮次。
+  it("LLM called exactly once when maxCallsPerSession=1; second turn returns 429 and records nothing", async () => {
     let llmCallCount = 0;
     const mockInterviewClient = {
       createAssistantTurn: vi.fn(async (input: any) => {
@@ -452,30 +455,34 @@ describe("Journey 6: cost guard (per-session LLM budget)", () => {
     const userTurns1 = body1.session.turns.filter((t: any) => t.role === "user");
     expect(userTurns1.length).toBeGreaterThanOrEqual(1);
 
-    // Second turn — budget exhausted, LLM must NOT be called again
+    // Second turn — budget exhausted → 如实 429，LLM 不再被调用，本轮原子失败（不落用户轮）
     const res2 = await miniServer.inject({
       method: "POST",
       url: `/api/interview-sessions/${sessionId}/turns`,
       payload: { content: "最大的担忧是做不出用户愿意付费的产品。" }
     });
-    expect(res2.statusCode).toBe(200);
-    // LLM still at 1 — skipped
+    expect(res2.statusCode).toBe(429);
+    expect(res2.json().error).toContain("预算");
+    // LLM still at 1 — not called again
     expect(llmCallCount).toBe(1);
-    const body2 = res2.json();
-    // Both user turns must be recorded
-    const userTurns2 = body2.session.turns.filter((t: any) => t.role === "user");
-    expect(userTurns2.length).toBeGreaterThanOrEqual(2);
+    // Atomic failure: the session still has exactly the first exchange (user + assistant)
+    const stateAfter = (await miniServer.inject({ method: "GET", url: "/api/state" })).json();
+    const sessionAfter = stateAfter.sessions.find((s: any) => s.id === sessionId);
+    expect(sessionAfter.turns.filter((t: any) => t.role === "user")).toHaveLength(1);
+    expect(sessionAfter.turns).toHaveLength(2);
 
     await miniServer.close();
   });
 });
 
 // ---------------------------------------------------------------------------
-// Journey 7 — full graceful degradation (happy path, no 5xx)
+// Journey 7 — full happy path across routes with injected fake LLM clients
+// （真实性重构后已无"无 key 优雅降级"路径：无 client 即 5xx。本旅程改为注入全套假
+//   client 验证主要路由端到端 happy path 全程非 5xx。）
 // ---------------------------------------------------------------------------
-describe("Journey 7: full graceful degradation on no-key server", () => {
-  it("every route on happy path returns a non-5xx status with deterministic fallbacks", async () => {
-    const server = buildApiServer({ env: {} }); // no API keys
+describe("Journey 7: full happy path on fake-LLM server", () => {
+  it("every route on happy path returns a non-5xx status with fake LLM clients", async () => {
+    const server = buildApiServer({ env: {}, ...fakeLlmClients() });
 
     // Health
     const health = await server.inject({ method: "GET", url: "/api/health" });

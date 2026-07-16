@@ -42,10 +42,10 @@ requirements:
     acceptance: "Given 用户回合已追加且 content 非退化(extractAnchor(content)≠\"这个问题\"),When 走确定性引擎生成下一回合,Then 返回的最末一条 role=assistant 回合 content 非空且包含从该用户输入提取的 anchor(可用 content.includes(anchor) 断言其针对性);Given content 退化为无实义(anchor 落到兜底\"这个问题\"),When 生成,Then 仍返回非空主持人回合(不崩溃),但不要求 anchor 命中;Given 同一会话已达配置的连续追问深度上限 maxFollowUpDepth,When 再生成,Then 走收束/降压技法而非继续深挖(reason 注明已达上限)。"
     expected_locations: ["src/domain/turn-builder.ts", "src/domain/strategy.ts", "src/domain/utils.ts"]
 
-  - id: REQ-INTERVIEW-TURN-OFFLINE-FALLBACK
-    why: "为了保证'断网/LLM 故障/预算耗尽时专访仍能继续'的可用性承诺,本需求要求 LLM 不可用时回退到确定性策略引擎生成本回合,而不是报错中断;否则一次供应商抖动就会打断整场访谈。"
-    acceptance: "Given 未配置 bailianInterviewClient,When POST /api/interview-sessions/:id/turns,Then 仍返回 200 且由确定性引擎产出下一回合;Given 已配置 client 但该会话 LLM 预算已耗尽(budget.tryConsume 返回 false),When 同请求,Then 仍返回 200、回退确定性引擎,并写入一条 status:\"degraded\" 的 aiRunEvent 且输出 llm_budget_exceeded 告警日志(降级对质量报告可见);Given 已配置 client 但其 createAssistantTurn 抛错/超时,When 同请求,Then 捕获异常、回退确定性引擎、记录 degradedReason,仍返回 200 不丢失已接收的用户回合。"
-    expected_locations: ["apps/api/src/routes/interview-sessions.ts", "src/domain/strategy.ts"]
+  - id: REQ-INTERVIEW-TURN-FAIL-EXPOSED
+    why: "真实性重构(2026-07-16)反转了旧 REQ-INTERVIEW-TURN-OFFLINE-FALLBACK 的产品决策:追问是 LLM 能力,'能用就能用,不能用就暴露'。确定性引擎模板追问冒充 AI 追问会让用户误以为专访正常进行——一次供应商抖动宁可让本轮失败可重试,也不可静默换成模板问题。"
+    acceptance: "Given 未配置 bailianInterviewClient,When POST /api/interview-sessions/:id/turns,Then 返回 503 且 error 说明 LLM 未配置,session.turns 不变;Given 已配置 client 但该会话 LLM 预算已耗尽(budget.tryConsume 返回 false),When 同请求,Then 返回 429 且输出 llm_budget_exceeded 告警日志,session.turns 不变;Given 已配置 client 但其 createAssistantTurn 抛错/超时,When 同请求,Then 返回 502、error 含失败原因与'本轮未记录,请重试',session.turns 不变(原子失败,用户原文可原样重试)。"
+    expected_locations: ["apps/api/src/routes/interview-sessions.ts"]
 
   - id: REQ-LLM-BUDGET-PER-SESSION
     why: "为了防止单个会话因 bug 或异常长对话无限调用 LLM 造成成本失控,本需求按会话维度精确限流调用次数;计数必须原子、可被显式置零(kill-switch),否则成本上限形同虚设。"

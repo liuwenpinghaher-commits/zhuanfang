@@ -1,10 +1,22 @@
+// 真实性重构配套改造：note 路径脚本是强制 LLM 能力（无 client→503 / 预算耗尽→429 / 失败→502），
+// audioRenderStatus 枚举 "fallback"→"failed"，synthesize 在 TTS 未配置/失败时如实 503/502（脚本不丢）。
+// 成功路径注入 createFakeChatClient()（provider 边界的确定性测试替身），走真实 LLM 代码路径。
 import { describe, expect, it } from "vitest";
+import Fastify from "fastify";
 import { buildApiServer } from "../server";
+import { createInMemoryProductStateRepository } from "../product-state-repository";
+import { createInitialProductState } from "../../../../src/domain/engine";
+import { createLlmBudget } from "../llm-budget";
+import { registerPodcastRoutes } from "./podcast";
+import { createFakeChatClient, createFailingChatClient } from "../test-helpers/fake-llm-clients";
 
 describe("POST /api/podcast/episodes", () => {
-  it("persists the episode + script even when TTS fails (no 500, no data loss)", async () => {
+  it("persists the episode + script even when TTS fails (200, audioRenderStatus=failed, no data loss)", async () => {
     const failingTts = { synthesize: async () => { throw new Error("TTS 400"); } };
-    const server = buildApiServer({ bailianPodcastAudioClient: failingTts as never });
+    const server = buildApiServer({
+      bailianPodcastAudioClient: failingTts as never,
+      bailianChatClient: createFakeChatClient()
+    });
     const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
     const noteId = state.notes[0]?.id; // demo default has a seed note
     const res = await server.inject({
@@ -15,16 +27,17 @@ describe("POST /api/podcast/episodes", () => {
     expect(res.statusCode).toBe(200);
     const ep = res.json().episode;
     expect(ep.script.length).toBeGreaterThan(0);
-    // assert the audio lifecycle field reflects failure — "fallback" is the union value for TTS failure
-    expect(ep.audioRenderStatus).toBe("fallback");
+    // TTS 运行时失败 → 如实 "failed" + 真实错误 message（不再是可自动恢复假象的 "fallback"）
+    expect(ep.audioRenderStatus).toBe("failed");
+    expect(ep.audioRenderMessage).toContain("TTS 400");
     // and the episode is actually persisted in state:
     const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
     expect(after.podcastEpisodes.some((e: any) => e.id === ep.id && e.script.length > 0)).toBe(true);
     await server.close();
   });
 
-  it("returns 200 with pending status when no TTS client configured", async () => {
-    const server = buildApiServer({});
+  it("returns 200 with pending status when no TTS client configured (script LLM still required)", async () => {
+    const server = buildApiServer({ bailianChatClient: createFakeChatClient() });
     const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
     const noteId = state.notes[0]?.id;
     const res = await server.inject({
@@ -47,7 +60,10 @@ describe("POST /api/podcast/episodes", () => {
         voice: "longyuan_v3"
       })
     };
-    const server = buildApiServer({ bailianPodcastAudioClient: successTts as never });
+    const server = buildApiServer({
+      bailianPodcastAudioClient: successTts as never,
+      bailianChatClient: createFakeChatClient()
+    });
     const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
     const noteId = state.notes[0]?.id;
     const res = await server.inject({
@@ -59,6 +75,58 @@ describe("POST /api/podcast/episodes", () => {
     const ep = res.json().episode;
     expect(ep.audioRenderStatus).toBe("rendered");
     expect(ep.audioUrl).toBe("https://example.com/audio.mp3");
+    await server.close();
+  });
+
+  it("note 路径无 chatClient → 503（脚本 LLM 必选，不落任何 episode）", async () => {
+    const server = buildApiServer({}); // no bailianChatClient
+    const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
+    const noteId = state.notes[0]?.id;
+    const res = await server.inject({
+      method: "POST",
+      url: "/api/podcast/episodes",
+      payload: { noteId, format: "solo", voice: "longyuan_v3" }
+    });
+    expect(res.statusCode).toBe(503);
+    expect(res.json().error).toContain("未配置");
+    const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
+    expect(after.podcastEpisodes).toHaveLength(state.podcastEpisodes.length); // 原子失败，未落库
+    await server.close();
+  });
+
+  it("note 路径 LLM 运行时失败 → 502（不落任何 episode）", async () => {
+    const server = buildApiServer({ bailianChatClient: createFailingChatClient("script boom") });
+    const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
+    const noteId = state.notes[0]?.id;
+    const res = await server.inject({
+      method: "POST",
+      url: "/api/podcast/episodes",
+      payload: { noteId, format: "solo", voice: "longyuan_v3" }
+    });
+    expect(res.statusCode).toBe(502);
+    expect(res.json().error).toContain("播客脚本生成失败");
+    const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
+    expect(after.podcastEpisodes).toHaveLength(state.podcastEpisodes.length);
+    await server.close();
+  });
+
+  it("note 路径预算耗尽 → 429", async () => {
+    const repository = createInMemoryProductStateRepository(createInitialProductState());
+    const exhaustedBudget = createLlmBudget({ maxCallsPerSession: 1 });
+    exhaustedBudget.tryConsume("system"); // 消耗唯一配额
+    const server = Fastify();
+    await registerPodcastRoutes(server, repository, {
+      bailianChatClient: createFakeChatClient(),
+      llmBudget: exhaustedBudget
+    });
+    const noteId = repository.getState().notes[0]?.id;
+    const res = await server.inject({
+      method: "POST",
+      url: "/api/podcast/episodes",
+      payload: { noteId, format: "solo", voice: "longyuan_v3" }
+    });
+    expect(res.statusCode).toBe(429);
+    expect(res.json().error).toContain("预算已用尽");
     await server.close();
   });
 });
@@ -75,9 +143,9 @@ describe("POST /api/podcast/episodes/:id/synthesize", () => {
     await server.close();
   });
 
-  it("degrades to fallback when no TTS client configured", async () => {
-    const server = buildApiServer({});
-    // First create an episode
+  it("no TTS client → 503; caller-supplied script is persisted before failing", async () => {
+    const server = buildApiServer({ bailianChatClient: createFakeChatClient() }); // no TTS
+    // First create an episode (creation succeeds with audioRenderStatus=pending)
     const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
     const noteId = state.notes[0]?.id;
     const createRes = await server.inject({
@@ -85,18 +153,22 @@ describe("POST /api/podcast/episodes/:id/synthesize", () => {
       url: "/api/podcast/episodes",
       payload: { noteId, format: "solo", voice: "longyuan_v3" }
     });
+    expect(createRes.statusCode).toBe(200);
     const episodeId = createRes.json().episode.id;
 
-    // Now synthesize without a TTS client
+    // Now synthesize without a TTS client, carrying an edited script
+    const editedScript = "用户编辑后的脚本，正文足够长可用于合成。";
     const res = await server.inject({
       method: "POST",
-      url: `/api/podcast/episodes/${episodeId}/synthesize`
+      url: `/api/podcast/episodes/${episodeId}/synthesize`,
+      payload: { script: editedScript }
     });
-    expect(res.statusCode).toBe(200);
-    const ep = res.json().episode;
-    expect(ep.audioRenderStatus).toBe("fallback");
-    expect(ep.status).toBe("ready");
-    expect(ep.scriptReviewStatus).toBe("用户确认");
+    expect(res.statusCode).toBe(503);
+    expect(res.json().error).toContain("未配置 TTS");
+    // 带来的脚本编辑先于失败被持久化（不丢内容）
+    const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
+    const persisted = after.podcastEpisodes.find((e: any) => e.id === episodeId);
+    expect(persisted?.script).toBe(editedScript);
     await server.close();
   });
 
@@ -108,7 +180,10 @@ describe("POST /api/podcast/episodes/:id/synthesize", () => {
         return { audioUrl: "https://example.com/synth.mp3", durationSec: 180, voice: "longyuan_v3" };
       }
     };
-    const server = buildApiServer({ bailianPodcastAudioClient: fakeTts as never });
+    const server = buildApiServer({
+      bailianPodcastAudioClient: fakeTts as never,
+      bailianChatClient: createFakeChatClient()
+    });
     // Create an episode first
     const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
     const noteId = state.notes[0]?.id;
@@ -142,27 +217,38 @@ describe("POST /api/podcast/episodes/:id/synthesize", () => {
     await server.close();
   });
 
-  it("degrades to fallback when TTS client throws", async () => {
+  it("TTS client throws → 502 {error, episode, state}; script + failed status persisted", async () => {
     const failingTts = { synthesize: async () => { throw new Error("TTS upstream error"); } };
-    const server = buildApiServer({ bailianPodcastAudioClient: failingTts as never });
+    const server = buildApiServer({
+      bailianPodcastAudioClient: failingTts as never,
+      bailianChatClient: createFakeChatClient()
+    });
     const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
     const noteId = state.notes[0]?.id;
-    // Create episode (will also fail TTS, starting as fallback)
+    // Create episode (creation TTS also fails → 200 + audioRenderStatus=failed persisted)
     const createRes = await server.inject({
       method: "POST",
       url: "/api/podcast/episodes",
       payload: { noteId, format: "solo", voice: "longyuan_v3" }
     });
+    expect(createRes.statusCode).toBe(200);
+    expect(createRes.json().episode.audioRenderStatus).toBe("failed");
     const episodeId = createRes.json().episode.id;
 
     const res = await server.inject({
       method: "POST",
       url: `/api/podcast/episodes/${episodeId}/synthesize`
     });
-    expect(res.statusCode).toBe(200);
-    const ep = res.json().episode;
-    expect(ep.audioRenderStatus).toBe("fallback");
-    expect(ep.status).toBe("ready");
+    expect(res.statusCode).toBe(502);
+    const body = res.json();
+    expect(body.error).toContain("音频渲染失败");
+    expect(body.episode.audioRenderStatus).toBe("failed");
+    expect(body.state).toBeDefined();
+    // 失败状态与脚本已持久化（不丢内容），供客户端同步 revision 后重试
+    const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
+    const persisted = after.podcastEpisodes.find((e: any) => e.id === episodeId);
+    expect(persisted?.audioRenderStatus).toBe("failed");
+    expect(persisted?.script.length).toBeGreaterThan(0);
     await server.close();
   });
 });

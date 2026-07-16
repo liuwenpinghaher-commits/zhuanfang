@@ -2,11 +2,11 @@
  * Parser robustness tests for corpus-llm.
  *
  * analyzeCorpusWithLlm wraps parseCorpusAnalysis (private).
- * Robustness points:
+ * 真实性契约(2026-07 重构):
  *  - No usable dimensions → throws "Corpus analysis produced no usable dimensions."
  *  - dimensions with missing name/finding are filtered out
- *  - impact not in {low, medium, high} → defaults to "medium"
- *  - score is a string → parsed as Number (|| 3 fallback)
+ *  - impact not in {low, medium, high} → throws(不再静默改写成 medium)
+ *  - score 解析后非 1-5 有限数 → throws(不再默认 3 分)
  *  - Well-formed JSON → structurally valid CorpusInsight returned
  */
 import { describe, expect, it } from "vitest";
@@ -94,7 +94,7 @@ describe("analyzeCorpusWithLlm", () => {
     ).rejects.toThrow("no usable dimensions");
   });
 
-  it("invalid impact value → coerced to 'medium'", async () => {
+  it("invalid impact value → throws (不再静默改写成 medium)", async () => {
     const json = JSON.stringify({
       ...JSON.parse(VALID_JSON),
       patch: {
@@ -104,10 +104,9 @@ describe("analyzeCorpusWithLlm", () => {
         impact: "INVALID" // not in {low, medium, high}
       }
     });
-    const { insight } = await analyzeCorpusWithLlm(baseState, baseInput, mockChat(json));
-    const patch = insight.recommendedPatches[0];
-    expect(patch).toBeDefined();
-    expect(patch.impact).toBe("medium");
+    await expect(
+      analyzeCorpusWithLlm(baseState, baseInput, mockChat(json))
+    ).rejects.toThrow("invalid impact");
   });
 
   it("score as string → parsed numerically (or fallback to 3)", async () => {
@@ -118,22 +117,23 @@ describe("analyzeCorpusWithLlm", () => {
       ]
     });
     const { insight } = await analyzeCorpusWithLlm(baseState, baseInput, mockChat(json));
-    // Number("5") = 5; non-numeric string → NaN || 3
+    // Number("5") = 5 —— 数字字符串仍可解析为合法评分
     expect(insight.dimensions[0].score).toBe(5);
   });
 
-  it("non-numeric score string → fallback score 3", async () => {
+  it("non-numeric score string → throws (非法评分不能用默认 3 分冒充)", async () => {
     const json = JSON.stringify({
       ...JSON.parse(VALID_JSON),
       dimensions: [
         { name: "某维度", score: "excellent", finding: "很好", example: "原话", recommendedAction: "继续" }
       ]
     });
-    const { insight } = await analyzeCorpusWithLlm(baseState, baseInput, mockChat(json));
-    expect(insight.dimensions[0].score).toBe(3);
+    await expect(
+      analyzeCorpusWithLlm(baseState, baseInput, mockChat(json))
+    ).rejects.toThrow("invalid score");
   });
 
-  it("malformed JSON → throws so route falls back to deterministic analyzer", async () => {
+  it("malformed JSON → throws (分析只有 LLM 一条路,路由如实暴露错误)", async () => {
     await expect(
       analyzeCorpusWithLlm(baseState, baseInput, mockChat("not json"))
     ).rejects.toThrow();

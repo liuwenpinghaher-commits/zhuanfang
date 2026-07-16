@@ -19,7 +19,10 @@ function buildAssistantSession(content: string): InterviewSession {
     status: "active",
     title: "实时打断回填测试",
     card: { historyReferences: [], suggestedPerspectives: [] } as unknown as InterviewSession["card"],
-    guide: { questions: [] } as unknown as InterviewSession["guide"],
+    // 真实性重构:POST /sessions 的 enginePolicy 不再有 config 拼装兜底,恒走域层
+    // buildInterviewEnginePolicy(内部读 guide.relevantMemories/graphReferences)——
+    // fixture 必须给全这些字段,否则域层如实抛错、路由 5xx(暴露而非掩盖)。
+    guide: { questions: [], relevantMemories: [], graphReferences: [] } as unknown as InterviewSession["guide"],
     turns: [
       {
         id: "turn-user",
@@ -780,7 +783,7 @@ describe("realtime-voice TTS WebSocket proxy (/api/realtime-voice/ws/tts/:sessio
   });
 });
 
-describe("realtime-voice GET /api/realtime-voice/voices — offline fallback", () => {
+describe("realtime-voice GET /api/realtime-voice/voices — 配置态 preset / 上游失败 502", () => {
   it("returns cosyvoice presets (not empty) when voiceEnrollmentClient is absent", async () => {
     const lonelyApp = Fastify();
     await registerRealtimeVoiceRoutes(lonelyApp); // no voiceEnrollmentClient
@@ -808,7 +811,8 @@ describe("realtime-voice GET /api/realtime-voice/voices — offline fallback", (
     await lonelyApp.close();
   });
 
-  it("returns cosyvoice presets (not empty) when voiceEnrollmentClient throws", async () => {
+  // 真实性重构:上游失败不再用预置列表冒充查询结果(那会隐藏用户的自定义克隆音色)——如实 502。
+  it("voiceEnrollmentClient 上游失败 → 502（不再回 preset 冒充查询结果）", async () => {
     const failingClient = {
       listVoices: async () => { throw new Error("network error"); },
       createVoice: async () => { throw new Error("network error"); }
@@ -822,13 +826,10 @@ describe("realtime-voice GET /api/realtime-voice/voices — offline fallback", (
       url: "/api/realtime-voice/voices"
     });
 
-    expect(res.statusCode).toBe(200);
-    const body = res.json() as { preset: Array<{ voice: string; name: string }>; custom: unknown[] };
-
-    expect(body.custom).toEqual([]);
-    const voices = body.preset.map((v) => v.voice);
-    expect(voices).toContain("longanyang");
-    expect(voices).toContain("longanhuan");
+    expect(res.statusCode).toBe(502);
+    const body = res.json() as { error: string };
+    expect(body.error).toContain("音色列表查询失败");
+    expect(body.error).toContain("network error");
 
     await testApp.close();
   });

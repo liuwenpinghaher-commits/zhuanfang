@@ -43,32 +43,18 @@ describe("upsertFinalizeThemes tracking + maturity (#1/#2a)", () => {
 });
 
 describe("finalize memory extraction (M1a)", () => {
-  it("derives candidate text from actual session content, not a fixed template", () => {
+  // 真实性重构:剔除「无 providedCandidates → 从会话/keyQuote 启发式造模板候选」的兜底——
+  // 记忆候选只来自 LLM 真实抽取(providedCandidates),确定性 finalize 不再伪造候选。
+  // 原「derives candidate text from actual session content」「candidate text contains salient
+  // user content」两个用例专测该兜底,改写为断言新的诚实行为:
+  it("finalizeSession without providedCandidates does NOT fabricate a memory candidate", () => {
     const state = createInitialProductState();
     let s = createInterviewSession({ id: "s1", title: "关于放权的纠结" });
     s = addTurn(s, { role: "user", content: "我一直不敢把审批权交给团队，怕出错。" });
     s = addTurn(s, { role: "assistant", content: "你怕的是结果失控，还是判断力被质疑？" });
     s = addTurn(s, { role: "user", content: "其实是怕我自己不再被需要。" });
     const { nextState } = finalizeSession(state, s);
-    const cand = nextState.memoryCandidates[0];
-    expect(cand).toBeDefined();
-    expect(cand.text).not.toContain("判断责任和机制代价"); // 不再是写死模板
-    expect(cand.text.length).toBeGreaterThan(8);
-  });
-
-  it("candidate text contains salient user content from the session", () => {
-    const state = createInitialProductState();
-    let s = createInterviewSession({ id: "s2", title: "关于放权的纠结" });
-    s = addTurn(s, { role: "user", content: "我一直不敢把审批权交给团队，怕出错。" });
-    s = addTurn(s, { role: "assistant", content: "你怕的是结果失控，还是判断力被质疑？" });
-    s = addTurn(s, { role: "user", content: "其实是怕我自己不再被需要。" });
-    const { nextState } = finalizeSession(state, s);
-    const cand = nextState.memoryCandidates[0];
-    // should reference session title or user content
-    const text = cand.text;
-    const mentionsTitle = text.includes("关于放权的纠结");
-    const mentionsContent = text.includes("不再被需要") || text.includes("审批权") || text.includes("怕出错");
-    expect(mentionsTitle || mentionsContent).toBe(true);
+    expect(nextState.memoryCandidates).toHaveLength(state.memoryCandidates.length);
   });
 
   it("mergeFinalizedState accepts providedCandidates and uses them instead of building from session", async () => {
@@ -114,7 +100,7 @@ describe("finalize memory extraction (M1a)", () => {
     expect(nextState.memoryCandidates[0].id).toBe("mc-fake-001");
   });
 
-  it("mergeFinalizedState with empty providedCandidates falls back to session-derived candidate", async () => {
+  it("mergeFinalizedState with empty/undefined providedCandidates adds NO memory candidate (诚实的空,不再启发式造候选)", async () => {
     const { mergeFinalizedState } = await import("./finalize");
     const { createInitialProductState: initState, createInterviewSession: cis, addTurn: at } = await import("./engine");
     const { nowIso } = await import("./utils");
@@ -137,10 +123,11 @@ describe("finalize memory extraction (M1a)", () => {
     };
     const content = { note, points: [], questions: [], decisions: [], debts: [], themes: [] };
 
-    // pass undefined — should fall back to session-derived (NOT fixed template)
-    const { nextState } = mergeFinalizedState(state, s, content, completedAt, undefined);
-    expect(nextState.memoryCandidates.length).toBeGreaterThan(0);
-    expect(nextState.memoryCandidates[0].text).not.toContain("判断责任和机制代价");
+    // undefined 与空数组同义:LLM 没抽出值得沉淀的记忆 → 不新增候选,绝不从 keyQuote 造模板候选。
+    const { nextState: viaUndefined } = mergeFinalizedState(state, s, content, completedAt, undefined);
+    expect(viaUndefined.memoryCandidates).toHaveLength(state.memoryCandidates.length);
+    const { nextState: viaEmpty } = mergeFinalizedState(state, s, content, completedAt, []);
+    expect(viaEmpty.memoryCandidates).toHaveLength(state.memoryCandidates.length);
   });
 
   it("F: decisions/debts 带 evidence 时 mergeFinalizedState 补 evidenceAnchors(满足 A1 溯源)", async () => {
@@ -282,27 +269,9 @@ describe("finalize 证据锚点扩展 (Phase 1 收尾)", () => {
     expect(stored.representativeQuoteAnchor).toEqual({ sessionId: s.id, turnId: userTurnId(s, "审批权") });
   });
 
-  it("M3 确定性回退候选也带锚点（keyQuote 命中）", async () => {
-    const { mergeFinalizedState } = await import("./finalize");
-    const { createInitialProductState: initState } = await import("./engine");
-    const { nowIso } = await import("./utils");
-
-    const state = initState();
-    const s = await buildSession();
-    const completedAt = nowIso();
-    const note = {
-      id: "note-m3", sessionId: s.id, title: s.title, summary: "测试",
-      keyQuote: "其实是怕我自己不再被需要。", saidTrack: [], learnedTrack: [], nextQuestions: [], createdAt: completedAt
-    };
-    const content = { note, points: [], questions: [], decisions: [], debts: [], themes: [] };
-
-    // 无 providedCandidates → 走确定性回退分支
-    const { nextState } = mergeFinalizedState(state, s, content, completedAt, undefined);
-    const cand = nextState.memoryCandidates[0];
-    expect(cand).toBeDefined();
-    expect(cand.evidenceQuote).toBe("其实是怕我自己不再被需要。");
-    expect(cand.evidenceAnchors).toEqual([{ sessionId: s.id, turnId: userTurnId(s, "不再被需要") }]);
-  });
+  // 真实性重构:剔除「M3 确定性回退候选也带锚点」用例——确定性回退候选本身已被剔除
+  // (无 providedCandidates → 不新增记忆候选),不存在需要盖锚点的回退候选。
+  // providedCandidates 路径的锚点行为由上方「mergeFinalizedState accepts providedCandidates」覆盖。
 });
 
 describe("审计修复:知识债状态守卫 + 问题 upsert", () => {

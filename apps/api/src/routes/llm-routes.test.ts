@@ -1,13 +1,15 @@
 /**
- * LLM-route deterministic fallback tests.
+ * LLM-route honesty tests（真实性重构后）.
  *
  * TWO halves:
  *
- * 1. No-key fallback: build the server with no provider clients (env: {}).
- *    For every LLM-backed route, drive it and assert 200 + deterministic fallback.
+ * 1. No-key exposure: build the server with no provider clients (env: {}).
+ *    For every LLM-backed route, drive it and assert 503 + 明确的"未配置"错误
+ *    （确定性兜底已剔除——不能用就暴露，不再返回模板数据冒充）。
  *
  * 2. LLM path: inject minimal mock clients. Drive the same routes and assert
- *    the response is structurally correct (LLM path used).
+ *    the response is structurally correct (LLM path used)；LLM 返回坏 JSON 时
+ *    如实 502 且不落任何变更（原子失败）。
  */
 import { describe, expect, it } from "vitest";
 import type { InjectOptions, Response } from "light-my-request";
@@ -67,11 +69,11 @@ async function setupSessionWithTurn(server: ReturnType<typeof buildApiServer>): 
 }
 
 // -----------------------------------------------------------------------
-// HALF 1: No-key fallback — all LLM routes return 200 + deterministic data
+// HALF 1: No-key exposure — LLM routes return 503（未配置即不可用，如实暴露）
 // -----------------------------------------------------------------------
 
-describe("No-key fallback (env: {})", () => {
-  it("/api/corpus/insights → 200 with deterministic fallback insight", async () => {
+describe("No-key exposure (env: {})", () => {
+  it("/api/corpus/insights → 503 语料分析 LLM 未配置（不再回落关键词模板分析）", async () => {
     const server = buildNoKeyServer();
     await server.ready();
 
@@ -80,61 +82,55 @@ describe("No-key fallback (env: {})", () => {
       content: "主持人：你好。\n被访者：你好，很高兴参加这次专访。"
     });
 
-    expect(resp.statusCode).toBe(200);
-    const body = JSON.parse(resp.payload) as { insight: unknown; state: unknown };
-    expect(body.insight).toBeDefined();
-    expect(body.state).toBeDefined();
+    expect(resp.statusCode).toBe(503);
+    const body = JSON.parse(resp.payload) as { error: string };
+    expect(body.error).toContain("未配置");
     await server.close();
   });
 
-  it("/api/reviews → 200 with deterministic review data", async () => {
+  it("/api/reviews → 503 复盘 LLM 未配置（不再返回确定性复盘数据）", async () => {
     const server = buildNoKeyServer();
     await server.ready();
 
     const resp = await inject(server, "GET", "/api/reviews");
 
-    expect(resp.statusCode).toBe(200);
-    const body = JSON.parse(resp.payload) as { monthly: unknown; yearly: unknown; radar: unknown };
-    expect(body.monthly).toBeDefined();
-    expect(body.yearly).toBeDefined();
-    expect(body.radar).toBeDefined();
+    expect(resp.statusCode).toBe(503);
+    const body = JSON.parse(resp.payload) as { error: string };
+    expect(body.error).toContain("未配置");
     await server.close();
   });
 
-  it("/api/import/documents → 200 with 0 LLM candidates (no chat client)", async () => {
+  it("/api/import/documents → 503 导入分析 LLM 未配置（不再静默 0 候选照常导入）", async () => {
     const server = buildNoKeyServer();
     await server.ready();
 
     const resp = await inject(server, "POST", "/api/import/documents", {
       title: "测试文档",
-      content: "这是一些测试内容，用来验证无 LLM key 时的降级行为。"
+      content: "这是一些测试内容，用来验证无 LLM key 时的暴露行为。"
     });
 
-    expect(resp.statusCode).toBe(200);
-    const body = JSON.parse(resp.payload) as { sourceId: string; candidateCount: number };
-    expect(typeof body.sourceId).toBe("string");
-    // No LLM → candidates always 0 (route still succeeds)
-    expect(typeof body.candidateCount).toBe("number");
+    expect(resp.statusCode).toBe(503);
+    const body = JSON.parse(resp.payload) as { error: string };
+    expect(body.error).toContain("未配置");
     await server.close();
   });
 
-  it("/api/interview-sessions/:id/end → 200 with deterministic fallback note", async () => {
+  it("/api/interview-sessions/:id/end → 503 归档 LLM 未配置，会话保持 active 可重试", async () => {
     const server = buildNoKeyServer();
     await server.ready();
 
     const sessionId = await setupSessionWithTurn(server);
     const resp = await inject(server, "POST", `/api/interview-sessions/${sessionId}/end`);
 
-    expect(resp.statusCode).toBe(200);
-    const body = JSON.parse(resp.payload) as {
-      session: { status: string };
-      note: { summary: string; saidTrack: string[] };
-      state: unknown;
-    };
-    expect(body.note).toBeDefined();
-    expect(typeof body.note.summary).toBe("string");
-    expect(Array.isArray(body.note.saidTrack)).toBe(true);
-    expect(body.session.status).toBe("completed");
+    expect(resp.statusCode).toBe(503);
+    const body = JSON.parse(resp.payload) as { error: string };
+    expect(body.error).toContain("未配置");
+
+    // 会话必须保持可重试：未被 finalize、未被归档。
+    const after = await inject(server, "GET", `/api/interview-sessions/${sessionId}`);
+    expect(after.statusCode).toBe(200);
+    const { session } = JSON.parse(after.payload) as { session: { status: string } };
+    expect(session.status).not.toBe("completed");
     await server.close();
   });
 });
@@ -260,8 +256,8 @@ describe("LLM path (mock BailianChatClient)", () => {
     await server.close();
   });
 
-  it("/api/import/documents: LLM returns malformed JSON → falls back, still 200", async () => {
-    // Mock LLM returns garbage → extractCandidateMemories throws → import route catches it
+  it("/api/import/documents: LLM returns malformed JSON → 502 且本次不导入（原子失败）", async () => {
+    // Mock LLM returns garbage → extractCandidateMemories throws → 路由如实 502，导入不落库
     const server = buildMockLlmServer("totally not json garbage !!!");
     await server.ready();
 
@@ -270,14 +266,17 @@ describe("LLM path (mock BailianChatClient)", () => {
       content: "这是测试内容"
     });
 
-    // The route catches LLM errors and ingests with 0 candidates
-    expect(resp.statusCode).toBe(200);
-    const body = JSON.parse(resp.payload) as { candidateCount: number };
-    expect(body.candidateCount).toBe(0);
+    expect(resp.statusCode).toBe(502);
+    const body = JSON.parse(resp.payload) as { error: string };
+    expect(body.error).toContain("记忆抽取失败");
+    // 原子失败：state 里不得出现这条 importSource
+    const stateResp = await inject(server, "GET", "/api/state");
+    const state = JSON.parse(stateResp.payload) as { importSources: Array<{ title: string }> };
+    expect(state.importSources.some((s) => s.title === "测试文档")).toBe(false);
     await server.close();
   });
 
-  it("/api/corpus/insights: LLM returns malformed JSON → falls back to deterministic, still 200", async () => {
+  it("/api/corpus/insights: LLM returns malformed JSON → 502 语料分析失败（不再回落确定性分析）", async () => {
     const server = buildMockLlmServer("this is not json at all");
     await server.ready();
 
@@ -286,10 +285,9 @@ describe("LLM path (mock BailianChatClient)", () => {
       content: "主持人：你好。\n被访者：你好。"
     });
 
-    // analyzeCorpus catches LLM errors and falls back to analyzeImportedInterview
-    expect(resp.statusCode).toBe(200);
-    const body = JSON.parse(resp.payload) as { insight: unknown };
-    expect(body.insight).toBeDefined();
+    expect(resp.statusCode).toBe(502);
+    const body = JSON.parse(resp.payload) as { error: string };
+    expect(body.error).toContain("语料分析失败");
     await server.close();
   });
 });

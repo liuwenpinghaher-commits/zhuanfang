@@ -4,7 +4,7 @@ import { registerInterviewSessionRoutes } from "./interview-sessions";
 import { createInMemoryProductStateRepository } from "../product-state-repository";
 import { createLlmBudget } from "../llm-budget";
 import { createInitialProductState } from "../../../../src/domain/engine";
-import { extractAnchor } from "../../../../src/domain/utils";
+import { createFakeChatClient, createFakeInterviewClient } from "../test-helpers/fake-llm-clients";
 import Fastify from "fastify";
 
 describe("interview-sessions routes", () => {
@@ -47,18 +47,15 @@ describe("interview-sessions routes", () => {
   });
 
   // REQ-INTERVIEW-TURN-NEXT-QUESTION (REQ-B): the generated host turn must observably
-  // RESPOND to the user's latest utterance — not just return any 200. A status-only
-  // assertion would pass even if the engine emitted a fixed, input-independent question.
-  // The deterministic engine extracts an anchor from the user text and embeds it in the
-  // next question; we assert that anchor (a) is non-trivial (not the empty-input fallback)
-  // and (b) appears verbatim in the generated host turn.
-  it("/turns: deterministic next question references the user's latest input (not a fixed prompt)", async () => {
-    const server = buildApiServer({ env: {} }); // no key → deterministic offline engine
+  // RESPOND to the user's latest utterance — not just return any 200. 真实性重构后追问
+  // 只有 LLM 一条路（确定性策略引擎兜底已删除），改用注入的假 interview client（回显
+  // 用户原文前 12 字）证明：路由把【本轮】用户原文交给了 LLM，且 LLM 的追问被落为
+  // assistant turn——固定的、与输入无关的问题无法通过该断言。
+  it("/turns: next question references the user's latest input (fake LLM echoes the utterance)", async () => {
+    const server = buildApiServer({ env: {}, bailianInterviewClient: createFakeInterviewClient() });
     const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "daily" } })).json();
     const id = created.session.id;
     const content = "公司里那条审批链路每次都卡在中间这件事让我特别烦躁";
-    const anchor = extractAnchor(content);
-    expect(anchor).not.toBe("这个问题"); // the empty/degenerate-input fallback anchor
 
     const res = await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/turns`, payload: { content } });
     expect(res.statusCode).toBe(200);
@@ -68,8 +65,8 @@ describe("interview-sessions routes", () => {
       | undefined;
     expect(lastAssistant).toBeDefined();
     expect(lastAssistant!.content.length).toBeGreaterThan(0);
-    // the host turn quotes the anchor lifted from THIS user's input → demonstrably responsive
-    expect(lastAssistant!.content).toContain(anchor);
+    // the host turn quotes the echo of THIS user's input → demonstrably responsive
+    expect(lastAssistant!.content).toContain(content.slice(0, 12));
     await server.close();
   });
 
@@ -97,7 +94,12 @@ describe("interview-sessions routes", () => {
   // the cold copy. /turns and /record-turn must guard against that with 409 — but an
   // in-progress session must still accept turns (no regression).
   it("/turns: appending to a completed + offloaded session is rejected 409 (no cold/hot split)", async () => {
-    const server = buildApiServer({ env: {} });
+    // 真实性重构后 /turns 与 /end 都必须有 LLM client 才能成功——注入假 client 走通成功路径。
+    const server = buildApiServer({
+      env: {},
+      bailianInterviewClient: createFakeInterviewClient(),
+      bailianChatClient: createFakeChatClient()
+    });
     const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "decision" } })).json();
     const id = created.session.id as string;
     await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/turns`, payload: { content: "我现在带的是 12 个人，最难的是放权。" } });
@@ -112,7 +114,11 @@ describe("interview-sessions routes", () => {
   });
 
   it("/control: 向 completed 会话追加控制轮被拒 409(审计修复 P2-19,与 /turns 对称)", async () => {
-    const server = buildApiServer({ env: {} });
+    const server = buildApiServer({
+      env: {},
+      bailianInterviewClient: createFakeInterviewClient(),
+      bailianChatClient: createFakeChatClient()
+    });
     const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "decision" } })).json();
     const id = created.session.id as string;
     await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/turns`, payload: { content: "我现在带的是 12 个人，最难的是放权。" } });
@@ -124,7 +130,11 @@ describe("interview-sessions routes", () => {
   });
 
   it("/record-turn: appending to a completed + offloaded session is rejected 409", async () => {
-    const server = buildApiServer({ env: {} });
+    const server = buildApiServer({
+      env: {},
+      bailianInterviewClient: createFakeInterviewClient(),
+      bailianChatClient: createFakeChatClient()
+    });
     const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "decision" } })).json();
     const id = created.session.id as string;
     await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/turns`, payload: { content: "我现在带的是 12 个人，最难的是放权。" } });
@@ -141,7 +151,7 @@ describe("interview-sessions routes", () => {
   });
 
   it("/turns: an in-progress (not completed/offloaded) session still accepts turns 200 (no regression)", async () => {
-    const server = buildApiServer({ env: {} });
+    const server = buildApiServer({ env: {}, bailianInterviewClient: createFakeInterviewClient() });
     const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "decision" } })).json();
     const id = created.session.id as string;
     const res = await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/turns`, payload: { content: "继续聊。" } });
@@ -163,7 +173,10 @@ describe("interview-sessions routes", () => {
     };
     const repo = createInMemoryProductStateRepository();
     const server = Fastify({ logger: false });
-    await registerInterviewSessionRoutes(server, repo, { embeddingClient: slowEmbeddingClient as never });
+    await registerInterviewSessionRoutes(server, repo, {
+      embeddingClient: slowEmbeddingClient as never,
+      bailianInterviewClient: createFakeInterviewClient() // /turns 成功路径现在必须有 LLM client
+    });
 
     const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "daily" } })).json();
     const id = created.session.id;
@@ -200,7 +213,7 @@ describe("interview-sessions routes", () => {
     await server.close();
   });
 
-  it("/turns: 2nd turn blocked by budget falls back to deterministic (200, LLM not called again)", async () => {
+  it("/turns: 2nd turn blocked by budget → 429 预算已用尽，LLM 不再被调用，本轮不落任何轮次", async () => {
     const llmCallCount = { value: 0 };
     const mockInterviewClient = {
       createAssistantTurn: vi.fn(async (input: any) => {
@@ -230,16 +243,18 @@ describe("interview-sessions routes", () => {
     const res1 = await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/turns`, payload: { content: "第一轮输入" } });
     expect(res1.statusCode).toBe(200);
     expect(llmCallCount.value).toBe(1);
+    const turnsAfterFirst = (res1.json().session.turns as Array<{ role: string }>).length;
 
-    // Second turn — budget exhausted, LLM must NOT be called
+    // Second turn — budget exhausted → 429 如实暴露（确定性追问兜底已删除），LLM must NOT be called
     const res2 = await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/turns`, payload: { content: "第二轮输入" } });
-    expect(res2.statusCode).toBe(200);
+    expect(res2.statusCode).toBe(429);
+    expect((res2.json() as { error: string }).error).toContain("预算已用尽");
     expect(llmCallCount.value).toBe(1); // still 1 — LLM was skipped
-    // Deterministic fallback still returns a valid session with the user turn recorded
-    const body2 = res2.json();
-    expect(body2.session).toBeDefined();
-    const userTurns = body2.session.turns.filter((t: any) => t.role === "user");
-    expect(userTurns.length).toBeGreaterThanOrEqual(2);
+
+    // 原子失败：被拒的这一轮不得落任何轮次（用户轮也不落，用户可原样重试）
+    const after = (await server.inject({ method: "GET", url: `/api/interview-sessions/${id}` })).json().session;
+    expect(after.turns.length).toBe(turnsAfterFirst);
+    expect(after.turns.filter((t: any) => t.role === "user").map((t: any) => t.content)).not.toContain("第二轮输入");
 
     await server.close();
   });
@@ -318,7 +333,7 @@ describe("interview-sessions routes", () => {
     await server.close();
   });
 
-  it("/turn-complete: without chatClient returns done:true as safe default", async () => {
+  it("/turn-complete: without chatClient → 503 如实暴露（不再伪造 done:true 安全默认）", async () => {
     const repo = createInMemoryProductStateRepository();
     const server = Fastify({ logger: false });
     await registerInterviewSessionRoutes(server, repo, {}); // no chatClient
@@ -331,8 +346,8 @@ describe("interview-sessions routes", () => {
       url: `/api/interview-sessions/${id}/turn-complete`,
       payload: { transcript: "说一半" }
     });
-    expect(res.statusCode).toBe(200);
-    expect(res.json().done).toBe(true);
+    expect(res.statusCode).toBe(503);
+    expect((res.json() as { error: string }).error).toContain("未配置");
 
     await server.close();
   });
@@ -438,10 +453,13 @@ describe("interview-sessions routes", () => {
     });
   }
 
-  it("/turns (no LLM): re-stamps enginePolicy so a mid-session applied patch takes effect THIS turn", async () => {
+  // 真实性重构后 /turns 无纯确定性路径（无 client 即 503），但策略引擎仍在真实 LLM 路径上
+  // 决策本轮动作并回填到 assistant turn（receiveTurn → decideInterviewStrategy）。用假 client
+  // 走通 LLM 路径，断言 re-stamp 的规则既出现在响应的 enginePolicy 上，也真实路由了策略引擎。
+  it("/turns: re-stamps enginePolicy so a mid-session applied patch takes effect THIS turn (strategy backfilled)", async () => {
     const repo = createInMemoryProductStateRepository();
     const server = Fastify({ logger: false });
-    await registerInterviewSessionRoutes(server, repo, {}); // deterministic path
+    await registerInterviewSessionRoutes(server, repo, { bailianInterviewClient: createFakeInterviewClient() });
 
     const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "decision" } })).json();
     const id = created.session.id;
@@ -459,7 +477,7 @@ describe("interview-sessions routes", () => {
 
     // The new rule must now be on this session's policy (re-stamped this turn).
     expect(session.enginePolicy.appliedPlaybookRules).toContain("当用户使用抽象评价时，先追问一个具体时刻。");
-    // And the ruleType must actually route the deterministic strategy engine.
+    // And the ruleType must actually route the strategy engine (decision backfilled onto the turn).
     const lastAssistant = [...session.turns].reverse().find((t: any) => t.role === "assistant");
     expect(lastAssistant.strategy).toBe("concrete_example_probe");
 
@@ -583,19 +601,26 @@ describe("interview-sessions routes", () => {
     await server.close();
   });
 
-  it("/end (no chatClient): still produces the heuristic candidate and does not crash", async () => {
+  // 真实性重构：确定性 finalizeSession/启发式模板候选已删除——无 chatClient 时 /end 如实 503，
+  // 会话保持 active 可重试，state 不落任何 finalize 产物。
+  it("/end (no chatClient): 503 如实暴露，会话保持 active，不产任何笔记/候选", async () => {
     const repo = createInMemoryProductStateRepository();
     const server = Fastify({ logger: false });
-    await registerInterviewSessionRoutes(server, repo, {}); // deterministic path, no LLM
+    await registerInterviewSessionRoutes(server, repo, {}); // no LLM
 
     const id = await seedEndableSession(server);
+    const notesBefore = repo.getState().notes.length;
     const res = await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/end` });
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode).toBe(503);
+    expect((res.json() as { error: string }).error).toContain("未配置");
 
-    const candidates = repo.getState().memoryCandidates;
-    // Task 1 heuristic: exactly one session-derived candidate, no crash.
-    expect(candidates.length).toBeGreaterThanOrEqual(1);
-    expect(candidates.some((c) => c.sourceType === "interview_session" && c.sourceId === id)).toBe(true);
+    // 会话保持可重试：未 completed、未归档；不产模板笔记/启发式候选冒充归档产物。
+    const state = repo.getState();
+    const session = state.sessions.find((s) => s.id === id)!;
+    expect(session.status).not.toBe("completed");
+    expect(session.rawMaterialOffloaded).not.toBe(true);
+    expect(state.notes.length).toBe(notesBefore);
+    expect(state.memoryCandidates.some((c) => c.sourceType === "interview_session" && c.sourceId === id)).toBe(false);
 
     await server.close();
   });
@@ -659,7 +684,12 @@ describe("interview-sessions routes", () => {
   // undone on the very next save. The heavy transcript stays only in cold storage,
   // served lazily via GET /api/sessions/:id/raw-material.
   it("/end: response state is the light (offloaded) state, heavy turns live only in cold storage", async () => {
-    const server = buildApiServer({ env: {} }); // in-memory product + raw-material repos, deterministic engine
+    // in-memory product + raw-material repos；/turns 与 /end 的成功路径注入假 LLM client
+    const server = buildApiServer({
+      env: {},
+      bailianInterviewClient: createFakeInterviewClient(),
+      bailianChatClient: createFakeChatClient()
+    });
     const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "decision" } })).json();
     const id = created.session.id as string;
     await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/turns`, payload: { content: "我现在带的是 12 个人，最难的是放权。" } });

@@ -1,8 +1,9 @@
 /**
  * P1-13: llm-budget 守卫覆盖全部 LLM 入口
  *
- * 验证当 budget 耗尽时，非 interview-sessions 的 LLM 端点也能
- * 跳过 LLM 调用，走本地 fallback（返回 200 + 确定性数据）。
+ * 真实性重构后：budget 耗尽时端点不再"跳过 LLM 走本地 fallback 返回 200"，
+ * 而是跳过 LLM 并如实返回 429（预算已用尽）。守卫的核心不变量仍然是：
+ * 预算耗尽时 LLM 绝不能被调用。
  *
  * 测试的端点：
  *   - POST /api/corpus/insights         (analyzeCorpusWithLlm)
@@ -15,6 +16,7 @@ import { describe, it, expect, vi } from "vitest";
 import Fastify from "fastify";
 import { createLlmBudget } from "../llm-budget";
 import { createInMemoryProductStateRepository } from "../product-state-repository";
+import { createInitialProductState } from "../../../../src/domain/engine";
 import { registerCorpusRoutes } from "./corpus";
 import { registerReviewRoutes } from "./reviews";
 import { registerImportRoutes } from "./import";
@@ -44,7 +46,7 @@ function makeExhaustedBudget() {
 // ---------------------------------------------------------------------------
 
 describe("llm-budget guard: POST /api/corpus/insights", () => {
-  it("budget exhausted → LLM is NOT called, falls back to deterministic insight (200)", async () => {
+  it("budget exhausted → LLM is NOT called, 429 预算已用尽（不再回落确定性分析）", async () => {
     const { client, complete } = makeMockChatClient(
       JSON.stringify({
         dimensions: [{ name: "追问", score: 5, finding: "好", example: "x", recommendedAction: "keep" }],
@@ -69,10 +71,9 @@ describe("llm-budget guard: POST /api/corpus/insights", () => {
       payload: { title: "测试", content: "主持人：你好。\n被访者：你好。" }
     });
 
-    expect(resp.statusCode).toBe(200);
-    const body = resp.json() as { insight: unknown };
-    expect(body.insight).toBeDefined();
-    // LLM must NOT have been called
+    expect(resp.statusCode).toBe(429);
+    expect((resp.json() as { error: string }).error).toContain("预算已用尽");
+    // 核心不变量：预算耗尽时 LLM 绝不能被调用
     expect(complete).not.toHaveBeenCalled();
 
     await server.close();
@@ -115,7 +116,7 @@ describe("llm-budget guard: POST /api/corpus/insights", () => {
 // ---------------------------------------------------------------------------
 
 describe("llm-budget guard: GET /api/reviews", () => {
-  it("budget exhausted → LLM is NOT called, deterministic reviews returned (200)", async () => {
+  it("budget exhausted → LLM is NOT called, 429 预算已用尽（不再回落确定性复盘）", async () => {
     const { client, complete } = makeMockChatClient(
       JSON.stringify({ monthly: { topTheme: "x" }, yearly: {} })
     );
@@ -132,10 +133,8 @@ describe("llm-budget guard: GET /api/reviews", () => {
 
     const resp = await server.inject({ method: "GET", url: "/api/reviews" });
 
-    expect(resp.statusCode).toBe(200);
-    const body = resp.json() as { monthly: unknown; yearly: unknown; radar: unknown };
-    expect(body.monthly).toBeDefined();
-    expect(body.yearly).toBeDefined();
+    expect(resp.statusCode).toBe(429);
+    expect((resp.json() as { error: string }).error).toContain("预算已用尽");
     expect(complete).not.toHaveBeenCalled();
 
     await server.close();
@@ -147,7 +146,7 @@ describe("llm-budget guard: GET /api/reviews", () => {
 // ---------------------------------------------------------------------------
 
 describe("llm-budget guard: POST /api/import/documents", () => {
-  it("budget exhausted → LLM is NOT called, imports with 0 candidates (200)", async () => {
+  it("budget exhausted → LLM is NOT called, 429 预算已用尽且本次不导入（原子失败）", async () => {
     const memoryJson = JSON.stringify({
       candidates: [
         { text: "用户注重效率", evidenceQuote: "我们要快", sensitivity: "normal" }
@@ -165,17 +164,18 @@ describe("llm-budget guard: POST /api/import/documents", () => {
     });
     await server.ready();
 
+    const importSourcesBefore = repo.getState().importSources.length;
     const resp = await server.inject({
       method: "POST",
       url: "/api/import/documents",
       payload: { title: "测试文档", content: "我们要快。" }
     });
 
-    expect(resp.statusCode).toBe(200);
-    const body = resp.json() as { candidateCount: number };
-    // No LLM → 0 candidates
-    expect(body.candidateCount).toBe(0);
+    expect(resp.statusCode).toBe(429);
+    expect((resp.json() as { error: string }).error).toContain("预算已用尽");
     expect(complete).not.toHaveBeenCalled();
+    // 导入是原子操作：预算被拒时不得留下"0 候选照常导入"的半成品
+    expect(repo.getState().importSources.length).toBe(importSourcesBefore);
 
     await server.close();
   });
@@ -186,7 +186,7 @@ describe("llm-budget guard: POST /api/import/documents", () => {
 // ---------------------------------------------------------------------------
 
 describe("llm-budget guard: POST /api/search/briefs", () => {
-  it("budget exhausted → enrichBriefInput LLM is NOT called (200)", async () => {
+  it("budget exhausted → enrichBriefInput LLM is NOT called, 429 预算已用尽", async () => {
     const { client, complete } = makeMockChatClient(
       JSON.stringify({ summary: "合成摘要", facts: [], controversies: [], opposingViews: [], interviewAngles: [], discussionTopics: [], sourceAngles: [] })
     );
@@ -208,10 +208,9 @@ describe("llm-budget guard: POST /api/search/briefs", () => {
       payload: { topic: "AI 产品", providerId: "local-demo" }
     });
 
-    expect(resp.statusCode).toBe(200);
-    const body = resp.json() as { brief: unknown };
-    expect(body.brief).toBeDefined();
-    // enrichBriefInput with chat client should NOT be called when budget exhausted
+    expect(resp.statusCode).toBe(429);
+    expect((resp.json() as { error: string }).error).toContain("预算已用尽");
+    // enrichBriefInput with chat client must NOT be called when budget exhausted
     expect(complete).not.toHaveBeenCalled();
 
     await server.close();
@@ -223,10 +222,27 @@ describe("llm-budget guard: POST /api/search/briefs", () => {
 // ---------------------------------------------------------------------------
 
 describe("llm-budget guard: POST /api/podcast/episodes", () => {
-  it("budget exhausted → generatePodcastScript LLM is NOT called, deterministic script used (200)", async () => {
+  it("budget exhausted → generatePodcastScript LLM is NOT called, 429 预算已用尽（note 路径）", async () => {
     const { client, complete } = makeMockChatClient("这是一段 LLM 生成的播客脚本");
 
-    const repo = createInMemoryProductStateRepository();
+    // 初始 state 无笔记会在预算守卫之前 422 短路——种一条笔记，让请求真正走到守卫。
+    const seededState = {
+      ...createInitialProductState(),
+      notes: [
+        {
+          id: "note-budget-1",
+          sessionId: "se_budget_1",
+          title: "测试笔记",
+          summary: "用于播客预算守卫测试的笔记摘要。",
+          keyQuote: "我在测试里说过这句话。",
+          saidTrack: ["谈了预算守卫"],
+          learnedTrack: ["预算耗尽必须如实 429"],
+          nextQuestions: [],
+          createdAt: "2026-06-01T00:00:00.000Z"
+        }
+      ]
+    };
+    const repo = createInMemoryProductStateRepository(seededState);
     const server = Fastify({ logger: false });
     const budget = makeExhaustedBudget();
 
@@ -236,18 +252,17 @@ describe("llm-budget guard: POST /api/podcast/episodes", () => {
     });
     await server.ready();
 
-    // note path requires a note in state — use default state which may have notes
-    // or just test that it falls through gracefully
     const resp = await server.inject({
       method: "POST",
       url: "/api/podcast/episodes",
       payload: { sourceType: "note" }
     });
 
-    // Either 200 (with deterministic script) or 422 (no notes) — both are valid
-    // The key assertion is that LLM was NOT called
-    expect([200, 422]).toContain(resp.statusCode);
+    expect(resp.statusCode).toBe(429);
+    expect((resp.json() as { error: string }).error).toContain("预算已用尽");
     expect(complete).not.toHaveBeenCalled();
+    // 429 时不得留下半成品 episode
+    expect(repo.getState().podcastEpisodes.length).toBe(seededState.podcastEpisodes.length);
 
     await server.close();
   });

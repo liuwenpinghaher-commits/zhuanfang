@@ -4,6 +4,8 @@ import { registerMemoryCandidateRoutes } from "./memory-candidates";
 import { createInMemoryProductStateRepository } from "../product-state-repository";
 import { createEmptyProductState } from "../../../../src/domain/engine";
 import type { MemoryCandidate, MemoryRecord, ProductState } from "../../../../src/domain/types";
+import { createLlmBudget } from "../llm-budget";
+import { createFakeChatClient } from "../test-helpers/fake-llm-clients";
 
 function confirmedRecord(partial: Partial<MemoryRecord> & { id: string; text: string }): MemoryRecord {
   return {
@@ -132,8 +134,9 @@ describe("memory-candidates approve (M3c embedding enrichment)", () => {
 
 // M5: lightweight consolidation — POST /api/memory/consolidate de-dups
 // near-identical confirmed records (deprecate the weaker) and persists the
-// result. With a chat client it may additionally emit a pending summary
-// candidate for HITL; without one it just de-dups (offline-safe).
+// result, and summarizes each merged cluster into a pending HITL candidate.
+// 真实性重构:摘要是整合契约的一部分——有合并簇但 LLM 不可用/预算耗尽/失败时,
+// 整个 consolidate 原子失败(503/429/502,未持久化任何去重变更),不再静默降级为"仅去重"。
 function seedNearDuplicateRecords(): ProductState {
   return {
     ...createEmptyProductState(),
@@ -145,10 +148,11 @@ function seedNearDuplicateRecords(): ProductState {
 }
 
 describe("memory consolidate (M5 lightweight consolidation)", () => {
-  it("deprecates the weaker of a near-duplicate pair and reports the count", async () => {
+  it("deprecates the weaker of a near-duplicate pair and reports the count (成功路径注入假 LLM)", async () => {
     const repo = createInMemoryProductStateRepository(seedNearDuplicateRecords());
     const server = Fastify({ logger: false });
-    await registerMemoryCandidateRoutes(server, repo, {});
+    // 有合并簇时摘要 LLM 是必选能力——注入确定性假 client 走真实摘要路径。
+    await registerMemoryCandidateRoutes(server, repo, { bailianChatClient: createFakeChatClient() });
 
     const res = await server.inject({ method: "POST", url: "/api/memory/consolidate" });
     expect(res.statusCode).toBe(200);
@@ -161,6 +165,12 @@ describe("memory consolidate (M5 lightweight consolidation)", () => {
     expect(persisted.memoryRecords.find((r) => r.id === "rec-weak")?.status).toBe("deprecated");
     expect(persisted.memoryRecords.find((r) => r.id === "rec-keep")?.status).toBe("confirmed");
     expect(body.state.memoryRecords.find((r: MemoryRecord) => r.id === "rec-weak")?.status).toBe("deprecated");
+
+    // 成功时每个合并簇必有一条摘要候选（吞错跳簇已删除）。
+    const candidates = persisted.memoryCandidates;
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].status).toBe("pending");
+    expect(candidates[0].text).toBe("当系统失败时会如实暴露而不是伪装成功（整合后的记忆表述）。");
 
     await server.close();
   });
@@ -184,16 +194,20 @@ describe("memory consolidate (M5 lightweight consolidation)", () => {
     await server.close();
   });
 
-  it("without a chat client: de-dups but emits no summary candidate", async () => {
+  // 真实性重构:有合并簇但无 chatClient → 503,原子失败(不再静默降级为"仅去重")。
+  it("有合并簇但无 chatClient → 503,未持久化任何去重变更", async () => {
     const repo = createInMemoryProductStateRepository(seedNearDuplicateRecords());
     const server = Fastify({ logger: false });
     await registerMemoryCandidateRoutes(server, repo, {}); // no bailianChatClient
 
     const res = await server.inject({ method: "POST", url: "/api/memory/consolidate" });
-    expect(res.statusCode).toBe(200);
-    expect(res.json().summary.deprecated).toBe(1);
-    // No LLM → no new pending candidate is created.
-    expect(repo.getState().memoryCandidates.length).toBe(0);
+    expect(res.statusCode).toBe(503);
+    expect(res.json().error).toContain("未配置");
+    // 原子失败:去重未持久化,两条记录仍 confirmed,无摘要候选。
+    const persisted = repo.getState();
+    expect(persisted.memoryRecords.find((r) => r.id === "rec-weak")?.status).toBe("confirmed");
+    expect(persisted.memoryRecords.find((r) => r.id === "rec-keep")?.status).toBe("confirmed");
+    expect(persisted.memoryCandidates).toHaveLength(0);
 
     await server.close();
   });
@@ -218,7 +232,8 @@ describe("memory consolidate (M5 lightweight consolidation)", () => {
     await server.close();
   });
 
-  it("chat client failure degrades to dedup-only (no crash, no candidate)", async () => {
+  // 真实性重构:摘要 LLM 运行时失败 → 502,整个 consolidate 原子失败(去重也不落库)。
+  it("摘要 LLM 失败 → 502,原子失败未持久化任何去重变更", async () => {
     const complete = vi.fn(async () => {
       throw new Error("chat service down");
     });
@@ -227,11 +242,31 @@ describe("memory consolidate (M5 lightweight consolidation)", () => {
     await registerMemoryCandidateRoutes(server, repo, { bailianChatClient: { complete } });
 
     const res = await server.inject({ method: "POST", url: "/api/memory/consolidate" });
-    expect(res.statusCode).toBe(200);
-    expect(res.json().summary.deprecated).toBe(1);
-    expect(repo.getState().memoryRecords.find((r) => r.id === "rec-weak")?.status).toBe("deprecated");
-    // Summary failed → no candidate, but consolidation still persisted.
-    expect(repo.getState().memoryCandidates.length).toBe(0);
+    expect(res.statusCode).toBe(502);
+    expect(res.json().error).toContain("记忆整合失败");
+    // 原子失败:rec-weak 未被 deprecate,无摘要候选。
+    expect(repo.getState().memoryRecords.find((r) => r.id === "rec-weak")?.status).toBe("confirmed");
+    expect(repo.getState().memoryCandidates).toHaveLength(0);
+
+    await server.close();
+  });
+
+  // 真实性重构:摘要预算耗尽 → 429,同样原子失败。
+  it("摘要预算耗尽 → 429,原子失败未持久化任何去重变更", async () => {
+    const repo = createInMemoryProductStateRepository(seedNearDuplicateRecords());
+    const exhaustedBudget = createLlmBudget({ maxCallsPerSession: 1 });
+    exhaustedBudget.tryConsume("memory_consolidate"); // 消耗唯一配额
+    const server = Fastify({ logger: false });
+    await registerMemoryCandidateRoutes(server, repo, {
+      bailianChatClient: createFakeChatClient(),
+      llmBudget: exhaustedBudget
+    });
+
+    const res = await server.inject({ method: "POST", url: "/api/memory/consolidate" });
+    expect(res.statusCode).toBe(429);
+    expect(res.json().error).toContain("预算已用尽");
+    expect(repo.getState().memoryRecords.find((r) => r.id === "rec-weak")?.status).toBe("confirmed");
+    expect(repo.getState().memoryCandidates).toHaveLength(0);
 
     await server.close();
   });

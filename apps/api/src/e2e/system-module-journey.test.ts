@@ -9,13 +9,15 @@
  * 对齐文档：docs/superpowers/2026-06-19-system-verification-criteria.md §3/§6/§7/§8。
  *
  * 约束：
- *  - env={} (无 key) → 确定性 fallback，不触网、不依赖 LLM。
- *  - 全程 buildApiServer + server.inject，不开端口（不碰 5173/8787）。
+ *  - env={} (无 key)，LLM 能力经 test-helpers/fake-llm-clients 在 provider 边界注入确定性
+ *    假 client，走真实 LLM 代码路径（真实性重构后生产已无离线兜底：无 client 即 503/429/502）。
+ *  - 不触网。全程 buildApiServer + server.inject，不开端口（不碰 5173/8787）。
  *  - 断言数据真实流转，而非仅校验状态码。
  */
 
 import { describe, it, expect, vi } from "vitest";
 import { buildApiServer } from "../server";
+import { createFakeChatClient, createFakeInterviewClient } from "../test-helpers/fake-llm-clients";
 
 // ===========================================================================
 // Journey A — 复杂真实业务贯穿：配置引擎 → 调研盯梢 → 专访(消费 tracked 简报)
@@ -24,8 +26,13 @@ import { buildApiServer } from "../server";
 describe("System journey A: config → research auto-run → interview → assets → memory → export → privacy → purge", () => {
   it("runs the full system-module business loop end-to-end with no 5xx and real data flow", async () => {
     // 注入空 env 对象，使 PATCH /api/system/config 写入这个对象而非 process.env（隔离、可断言）。
+    // 追问/归档/导入抽取是 LLM 必选能力 → 注入假 chat + 专访 client 走真实 LLM 代码路径。
     const env: Record<string, string | undefined> = {};
-    const server = buildApiServer({ env });
+    const server = buildApiServer({
+      env,
+      bailianChatClient: createFakeChatClient(),
+      bailianInterviewClient: createFakeInterviewClient()
+    });
 
     // --- 前置：清空到空状态 ---
     const reset = await server.inject({ method: "POST", url: "/api/state/reset", payload: { confirm: "RESET_ALL_DATA" } });
@@ -44,9 +51,10 @@ describe("System journey A: config → research auto-run → interview → asset
     const byId = (id: string) => capBody.capabilities.find((c: any) => c.id === id);
     expect(byId("product-api").status).toBe("ready");
     expect(byId("state-store").status).toBe("degraded");
-    // 无 key → 百炼能力必须是 needs-key（诚实降级）
+    // 能力状态如实反映 client 是否存在：未注入的（联网搜索/TTS）是 needs-key（诚实降级），
+    // 本测试注入了假专访 client → bailian-character 如实上报 ready。
     expect(byId("bailian-responses").status).toBe("needs-key");
-    expect(byId("bailian-character").status).toBe("needs-key");
+    expect(byId("bailian-character").status).toBe("ready");
     expect(byId("bailian-cosyvoice").status).toBe("needs-key");
     // 每项能力结构完整
     for (const cap of capBody.capabilities) {
@@ -194,20 +202,19 @@ describe("System journey A: config → research auto-run → interview → asset
     expect(typeof importBody.sourceId).toBe("string");
     expect(importBody.state.ragChunks.length).toBeGreaterThan(0);
 
+    // 假 chat client 的记忆抽取确定性产出候选 → 必有 pending 候选可审批。
     const pendingCandidate = importBody.state.memoryCandidates.find((c: any) => c.status === "pending");
-    if (pendingCandidate) {
-      const approveRes = await server.inject({
-        method: "POST",
-        url: `/api/memory-candidates/${pendingCandidate.id}/approve`
-      });
-      expect(approveRes.statusCode).toBe(200);
-      expect(approveRes.json().candidate.status).toBe("approved");
-      const persisted = (await server.inject({ method: "GET", url: "/api/state" }))
-        .json()
-        .memoryRecords.find((r: any) => r.sourceCandidateId === pendingCandidate.id);
-      expect(persisted).toBeDefined();
-    }
-    // 无 key 时 corpus_import 候选仍可能由确定性引擎生成；无候选也是合理路径。
+    expect(pendingCandidate).toBeDefined();
+    const approveRes = await server.inject({
+      method: "POST",
+      url: `/api/memory-candidates/${pendingCandidate.id}/approve`
+    });
+    expect(approveRes.statusCode).toBe(200);
+    expect(approveRes.json().candidate.status).toBe("approved");
+    const persisted = (await server.inject({ method: "GET", url: "/api/state" }))
+      .json()
+      .memoryRecords.find((r: any) => r.sourceCandidateId === pendingCandidate.id);
+    expect(persisted).toBeDefined();
 
     // =====================================================================
     // Step 6: 导出备份演练 — 可序列化 + 恢复摘要一致 + 密钥排除
@@ -312,7 +319,9 @@ describe("System journey A: config → research auto-run → interview → asset
 // ===========================================================================
 describe("System journey B: corpus learning patch propagates to engine policy AND realtime voice instructions", () => {
   it("applies a corpus-derived playbook patch and the rule reaches a new session's engine policy + agent-context instructions", async () => {
-    const server = buildApiServer({ env: {} });
+    // 语料分析是 LLM 必选能力（无 client → 503）→ 注入假 chat client（canned 语料分析含
+    // concrete-moment 规则），走真实分析→patch→apply→引擎→语音指令全链路。
+    const server = buildApiServer({ env: {}, bailianChatClient: createFakeChatClient() });
     await server.inject({ method: "POST", url: "/api/state/reset", payload: { confirm: "RESET_ALL_DATA" } });
 
     // --- 1. 语料分析：导入一段含"具体时刻 + 机制反转"技法的优秀样本 ---

@@ -7,7 +7,9 @@
  *       → 主题线聚合 → 导出/隐私 → 播客降级。
  *
  * 约束：
- *  - env={} (无 key) → 确定性 fallback，不依赖网络/LLM。
+ *  - env={} (无 key)，LLM 能力经 test-helpers/fake-llm-clients 在 provider 边界注入确定性
+ *    假 client，走真实 LLM 代码路径（真实性重构后生产已无离线兜底：无 client 即 503/429/502）。
+ *  - 不触网：外部 provider 一律假 client 或如实 5xx。
  *  - 全程使用 server.inject，不开端口。
  *  - 每步断言数据真实流转，而非仅校验状态码。
  */
@@ -16,10 +18,24 @@ import { describe, it, expect, vi } from "vitest";
 import { buildApiServer } from "../server";
 import { buildSessionArchive } from "../../../../src/domain/session-archive";
 import { buildTrackWorkspace } from "../../../../src/domain/timeline";
+import {
+  createFakeChatClient,
+  createFakeEmbeddingClient,
+  createFakeInterviewClient
+} from "../test-helpers/fake-llm-clients";
+
+// 全套假 LLM client：让旅程走真实 LLM 代码路径（prompt 组装/解析/校验/落库全真）。
+function fakeLlmClients() {
+  return {
+    bailianChatClient: createFakeChatClient(),
+    bailianInterviewClient: createFakeInterviewClient(),
+    embeddingClient: createFakeEmbeddingClient()
+  };
+}
 
 describe("Full cross-feature business journey: 团队授权与控制感", () => {
   it("completes the full PM decision-interview journey end-to-end with no 5xx", async () => {
-    const server = buildApiServer({ env: {} });
+    const server = buildApiServer({ env: {}, ...fakeLlmClients() });
 
     // =========================================================================
     // 前置：重置到空状态，保证本旅程数据完全可追踪
@@ -66,17 +82,19 @@ describe("Full cross-feature business journey: 团队授权与控制感", () => 
     expect(trackBody.brief.id).toBe(briefId);
     expect(trackBody.brief.tracked).toBe(true);
 
-    // 1c. 刷新简报（无 key → local-demo fallback）
+    // 1c. 刷新简报 — 真实性重构:local-demo 演示简报不支持联网刷新，如实 422（原简报不动）
     const refreshRes = await server.inject({
       method: "POST",
       url: `/api/search/briefs/${briefId}/refresh`
     });
-    expect(refreshRes.statusCode).toBe(200);
-    const refreshBody = refreshRes.json();
-    // 断言：id 不变、tracked 保留、内容已更新
-    expect(refreshBody.brief.id).toBe(briefId);
-    expect(refreshBody.brief.tracked).toBe(true);
-    expect(typeof refreshBody.brief.summary).toBe("string");
+    expect(refreshRes.statusCode).toBe(422);
+    expect(refreshRes.json().error).toContain("local-demo");
+    // 原简报保持原样：id/tracked 未受影响
+    const briefAfterRefresh = (await server.inject({ method: "GET", url: "/api/state" }))
+      .json()
+      .searchBriefs.find((b: any) => b.id === briefId);
+    expect(briefAfterRefresh).toBeDefined();
+    expect(briefAfterRefresh.tracked).toBe(true);
 
     // =========================================================================
     // Step 2: 专访（以简报作上下文，决策模式）
@@ -173,30 +191,27 @@ describe("Full cross-feature business journey: 团队授权与控制感", () => 
     // Step 4: 决策确认 — 找到待确认的决策并确认
     // =========================================================================
 
-    // decisions 由 finalizeSession 从 LLM/fallback 产出；无 key 时可能为空。
-    // 若有候选决策，执行确认流程；若无则跳过本步（业务上合理）。
+    // decisions 由 finalize LLM（fake canned 固定含 1 条决策）产出——必有待确认决策。
     const pendingDecision = stateAfterInterview.decisions.find(
       (d: any) => d.confirmationStatus === "待用户确认"
     );
+    expect(pendingDecision).toBeDefined();
 
-    if (pendingDecision) {
-      const confirmRes = await server.inject({
-        method: "POST",
-        url: `/api/assets/decisions/${pendingDecision.id}/confirm`
-      });
-      expect(confirmRes.statusCode).toBe(200);
-      const confirmBody = confirmRes.json();
-      // 断言确认后状态更新
-      expect(confirmBody.asset.id).toBe(pendingDecision.id);
-      expect(confirmBody.asset.confirmationStatus).toBe("用户确认");
+    const confirmRes = await server.inject({
+      method: "POST",
+      url: `/api/assets/decisions/${pendingDecision!.id}/confirm`
+    });
+    expect(confirmRes.statusCode).toBe(200);
+    const confirmBody = confirmRes.json();
+    // 断言确认后状态更新
+    expect(confirmBody.asset.id).toBe(pendingDecision!.id);
+    expect(confirmBody.asset.confirmationStatus).toBe("用户确认");
 
-      // 持久化验证
-      const stateAfterConfirm = (await server.inject({ method: "GET", url: "/api/state" })).json();
-      const confirmedDecision = stateAfterConfirm.decisions.find((d: any) => d.id === pendingDecision.id);
-      expect(confirmedDecision).toBeDefined();
-      expect(confirmedDecision!.confirmationStatus).toBe("用户确认");
-    }
-    // 若无待确认决策，本步骤为 SKIPPED（确定性 fallback 正常路径）
+    // 持久化验证
+    const stateAfterConfirm = (await server.inject({ method: "GET", url: "/api/state" })).json();
+    const confirmedDecision = stateAfterConfirm.decisions.find((d: any) => d.id === pendingDecision!.id);
+    expect(confirmedDecision).toBeDefined();
+    expect(confirmedDecision!.confirmationStatus).toBe("用户确认");
 
     // =========================================================================
     // Step 5: 记忆 HITL — 导入文档 → 候选 → 审批
@@ -234,33 +249,32 @@ describe("Full cross-feature business journey: 团队授权与控制感", () => 
     );
     expect(importedSource).toBeDefined();
 
-    // 5b. 若有候选记忆（无 key 时为 0，有 mock LLM 时为 >0），则执行审批
+    // 5b. 审批候选记忆（fake 记忆抽取确定性产出候选，必有 pending 候选）
+    expect(importBody.candidateCount).toBeGreaterThan(0);
     const pendingCandidate = stateAfterImport.memoryCandidates.find(
       (c: any) => c.status === "pending"
     );
+    expect(pendingCandidate).toBeDefined();
 
-    if (pendingCandidate) {
-      const approveRes = await server.inject({
-        method: "POST",
-        url: `/api/memory-candidates/${pendingCandidate.id}/approve`
-      });
-      expect(approveRes.statusCode).toBe(200);
-      const approveBody = approveRes.json();
+    const approveRes = await server.inject({
+      method: "POST",
+      url: `/api/memory-candidates/${pendingCandidate!.id}/approve`
+    });
+    expect(approveRes.statusCode).toBe(200);
+    const approveBody = approveRes.json();
 
-      // 断言候选状态变更
-      expect(approveBody.candidate.status).toBe("approved");
-      // record 必须出现在 memoryRecords
-      expect(approveBody.record).toBeDefined();
-      expect(approveBody.record.sourceCandidateId).toBe(pendingCandidate.id);
+    // 断言候选状态变更
+    expect(approveBody.candidate.status).toBe("approved");
+    // record 必须出现在 memoryRecords
+    expect(approveBody.record).toBeDefined();
+    expect(approveBody.record.sourceCandidateId).toBe(pendingCandidate!.id);
 
-      // 持久化验证
-      const stateAfterApprove = (await server.inject({ method: "GET", url: "/api/state" })).json();
-      const persistedRecord = stateAfterApprove.memoryRecords.find(
-        (r: any) => r.sourceCandidateId === pendingCandidate.id
-      );
-      expect(persistedRecord).toBeDefined();
-    }
-    // 若 candidateCount=0（无 key），记忆候选为空是合理的，不影响其他步骤
+    // 持久化验证
+    const stateAfterApprove = (await server.inject({ method: "GET", url: "/api/state" })).json();
+    const persistedRecord = stateAfterApprove.memoryRecords.find(
+      (r: any) => r.sourceCandidateId === pendingCandidate!.id
+    );
+    expect(persistedRecord).toBeDefined();
 
     // =========================================================================
     // Step 6: 资料 RAG — 问答（导入资料应被召回）
@@ -273,25 +287,19 @@ describe("Full cross-feature business journey: 团队授权与控制感", () => 
     });
     expect(ragRes.statusCode).toBe(200);
     const ragBody = ragRes.json();
-    // answer 必须存在（fallback 路径也会返回基于内容的摘要）
+    // answer 来自注入的假 chat client（真实 RAG 代码路径：清洗→召回→prompt→生成）
     expect(typeof ragBody.answer).toBe("string");
     expect(ragBody.answer.length).toBeGreaterThan(0);
     expect(Array.isArray(ragBody.citations)).toBe(true);
     // 因为我们已导入文档，ragChunks 非空，citations 应来自导入资料
-    // （fallback 路径最多返回 3 条）
     expect(ragBody.citations.length).toBeGreaterThan(0);
     // 每条 citation 必须有 id 和 title
     for (const citation of ragBody.citations) {
       expect(typeof citation.id).toBe("string");
       expect(typeof citation.title).toBe("string");
     }
-    // 断言答案包含导入资料的主题词（keyword fallback 路径）
-    const answerContainsRelevantContent =
-      ragBody.answer.includes("授权") ||
-      ragBody.answer.includes("控制感") ||
-      ragBody.answer.includes("团队") ||
-      ragBody.citations.some((c: any) => c.title.includes("授权"));
-    expect(answerContainsRelevantContent).toBe(true);
+    // 断言召回真实命中了导入资料（citation 标题带主题词）
+    expect(ragBody.citations.some((c: any) => c.title.includes("授权"))).toBe(true);
 
     // =========================================================================
     // Step 7: 主题线聚合 — buildTrackWorkspace
@@ -355,7 +363,7 @@ describe("Full cross-feature business journey: 团队授权与控制感", () => 
     expect(privacyBody.totalRecords).toBeGreaterThan(0);
 
     // =========================================================================
-    // Step 9: 播客降级 — 创建 episode + 重新合成（无 key → fallback）
+    // Step 9: 播客 — 创建 episode（LLM 脚本 + 无 TTS → pending）+ 重新合成（无 TTS → 503）
     // =========================================================================
 
     // 9a. 用本次专访产生的 note 创建播客 episode
@@ -373,10 +381,10 @@ describe("Full cross-feature business journey: 团队授权与控制感", () => 
     const episodeBody = episodeRes.json();
     expect(episodeBody.episode).toBeDefined();
     expect(episodeBody.episode.noteId).toBe(noteId);
-    // 脚本必须存在（确定性 fallback 已生成）
+    // 脚本由假 chat client 走真实 LLM 脚本生成路径产出
     expect(typeof episodeBody.episode.script).toBe("string");
     expect(episodeBody.episode.script.length).toBeGreaterThan(0);
-    // 无 TTS client → audioRenderStatus 应为 "pending"（直接返回）
+    // 无 TTS client → audioRenderStatus 保持 "pending"（尚未渲染是诚实状态）
     expect(episodeBody.episode.audioRenderStatus).toBe("pending");
     const episodeId = episodeBody.episode.id as string;
 
@@ -386,20 +394,20 @@ describe("Full cross-feature business journey: 团队授权与控制感", () => 
     expect(persistedEpisode).toBeDefined();
     expect(persistedEpisode!.noteId).toBe(noteId);
 
-    // 9b. 重新合成（synthesize）— 无 TTS client → fallback
+    // 9b. 重新合成（synthesize）— 真实性重构:无 TTS client → 如实 503（不再假装 fallback 成功）
     const synthesizeRes = await server.inject({
       method: "POST",
       url: `/api/podcast/episodes/${episodeId}/synthesize`
     });
-    expect(synthesizeRes.statusCode).toBe(200);
-    const synthesizeBody = synthesizeRes.json();
-    expect(synthesizeBody.episode).toBeDefined();
-    expect(synthesizeBody.episode.id).toBe(episodeId);
-    // 无 TTS → fallback
-    expect(synthesizeBody.episode.audioRenderStatus).toBe("fallback");
-    // 脚本必须保留
-    expect(typeof synthesizeBody.episode.script).toBe("string");
-    expect(synthesizeBody.episode.script.length).toBeGreaterThan(0);
+    expect(synthesizeRes.statusCode).toBe(503);
+    expect(synthesizeRes.json().error).toContain("TTS");
+    // 脚本必须保留：episode 原样在库（audioRenderStatus 仍是 pending，未被污染）
+    const episodeAfterSynthesize = (await server.inject({ method: "GET", url: "/api/state" }))
+      .json()
+      .podcastEpisodes.find((e: any) => e.id === episodeId);
+    expect(episodeAfterSynthesize).toBeDefined();
+    expect(episodeAfterSynthesize.script.length).toBeGreaterThan(0);
+    expect(episodeAfterSynthesize.audioRenderStatus).toBe("pending");
 
     // =========================================================================
     // Step 10: 全程非 5xx — 最终状态一致性校验
@@ -435,21 +443,10 @@ describe("Full cross-feature business journey: 团队授权与控制感", () => 
   // =========================================================================
   // 补充：记忆 HITL mock LLM 路径（有候选时的完整流程验证）
   // =========================================================================
-  it("memory HITL: mock LLM produces candidates → approve moves to memoryRecords", async () => {
-    const mockChatClient = {
-      complete: vi.fn(async () =>
-        JSON.stringify([
-          {
-            text: "授权改革成功的核心在于让被授权者感受到真实的控制感，而非形式上的权力转让。",
-            type: "insight",
-            sensitivity: "normal",
-            source: "授权研究摘录"
-          }
-        ])
-      )
-    };
-
-    const server = buildApiServer({ env: {}, bailianChatClient: mockChatClient as any });
+  it("memory HITL: fake LLM produces candidates → approve moves to memoryRecords", async () => {
+    // 真实性重构:抽取解析已收紧（非 {"candidates":[...]} 形状即 502 原子失败）。注入
+    // createFakeChatClient（canned 记忆抽取固定 1 条候选）走真实抽取→审批全路径。
+    const server = buildApiServer({ env: {}, bailianChatClient: createFakeChatClient() });
 
     const importRes = await server.inject({
       method: "POST",
@@ -464,12 +461,7 @@ describe("Full cross-feature business journey: 团队授权与控制感", () => 
     });
     expect(importRes.statusCode).toBe(200);
     const importBody = importRes.json();
-
-    if (importBody.candidateCount === 0) {
-      // mock parsing may not match extraction schema — still valid
-      await server.close();
-      return;
-    }
+    expect(importBody.candidateCount).toBe(1);
 
     const pendingCandidate = importBody.state.memoryCandidates.find(
       (c: any) => c.status === "pending"
@@ -498,16 +490,16 @@ describe("Full cross-feature business journey: 团队授权与控制感", () => 
   });
 
   // =========================================================================
-  // 补充：播客 TTS 降级（failing TTS client → fallback 200）
+  // 补充：播客 TTS 失败暴露（failing TTS client → 创建仍 200，audioRenderStatus=failed 真错误入库）
   // =========================================================================
-  it("podcast TTS degradation: failing TTS client → 200, script intact, status=fallback", async () => {
+  it("podcast TTS failure: failing TTS client → 200, script intact, status=failed", async () => {
     const failingTtsClient = {
       synthesize: vi.fn(async () => {
         throw new Error("TTS synthesis error");
       })
     };
 
-    const server = buildApiServer({ env: {}, bailianPodcastAudioClient: failingTtsClient });
+    const server = buildApiServer({ env: {}, ...fakeLlmClients(), bailianPodcastAudioClient: failingTtsClient });
 
     // 重置并创建一个 session + note
     await server.inject({ method: "POST", url: "/api/state/reset", payload: { confirm: "RESET_ALL_DATA" } });
@@ -540,8 +532,9 @@ describe("Full cross-feature business journey: 团队授权与控制感", () => 
     const episodeBody = episodeRes.json();
     expect(typeof episodeBody.episode.script).toBe("string");
     expect(episodeBody.episode.script.length).toBeGreaterThan(0);
-    // TTS 失败 → fallback
-    expect(episodeBody.episode.audioRenderStatus).toBe("fallback");
+    // 真实性重构:TTS 失败 → "failed" 真错误入库（"fallback" 伪中间态已删），脚本不丢
+    expect(episodeBody.episode.audioRenderStatus).toBe("failed");
+    expect(episodeBody.episode.audioRenderMessage).toContain("音频渲染失败");
 
     // episode 必须持久化
     const finalState = (await server.inject({ method: "GET", url: "/api/state" })).json();
@@ -549,7 +542,7 @@ describe("Full cross-feature business journey: 团队授权与控制感", () => 
       (e: any) => e.id === episodeBody.episode.id
     );
     expect(persistedEpisode).toBeDefined();
-    expect(persistedEpisode!.audioRenderStatus).toBe("fallback");
+    expect(persistedEpisode!.audioRenderStatus).toBe("failed");
 
     await server.close();
   });
@@ -561,9 +554,10 @@ describe("Full cross-feature business journey: 团队授权与控制感", () => 
   //   → 数据治理：导出有内容 / 隐私报告分类 / purge 后个人数据清空但结构在
   // =========================================================================
   it("system module: config save, corpus patch reaches engine+voice, data governance round-trip", async () => {
-    // 注入空 env 对象，PATCH 写入它而非 process.env（隔离 + 可断言）
+    // 注入空 env 对象，PATCH 写入它而非 process.env（隔离 + 可断言）。
+    // 语料分析是 LLM 必选能力 → 注入假 chat client（canned 语料分析含 concrete-moment 规则）。
     const env: Record<string, string | undefined> = {};
-    const server = buildApiServer({ env });
+    const server = buildApiServer({ env, bailianChatClient: createFakeChatClient() });
 
     await server.inject({ method: "POST", url: "/api/state/reset", payload: { confirm: "RESET_ALL_DATA" } });
 

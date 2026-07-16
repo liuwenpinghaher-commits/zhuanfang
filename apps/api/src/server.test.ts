@@ -3,6 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildApiServer, isDirectCliExecution, createGracefulShutdown } from "./server";
+import {
+  createFakeChatClient,
+  createFakeEmbeddingClient,
+  createFakeInterviewClient
+} from "./test-helpers/fake-llm-clients";
 
 describe("Product API", () => {
   const tempDirs: string[] = [];
@@ -401,7 +406,47 @@ describe("Product API", () => {
     });
   });
 
-  it("creates and persists search briefs through the Product API", async () => {
+  // 真实性重构:联网 provider 未配置 client 时不再用 local-demo 占位简报冒充（degraded 兜底已删）。
+  // 成功持久化路径改为用户【显式选择】local-demo 演示 provider（唯一保留的确定性简报入口）。
+  it("creates and persists search briefs through the Product API (explicit local-demo provider)", async () => {
+    const server = buildApiServer();
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/search/briefs",
+      payload: {
+        topic: "AI 产品商业化热点",
+        providerId: "local-demo",
+        maxSources: 3,
+        recencyDays: 14
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      brief: {
+        topic: "AI 产品商业化热点",
+        provider: "local-demo",
+        sources: expect.any(Array)
+      },
+      task: {
+        status: "succeeded",
+        providerId: "local-demo"
+      },
+      state: {
+        searchBriefs: expect.any(Array)
+      }
+    });
+
+    const stateResponse = await server.inject({ method: "GET", url: "/api/state" });
+    expect(stateResponse.json().searchBriefs[0]).toMatchObject({
+      topic: "AI 产品商业化热点",
+      provider: "local-demo"
+    });
+  });
+
+  // 真实性重构:选定联网 provider 但无对应 client → 如实 503（不能用就暴露）。
+  it("returns 503 when a networked search provider is selected without its client", async () => {
     const server = buildApiServer();
 
     const response = await server.inject({
@@ -415,27 +460,8 @@ describe("Product API", () => {
       }
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
-      brief: {
-        topic: "AI 产品商业化热点",
-        provider: "anysearch",
-        sources: expect.any(Array)
-      },
-      task: {
-        status: "degraded",
-        providerId: "anysearch"
-      },
-      state: {
-        searchBriefs: expect.any(Array)
-      }
-    });
-
-    const stateResponse = await server.inject({ method: "GET", url: "/api/state" });
-    expect(stateResponse.json().searchBriefs[0]).toMatchObject({
-      topic: "AI 产品商业化热点",
-      provider: "anysearch"
-    });
+    expect(response.statusCode).toBe(503);
+    expect(response.json().error).toContain("AnySearch 未配置");
   });
 
   it("uses Bailian built-in web search when the provider client is configured", async () => {
@@ -557,7 +583,9 @@ describe("Product API", () => {
   });
 
   it("creates and persists podcast episodes through the Product API", async () => {
-    const server = buildApiServer();
+    // 真实性重构:note 路径播客脚本是 LLM 必选能力（无 client → 503），注入假 chat client 走真实脚本生成路径。
+    // 无 TTS client 时创建仍 200,audioRenderStatus 保持 "pending"（尚未渲染是诚实状态）。
+    const server = buildApiServer({ bailianChatClient: createFakeChatClient() });
     const stateResponse = await server.inject({ method: "GET", url: "/api/state" });
     const noteId = stateResponse.json().notes[0].id;
 
@@ -577,12 +605,14 @@ describe("Product API", () => {
         noteId,
         format: "solo",
         voice: "calm-host",
-        status: "draft"
+        status: "draft",
+        audioRenderStatus: "pending"
       },
       state: {
         podcastEpisodes: expect.any(Array)
       }
     });
+    expect(response.json().episode.script).toContain("播客脚本正文");
 
     const persistedStateResponse = await server.inject({ method: "GET", url: "/api/state" });
     expect(persistedStateResponse.json().podcastEpisodes[0]).toMatchObject({
@@ -592,7 +622,8 @@ describe("Product API", () => {
   });
 
   it("analyzes and persists imported interview corpus through the Product API", async () => {
-    const server = buildApiServer();
+    // 真实性重构:语料分析是 LLM 必选能力（无 client → 503），注入假 chat client 走真实分析路径。
+    const server = buildApiServer({ bailianChatClient: createFakeChatClient() });
 
     const response = await server.inject({
       method: "POST",
@@ -624,7 +655,8 @@ describe("Product API", () => {
     });
   });
 
-  it("returns a degraded audio transcription draft when ASR is not configured", async () => {
+  // 真实性重构:无转写 client → 如实 503（此前返回 status:"degraded" 的占位稿冒充转写草稿,已剔除）。
+  it("returns 503 for audio transcription when ASR is not configured", async () => {
     const server = buildApiServer();
 
     const response = await server.inject({
@@ -636,18 +668,8 @@ describe("Product API", () => {
       }
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
-      transcription: {
-        providerId: "local-fallback",
-        model: "manual-transcript-required",
-        status: "degraded",
-        title: "音频专访样本",
-        sourceUrl: "https://example.com/interview-audio.mp3",
-        degradedReason: "缺少 DASHSCOPE_API_KEY 或 BAILIAN_API_KEY，无法调用百炼 SenseVoice 录音转写。"
-      }
-    });
-    expect(response.json().transcription.text).toContain("主持人：");
+    expect(response.statusCode).toBe(503);
+    expect(response.json().error).toContain("SenseVoice");
   });
 
   it("transcribes imported audio through the configured Bailian ASR client", async () => {
@@ -697,9 +719,10 @@ describe("Product API", () => {
     });
   });
 
-  it("honestly degrades a locally uploaded audio file instead of faking a transcript", async () => {
+  it("rejects a locally uploaded audio file with 422 instead of faking a transcript", async () => {
     // SenseVoice 录音转写只接受公网 file_urls；本地文件没有可行的 base64 内联转写路径。
-    // 即使 ASR client 已配置，本地文件上传也必须诚实降级 —— 绝不冒充真转写。
+    // 真实性重构:这是能力边界 → 如实 422 拒绝（此前返回 degraded 占位草稿,已剔除）。
+    // 即使 ASR client 已配置，本地文件上传也绝不调 ASR、绝不冒充真转写。
     let asrCalled = false;
     const server = buildApiServer({
       bailianTranscriptionClient: {
@@ -721,15 +744,11 @@ describe("Product API", () => {
     });
 
     expect(asrCalled).toBe(false);
-    expect(response.statusCode).toBe(200);
-    const transcription = response.json().transcription;
-    expect(transcription.status).toBe("degraded");
-    expect(transcription.providerId).toBe("local-fallback");
+    expect(response.statusCode).toBe(422);
     // 诚实文案：说明已收到文件、点名转写引擎需要公网 URL、给出可执行的下一步。
-    expect(transcription.degradedReason).toContain("interview.m4a");
-    expect(transcription.degradedReason).toContain("公网");
-    // 草稿把文件名带入上下文，且不假装这就是转写结果。
-    expect(transcription.text).toContain("interview.m4a");
+    const error = response.json().error as string;
+    expect(error).toContain("interview.m4a");
+    expect(error).toContain("公网");
   });
 
   it("rejects an oversized locally uploaded audio file with a 422", async () => {
@@ -764,7 +783,13 @@ describe("Product API", () => {
   });
 
   it("runs an interview session through the Product API and persists the generated note", async () => {
-    const server = buildApiServer();
+    // 真实性重构:追问（/turns）与归档（/end 的记忆抽取+finalize+矛盾精判）均为 LLM 必选能力，
+    // 注入全套假 client 走真实 LLM 代码路径（prompt 组装/解析/校验/落库全真）。
+    const server = buildApiServer({
+      bailianInterviewClient: createFakeInterviewClient(),
+      bailianChatClient: createFakeChatClient(),
+      embeddingClient: createFakeEmbeddingClient()
+    });
 
     const createResponse = await server.inject({
       method: "POST",
@@ -794,9 +819,10 @@ describe("Product API", () => {
 
     expect(turnResponse.statusCode).toBe(200);
     expect(turnResponse.json().session.turns).toHaveLength(2);
+    // intent 来自注入的假专访 client（createFakeInterviewClient 与真实 client 同契约的固定 intent）。
     expect(turnResponse.json().session.turns[1]).toMatchObject({
       role: "assistant",
-      intent: "追问机制"
+      intent: "百炼角色扮演追问"
     });
 
     const controlResponse = await server.inject({
@@ -890,10 +916,13 @@ describe("Product API", () => {
   // 的重连往返用例覆盖(surrealkv 落盘 + 新连接读回)。
 
   it("renders podcast audio through Bailian CosyVoice when the audio client is configured", async () => {
+    // 真实性重构:note 路径脚本由 LLM 生成（假 chat client 的 canned 播客脚本），TTS 收到的
+    // 是 LLM 脚本而非确定性模板（"开场：今天我们回到"模板已剔除）。
     const server = buildApiServer({
+      bailianChatClient: createFakeChatClient(),
       bailianPodcastAudioClient: {
         async synthesize(input) {
-          expect(input.text).toContain("开场：今天我们回到");
+          expect(input.text).toContain("播客脚本正文");
           expect(input.voice).toBeUndefined();
           return {
             providerId: "bailian-cosyvoice",

@@ -21,14 +21,14 @@ describe("classifyTurnComplete", () => {
     expect(r.done).toBe(false);
   });
 
-  it("LLM 返回坏 JSON → 默认 done:true（宁可接话）", async () => {
-    const r = await classifyTurnComplete(fakeSession(), "嗯", fakeChat("不是JSON"));
-    expect(r.done).toBe(true);
+  // 真实性重构:剔除「失败 → 默认 done:true」兜底——服务端不伪造分类结果,
+  // 失败向上抛由路由如实 5xx;"拿不到判定就默认应答"的实时策略属于 cascade 调用方。
+  it("LLM 返回坏 JSON → 向上抛(不再默认 done:true)", async () => {
+    await expect(classifyTurnComplete(fakeSession(), "嗯", fakeChat("不是JSON"))).rejects.toThrow();
   });
 
-  it("chatClient 抛错 → 默认 done:true", async () => {
+  it("chatClient 抛错 → 向上抛(不再默认 done:true)", async () => {
     const chat: BailianChatClient = { complete: vi.fn(async () => { throw new Error("timeout"); }) };
-    const r = await classifyTurnComplete(fakeSession(), "嗯", chat);
-    expect(r.done).toBe(true);
+    await expect(classifyTurnComplete(fakeSession(), "嗯", chat)).rejects.toThrow("timeout");
   });
 });

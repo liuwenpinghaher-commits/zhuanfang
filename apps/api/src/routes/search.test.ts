@@ -181,10 +181,12 @@ describe("POST /api/research/auto-run", () => {
   const baseState = createInitialProductState();
 
   // Plant a stale tracked brief with a duplicate source URL (to verify dedup)
+  // 真实性重构:local-demo 简报不再支持联网刷新(422/记失败)——要测"过期 tracked 简报被刷新",
+  // 种子简报必须是联网 provider(bailian,由 fakeClientWithDup 担任测试替身)。
   const staleBriefPartial = {
     id: "stale-brief-1",
     topic: "自动化测试主题",
-    provider: "local-demo" as const,
+    provider: "bailian" as const,
     status: "ready" as const,
     summary: "旧简报摘要",
     facts: ["旧事实"],
@@ -312,8 +314,8 @@ describe("POST /api/research/auto-run", () => {
     expect(body.summary.dedupedSources).toBeGreaterThanOrEqual(0);
   });
 
-  it("falls back gracefully when no provider key is configured (no-key scenario)", async () => {
-    // App with no provider clients at all → should still return 200 via local-demo fallback
+  // 真实性重构:无 provider key 不再走 local-demo 占位简报——逐条失败进 summary.failures 如实汇报。
+  it("no provider key → 200, generated=0, 失败逐条进 summary.failures 如实汇报", async () => {
     const noKeyApp = Fastify();
     const noKeyRepo = createInMemoryProductStateRepository(createInitialProductState());
     await registerSearchRoutes(noKeyApp, noKeyRepo, {}); // no bailianSearchClient
@@ -326,7 +328,9 @@ describe("POST /api/research/auto-run", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.summary).toBeDefined();
-    expect(typeof body.summary.generated).toBe("number");
+    expect(body.summary.generated).toBe(0);   // 不再用占位简报冒充生成成功
+    expect(body.summary.failed).toBeGreaterThanOrEqual(1);
+    expect(body.summary.failures[0].error).toContain("未配置");
 
     await noKeyApp.close();
   });
@@ -499,14 +503,15 @@ describe("POST /api/research/auto-run — 并发保护", () => {
   });
 });
 
-describe("审计修复(P2-24):refresh 降级不覆盖真实内容", () => {
-  it("无有效 provider → 保留原内容, status=needs-review, degraded=true", async () => {
+// 真实性重构(取代旧 P2-24 降级用例):refresh 不再有"needs-review + degraded"降级分支——
+// provider 未配置 → 503 / local-demo 简报 → 422,原简报原样保留(不落任何变更)。
+describe("refresh 真实性:不可用就暴露,原简报不动", () => {
+  it("provider(bailian) 未配置 → 503, 原简报内容原样保留", async () => {
     const app2 = Fastify();
     const repo = createInMemoryProductStateRepository(createInitialProductState());
-    // 无任何 provider client → freshInput 恒空 → enriched 空 → 走降级分支
-    await registerSearchRoutes(app2, repo, {});
+    await registerSearchRoutes(app2, repo, {}); // 无任何 provider client
     await app2.ready();
-    // 先种一条有真实内容的 tracked brief
+    // 先种一条有真实内容的 tracked brief(provider=activeProvider=bailian)
     const state = repo.getState();
     const { brief: existing, nextState } = buildSearchBrief(state, "真实调研主题");
     const realFact = "这是真实抓取的事实,不该被模板覆盖";
@@ -514,11 +519,27 @@ describe("审计修复(P2-24):refresh 降级不覆盖真实内容", () => {
     repo.replaceState({ ...nextState, searchBriefs: [seeded, ...nextState.searchBriefs.slice(1)] });
 
     const res = await app2.inject({ method: "POST", url: `/api/search/briefs/${existing.id}/refresh` });
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body.degraded).toBe(true);
-    expect(body.brief.status).toBe("needs-review");
-    expect(body.brief.facts).toContain(realFact);   // 真实内容保留,未被 local-demo 模板替换
+    expect(res.statusCode).toBe(503);
+    expect(res.json().error).toContain("未配置");
+    // 原简报原样保留:内容与状态都未被改动
+    const persisted = repo.getState().searchBriefs.find((b) => b.id === existing.id);
+    expect(persisted?.facts).toContain(realFact);
+    expect(persisted?.status).toBe("ready");
+    await app2.close();
+  });
+
+  it("local-demo 简报 → 422（演示简报不支持联网刷新）", async () => {
+    const app2 = Fastify();
+    const repo = createInMemoryProductStateRepository(createInitialProductState());
+    await registerSearchRoutes(app2, repo, {});
+    await app2.ready();
+    const state = repo.getState();
+    const { brief: existing, nextState } = buildSearchBrief(state, "演示主题", "local-demo");
+    repo.replaceState(nextState);
+
+    const res = await app2.inject({ method: "POST", url: `/api/search/briefs/${existing.id}/refresh` });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error).toContain("local-demo");
     await app2.close();
   });
 });

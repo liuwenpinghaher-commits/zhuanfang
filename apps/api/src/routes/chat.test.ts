@@ -170,7 +170,8 @@ describe("POST /api/chat", () => {
     await server.close();
   });
 
-  it("R2c searchHybrid 抛错 → 回落旧 listAll+rank 路径, 仍 200 且 citations 非空", async () => {
+  // 真实性重构:原生召回抛错不再静默换路(listAll 回落已删)——如实 502,本轮消息不入库。
+  it("searchHybrid 抛错 → 502（不再回落 listAll，本轮消息不入库）", async () => {
     const repository = createInMemoryProductStateRepository(createInitialProductState());
     const { repo, listAllCalls } = await seedHybridKnowledge({
       hybrid: async () => { throw new Error("simulated native recall failure"); }
@@ -185,19 +186,21 @@ describe("POST /api/chat", () => {
 
     const res = await server.inject({ method: "POST", url: "/api/chat", payload: { message: "我担心什么?" } });
 
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode).toBe(502);
     const body = res.json();
-    expect(listAllCalls()).toBe(1);   // 回落旧路径
-    expect(body.citations.length).toBeGreaterThan(0);   // 种子块经关键词重叠照常命中
-    expect(body.citations[0].sourceId).toBe("k1");
+    expect(body.error).toContain("对话资料召回失败");
+    expect(listAllCalls()).toBe(0);   // 绝不静默换路
+    // 原子失败:本轮 user 消息未持久化
+    expect(repository.getState().chatSessions).toHaveLength(0);
 
     await server.close();
   });
 
-  it("R2c searchHybrid 返回空候选 → 回落旧路径(召回面永不小于现状)", async () => {
+  // 真实性重构:空候选=没有相关资料(诚实的空),不再回落 listAll 全表掩盖差异——照常生成、不带引用。
+  it("searchHybrid 返回空候选 → 200 诚实空检索（不回落 listAll，citations 空）", async () => {
     const repository = createInMemoryProductStateRepository(createInitialProductState());
     const { repo, hybridCalls, listAllCalls } = await seedHybridKnowledge({ hybrid: async () => [] });
-    const fakeChatClient = { complete: async () => "根据你的资料[1],你担心放权失控。" };
+    const fakeChatClient = { complete: async () => "我没有检索到相关资料，仅凭对话历史回答。" };
 
     const server = buildApiServer({
       productStateRepository: repository,
@@ -213,21 +216,24 @@ describe("POST /api/chat", () => {
     // 无 embeddingClient → query 向量缺席:消费点须以"不带 embedding 键"调用(BM25-only 语义),
     // 而不是传 undefined/空数组。
     expect(hybridCalls[0].embedding).toBeUndefined();
-    expect(listAllCalls()).toBe(1);   // 空候选 → 旧路径兜底
-    expect(body.citations.length).toBeGreaterThan(0);
-    expect(body.citations[0].sourceId).toBe("k1");
+    expect(listAllCalls()).toBe(0);   // 空候选不再回落全表
+    expect(body.citations).toHaveLength(0);   // 诚实的空:回答不带引用
+    const session = body.state.chatSessions.find((s: any) => s.id === body.sessionId);
+    expect(session.messages).toHaveLength(2);   // 正常生成照常入库
+    expect(session.messages[1].role).toBe("assistant");
 
     await server.close();
   });
 
-  it("R2c 候选非空但域层精排全零 → 仍回落旧路径(闸门滤空不算命中)", async () => {
+  // 真实性重构:精排全零同样是诚实的空——不再回落 listAll,无关候选块绝不进引用。
+  it("候选非空但域层精排全零 → 200 诚实空检索（不回落 listAll）", async () => {
     const repository = createInMemoryProductStateRepository(createInitialProductState());
     // 原生路返回与 query 向量正交的候选块(cosine=0)且关键词零重叠 → rankKnowledgeChunks 的
-    // score>0 闸门全滤 → 精排结果为空,必须回落 listAll 旧路径(M1:与 rag.ts"结果空即回落"对称)。
+    // score>0 闸门全滤 → 精排结果为空。
     const { repo, hybridCalls, listAllCalls } = await seedHybridKnowledge({
       hybrid: async () => [makeChunk({ id: "irrelevant", text: "火星地貌研究笔记。", keywords: ["火星"], embedding: [0, 1, 0] })]
     });
-    const fakeChatClient = { complete: async () => "根据你的资料[1],你担心放权失控。" };
+    const fakeChatClient = { complete: async () => "我没有检索到相关资料，仅凭对话历史回答。" };
     const fakeEmbedding = { providerId: "fake", embed: async (texts: string[]) => texts.map(() => [1, 0, 0]) };
 
     const server = buildApiServer({
@@ -242,16 +248,17 @@ describe("POST /api/chat", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(hybridCalls).toHaveLength(1);
-    expect(listAllCalls()).toBe(1);   // 精排全零 → 旧全表路径兜底
-    // 回落路径照常命中种子块(k1 无嵌入,按关键词重叠计分),无关候选块绝不进引用。
-    expect(body.citations.length).toBeGreaterThan(0);
-    expect(body.citations[0].sourceId).toBe("k1");
+    expect(listAllCalls()).toBe(0);   // 精排全零不再回落全表
+    expect(body.citations).toHaveLength(0);
     expect(body.citations.some((c: any) => c.sourceId === "irrelevant")).toBe(false);
+    const session = body.state.chatSessions.find((s: any) => s.id === body.sessionId);
+    expect(session.messages).toHaveLength(2);
 
     await server.close();
   });
 
-  it("离线: 无 bailianChatClient → assistant 是降级文案, 不报错", async () => {
+  // 真实性重构:OFFLINE_ANSWER 降级文案已删除——无 chatClient 即对话不可用,如实 503,消息不入库。
+  it("无 bailianChatClient → 503（不再存降级文案冒充回答，消息不入库）", async () => {
     const repository = createInMemoryProductStateRepository(createInitialProductState());
     const knowledgeIndexRepository = await seedKnowledge();
 
@@ -267,13 +274,10 @@ describe("POST /api/chat", () => {
       payload: { message: "我担心什么?" }
     });
 
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body.answer).toContain("对话暂不可用");
-    expect(body.citations).toHaveLength(0);
-    const session = body.state.chatSessions.find((s: any) => s.id === body.sessionId);
-    expect(session.messages).toHaveLength(2);
-    expect(session.messages[1].role).toBe("assistant");
+    expect(res.statusCode).toBe(503);
+    expect(res.json().error).toContain("未配置");
+    // 原子失败:会话与消息都未持久化
+    expect(repository.getState().chatSessions).toHaveLength(0);
 
     await server.close();
   });

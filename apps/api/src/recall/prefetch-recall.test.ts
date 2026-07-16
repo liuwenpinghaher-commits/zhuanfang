@@ -31,11 +31,13 @@ describe("prefetchRecall", () => {
     expect(r.memoryHits).toBeUndefined();
     expect(r.themeAssets?.points).toContain("pt_1");
   });
-  it("fail-safe:某子召回抛错 → 该字段 undefined,整体不抛", async () => {
+  // 真实性重构:safe() 吞错已删除——任一路召回抛错整体 reject,由调用方如实 5xx,
+  // 不再"看起来成功但少了召回"。
+  it("某子召回抛错 → 整体 reject(不再吞错返回 undefined)", async () => {
     const port: NativeRecallPort = { ...okPort(), recallMemoriesByVector: async () => { throw new Error("boom"); } };
-    const r = await prefetchRecall(port, stateWithTheme(), "放权", [0.1], { includeSensitive: false, topN: 5 });
-    expect(r.memoryHits).toBeUndefined();
-    expect(r.themeAssets?.points).toContain("pt_1");
+    await expect(
+      prefetchRecall(port, stateWithTheme(), "放权", [0.1], { includeSensitive: false, topN: 5 })
+    ).rejects.toThrow("boom");
   });
   it("③ 混合检索:把 topicHint 作为 queryText + includeSensitive 透传给 recallMemoriesByVector", async () => {
     let seen: { includeSensitive?: boolean; queryText?: string } | undefined;
@@ -62,11 +64,12 @@ describe("prefetchRecall: rag 混合召回注入(方案一)+ 溯源敏感透传(
     expect(r.ragHits).toBeUndefined();
     expect(r.themeAssets?.points).toContain("pt_1");
   });
-  it("fail-safe:recallRagChunks 抛错 → ragHits undefined,不影响其他路", async () => {
+  // 真实性重构:rag 路同样不吞错——抛错整体 reject。
+  it("recallRagChunks 抛错 → 整体 reject(不再吞错置 ragHits undefined)", async () => {
     const port: NativeRecallPort = { ...okPort(), recallRagChunks: async () => { throw new Error("boom"); } };
-    const r = await prefetchRecall(port, stateWithTheme(), "放权", [0.1], { includeSensitive: false, topN: 5 });
-    expect(r.ragHits).toBeUndefined();
-    expect(r.themeAssets?.points).toContain("pt_1");
+    await expect(
+      prefetchRecall(port, stateWithTheme(), "放权", [0.1], { includeSensitive: false, topN: 5 })
+    ).rejects.toThrow("boom");
   });
   it("无 queryEmbedding 有 topicHint → 仍调 recallRagChunks(BM25-only,不带 embedding);空命中不注入", async () => {
     let seen: { embedding?: number[]; queryText?: string } | undefined;
