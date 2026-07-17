@@ -4,8 +4,10 @@ import { createLivekitVoiceSession, type LivekitVoiceCallbacks } from "./livekit
 const mockSetMicrophoneEnabled = vi.fn().mockResolvedValue(undefined);
 const mockConnect = vi.fn().mockResolvedValue(undefined);
 const mockPublishData = vi.fn().mockResolvedValue(undefined);
+const mockModuleLoadState = vi.hoisted(() => ({ count: 0 }));
 
-vi.mock("livekit-client", () => {
+vi.mock("livekit-client/source", () => {
+  mockModuleLoadState.count += 1;
   function MockRoom() {
     return {
       connect: mockConnect,
@@ -59,6 +61,10 @@ describe("createLivekitVoiceSession", () => {
     vi.clearAllMocks();
     mockConnect.mockResolvedValue(undefined);
     mockSetMicrophoneEnabled.mockResolvedValue(undefined);
+  });
+
+  it("does not load livekit-client until the LiveKit path is actually selected", () => {
+    expect(mockModuleLoadState.count).toBe(0);
   });
 
   it("resolves with session controls on successful connect", async () => {

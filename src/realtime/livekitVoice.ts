@@ -1,12 +1,17 @@
-import {
-  Room,
-  type RemoteParticipant,
-  type RemoteTrack,
-  type RemoteTrackPublication,
-  RoomEvent,
-  type ConnectionState,
-  Track
+import type {
+  RemoteParticipant,
+  RemoteTrack,
+  RemoteTrackPublication,
+  ConnectionState,
 } from "livekit-client";
+
+type LivekitSdk = Pick<typeof import("livekit-client"), "Room" | "RoomEvent" | "Track">;
+let livekitSdkPromise: Promise<LivekitSdk> | undefined;
+
+function loadLivekitSdk(): Promise<LivekitSdk> {
+  livekitSdkPromise ??= import("livekit-client/source");
+  return livekitSdkPromise;
+}
 
 export interface LivekitVoiceCallbacks {
   onStateChange: (state: ConnectionState) => void;
@@ -50,6 +55,7 @@ export async function createLivekitVoiceSession(
   options: CreateLivekitVoiceSessionOptions
 ): Promise<LivekitVoiceSession> {
   const { serverUrl, token, callbacks } = options;
+  const { Room, RoomEvent, Track } = await loadLivekitSdk();
   const room = new Room();
 
   // Track the agent's subscribed audio tracks + the <audio> elements .attach()

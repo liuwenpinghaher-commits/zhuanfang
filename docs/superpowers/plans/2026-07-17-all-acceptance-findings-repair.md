@@ -81,11 +81,11 @@
 
 ### Steps
 
-- [ ] 添加失败测试/构建断言：非 LiveKit 模式不触发 `livekit-client` import，进入 LiveKit 模式才加载。
-- [ ] 运行聚焦测试并记录红；运行一次 `npm run build` 保存现有 `vendor-livekit >500kB` 证据。
-- [ ] 将 LiveKit SDK 改为动态 import，移除强制首屏共享 manual chunk；保持公开 API 与错误处理不变。
-- [ ] 运行 `npx vitest run src/realtime/livekitVoice.test.ts`。
-- [ ] 运行 `npm run build`，要求首屏不引用 LiveKit chunk 且不再出现该大 chunk 警告；若仍有其他大 chunk，定位实际文件后处理，不调高 warning 上限。
+- [x] 添加失败测试/构建断言：非 LiveKit 模式不触发 `livekit-client` import，进入 LiveKit 模式才加载。
+- [x] 运行聚焦测试并记录红；运行一次 `npm run build` 保存现有 `vendor-livekit 504.52kB` 告警证据。
+- [x] 将 LiveKit SDK 改为动态 import，移除强制首屏共享 manual chunk；保持公开 API 与错误处理不变。
+- [x] 运行 `npx vitest run src/realtime/livekitVoice.test.ts`（9 tests passed）。
+- [x] 运行 `npm run build`：首屏 HTML 只预载 React，LiveKit 懒包降至 478.50kB，构建无大包告警；未调高 warning 上限。
 - [ ] 提交：`perf(voice): load livekit only when selected`。
 
 ---
