@@ -674,6 +674,39 @@ describe("interview-sessions routes", () => {
     await server.close();
   });
 
+  it("/end blocks a stale memory candidate that conflicts with an explicit correction made in this interview", async () => {
+    const staleClaim = "五项构成 AI Native 转型的结构性前提，缺一不可。";
+    const correctedClaim = "个人工具普及率不是组织提效的充分条件。";
+    const chatClient = makeDualPurposeChatClient([
+      { text: staleClaim, evidenceQuote: "转型前要把五项条件全部准备好", sensitivity: "normal" },
+      { text: correctedClaim, evidenceQuote: "个人工具快了，但价值流没有缩短", sensitivity: "normal" }
+    ]);
+    const repo = createInMemoryProductStateRepository();
+    const server = Fastify({ logger: false });
+    await registerInterviewSessionRoutes(server, repo, {
+      bailianChatClient: chatClient as any,
+      llmBudget: createLlmBudget({ maxCallsPerSession: 5 })
+    });
+
+    const id = await seedEndableSession(server);
+    await server.inject({
+      method: "POST",
+      url: `/api/interview-sessions/${id}/record-turn`,
+      payload: {
+        role: "user",
+        content: "我明确纠正：结构条件不是转型开始前必须全部满足的准入门槛，而应当在试点中一起改变。"
+      }
+    });
+
+    const res = await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/end` });
+    expect(res.statusCode).toBe(200);
+    const texts = repo.getState().memoryCandidates.map((candidate) => candidate.text);
+    expect(texts).not.toContain(staleClaim);
+    expect(texts).toContain(correctedClaim);
+
+    await server.close();
+  });
+
   // 真实性重构：确定性 finalizeSession/启发式模板候选已删除——无 chatClient 时 /end 如实 503，
   // 会话保持 active 可重试，state 不落任何 finalize 产物。
   it("/end (no chatClient): 503 如实暴露，会话保持 active，不产任何笔记/候选", async () => {

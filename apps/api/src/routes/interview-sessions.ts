@@ -362,7 +362,7 @@ export async function registerInterviewSessionRoutes(
       // would discard the candidates anyway, so spending LLM budget on them is pure waste.
       const providedCandidates = session.doNotSave
         ? undefined
-        : await extractSessionMemoryCandidates(session, options.bailianChatClient, budget);
+        : await extractSessionMemoryCandidates(session, options.bailianChatClient, budget, state.memoryCorrections);
       result = await finalizeSessionWithLlm(baseState, session, options.bailianChatClient, providedCandidates, options.embeddingClient);
       // 轻量推理(欠账②):finalize 之后,对全量观点做矛盾/演化检出。规则粗筛 → LLM 精判 →
       // 应用关系(双向 contradicts + supersedes)。失败与 finalize 一体原子中止(此时尚未持久化)。
@@ -766,7 +766,8 @@ function stripAsidesFromLatestAssistantTurn(session: InterviewSession): Intervie
 async function extractSessionMemoryCandidates(
   session: InterviewSession,
   chatClient: BailianChatClient,
-  budget: LlmBudget
+  budget: LlmBudget,
+  storedCorrections: MemoryCorrection[] = []
 ): Promise<MemoryCandidate[]> {
   if (!budget.tryConsume(session.id)) {
     console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "memory_extraction", sessionId: session.id }));
@@ -776,7 +777,12 @@ async function extractSessionMemoryCandidates(
   if (!transcript.trim()) {
     return [];
   }
-  const extracted = await extractCandidateMemories(session.title, transcript, chatClient);
+  const inSessionCorrections = session.turns
+    .filter((turn) => turn.role === "user" && /纠正|更正|不是|并非|不再|不能说|不应该|不应当|我不同意|我否定/.test(turn.content))
+    .map((turn) => turn.content);
+  const extracted = await extractCandidateMemories(session.title, transcript, chatClient, {
+    corrections: [...storedCorrections.map((correction) => correction.text), ...inSessionCorrections]
+  });
   return toSessionMemoryCandidates(extracted, session.id, session.title, nowIso());
 }
 

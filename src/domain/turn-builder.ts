@@ -12,7 +12,7 @@ import type {
   MemoryCorrection,
 } from "./types";
 
-import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, extractAnchor, isLongUserAnswer, buildMirroredFollowUp, findPendingControlAction, applyPendingControlToFollowUp, sanitizeExternalMaterialText } from "./utils";
+import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, extractAnchor, isLongUserAnswer, buildMirroredFollowUp, findPendingControlAction, applyPendingControlToFollowUp, sanitizeExternalMaterialText, shortUserQuote } from "./utils";
 import { decideInterviewStrategy } from "./strategy";
 import { buildRealtimeVoiceInstructions } from "./voice-instructions";
 
@@ -137,7 +137,7 @@ function controlFeedback(
     case "summary":
       return {
         nextStrength: session.strength,
-        content: `我先做阶段总结：你反复回到的其实是"${anchor}"背后那层更在意的东西。下一步最值得问的是：它能不能被一个小一点的具体例子先验证一下？`
+        content: buildStageSummary(session)
       };
     case "do-not-save":
       return {
@@ -145,6 +145,26 @@ function controlFeedback(
         content: "本次我会按不保存处理。你仍然可以继续说，但结束后不会沉淀到长期档案。"
       };
   }
+}
+
+function buildStageSummary(session: InterviewSession) {
+  const userTurns = session.turns.filter((turn) => turn.role === "user" && turn.content.trim().length > 0);
+  if (userTurns.length === 0) {
+    return "我先做阶段总结：目前还没有足够的用户表达可以归纳主线。请你先说一个最关键的事实，我再据此总结。";
+  }
+  if (userTurns.length === 1) {
+    return `我先做阶段总结：目前只有一条明确证据——你提到“${shortUserQuote(userTurns[0].content)}”。材料还不足以说这是反复主线，请你确认：这是不是本场最值得继续追的方向？`;
+  }
+  const first = userTurns[0];
+  const latest = userTurns.at(-1)!;
+  return `我先做阶段总结：你先提到“${shortUserQuote(first.content)}”，后来又说“${shortUserQuote(latest.content)}”。我先不替你下结论：请你确认，这两点之间共同的主线是什么？`;
+}
+
+function normalizeAssistantQuestion(content: string) {
+  return content
+    .replace(/（[^）]*）/g, "")
+    .replace(/\s+/g, " ")
+    .trim() || "这个问题";
 }
 export function receiveUserTurn(session: InterviewSession, userText: string): InterviewSession {
   const trimmed = userText.trim();
@@ -204,7 +224,9 @@ export function receiveUserTurnWithAssistant(
     strategyTrace: assistant.strategyDecision
       ? [...(session.strategyTrace ?? []), assistant.strategyDecision]
       : session.strategyTrace,
-    askedAnchor: extractAnchor(trimmed),
+    // Control actions target the question currently being answered, not a
+    // mechanically truncated fragment of the user's previous answer.
+    askedAnchor: normalizeAssistantQuestion(assistant.content),
     // The pending control directive was applied to this turn's prompt — clear it.
     pendingControl: undefined
   };

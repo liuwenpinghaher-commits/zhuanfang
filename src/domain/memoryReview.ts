@@ -16,6 +16,11 @@ type MemoryCandidateReviewInput = {
   reviewSignals?: string[];
 };
 
+type CorrectionAwareCandidate = {
+  text: string;
+  evidenceQuote?: string;
+};
+
 const externalSourceTypes: MemorySourceType[] = ["search_brief", "import_source", "corpus_import"];
 const interviewSourceTypes: MemorySourceType[] = ["interview_session", "dual_track_note"];
 
@@ -102,6 +107,71 @@ export function withMemoryCandidateReview<T extends MemoryCandidateReviewInput>(
     reviewScore: hasPersistedScore ? clampReviewScore(candidate.reviewScore ?? computed.reviewScore) : computed.reviewScore,
     reviewSignals
   };
+}
+
+export function conflictsWithExplicitCorrection(
+  candidate: CorrectionAwareCandidate,
+  corrections: string[]
+) {
+  const candidateText = normalizeForConflict(candidate.text);
+  if (!candidateText) {
+    return false;
+  }
+  return corrections.some((rawCorrection) => {
+    const correction = normalizeForConflict(rawCorrection);
+    if (!isExplicitCorrection(rawCorrection) || !correction) {
+      return false;
+    }
+    // A candidate that faithfully preserves the complete corrected statement
+    // is desirable; only stale/contradictory claims should be blocked.
+    if (candidateText.includes(correction) || correction.includes(candidateText)) {
+      return false;
+    }
+
+    const prerequisiteClaim = /结构性?前提|缺一不可|准入门槛|必须.{0,12}(?:满足|具备|准备好)/.test(candidate.text);
+    const prerequisiteCorrection = /不是.{0,28}(?:前提|准入门槛)|不(?:需要|应当).{0,20}(?:满足|具备)|不是.{0,20}必须.{0,20}满足/.test(rawCorrection);
+    if (prerequisiteClaim && prerequisiteCorrection && sharedConceptCount(candidateText, correction) >= 2) {
+      return true;
+    }
+
+    const candidateIsAbsolute = /总是|永远|所有|完全|必须|从不|绝不|根本|一律|缺一不可/.test(candidate.text);
+    return candidateIsAbsolute && sharedConceptCount(candidateText, correction) >= 3;
+  });
+}
+
+function isExplicitCorrection(text: string) {
+  return /纠正|更正|不是|并非|不再|不能说|不应该|不应当|我不同意|我否定/.test(text);
+}
+
+function normalizeForConflict(text: string) {
+  return text
+    .toLowerCase()
+    .replace(/ai\s*native/g, "ainative")
+    .replace(/[\s，。！？、,.!?；;：:"“”'‘’（）()\[\]【】]/g, "");
+}
+
+function sharedConceptCount(left: string, right: string) {
+  const leftConcepts = conceptBigrams(left);
+  const rightConcepts = conceptBigrams(right);
+  let count = 0;
+  for (const concept of leftConcepts) {
+    if (rightConcepts.has(concept)) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function conceptBigrams(text: string) {
+  const stop = new Set(["不是", "而是", "这个", "那个", "我们", "应当", "进行", "一个", "开始"]);
+  const result = new Set<string>();
+  for (let index = 0; index < text.length - 1; index += 1) {
+    const token = text.slice(index, index + 2);
+    if (!stop.has(token)) {
+      result.add(token);
+    }
+  }
+  return result;
 }
 
 function clampReviewScore(score: number) {

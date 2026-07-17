@@ -2,7 +2,7 @@
 // Returns reviewable candidates (the user approves each before it's stored).
 import type { ImportedMemoryCandidate } from "../../../../src/domain/import";
 import { sanitizeExternalMaterialBlock , sanitizeExternalMaterialText } from "../../../../src/domain/engine";
-import { withMemoryCandidateReview } from "../../../../src/domain/memoryReview";
+import { conflictsWithExplicitCorrection, withMemoryCandidateReview } from "../../../../src/domain/memoryReview";
 import type { MemoryCandidate } from "../../../../src/domain/types";
 import { makeId } from "../../../../src/domain/utils";
 import type { BailianChatClient } from "../providers/bailian";
@@ -23,8 +23,10 @@ const SYSTEM_PROMPT = [
 export async function extractCandidateMemories(
   title: string,
   content: string,
-  chatClient: BailianChatClient
+  chatClient: BailianChatClient,
+  options: { corrections?: string[] } = {}
 ): Promise<ImportedMemoryCandidate[]> {
+  const corrections = (options.corrections ?? []).map((item) => item.trim()).filter(Boolean).slice(-20);
   const raw = await chatClient.complete({
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
@@ -40,6 +42,15 @@ export async function extractCandidateMemories(
           // (often the deepest part) was silently dropped.
           sanitizeExternalMaterialBlock(content, "（外部资料片段已清洗）").slice(0, 24000),
           "=== 内容结束 ===",
+          ...(corrections.length > 0
+            ? [
+                "",
+                "=== 用户明确修正（最高优先级）===",
+                ...corrections.map((correction) => `- ${sanitizeExternalMaterialText(correction, "（修正已清洗）")}`),
+                "不得抽取与这些修正冲突的旧观点；如需抽取，只能保留修正后的完整表述。",
+                "=== 修正结束 ==="
+              ]
+            : []),
           "",
           "请输出 JSON：",
           `{"candidates":[{"text":"一条值得长期记住的记忆（陈述句）","evidenceQuote":"资料里的原文片段","sensitivity":"normal|sensitive"}]}`
@@ -66,6 +77,7 @@ export async function extractCandidateMemories(
       };
     })
     .filter((candidate) => candidate.text.length > 0)
+    .filter((candidate) => !conflictsWithExplicitCorrection(candidate, corrections))
     .slice(0, 20);
 }
 
