@@ -524,6 +524,18 @@ export async function registerStateRoutes(
         if (restoredRawMaterials !== undefined) steps.push({ store: "raw-material", status: "rolled-back" });
         if (restoredAudios !== undefined) steps.push({ store: "audio", status: "rolled-back" });
         steps.push({ store: "hot-state", status: "rolled-back" });
+        const conflictCode = typeof err === "object" && err !== null && "code" in err
+          ? String((err as { code?: unknown }).code ?? "")
+          : "";
+        if (conflictCode.startsWith("IMPORT_")) {
+          return reply.code(422).send({
+            error: message,
+            code: conflictCode,
+            failedStep: "validation",
+            rolledBack: true,
+            steps,
+          });
+        }
         // N-11:generic 中文 + 非生产 detail(SurrealDB 原始 message 可含字段值)。
         return reply.code(500).send({
           error: "导入失败(已整体回滚,无部分提交),请查看服务端日志。",

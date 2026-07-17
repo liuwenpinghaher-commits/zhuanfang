@@ -398,7 +398,7 @@ describe("surreal graph consistency audit(方案二)", () => {
 
 // ── P0 家族根修回归(全系统审查实测三形态) ──
 describe("P0 persist 确定性失败家族根修", () => {
-  it("P0-1a(note×级联收缩): 移除 session 保留 note → note 在 hot 与 DB 双侧存活,审计一致", async () => {
+  it("P0-1a(note×级联收缩): 移除 session 保留 note → note 双侧存活,遗留 anchor 令审计失败", async () => {
     const repo = await makeMem();
     repo.replaceState(linkedState());
     await repo.flush();
@@ -415,7 +415,8 @@ describe("P0 persist 确定性失败家族根修", () => {
     const [rows] = await repo.query<[Array<{ id: unknown }>]>("SELECT id FROM note;");
     expect((rows ?? []).length).toBe(1);                                 // DB 同样保留(不再发散)
     const audit = await repo.auditGraphConsistency();
-    expect(audit.ok, JSON.stringify(audit)).toBe(true);
+    expect(audit.ok, JSON.stringify(audit)).toBe(false);
+    expect(audit.danglingProvenanceCount).toBe(1);
     // 隐私核心不回退:session 的 turn 仍被级联清掉
     const [turns] = await repo.query<[Array<{ id: unknown }>]>("SELECT id FROM turn;");
     expect((turns ?? []).length).toBe(0);
@@ -434,9 +435,10 @@ describe("P0 persist 确定性失败家族根修", () => {
     expect(repo.getPersistHealth().consecutiveFailures).toBe(0);
     const audit = await repo.auditGraphConsistency();
     expect(audit.ok, JSON.stringify(audit)).toBe(true);
+    expect(audit.danglingProvenanceCount).toBe(0);
   });
 
-  it("P0-2(同事务级联感知): 移除 session + 新增 point(anchor→该 session 的 turn)→ persist 成功,悬空边被判死", async () => {
+  it("P0-2(同事务级联感知): 移除 session + 新增 point(anchor→该 session 的 turn)→ persist 成功但审计报告 dangling", async () => {
     const repo = await makeMem();
     repo.replaceState(linkedState());
     await repo.flush();
@@ -448,7 +450,8 @@ describe("P0 persist 确定性失败家族根修", () => {
     const [pts] = await repo.query<[Array<{ id: unknown }>]>("SELECT id FROM point;");
     expect((pts ?? []).length).toBe(2);                                 // 资产真实落库
     const audit = await repo.auditGraphConsistency();
-    expect(audit.ok, JSON.stringify(audit)).toBe(true);
+    expect(audit.ok, JSON.stringify(audit)).toBe(false);
+    expect(audit.danglingProvenanceCount).toBe(2);
   });
 
   it("P0-3b(必填 string 兜底): 缺 content 的 point 被 normalize 补空串,persist 不被 coerce 拒", async () => {
@@ -500,7 +503,7 @@ describe("④根修:悬空溯源不再拒整事务(reset→重引入形状,E2E �
     const [df] = await repo.query<[Array<Record<string, unknown>>]>("SELECT * FROM derived_from;");
     expect((df ?? []).length).toBe(0);               // 悬空溯源不投影(turn 真的不存在)
     const audit = await repo.auditGraphConsistency();
-    expect(audit.ok, `悬空溯源应归 dangling 而非漂移: ${JSON.stringify(audit)}`).toBe(true);
+    expect(audit.ok, `悬空溯源必须令审计失败: ${JSON.stringify(audit)}`).toBe(false);
     expect(audit.danglingProvenanceCount).toBe(1);   // 单列可观测
     expect(audit.missingCount).toBe(0);
   });

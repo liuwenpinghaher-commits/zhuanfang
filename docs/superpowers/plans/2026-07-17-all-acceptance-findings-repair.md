@@ -33,14 +33,14 @@
 
 ### Steps
 
-- [ ] 添加失败测试：完整 export/import 后 hot `session.turns` 仍为空，但 cold raw turns 被原子投影为 turn 节点、`part_of`/`derived_from` 边且可反向召回。
-- [ ] 添加失败测试：同一 turn ID 在 hot/cold 中内容冲突时导入返回 4xx/结构化失败，数据库保持导入前状态。
-- [ ] 添加失败测试：存在 dangling provenance 时 `GraphConsistencyReport.ok === false`。
-- [ ] 运行：`npx vitest run packages/db/src/surreal/surreal-governance-tx.test.ts packages/db/src/surreal/surreal-product-state-repository.test.ts apps/api/src/routes/state.governance.test.ts`，确认新增断言红。
-- [ ] 在 governance replace 内构造仅用于持久化投影的完整 turn 集；先校验冲突，再在同一事务写节点和边，不把冷 turns 重新留在 hot ProductState。
-- [ ] 将 dangling provenance 纳入 `ok`，并让导入 receipt/错误暴露失败步骤；保留补偿回滚。
-- [ ] 运行上述聚焦测试；再运行 `npx vitest run apps/api/src/routes/state.test.ts apps/api/src/routes/state.governance.real.test.ts packages/db/src/surreal/surreal-recall.test.ts`。
-- [ ] 检查 diff 与事务边界，提交：`fix(storage): restore provenance graph atomically`。
+- [x] 添加失败测试：完整 export/import 后 hot `session.turns` 仍为空，但 cold raw turns 被原子投影为 turn 节点、`part_of`/`derived_from` 边且可反向召回。
+- [x] 添加失败测试：同一 turn ID 在 hot/cold 中内容冲突时导入返回 4xx/结构化失败，数据库保持导入前状态。
+- [x] 添加失败测试：存在 dangling provenance 时 `GraphConsistencyReport.ok === false`。
+- [x] 运行：`npx vitest run packages/db/src/surreal/surreal-governance-tx.test.ts packages/db/src/surreal/surreal-product-state-repository.test.ts apps/api/src/routes/state.governance.test.ts`，确认新增断言红。
+- [x] 在 governance replace 内构造仅用于持久化投影的完整 turn 集；先校验冲突，再在同一事务写节点和边，不把冷 turns 重新留在 hot ProductState。
+- [x] 将 dangling provenance 纳入 `ok`，并让导入 receipt/错误暴露失败步骤；保留补偿回滚。
+- [x] 运行上述聚焦测试；再运行 `npx vitest run apps/api/src/routes/state.test.ts apps/api/src/routes/state.governance.real.test.ts packages/db/src/surreal/surreal-recall.test.ts`。
+- [x] 检查 diff 与事务边界，提交：`fix(storage): restore provenance graph atomically`。
 
 ---
 
@@ -289,4 +289,3 @@
 | 语音尾句截断/背景污染 | Task 8 |
 | no-save UI 仍称生成档案/资产 | Task 9 |
 | active 会话难恢复/重复 | Task 4 + Task 9 |
-
