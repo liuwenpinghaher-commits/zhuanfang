@@ -834,6 +834,8 @@ async function receiveTurn(
   const nextSession = receiveUserTurnWithAssistant(session, content, {
     content: assistant.content,
     intent: assistant.intent,
+    referencedMemory: strategyDecision.referencedMemory,
+    references: strategyDecision.references,
     strategyDecision
   });
   return { nextSession: { ...nextSession, interactionPreSignals: assistant.preSignals }, preSignals: assistant.preSignals };

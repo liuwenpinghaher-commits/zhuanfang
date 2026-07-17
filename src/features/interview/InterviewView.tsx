@@ -262,7 +262,15 @@ export function InterviewView({
                     )}
                   </div>
                   <p>{turn.content}</p>
-                  {turn.referencedMemory && <small>引用历史：{turn.referencedMemory}</small>}
+                  {turn.references && turn.references.length > 0 ? (
+                    <div className="turn-references" aria-label="本轮引用">
+                      {turn.references.map((reference) => (
+                        <small key={reference.id}>引用 · {reference.sourceLabel}：{reference.text}</small>
+                      ))}
+                    </div>
+                  ) : turn.referencedMemory ? (
+                    <small>引用：未提供结构化引用</small>
+                  ) : null}
                 </article>
               );
             })}

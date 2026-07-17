@@ -5,6 +5,7 @@ import type {
   InterviewGuide,
   InterviewGuideOptions,
   InterviewMode,
+  InterviewReference,
   InterviewResumeCard,
   InterviewSession,
   InterviewTurn,
@@ -497,6 +498,7 @@ export function buildInterviewGuide(state: ProductState, options: InterviewGuide
     nowIso(),
     recall
   );
+  const availableReferences = buildAvailableInterviewReferences(contextPack.memoryRecords, relevantMemories);
   // 审计修复(P2-10) + 回归审查 R5-3(注释因果修正):「已放弃/已修正」是用户/推理已废弃的立场——
   // 此前不筛状态,直接 slice 前 4 条(数组序,非 updatedAt 排序),主持人 prompt 把用户亲手废弃的观点
   // 当"过去的立场"对质,而同一资产的溯源门控又拒绝它——口径分裂。与溯源门控对齐:终态(已放弃/已修正)出局。
@@ -535,6 +537,7 @@ export function buildInterviewGuide(state: ProductState, options: InterviewGuide
     recommendedPerspectives,
     perspectiveRationale: buildPerspectiveRationale(recommendedPerspectives, missingPerspectives, searchBrief),
     relevantMemories,
+    availableReferences,
     graphReferences: contextPack.graphReferences,
     opinionEvolution: buildOpinionEvolution(state),
     statedPositions,
@@ -552,6 +555,25 @@ export function buildInterviewGuide(state: ProductState, options: InterviewGuide
       agendaContext
     })
   };
+}
+
+function buildAvailableInterviewReferences(
+  memoryRecords: MemoryRecord[],
+  relevantMemories: string[]
+): InterviewReference[] {
+  const rankByText = new Map(relevantMemories.map((text, index) => [text, index]));
+  return memoryRecords
+    .filter((record) => rankByText.has(record.text))
+    .sort((left, right) => (rankByText.get(left.text) ?? 999) - (rankByText.get(right.text) ?? 999))
+    .map((record) => ({
+      id: `memory:${record.id}`,
+      type: "memory" as const,
+      text: record.text,
+      sourceEntityType: "memory_record" as const,
+      sourceEntityId: record.id,
+      sourceLabel: record.sourceType === "interview_session" ? "已确认专访记忆" : "已确认长期记忆",
+      ...(record.evidenceAnchors?.[0] ? { evidenceTurn: record.evidenceAnchors[0] } : {})
+    }));
 }
 export function buildInterviewResumeCard(state: ProductState): InterviewResumeCard | null {
   return buildInterviewResumeCards(state)[0] ?? null;

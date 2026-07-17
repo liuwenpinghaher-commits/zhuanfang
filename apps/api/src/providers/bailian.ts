@@ -956,6 +956,15 @@ export function buildCharacterSystemPrompt(
   // 策略引擎为本轮选定的动作方向 —— 作为软指引注入，让策略真正驱动 LLM 提问，
   // 而不是事后只贴个标签。要顺着用户刚说的具体内容自然展开，不报动作名。
   if (strategyDecision) {
+    const selectedReferences = (strategyDecision.references ?? []).slice(0, 2);
+    if (selectedReferences.length > 0) {
+      ensureReferenceGuard();
+      lines.push(
+        `【本轮选定引用】${selectedReferences
+          .map((reference) => `${reference.id}｜${reference.sourceLabel}｜${sanitizeExternalMaterialList([reference.text], "")[0] ?? "引用内容已清洗"}`)
+          .join("；")}。如果本轮引用历史，只能引用这里列出的证据。`
+      );
+    }
     const perspectiveHint = strategyDecision.perspective ? `，可引入「${strategyDecision.perspective}」视角` : "";
     const blindspotHint = strategyDecision.blindspotConcept ? `，留意盲区「${strategyDecision.blindspotConcept}」` : "";
     lines.push(

@@ -376,6 +376,58 @@ describe("interview-sessions routes", () => {
     await server.close();
   });
 
+  it("/turns returns the same confirmed-memory reference used by the model and strategy trace", async () => {
+    const capturedDecisions: any[] = [];
+    const interviewClient = {
+      createAssistantTurn: vi.fn(async (input: any) => {
+        capturedDecisions.push(input.strategyDecision);
+        return {
+          providerId: "bailian-character" as const,
+          model: "test-model",
+          content: "这条历史判断在哪个流程节点最能被验证？",
+          intent: "百炼角色扮演追问" as const
+        };
+      })
+    };
+    const initial = createInitialProductState();
+    initial.memoryRecords = [{
+      id: "memory-org-efficiency",
+      text: "个人工具普及率不是组织提效的充分条件。",
+      status: "confirmed",
+      sourceType: "interview_session",
+      sourceId: "source-session",
+      evidenceQuote: "个人快了，但端到端价值流没有缩短。",
+      sensitivity: "normal",
+      createdAt: "2026-07-01T00:00:00.000Z",
+      updatedAt: "2026-07-01T00:00:00.000Z",
+      evidenceAnchors: [{ sessionId: "source-session", turnId: "source-turn" }]
+    }];
+    const repo = createInMemoryProductStateRepository(initial);
+    const server = Fastify({ logger: false });
+    await registerInterviewSessionRoutes(server, repo, { bailianInterviewClient: interviewClient });
+    const created = (await server.inject({
+      method: "POST",
+      url: "/api/interview-sessions",
+      payload: { mode: "organization", topicHint: "组织提效" }
+    })).json();
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/interview-sessions/${created.session.id}/turns`,
+      payload: { content: "个人效率提升后，组织效率还是没变化。" }
+    });
+
+    expect(res.statusCode).toBe(200);
+    const turn = res.json().session.turns.at(-1);
+    const trace = res.json().session.strategyTrace.at(-1);
+    expect(capturedDecisions[0].references[0].sourceEntityId).toBe("memory-org-efficiency");
+    expect(turn.references).toEqual(capturedDecisions[0].references);
+    expect(trace.references).toEqual(capturedDecisions[0].references);
+    expect(turn.references[0].text).toBe("个人工具普及率不是组织提效的充分条件。");
+
+    await server.close();
+  });
+
   // --- turn-complete (Layer 2) + decisions (audit log) ---
 
   it("/turn-complete: with chatClient mock returns done:true when LLM says so", async () => {

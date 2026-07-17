@@ -225,6 +225,8 @@ export interface InterviewGuide {
   recommendedPerspectives: string[];
   perspectiveRationale: string;
   relevantMemories: string[];
+  /** 可核验的本轮引用候选。旧会话可缺省；缺省时消费侧不得从字符串猜来源。 */
+  availableReferences?: InterviewReference[];
   graphReferences: MemoryGraphReference[];
   opinionEvolution: Array<{
     topic: string;
@@ -275,6 +277,8 @@ export interface InterviewTurn {
   intent: string;
   timestamp: string;
   referencedMemory?: string;
+  /** 本轮模型实际收到并使用的结构化引用；referencedMemory 仅保留旧数据兼容。 */
+  references?: InterviewReference[];
   strategy?: InterviewStrategyId;
   depth?: InterviewDepth;
   truncated?: InterviewTurnTruncation;
@@ -313,6 +317,28 @@ export type InterviewStrategyId =
 
 export type InterviewDepth = "surface" | "mechanism" | "meta" | "synthesis";
 
+export type InterviewReferenceType = "memory" | "interview_turn" | "search" | "import" | "asset" | "theme";
+
+export interface InterviewReference {
+  /** 稳定引用 ID，格式由来源类型和实体 ID 组成。 */
+  id: string;
+  type: InterviewReferenceType;
+  text: string;
+  sourceEntityType:
+    | "memory_record"
+    | "interview_turn"
+    | "search_brief"
+    | "import_source"
+    | "dual_track_note"
+    | "point"
+    | "question"
+    | "decision"
+    | "theme";
+  sourceEntityId: string;
+  sourceLabel: string;
+  evidenceTurn?: EvidenceAnchor;
+}
+
 export interface InterviewStrategyDecision {
   strategy: InterviewStrategyId;
   label: string;
@@ -322,6 +348,7 @@ export interface InterviewStrategyDecision {
   perspective?: string;
   blindspotConcept?: string;
   referencedMemory?: string;
+  references?: InterviewReference[];
 }
 
 export interface InterviewQualityGate {

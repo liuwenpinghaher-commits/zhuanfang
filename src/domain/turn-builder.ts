@@ -4,6 +4,7 @@ import type {
   InterviewControlAction,
   InterviewGuide,
   InterviewMode,
+  InterviewReference,
   InterviewSession,
   InterviewStrategyDecision,
   InterviewStrategyId,
@@ -51,7 +52,7 @@ function buildAssistantTurn(session: InterviewSession, userText: string): Interv
       : `我想回访一个知识债："${session.guide.debtToAddress}"。你现在能用自己的话解释它和这件事的关系吗？`;
   } else if (decision.strategy === "perspective_shift") {
     const perspective = decision.perspective ?? session.guide.recommendedPerspectives[0] ?? "另一个";
-    const memory = decision.referencedMemory ?? session.card.historyReferences[0];
+    const memory = decision.referencedMemory;
     content = memory
       ? `换到${perspective}视角，我先引用一条你说过的话："${memory}"。从这个角度看，"${anchor}"这件事真正在被什么推动？`
       : `换到${perspective}视角看"${anchor}"：从这个角度，事情真正在被什么推动？`;
@@ -99,7 +100,8 @@ function buildAssistantTurn(session: InterviewSession, userText: string): Interv
     content,
     intent,
     timestamp: nowIso(),
-    referencedMemory: decision.referencedMemory ?? session.card.historyReferences[0],
+    referencedMemory: decision.referencedMemory,
+    references: decision.references,
     strategy: decision.strategy,
     depth: decision.depth,
     strategyDecision: {
@@ -181,13 +183,20 @@ export function receiveUserTurn(session: InterviewSession, userText: string): In
     content: assistant.content,
     intent: assistant.intent,
     referencedMemory: assistant.referencedMemory,
+    references: assistant.references,
     strategyDecision: assistant.strategyDecision
   });
 }
 export function receiveUserTurnWithAssistant(
   session: InterviewSession,
   userText: string,
-  assistant: { content: string; intent: string; referencedMemory?: string; strategyDecision?: InterviewStrategyDecision }
+  assistant: {
+    content: string;
+    intent: string;
+    referencedMemory?: string;
+    references?: InterviewReference[];
+    strategyDecision?: InterviewStrategyDecision;
+  }
 ): InterviewSession {
   const trimmed = userText.trim();
   if (!trimmed) {
@@ -216,7 +225,8 @@ export function receiveUserTurnWithAssistant(
         content: assistant.content,
         intent: assistant.intent,
         timestamp,
-        referencedMemory: assistant.referencedMemory ?? session.card.historyReferences[0],
+        referencedMemory: assistant.referencedMemory ?? assistant.strategyDecision?.referencedMemory,
+        references: assistant.references ?? assistant.strategyDecision?.references,
         strategy: assistant.strategyDecision?.strategy,
         depth: assistant.strategyDecision?.depth
       }
@@ -249,7 +259,7 @@ export function updateInterviewControl(session: InterviewSession, action: Interv
         content: feedback.content,
         intent: "控制反馈",
         timestamp,
-        referencedMemory: session.card.historyReferences[0]
+        references: undefined
       }
     ]
   };
@@ -319,6 +329,7 @@ export interface AddTurnInput {
   strategy?: string;
   intent?: string;
   referencedMemory?: string;
+  references?: InterviewReference[];
 }
 
 const VALID_STRATEGY_IDS: ReadonlySet<InterviewStrategyId> = new Set<InterviewStrategyId>([
@@ -375,6 +386,7 @@ export function addTurn(session: InterviewSession, input: AddTurnInput): Intervi
     timestamp: nowIso(),
     ...(strategy ? { strategy } : {}),
     ...(input.referencedMemory ? { referencedMemory: input.referencedMemory } : {}),
+    ...(input.references?.length ? { references: input.references } : {}),
   };
   return {
     ...session,

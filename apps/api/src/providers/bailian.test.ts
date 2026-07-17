@@ -558,6 +558,41 @@ describe("bailian provider client", () => {
     expect(systemPrompt).toContain("上次说的那个项目其实已经停了");
   });
 
+  it("injects the exact structured reference selected for this turn into the model prompt", async () => {
+    const session = createSessionDraft(createInitialProductState(), "organization", "standard");
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ choices: [{ message: { role: "assistant", content: "继续追问。" } }] }),
+        { status: 200 }
+      )
+    );
+    const client = createBailianCharacterInterviewClient({ apiKey: "test-key", fetchImpl });
+    const strategyDecision = {
+      turnIndex: 1,
+      strategy: "mechanism_probe" as const,
+      label: "追问机制",
+      reason: "test",
+      depth: "surface" as const,
+      referencedMemory: "个人工具普及率不是组织提效的充分条件。",
+      references: [{
+        id: "memory:memory-1",
+        type: "memory",
+        text: "个人工具普及率不是组织提效的充分条件。",
+        sourceEntityType: "memory_record",
+        sourceEntityId: "memory-1",
+        sourceLabel: "已确认长期记忆"
+      }]
+    };
+
+    await client.createAssistantTurn({ session, userText: "为什么组织没有提效？", strategyDecision } as any);
+
+    const requestBody = JSON.parse(getLastFetchCall(fetchImpl as FetchMock)[1]?.body as string);
+    const systemPrompt = requestBody.messages[0].content as string;
+    expect(systemPrompt).toContain("本轮选定引用");
+    expect(systemPrompt).toContain("memory:memory-1");
+    expect(systemPrompt).toContain("个人工具普及率不是组织提效的充分条件。");
+  });
+
   it("omits the playbook/corrections sections from the system prompt when there are none", async () => {
     const state = createInitialProductState();
     const session = createSessionDraft(state, "decision", "standard");

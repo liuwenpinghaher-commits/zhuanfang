@@ -223,11 +223,13 @@ export function decideInterviewStrategy(session: InterviewSession, userText: str
   const trace = session.strategyTrace ?? [];
   const perspectiveShiftCount = trace.filter((item) => item.strategy === "perspective_shift").length;
   const nextPerspective = session.guide.recommendedPerspectives[perspectiveShiftCount];
-  const referencedMemory = pickReferencedMemory(session, userText);
+  const selectedReference = pickStructuredReference(session, userText);
   const maxFollowUpDepth = Math.max(1, session.enginePolicy?.maxFollowUpDepth ?? 4);
   const base = {
     turnIndex: previousUserTurns + 1,
-    referencedMemory
+    ...(selectedReference
+      ? { referencedMemory: selectedReference.text, references: [selectedReference] }
+      : {})
   };
 
   if (
@@ -428,14 +430,10 @@ function isAbstractInterviewClaim(text: string) {
   const hasConcreteSignal = concreteSignals.some((signal) => text.includes(signal));
   return hasAbstractSignal && !hasConcreteSignal;
 }
-function pickReferencedMemory(session: InterviewSession, userText: string) {
+function pickStructuredReference(session: InterviewSession, userText: string) {
   const anchor = extractAnchor(userText);
-  return (
-    session.guide.relevantMemories.find((memory) => memory.includes(anchor)) ??
-    session.card.historyReferences.find((memory) => memory.includes(anchor)) ??
-    session.guide.relevantMemories[0] ??
-    session.card.historyReferences[0]
-  );
+  const references = session.guide.availableReferences ?? [];
+  return references.find((reference) => reference.text.includes(anchor)) ?? references[0];
 }
 function qualityActionPriorityRank(action: QualityRemediationAction) {
   return action.priority === "high" ? 3 : action.priority === "medium" ? 2 : 1;
