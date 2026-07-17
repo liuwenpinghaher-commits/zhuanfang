@@ -3,6 +3,7 @@ import type { InteractionPreSignals, InterviewControlAction, InterviewSession, I
 import { INTERVIEWER_CRAFT_RULES } from "../../../../src/domain/interviewer-craft";
 import { buildAppliedPlaybookRulesBlock, buildBoundariesBlock, buildCorrectionsBlock } from "../../../../src/domain/voice-instructions";
 import { sanitizeExternalMaterialList } from "../../../../src/domain/utils";
+import { resolveRequestTimeoutMs } from "../request-timeout";
 
 export const BAILIAN_DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 export const BAILIAN_DEFAULT_AUDIO_BASE_URL = "https://dashscope.aliyuncs.com";
@@ -169,6 +170,7 @@ interface BailianCharacterInterviewClientOptions {
   apiKey: string;
   baseUrl?: string;
   model?: string;
+  timeoutMs?: number;
   fetchImpl?: FetchLike;
 }
 
@@ -434,6 +436,7 @@ export function createBailianCharacterInterviewClient(
     apiKey: options.apiKey,
     baseUrl: options.baseUrl,
     model,
+    timeoutMs: options.timeoutMs,
     fetchImpl: options.fetchImpl
   });
 
@@ -752,7 +755,8 @@ export function createBailianCharacterInterviewClientFromEnv(
   return createBailianCharacterInterviewClient({
     apiKey,
     baseUrl: env.BAILIAN_BASE_URL,
-    model: env.BAILIAN_CHARACTER_MODEL ?? BAILIAN_ROLE_PLAY_MODEL
+    model: env.BAILIAN_CHARACTER_MODEL ?? BAILIAN_ROLE_PLAY_MODEL,
+    timeoutMs: resolveRequestTimeoutMs(env, "BAILIAN_INTERVIEW_REQUEST_TIMEOUT_MS")
   });
 }
 

@@ -58,13 +58,13 @@
 
 ### Steps
 
-- [ ] 添加失败测试：AnySearch 只有 credential 时为 `configured=true, available=false|unknown`；真实探测成功后才为 available，失败时保留最近错误/探测时间。
-- [ ] 添加失败测试：实际搜索 fallback 后 source trace 标记真实 provider，不沿用 AnySearch 标签。
-- [ ] 添加前端失败测试：turn 请求 Abort/timeout/non-2xx 后 loading 结束、输入保留、出现“重试本轮”，且失败轮不重复持久化。
+- [x] 添加失败测试：AnySearch 只有 credential 时为 `configured=true, available=false|unknown`；真实请求成功后才为 available，失败时保留最近错误/探测时间。
+- [x] 核对搜索失败路径：联网 provider 失败直接返回结构化 502 且不落简报，不存在把本地 fallback 继续标成 AnySearch 的路径。
+- [x] 添加前端失败测试：turn 请求 timeout 后客户端主动中止、输入保留、出现“重试本轮”；路由不落半轮数据且释放锁允许重试。
 - [ ] 添加 fixture 合同测试或直接运行目标 E2E，证明旧 `mode:text`/缺 `startedAt` 被 422 拒绝。
-- [ ] 实现 provider configured/available 双状态与轻量探测；保持兼容字段但不把 configured 映射成 ready。
-- [ ] 为文本轮建立 `idle/submitting/succeeded/failed` 状态和 AbortController 超时；重试生成新 request ID，服务端幂等边界不变。
-- [ ] 更新 7 个真实资产 fixture 为合法 mode 与 ISO `startedAt`，不改生产校验。
+- [x] 实现 provider configured/available 双状态；实际业务请求更新可用性快照，保持兼容字段但不把 configured 映射成 ready。
+- [x] 为文本轮增加路由级硬截止、客户端 AbortController 截止与明确重试态；失败请求原子不落库，原样重试安全。
+- [x] 更新 7 个共享同一种子的真实资产用例：fixture 改为合法 mode 与 ISO `startedAt`，不改生产校验。
 - [ ] 运行：`npx vitest run apps/api/src/routes/health.test.ts apps/api/src/routes/chat.test.ts` 及新增前端测试；再运行 `npx playwright test tests/e2e/real-assets.spec.ts --project=chromium`（外部环境不齐时如实记录具体跳过/失败）。
 - [ ] 提交：`fix(runtime): expose provider truth and recover timed out turns`。
 

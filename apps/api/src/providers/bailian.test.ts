@@ -421,6 +421,28 @@ describe("bailian provider client", () => {
     });
   });
 
+  it("character interview client honors its configured request timeout", async () => {
+    const state = createInitialProductState();
+    const session = createSessionDraft(state, "organization", "standard");
+    const fetchImpl = vi.fn((_input: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(init.signal?.reason ?? new Error("aborted"));
+        }, { once: true });
+      })
+    );
+    const client = createBailianCharacterInterviewClient({
+      apiKey: "test-key",
+      timeoutMs: 10,
+      fetchImpl
+    });
+
+    await expect(Promise.race([
+      client.createAssistantTurn({ session, userText: "组织效率没有随个人效率一起提升。" }),
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("client did not abort")), 100))
+    ])).rejects.not.toThrow("client did not abort");
+  });
+
   it("parses pre_signals from LLM response when present", async () => {
     const state = createInitialProductState();
     const session = createSessionDraft(state, "decision");

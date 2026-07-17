@@ -52,6 +52,34 @@ describe("ConfigView", () => {
     expect(container?.textContent).toContain("ANYSEARCH_API_KEY");
   });
 
+  it("does not label configured-but-unverified AnySearch as available", () => {
+    const state = createInitialProductState();
+    const systemCapabilities: SystemCapabilitiesResponse = {
+      generatedAt: "2026-06-10T00:00:00.000Z",
+      configVersion: "base-v1",
+      runtime: { service: "interview-product-api", stateStore: "memory" },
+      capabilities: [{
+        id: "anysearch",
+        kind: "search",
+        label: "AnySearch",
+        status: "degraded",
+        active: true,
+        detail: "AnySearch API Key 已配置，但尚未经过真实请求验证。",
+        requiredEnv: ["ANYSEARCH_API_KEY"],
+        configured: true,
+        availability: "unknown",
+        lastCheckedAt: "2026-06-10T00:00:00.000Z"
+      }]
+    };
+
+    renderView(state, systemCapabilities);
+
+    const card = container?.querySelector(".live-provider-card");
+    expect(card?.textContent).toContain("降级");
+    expect(card?.textContent).toContain("尚未经过真实请求验证");
+    expect(card?.textContent).not.toContain("可用");
+  });
+
   it("renders editable runtime settings and saves changed values", () => {
     const state = createInitialProductState();
     const systemCapabilities: SystemCapabilitiesResponse = {

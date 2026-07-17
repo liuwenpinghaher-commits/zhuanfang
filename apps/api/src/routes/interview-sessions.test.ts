@@ -82,6 +82,58 @@ describe("interview-sessions routes", () => {
     await server.close();
   });
 
+  it("/turns: LLM 超时返回 504、不落半轮数据，并释放会话锁允许原样重试", async () => {
+    let attempt = 0;
+    const interviewClient = {
+      createAssistantTurn: vi.fn(async () => {
+        attempt += 1;
+        if (attempt === 1) {
+          return await new Promise<never>(() => undefined);
+        }
+        return {
+          providerId: "bailian-character" as const,
+          model: "test-model",
+          content: "你刚才提到组织效率，能说一个最近发生的具体例子吗？",
+          intent: "百炼角色扮演追问" as const
+        };
+      })
+    };
+    const repo = createInMemoryProductStateRepository();
+    const server = Fastify({ logger: false });
+    await registerInterviewSessionRoutes(server, repo, {
+      bailianInterviewClient: interviewClient,
+      interviewTurnTimeoutMs: 20
+    });
+    const created = (await server.inject({
+      method: "POST",
+      url: "/api/interview-sessions",
+      payload: { mode: "organization", topicHint: "企业如何进行 AI Native 转型" }
+    })).json();
+    const id = created.session.id as string;
+    const beforeTurns = created.session.turns;
+
+    const timedOut = await server.inject({
+      method: "POST",
+      url: `/api/interview-sessions/${id}/turns`,
+      payload: { content: "个人提效很明显，但组织提效不多。" }
+    });
+    expect(timedOut.statusCode).toBe(504);
+    expect(timedOut.json()).toMatchObject({ code: "INTERVIEW_TURN_TIMEOUT", retryable: true });
+
+    const unchanged = (await server.inject({ method: "GET", url: `/api/interview-sessions/${id}` })).json().session;
+    expect(unchanged.turns).toEqual(beforeTurns);
+
+    const retried = await server.inject({
+      method: "POST",
+      url: `/api/interview-sessions/${id}/turns`,
+      payload: { content: "个人提效很明显，但组织提效不多。" }
+    });
+    expect(retried.statusCode).toBe(200);
+    expect(retried.json().session.turns).toHaveLength(beforeTurns.length + 2);
+    expect(interviewClient.createAssistantTurn).toHaveBeenCalledTimes(2);
+    await server.close();
+  });
+
   it("/turns: unknown session id returns 404", async () => {
     const server = buildApiServer({ env: {} });
     const res = await server.inject({ method: "POST", url: "/api/interview-sessions/does-not-exist/turns", payload: { content: "hi" } });

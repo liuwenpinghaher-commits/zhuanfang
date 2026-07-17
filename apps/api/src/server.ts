@@ -42,6 +42,7 @@ import {
 } from "./providers/bailian-streaming-tts";
 import { isAuthGuardActive, isAuthorized } from "./auth";
 import { createLlmBudget } from "./llm-budget";
+import { resolveRequestTimeoutMs } from "./request-timeout";
 import { registerAssetRoutes } from "./routes/assets";
 import { registerCorpusRoutes } from "./routes/corpus";
 import { registerHealthRoutes } from "./routes/health";
@@ -78,6 +79,8 @@ interface BuildApiServerOptions {
   bailianTranscriptionClient?: BailianAudioTranscriptionClient;
   streamingTtsClient?: BailianStreamingTtsClient;
   embeddingClient?: BailianEmbeddingClient;
+  /** 测试/嵌入场景可覆盖；生产默认比底层百炼请求超时多 5 秒，用于清理与结构化响应。 */
+  interviewTurnTimeoutMs?: number;
   env?: Record<string, string | undefined>;
   envFilePath?: string;
   /**
@@ -258,7 +261,10 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     await registerInterviewSessionRoutes(registeredServer, productStateRepository, withLiveProviderClients({
       rawMaterialRepository,
       knowledgeIndexRepository,
-      llmBudget: sharedBudget
+      llmBudget: sharedBudget,
+      interviewTurnTimeoutMs:
+        options.interviewTurnTimeoutMs ??
+        resolveRequestTimeoutMs(runtimeEnv, "BAILIAN_INTERVIEW_REQUEST_TIMEOUT_MS") + 5_000
     }));
   });
   void server.register(async (registeredServer) => {

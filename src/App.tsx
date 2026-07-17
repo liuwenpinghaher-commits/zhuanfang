@@ -175,6 +175,7 @@ export default function App() {
   // "200+异步落库"写路径(资产确认/记忆编辑等从不 PUT /api/state,却共享同一 persistQueue)。
   const [persistHealth, setPersistHealth] = useState<PersistHealthLite | null>(null);
   const [interviewInput, setInterviewInput] = useState("");
+  const [failedTurnContent, setFailedTurnContent] = useState<string | null>(null);
   const [submittingTurn, setSubmittingTurn] = useState(false);
   const [startingInterview, setStartingInterview] = useState(false);
   // 同步防重入:setStartingInterview 是异步 state,挡不住"创建请求在途时"的二次触发(双击 /
@@ -1773,6 +1774,7 @@ export default function App() {
       // spread the STALE closure `session` here, which dropped the new turns
       // whenever the reply included pre_signals, i.e. always with the real LLM.)
       setSession(apiRun.session);
+      setFailedTurnContent(null);
       adoptServerState(apiRun.state);
       setApiPersistenceEnabled(true);
     } catch (err) {
@@ -1783,6 +1785,7 @@ export default function App() {
       }
       setNotice(buildNotice("danger", "本轮未送达", message));
       setInterviewInput(content);
+      setFailedTurnContent(content);
     } finally {
       setSubmittingTurn(false);
     }
@@ -2661,7 +2664,12 @@ export default function App() {
               : realtimeVoiceSession ? "websocket"
               : null
             }
-            onInput={setInterviewInput}
+            onInput={(value) => {
+              setInterviewInput(value);
+              if (value !== failedTurnContent) {
+                setFailedTurnContent(null);
+              }
+            }}
             onStart={startInterview}
             onSubmit={submitTurn}
             onFinish={finishInterview}
@@ -2669,6 +2677,7 @@ export default function App() {
             onToggleRecording={toggleRealtimeRecording}
             onInterrupt={interruptAssistant}
             submitting={submittingTurn}
+            retryAvailable={failedTurnContent !== null && failedTurnContent === interviewInput}
             starting={startingInterview}
             finishing={finishingInterview}
             guidanceState={guidanceState}

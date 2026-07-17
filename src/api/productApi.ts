@@ -174,6 +174,9 @@ export interface SystemCapability {
   requiredEnv: string[];
   model?: string;
   transport?: string;
+  configured?: boolean;
+  availability?: "unknown" | "available" | "unavailable";
+  lastErrorCode?: string;
   lastCheckedAt: string;
 }
 
@@ -446,6 +449,19 @@ export class ApiError extends Error {
   }
 }
 
+export class InterviewTurnRequestTimeoutError extends Error {
+  readonly retryable = true;
+
+  constructor(public readonly timeoutMs: number) {
+    super(`专访追问等待超过 ${Math.ceil(timeoutMs / 1000)} 秒。本轮没有记录，请原样重试。`);
+    this.name = "InterviewTurnRequestTimeoutError";
+  }
+}
+
+export interface ProductApiClientOptions {
+  interviewTurnTimeoutMs?: number;
+}
+
 /**
  * F-03:reset 单库清理结果,与后端 apps/api/src/routes/state.ts 的 reset/purge 端点对齐:
  * "cleared" | "not-configured" | "failed: <原因>"(not-configured 不算失败)。
@@ -557,8 +573,17 @@ function roleQuery(role?: SessionAudioRole): string {
   return role === "interviewer" ? "?role=interviewer" : "";
 }
 
-export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchImpl: FetchLike = fetch): ProductApiClient {
+export function createProductApiClient(
+  baseUrl = getProductApiBaseUrl(),
+  fetchImpl: FetchLike = fetch,
+  options: ProductApiClientOptions = {}
+): ProductApiClient {
   const normalizedBaseUrl = baseUrl.replace(/\/$/, "");
+  const interviewTurnTimeoutMs = resolveClientTimeoutMs(
+    options.interviewTurnTimeoutMs,
+    import.meta.env.VITE_INTERVIEW_TURN_TIMEOUT_MS,
+    45_000
+  );
   // H 生产 bearer 鉴权:前端从 Vite env(VITE_PRODUCT_API_TOKEN)注入 token,所有请求自动附 Authorization。
   // 无 token(dev / 未配)→ 不附头,dev fail-open 行为不变;配了 token 的生产 profile 不再整站 401。
   const rawFetch = fetchImpl;
@@ -900,15 +925,24 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
       };
     },
     async sendInterviewTurn(sessionId, input, signal) {
-      const response = (await requestJson(`/api/interview-sessions/${sessionId}/turns`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(input),
-        // Pass the barge-in AbortSignal so an interrupted cascade turn cancels the
-        // in-flight LLM call server-side instead of letting it run to completion and
-        // overwrite the user's newly-started turn (P0-D). Optional → backward compatible.
-        ...(signal ? { signal } : {})
-      })) as InterviewSessionResponse;
+      const deadline = createDeadlineSignal(signal, interviewTurnTimeoutMs);
+      let response: InterviewSessionResponse;
+      try {
+        response = (await requestJson(`/api/interview-sessions/${sessionId}/turns`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(input),
+          // 外部 signal 保留语音打断语义；内部 deadline 保证普通文本提交也一定退出等待态。
+          signal: deadline.signal
+        })) as InterviewSessionResponse;
+      } catch (error) {
+        if (deadline.didTimeout()) {
+          throw new InterviewTurnRequestTimeoutError(interviewTurnTimeoutMs);
+        }
+        throw error;
+      } finally {
+        deadline.dispose();
+      }
 
       return {
         ...response,
@@ -1132,6 +1166,40 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
       // production bearer 鉴权（DEPLOYMENT_PROFILE=production），此回放会 401。本地/dev
       // (fail-open) 正常。启用生产前需改为 ?token= 查询鉴权，或前端用 fetch+blob URL 回放。
       return `${normalizedBaseUrl}/api/sessions/${sessionId}/audio`;
+    }
+  };
+}
+
+function resolveClientTimeoutMs(explicit: number | undefined, envValue: string | undefined, fallback: number): number {
+  const parsed = explicit ?? (envValue?.trim() ? Number(envValue) : Number.NaN);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(1, Math.min(600_000, Math.round(parsed)));
+}
+
+function createDeadlineSignal(external: AbortSignal | undefined, timeoutMs: number) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const abortFromExternal = () => controller.abort(external?.reason);
+
+  if (external?.aborted) {
+    abortFromExternal();
+  } else {
+    external?.addEventListener("abort", abortFromExternal, { once: true });
+  }
+
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort(new DOMException(`Interview turn timed out after ${timeoutMs}ms.`, "TimeoutError"));
+  }, timeoutMs);
+
+  return {
+    signal: controller.signal,
+    didTimeout: () => timedOut,
+    dispose: () => {
+      clearTimeout(timer);
+      external?.removeEventListener("abort", abortFromExternal);
     }
   };
 }

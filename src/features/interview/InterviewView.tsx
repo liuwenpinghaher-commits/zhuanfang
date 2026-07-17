@@ -26,6 +26,7 @@ interface InterviewViewProps {
   onToggleRecording: () => void | Promise<void>;
   onInterrupt: () => void;
   submitting?: boolean;
+  retryAvailable?: boolean;
   starting?: boolean;
   finishing?: boolean;
   guidanceState?: {
@@ -55,6 +56,7 @@ export function InterviewView({
   onToggleRecording,
   onInterrupt,
   submitting,
+  retryAvailable,
   starting,
   finishing,
   guidanceState
@@ -282,7 +284,7 @@ export function InterviewView({
                 {finishing ? "正在生成档案…" : "结束并生成档案"}
               </button>
               <button className="primary-action" type="submit" disabled={submitting || !input.trim()} aria-busy={submitting}>
-                <ChevronRight size={18} />{submitting ? "思考中…" : "提交表达"}
+                <ChevronRight size={18} />{submitting ? "思考中…" : retryAvailable ? "重试本轮" : "提交表达"}
               </button>
             </div>
           </form>

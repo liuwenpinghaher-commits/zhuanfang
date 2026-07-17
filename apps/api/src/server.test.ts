@@ -161,7 +161,13 @@ describe("Product API", () => {
       },
       capabilities: expect.arrayContaining([
         expect.objectContaining({ id: "bailian-responses", status: "ready", active: true }),
-        expect.objectContaining({ id: "anysearch", status: "ready", requiredEnv: ["ANYSEARCH_API_KEY"] }),
+        expect.objectContaining({
+          id: "anysearch",
+          status: "degraded",
+          configured: true,
+          availability: "unknown",
+          requiredEnv: ["ANYSEARCH_API_KEY"],
+        }),
         expect.objectContaining({ id: "bailian-cosyvoice", status: "ready" }),
         expect.objectContaining({ id: "bailian-sensevoice", status: "ready" }),
         expect.objectContaining({ id: "bailian-character", status: "ready" }),
@@ -272,7 +278,7 @@ describe("Product API", () => {
         expect.objectContaining({ id: "bailian-sensevoice", status: "ready" }),
         expect.objectContaining({ id: "bailian-character", status: "ready" }),
         expect.objectContaining({ id: "bailian-realtime", status: "ready" }),
-        expect.objectContaining({ id: "anysearch", status: "ready" })
+        expect.objectContaining({ id: "anysearch", status: "degraded", configured: true, availability: "unknown" })
       ])
     );
   });
@@ -339,7 +345,7 @@ describe("Product API", () => {
       }
     });
     const capabilities = (await server.inject({ method: "GET", url: "/api/system/capabilities" })).json().capabilities;
-    const anysearch = capabilities.find((capability: { id: string }) => capability.id === "anysearch");
+    const anysearchBeforeRequest = capabilities.find((capability: { id: string }) => capability.id === "anysearch");
 
     const searchRes = await server.inject({
       method: "POST",
@@ -352,9 +358,11 @@ describe("Product API", () => {
       }
     });
     const body = searchRes.json();
+    const capabilitiesAfterRequest = (await server.inject({ method: "GET", url: "/api/system/capabilities" })).json().capabilities;
+    const anysearchAfterRequest = capabilitiesAfterRequest.find((capability: { id: string }) => capability.id === "anysearch");
 
     expect(configRes.statusCode).toBe(200);
-    expect(anysearch).toMatchObject({ status: "ready" });
+    expect(anysearchBeforeRequest).toMatchObject({ status: "degraded", configured: true, availability: "unknown" });
     expect(fetchImpl).toHaveBeenCalledWith(
       "https://mock-anysearch.example/v1/search",
       expect.objectContaining({ method: "POST" })
@@ -362,6 +370,7 @@ describe("Product API", () => {
     expect(searchRes.statusCode).toBe(200);
     expect(body.task).toMatchObject({ status: "succeeded", providerId: "anysearch" });
     expect(body.brief.sources[0].url).toBe("https://news.example/runtime-anysearch");
+    expect(anysearchAfterRequest).toMatchObject({ status: "ready", configured: true, availability: "available" });
     await server.close();
   });
 

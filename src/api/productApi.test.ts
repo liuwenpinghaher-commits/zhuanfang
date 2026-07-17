@@ -475,7 +475,8 @@ describe("product api client", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         content: "我怕放手后项目失控。"
-      })
+      }),
+      signal: expect.any(AbortSignal)
     });
     expect(fetchImpl).toHaveBeenNthCalledWith(3, `http://127.0.0.1:8787/api/interview-sessions/${session.id}/end`, {
       method: "POST"
@@ -484,6 +485,27 @@ describe("product api client", () => {
     expect(turned.session.turns).toHaveLength(2);
     expect(ended.note.sessionId).toBe(session.id);
     expect(ended.state.profile.name).toBe("Mia");
+  });
+
+  it("sendInterviewTurn has a client deadline so the UI cannot stay thinking forever", async () => {
+    const fetchImpl = vi.fn((_input: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(init.signal?.reason ?? new Error("aborted"));
+        }, { once: true });
+      })
+    );
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl, {
+      interviewTurnTimeoutMs: 10
+    });
+
+    await expect(Promise.race([
+      client.sendInterviewTurn("session-timeout", { content: "组织一直没有提效。" }),
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("client did not abort")), 100))
+    ])).rejects.toMatchObject({
+      name: "InterviewTurnRequestTimeoutError",
+      retryable: true
+    });
   });
 
   it("creates realtime voice sessions through the API", async () => {

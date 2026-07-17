@@ -60,6 +60,19 @@ interface InterviewSessionRouteOptions {
   rawMaterialRepository?: RawMaterialRepository;
   knowledgeIndexRepository?: KnowledgeIndexRepository;
   llmBudget?: LlmBudget;
+  /** 路由级硬截止时间。它独立于 provider fetch 超时，确保自定义/异常 client 也不能永久占住会话锁。 */
+  interviewTurnTimeoutMs?: number;
+}
+
+const DEFAULT_INTERVIEW_TURN_TIMEOUT_MS = 65_000;
+
+class InterviewTurnTimeoutError extends Error {
+  readonly code = "INTERVIEW_TURN_TIMEOUT";
+
+  constructor(timeoutMs: number) {
+    super(`专访追问在 ${timeoutMs}ms 内未完成`);
+    this.name = "InterviewTurnTimeoutError";
+  }
 }
 
 const interviewModes: InterviewMode[] = ["daily", "decision", "point", "learning", "organization", "long-term"];
@@ -79,6 +92,10 @@ export async function registerInterviewSessionRoutes(
   options: InterviewSessionRouteOptions = {}
 ) {
   const budget = options.llmBudget ?? createLlmBudget();
+  const interviewTurnTimeoutMs = normalizeTimeoutMs(
+    options.interviewTurnTimeoutMs,
+    DEFAULT_INTERVIEW_TURN_TIMEOUT_MS
+  );
 
   // Per-session write serialization. /turns is a read-modify-write on the global state with
   // an await window (embedding + LLM round-trip) in the middle, so two concurrent turns on the
@@ -225,15 +242,26 @@ export async function registerInterviewSessionRoutes(
     }
     let updatedSession: Awaited<ReturnType<typeof receiveTurn>>;
     try {
-      updatedSession = await receiveTurn(
-        freshSession,
-        content,
-        options.bailianInterviewClient,
-        state.memoryCorrections,
-        state.profile.explicitBoundaries
+      updatedSession = await withInterviewTurnDeadline(
+        receiveTurn(
+          freshSession,
+          content,
+          options.bailianInterviewClient,
+          state.memoryCorrections,
+          state.profile.explicitBoundaries
+        ),
+        interviewTurnTimeoutMs
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (isInterviewTurnTimeout(error)) {
+        console.warn(JSON.stringify({ event: "llm_timeout", capability: "interview_turn", sessionId: freshSession.id, error: message }));
+        return reply.code(504).send({
+          code: "INTERVIEW_TURN_TIMEOUT",
+          error: "追问生成超时。本轮没有记录，你可以原样重试。",
+          retryable: true
+        });
+      }
       console.warn(JSON.stringify({ event: "llm_failed", capability: "interview_turn", sessionId: freshSession.id, error: message }));
       return reply.code(502).send({ error: `追问生成失败：${message}。本轮未记录，请重试。` });
     }
@@ -585,6 +613,40 @@ export async function registerInterviewSessionRoutes(
     );
     return { instructions };
   });
+}
+
+async function withInterviewTurnDeadline<T>(task: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      task,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new InterviewTurnTimeoutError(timeoutMs)), timeoutMs);
+        timer.unref?.();
+      })
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+function isInterviewTurnTimeout(error: unknown): boolean {
+  if (error instanceof InterviewTurnTimeoutError) {
+    return true;
+  }
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return error.name === "TimeoutError" || error.name === "AbortError" || /timed?\s*out|timeout/i.test(error.message);
+}
+
+function normalizeTimeoutMs(value: number | undefined, fallback: number): number {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.max(1, Math.min(600_000, Math.round(value!)));
 }
 
 // M3c: embed a query string (create-time topic or a turn's user text) for semantic
