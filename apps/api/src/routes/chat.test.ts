@@ -63,7 +63,13 @@ describe("POST /api/chat", () => {
   it("同会话追加: 第二次带 sessionId → messages 变 4 条", async () => {
     const repository = createInMemoryProductStateRepository(createInitialProductState());
     const knowledgeIndexRepository = await seedKnowledge();
-    const fakeChatClient = { complete: async () => "根据你的资料[1]..." };
+    let callCount = 0;
+    const fakeChatClient = {
+      complete: async () => {
+        callCount += 1;
+        return callCount === 1 ? "根据你的资料[1]..." : "我没有检索到更多相关资料。";
+      }
+    };
 
     const server = buildApiServer({
       productStateRepository: repository,
@@ -279,6 +285,67 @@ describe("POST /api/chat", () => {
     // 原子失败:会话与消息都未持久化
     expect(repository.getState().chatSessions).toHaveLength(0);
 
+    await server.close();
+  });
+
+  it("模型输出越界 citation 编号时返回 502，且本轮不入库", async () => {
+    const repository = createInMemoryProductStateRepository(createInitialProductState());
+    const server = buildApiServer({
+      productStateRepository: repository,
+      knowledgeIndexRepository: await seedKnowledge(),
+      bailianChatClient: { complete: async () => "根据你的资料[9]，你担心放权失控。" } as never
+    });
+
+    const res = await server.inject({ method: "POST", url: "/api/chat", payload: { message: "我担心什么?" } });
+
+    expect(res.statusCode).toBe(502);
+    expect(res.json().error).toContain("引用编号");
+    expect(repository.getState().chatSessions).toHaveLength(0);
+    await server.close();
+  });
+
+  it("memory 来源被回答称为用户原话时返回 502，且不保存错误来源断言", async () => {
+    const repository = createInMemoryProductStateRepository(createInitialProductState());
+    const server = buildApiServer({
+      productStateRepository: repository,
+      knowledgeIndexRepository: await seedKnowledge(),
+      bailianChatClient: { complete: async () => "根据你的用户原话[1]，你担心放权失控。" } as never
+    });
+
+    const res = await server.inject({ method: "POST", url: "/api/chat", payload: { message: "我担心什么?" } });
+
+    expect(res.statusCode).toBe(502);
+    expect(res.json().error).toContain("来源类型");
+    expect(repository.getState().chatSessions).toHaveLength(0);
+    await server.close();
+  });
+
+  it("只引用检索列表第 2 项时保留 citation number=2 和服务端来源标签", async () => {
+    const repository = createInMemoryProductStateRepository(createInitialProductState());
+    const knowledgeIndexRepository = createInMemoryKnowledgeIndexRepository();
+    await knowledgeIndexRepository.put(makeChunk({
+      id: "k-first", sourceType: "point", sourceId: "point-1", title: "授权观点",
+      text: "放权需要明确决策边界。", keywords: ["放权", "决策", "边界"]
+    }));
+    await knowledgeIndexRepository.put(makeChunk({
+      id: "k-second", sourceType: "memory", sourceId: "memory-2", title: "失控担忧",
+      text: "我担心放权之后团队失控。", keywords: ["担心", "放权", "失控"]
+    }));
+    const server = buildApiServer({
+      productStateRepository: repository,
+      knowledgeIndexRepository,
+      bailianChatClient: { complete: async () => "已确认长期记忆[2]显示，你担心放权后的失控。" } as never
+    });
+
+    const res = await server.inject({ method: "POST", url: "/api/chat", payload: { message: "放权" } });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.citations).toHaveLength(1);
+    expect(body.citations[0].number).toBe(2);
+    expect(body.citations[0].sourceType).toBe("memory");
+    expect(body.citations[0].sourceLabel).toBe("已确认长期记忆");
+    expect(body.state.chatSessions[0].messages[1].citations).toEqual(body.citations);
     await server.close();
   });
 });

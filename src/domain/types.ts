@@ -157,7 +157,16 @@ export interface KnowledgeChunk {
   createdAt: string;
 }
 
-export interface ChatCitation { sourceType: KnowledgeSourceType; sourceId: string; title: string; snippet: string; }
+export interface ChatCitation {
+  /** 模型回答中实际使用的原始编号；旧数据可缺省，UI 必须显示未知而非自行重编号。 */
+  number?: number;
+  sourceType: KnowledgeSourceType;
+  sourceId: string;
+  /** 服务端根据权威 sourceType 给出的准确标签；旧数据可缺省。 */
+  sourceLabel?: string;
+  title: string;
+  snippet: string;
+}
 export interface ChatMessage { id: string; role: "user" | "assistant"; content: string; citations?: ChatCitation[]; createdAt: string; }
 export interface ChatSession { id: string; title: string; messages: ChatMessage[]; createdAt: string; updatedAt: string; }
 

@@ -4,6 +4,7 @@ import {
   appendChatMessage,
   buildChatPrompt,
   createChatSession,
+  getKnowledgeSourceLabel,
   rankKnowledgeChunks
 } from "../../../../src/domain/knowledge";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
@@ -146,20 +147,13 @@ export async function registerChatRoutes(
         // 原子失败:本轮 user/assistant 消息都不入库,如实报错让用户重试。
         return reply.code(502).send({ error: `对话生成失败：${msg}。本轮未记录，请重试。` });
       }
-      // 只把模型实际引用的 [n] 对应块作为 citation,避免展示模型根本没用到的资料。
-      // 解析不到任何有效编号时,回退为全部检索块(保留可溯源性)。
-      const citedIdx = new Set<number>();
-      for (const m of answer.matchAll(/\[(\d+)\]/g)) {
-        const i = Number(m[1]) - 1;
-        if (i >= 0 && i < retrieved.length) citedIdx.add(i);
+      try {
+        citations = validateAndBuildChatCitations(answer, retrieved);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(JSON.stringify({ event: "chat_citation_invalid", error: msg }));
+        return reply.code(502).send({ error: `对话引用校验失败：${msg}。本轮未记录，请重试。` });
       }
-      const citedChunks = citedIdx.size > 0 ? retrieved.filter((_, i) => citedIdx.has(i)) : retrieved;
-      citations = citedChunks.map((c) => ({
-        sourceType: c.sourceType,
-        sourceId: c.sourceId,
-        title: c.title,
-        snippet: c.text.length > SNIPPET_LIMIT ? `${c.text.slice(0, SNIPPET_LIMIT)}…` : c.text
-      }));
     }
 
     // ── 追加 assistant 消息 + 持久化 ──
@@ -167,5 +161,51 @@ export async function registerChatRoutes(
     const nextState = productRepo.replaceState(state);
 
     return reply.send({ state: nextState, sessionId, answer, citations } satisfies ChatResponse);
+  });
+}
+
+function validateAndBuildChatCitations(answer: string, retrieved: KnowledgeChunk[]): ChatCitation[] {
+  const citationNumbers = Array.from(answer.matchAll(/\[(\d+)\]/g), (match) => Number(match[1]));
+  for (const number of citationNumbers) {
+    if (!Number.isInteger(number) || number < 1 || number > retrieved.length) {
+      throw new Error(`引用编号 [${number}] 超出本轮允许范围 1-${retrieved.length}。`);
+    }
+  }
+
+  const sourceAssertions: Array<{ pattern: RegExp; allowed: KnowledgeChunk["sourceType"][]; label: string }> = [
+    { pattern: /(?:用户原话|原始记录|逐字稿)\s*\[(\d+)\]/g, allowed: ["transcript"], label: "用户原话/原始记录" },
+    { pattern: /(?:已确认长期记忆|长期记忆|记忆)\s*\[(\d+)\]/g, allowed: ["memory"], label: "长期记忆" },
+    { pattern: /(?:双轨笔记|笔记)\s*\[(\d+)\]/g, allowed: ["note"], label: "笔记" },
+    { pattern: /(?:长期主题|主题)\s*\[(\d+)\]/g, allowed: ["theme"], label: "主题" },
+    { pattern: /(?:观点资产|观点)\s*\[(\d+)\]/g, allowed: ["point"], label: "观点" },
+    { pattern: /(?:决策资产|决策)\s*\[(\d+)\]/g, allowed: ["decision"], label: "决策" },
+    { pattern: /知识债\s*\[(\d+)\]/g, allowed: ["debt"], label: "知识债" },
+    { pattern: /(?:导入资料|素材)\s*\[(\d+)\]/g, allowed: ["material"], label: "导入资料" }
+  ];
+  for (const assertion of sourceAssertions) {
+    for (const match of answer.matchAll(assertion.pattern)) {
+      const number = Number(match[1]);
+      const chunk = retrieved[number - 1];
+      if (!chunk || !assertion.allowed.includes(chunk.sourceType)) {
+        throw new Error(`来源类型不一致：回答称 [${number}] 为${assertion.label}，实际是${chunk ? getKnowledgeSourceLabel(chunk.sourceType) : "未知来源"}。`);
+      }
+    }
+  }
+
+  if (citationNumbers.length === 0 && /你的资料显示|根据你的资料|用户原话|原始记录|逐字稿|已确认长期记忆/.test(answer)) {
+    throw new Error("回答声明使用了用户资料，但没有提供可核验的 citation 编号。");
+  }
+
+  const uniqueNumbers = Array.from(new Set(citationNumbers));
+  return uniqueNumbers.map((number) => {
+    const chunk = retrieved[number - 1];
+    return {
+      number,
+      sourceType: chunk.sourceType,
+      sourceId: chunk.sourceId,
+      sourceLabel: getKnowledgeSourceLabel(chunk.sourceType),
+      title: chunk.title,
+      snippet: chunk.text.length > SNIPPET_LIMIT ? `${chunk.text.slice(0, SNIPPET_LIMIT)}…` : chunk.text
+    };
   });
 }
