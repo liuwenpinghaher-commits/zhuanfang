@@ -19,7 +19,7 @@ import { FormEvent, MutableRefObject, useEffect, useMemo, useRef, useState } fro
 import {
   buildCognitiveRadar,
   buildInterviewCard,
-  buildInterviewResumeCard,
+  buildInterviewResumeCards,
   buildRealtimeTurnState,
   buildSystemStatus,
   createQuestionFromNote,
@@ -27,7 +27,9 @@ import {
   createPointFromSearchBrief,
   createQuestionFromSearchBrief,
   markMemoryCorrection,
+  makeId,
   receiveUserTurn,
+  resolveInterviewTopicHint,
   searchProductAssets,
   toggleAssetImportance,
   buildRealtimeVoiceInstructions,
@@ -181,6 +183,10 @@ export default function App() {
   // 同步防重入:setStartingInterview 是异步 state,挡不住"创建请求在途时"的二次触发(双击 /
   // 快速重渲染),会创建多个空 session。startInterview 入口用这个 ref 同步短路。
   const startingRef = useRef(false);
+  const pendingSessionCreateRef = useRef<{
+    id: string;
+    signature: string;
+  } | null>(null);
   // P3-19:录音开关同步防重入。开始录音的连接建立(创建 voice session + 连 ASR/TTS WS)是异步的,
   // recording state 要等连接就绪才置 true——期间双击/快速重渲染会开出两条 pipeline、两个 getUserMedia
   // (mic 泄漏)。与 startingRef 同构:进"开始"分支前同步短路,连接流程 settle 后在 finally 复位。
@@ -805,9 +811,33 @@ export default function App() {
     };
   }, [reconnectNonce]);
 
-  const card = useMemo(() => buildInterviewCard(productState, activeSearchBriefId), [activeSearchBriefId, productState]);
-  // Resume: surface the most-recent unfinished (active) session so it isn't stranded.
-  const resumeCard = useMemo(() => buildInterviewResumeCard(productState), [productState]);
+  const suggestedTopicHint = useMemo(
+    () => resolveInterviewTopicHint(productState, activeSearchBriefId ? { searchBriefId: activeSearchBriefId } : {}),
+    [activeSearchBriefId, productState]
+  );
+  const card = useMemo(
+    () => buildInterviewCard(productState, activeSearchBriefId, suggestedTopicHint),
+    [activeSearchBriefId, productState, suggestedTopicHint]
+  );
+  const recommendedLaunch = useMemo(() => {
+    if (activeSearchBriefId) {
+      return { mode: "learning" as const, reason: "适合先消化外部材料，再回到你的真实经验" };
+    }
+    const dueDecision = productState.decisions.some((decision) =>
+      decision.status === "待复盘" &&
+      decision.confirmationStatus === "用户确认" &&
+      (!decision.reviewAt || Date.parse(decision.reviewAt) <= Date.now())
+    );
+    if (dueDecision) {
+      return { mode: "decision" as const, reason: "有已确认且到期的决策需要复盘" };
+    }
+    if (productState.themes.length > 0) {
+      return { mode: "long-term" as const, reason: "适合回访反复出现的问题" };
+    }
+    return { mode: "daily" as const, reason: "先从最近发生的一件具体事情开始" };
+  }, [activeSearchBriefId, productState.decisions, productState.themes.length]);
+  // Resume: surface every unfinished session; keeping only the newest one hid older active work.
+  const resumeCards = useMemo(() => buildInterviewResumeCards(productState), [productState]);
   // 认知雷达是本地确定性真实计数（非 LLM 叙事），始终可算可渲染。
   const localRadar = useMemo(() => buildCognitiveRadar(productState), [productState]);
   // LLM 综述只认服务端产出——不可用就把真实原因暴露给用户（reviewsError），
@@ -876,6 +906,23 @@ export default function App() {
         scheduleReconnectProbe();
       }
     });
+  }
+
+  async function saveProfile(nextState: ProductState): Promise<ProductState> {
+    try {
+      const result = await productApiClient.saveState(nextState);
+      if (result.conflicted) {
+        throw new Error("服务器版本已更新，档案未保存。请刷新后重试。");
+      }
+      acceptAuthoritativeState(result.state);
+      return result.state;
+    } catch (error) {
+      if (isNetworkError(error)) {
+        setApiPersistenceEnabled(false);
+        scheduleReconnectProbe();
+      }
+      throw error;
+    }
   }
 
   async function keepLocalConflictVersion() {
@@ -1281,23 +1328,50 @@ export default function App() {
   }
 
   /** 一键开始：直接传参给 startInterview，不依赖 setState 后的值。 */
-  async function launchInterview(mode: InterviewMode = "decision", searchBriefId = activeSearchBriefId) {
+  async function launchInterview(
+    mode: InterviewMode = recommendedLaunch.mode,
+    searchBriefId = activeSearchBriefId,
+    topicHint?: string
+  ) {
+    const activeSessions = productState.sessions.filter((item) => item.status === "active");
+    if (activeSessions.length > 0) {
+      const confirmed = window.confirm(
+        `当前还有 ${activeSessions.length} 场未完成专访。继续新建会保留这些会话，你可以稍后逐一恢复。仍要新建吗？`
+      );
+      if (!confirmed) {
+        setNotice(buildNotice("info", "已保留未完成专访", "请从页面顶部选择一场继续。"));
+        return;
+      }
+    }
     setPendingMode(mode);
     setActiveSearchBriefId(searchBriefId);
     setSession(null);
-    await startInterview(mode, searchBriefId);
+    await startInterview(mode, searchBriefId, topicHint);
   }
 
-  async function startInterview(mode: InterviewMode = pendingMode, searchBriefId = activeSearchBriefId) {
+  async function startInterview(
+    mode: InterviewMode = pendingMode,
+    searchBriefId = activeSearchBriefId,
+    topicHint?: string
+  ) {
     if (startingRef.current) return; // 已在创建中 → 跳过,避免双触发产生多个空 session
     startingRef.current = true;
     setStartingInterview(true);
+    const normalizedTopicHint = topicHint?.trim() || resolveInterviewTopicHint(productState, searchBriefId ? { searchBriefId } : {});
+    const createSignature = JSON.stringify({ mode, searchBriefId: searchBriefId || "", topicHint: normalizedTopicHint });
+    if (pendingSessionCreateRef.current?.signature !== createSignature) {
+      pendingSessionCreateRef.current = { id: makeId("session-create"), signature: createSignature };
+    }
+    const clientRequestId = pendingSessionCreateRef.current.id;
     try {
       const apiRun = await productApiClient.createInterviewSession({
         mode,
         strength: productState.profile.preferredStrength,
-        ...(searchBriefId ? { searchBriefId } : {})
+        ...(searchBriefId ? { searchBriefId } : {}),
+        topicHint: normalizedTopicHint,
+        clientRequestId
       });
+      pendingSessionCreateRef.current = null;
       setSession(apiRun.session);
       adoptServerState(apiRun.state);
       closeRealtimeVoiceSession();
@@ -1313,6 +1387,7 @@ export default function App() {
         scheduleReconnectProbe();
         setNotice(buildNotice("danger", "无法开始专访", "后端不可达，专访功能不可用。恢复连接后请重试。"));
       } else {
+        pendingSessionCreateRef.current = null;
         setNotice(buildNotice("danger", "无法开始专访", message));
       }
     } finally {
@@ -2627,23 +2702,35 @@ export default function App() {
             {notice.detail && <span>{notice.detail}</span>}
           </section>
         )}
-        {resumeCard && view !== "interview" && session?.id !== resumeCard.sessionId && (
-          <section className="resume-banner" aria-label="未完成的专访">
+        {view !== "interview" && resumeCards.some((card) => session?.id !== card.sessionId) && (
+          <section className="resume-banner resume-session-picker" aria-label="未完成的专访">
             <div className="resume-banner-main">
-              <span className="resume-banner-eyebrow">未完成的专访 · 已进行 {resumeCard.turnCount} 轮</span>
-              <strong>{resumeCard.title}</strong>
-              <p>{resumeCard.pendingQuestion}</p>
+              <span className="resume-banner-eyebrow">未完成的专访 · 共 {resumeCards.length} 场</span>
+              <strong>选择要继续的专访</strong>
+              <div className="resume-session-list">
+                {resumeCards.map((card) => (
+                  <button
+                    className="resume-session-option"
+                    type="button"
+                    key={card.sessionId}
+                    onClick={() => continueInterview(card.sessionId)}
+                  >
+                    <span>{card.title} · {card.turnCount} 轮</span>
+                    <small>{card.pendingQuestion}</small>
+                  </button>
+                ))}
+              </div>
             </div>
-            <button className="primary-action" type="button" onClick={() => continueInterview(resumeCard.sessionId)}>
-              <Play size={16} />继续专访
-            </button>
           </section>
         )}
         {view === "home" && (
           <HomeView
             state={productState}
             card={card}
-            onStart={launchInterview}
+            suggestedTopicHint={suggestedTopicHint}
+            recommendedMode={recommendedLaunch.mode}
+            recommendationReason={recommendedLaunch.reason}
+            onStart={(mode, topicHint) => launchInterview(mode, activeSearchBriefId, topicHint)}
             onOpenTrack={openTrack}
             onNavigate={(v) => setView(v as Parameters<typeof setView>[0])}
           />
@@ -2833,7 +2920,10 @@ export default function App() {
           <TrackWorkspaceView
             workspace={buildTrackWorkspace(productState, selectedTrackId ?? "")}
             onBack={() => setView("home")}
-            onContinue={() => launchInterview("long-term")}
+            onContinue={() => {
+              const track = buildTrackWorkspace(productState, selectedTrackId ?? "");
+              void launchInterview("long-term", "", track.theme?.name);
+            }}
             state={productState}
             onAddAnnotation={addInterviewAnnotation}
             onRemoveAnnotation={removeInterviewAnnotation}
@@ -2893,6 +2983,7 @@ export default function App() {
             onPrivacyReport={showPrivacyReport}
             onPurge={purgeData}
             onSetProductState={setProductState}
+            onSaveProfile={saveProfile}
           />
         )}
       </main>

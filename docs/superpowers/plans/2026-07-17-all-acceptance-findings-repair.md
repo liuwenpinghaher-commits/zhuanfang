@@ -104,13 +104,13 @@
 
 ### Steps
 
-- [ ] 添加 Profile 组件失败测试：保存中禁用；只有 Promise 成功后显示“已保存”；冲突/网络失败显示错误并保留草稿。
-- [ ] 添加会话创建失败测试：具体 topic 进入标题、开场和历史文案；空 topic 才使用通用文案。
-- [ ] 添加模式测试：长期主题一键开始显示推荐 mode/原因，请求携带可见 mode，不静默改为 decision。
-- [ ] 添加 active 会话测试：多个 active 全部可见且可选择恢复；已有 active 时新建必须经过明确选择，不自动遗留/覆盖。
-- [ ] 将 profile 保存从同步 state setter 改为显式 async command，服务端 revision 确认后才更新 UI。
-- [ ] 统一 topic 规范化与会话文案构建；新增 active session picker 和明确新建分支。
-- [ ] 运行：`npx vitest run src/domain/interviewSession.test.ts apps/api/src/routes/interview-sessions.test.ts` 及 Profile/Interview 组件测试。
+- [x] 添加 Profile 组件失败测试：保存中禁用；只有 Promise 成功后显示“已保存”；冲突/网络失败显示错误并保留草稿。
+- [x] 添加会话创建失败测试：具体 topic 进入标题、开场和首条主题参照；空 topic 才使用通用文案。
+- [x] 添加模式测试：长期主题一键开始显示推荐 mode/原因，请求携带可见 mode，不静默改为 decision。
+- [x] 添加 active 会话测试：多个 active 全部可见且可选择恢复；已有 active 时新建必须经过明确确认；同一创建命令重试保持幂等。
+- [x] 将 profile 保存从同步 state setter 改为显式 async command，服务端 revision 确认后才更新 UI。
+- [x] 统一 topic 规范化与会话文案构建；新增 active session picker、自定义主题入口和明确新建分支。
+- [x] 运行 Profile/Home、context-pack、interview routes 聚焦测试（71 tests passed）并通过全量 typecheck。
 - [ ] 运行相关生命周期 E2E：`npx playwright test tests/e2e/interview-lifecycle.spec.ts --project=chromium`。
 - [ ] 提交：`fix(sessions): confirm profile saves and make resumes explicit`。
 

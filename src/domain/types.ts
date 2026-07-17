@@ -613,6 +613,8 @@ export interface InterviewEnginePolicy {
 
 export interface InterviewSession {
   id: string;
+  /** 客户端创建命令幂等键；同一启动意图因网络重试不得产生第二场 active 会话。 */
+  clientRequestId?: string;
   mode: InterviewMode;
   strength: InterviewStrength;
   status: "active" | "completed";

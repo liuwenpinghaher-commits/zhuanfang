@@ -271,7 +271,14 @@ export function buildInterviewCard(state: ProductState, searchBriefId?: string, 
       : explicitTopicHint && hasContextSources
         ? `我们先拿这条导入资料做参照：${ensureSentenceEnd(explicitTopicHint)}它和你最近的真实场景有什么关系？`
         : guide.suggestedOpening,
-    historyReferences: Array.from(new Set([...(agendaContext ? [agendaContext] : []), ...sourceReferences, reference, ...evidenceQuotes, ...confirmedMemoryTexts])).slice(0, 4),
+    historyReferences: Array.from(new Set([
+      ...(explicitTopicHint ? [`本次主题：${explicitTopicHint}`] : []),
+      ...(agendaContext ? [agendaContext] : []),
+      ...sourceReferences,
+      reference,
+      ...evidenceQuotes,
+      ...confirmedMemoryTexts
+    ])).slice(0, 4),
     potentialTension: searchBrief?.sourceAngles[0] ?? contextPack.ragChunks[0]?.text ?? neutralTension,
     suggestedPerspectives: guide.recommendedPerspectives,
     likelyOutputs: [
@@ -547,14 +554,17 @@ export function buildInterviewGuide(state: ProductState, options: InterviewGuide
   };
 }
 export function buildInterviewResumeCard(state: ProductState): InterviewResumeCard | null {
-  const activeSession = [...state.sessions]
+  return buildInterviewResumeCards(state)[0] ?? null;
+}
+
+export function buildInterviewResumeCards(state: ProductState): InterviewResumeCard[] {
+  return [...state.sessions]
     .filter((item) => item.status === "active")
-    .sort((a, b) => Date.parse(getSessionLastUpdatedAt(b)) - Date.parse(getSessionLastUpdatedAt(a)))[0];
+    .sort((a, b) => Date.parse(getSessionLastUpdatedAt(b)) - Date.parse(getSessionLastUpdatedAt(a)))
+    .map(toInterviewResumeCard);
+}
 
-  if (!activeSession) {
-    return null;
-  }
-
+function toInterviewResumeCard(activeSession: InterviewSession): InterviewResumeCard {
   const lastUserTurn = findLastTurn(activeSession, "user");
   const lastAssistantTurn = findLastTurn(activeSession, "assistant");
   const lastDecision = activeSession.strategyTrace?.at(-1);

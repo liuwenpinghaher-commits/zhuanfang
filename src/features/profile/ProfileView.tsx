@@ -18,6 +18,7 @@ interface ProfileViewProps {
   onPrivacyReport: () => Promise<PrivacyReport>;
   onPurge: () => Promise<ProductState>;
   onSetProductState: (state: ProductState) => void;
+  onSaveProfile: (state: ProductState) => Promise<ProductState>;
 }
 
 type GovernanceAction = "export" | "import" | "privacy" | "purge";
@@ -73,7 +74,8 @@ export function ProfileView({
   onExport,
   onPrivacyReport,
   onPurge,
-  onSetProductState
+  onSetProductState,
+  onSaveProfile
 }: ProfileViewProps) {
   const [form, setForm] = useState({
     name: state.profile.name,
@@ -84,11 +86,23 @@ export function ProfileView({
     preferredStrength: state.profile.preferredStrength
   });
   const [profileSaved, setProfileSaved] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileSaveError, setProfileSaveError] = useState<string | null>(null);
   const [boundaryText, setBoundaryText] = useState("");
 
-  function handleSaveProfile() {
-    onSetProductState(updateProfile(state, form));
-    setProfileSaved(true);
+  async function handleSaveProfile() {
+    if (profileSaving) return;
+    setProfileSaving(true);
+    setProfileSaved(false);
+    setProfileSaveError(null);
+    try {
+      await onSaveProfile(updateProfile(state, form));
+      setProfileSaved(true);
+    } catch (error) {
+      setProfileSaveError(error instanceof Error && error.message ? error.message : "档案保存失败，请重试。");
+    } finally {
+      setProfileSaving(false);
+    }
   }
   function handleAddBoundary() {
     const text = boundaryText.trim();
@@ -277,9 +291,12 @@ export function ProfileView({
               </select>
             </label>
             <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
-              <button className="primary-action" type="button" onClick={handleSaveProfile}>保存档案</button>
+              <button className="primary-action" type="button" onClick={handleSaveProfile} disabled={profileSaving} aria-busy={profileSaving}>
+                {profileSaving ? "保存中…" : "保存档案"}
+              </button>
               {profileSaved && <span style={{ color: "var(--color-success, #22c55e)", fontSize: "0.875rem" }}>已保存</span>}
             </div>
+            {profileSaveError && <p className="field-error" role="alert">{profileSaveError}</p>}
           </div>
         </section>
         <section className="panel">

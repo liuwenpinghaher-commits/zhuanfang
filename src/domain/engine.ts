@@ -33,10 +33,11 @@ export {
 
 export {
   addMemoryGraphToken, buildInterviewCard, buildInterviewContextPack,
-  buildInterviewGuide, buildInterviewResumeCard,
+  buildInterviewGuide, buildInterviewResumeCard, buildInterviewResumeCards,
   collectAppliedPlaybookRules,
   computeRecordThemeIds,
   createSessionDraft, formatMemoryGraphTargetLabel,
+  resolveInterviewTopicHint,
   tokenizeMemoryGraphText,
 } from "./context-pack";
 

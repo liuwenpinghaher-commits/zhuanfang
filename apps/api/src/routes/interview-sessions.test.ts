@@ -141,6 +141,27 @@ describe("interview-sessions routes", () => {
     await server.close();
   });
 
+  it("创建会话按 clientRequestId 幂等，网络重试不会制造重复 active 会话", async () => {
+    const server = buildApiServer({ env: {} });
+    const payload = {
+      mode: "organization",
+      topicHint: "企业如何进行 AI Native 转型",
+      clientRequestId: "create-ai-native-001"
+    };
+
+    const first = await server.inject({ method: "POST", url: "/api/interview-sessions", payload });
+    const retried = await server.inject({ method: "POST", url: "/api/interview-sessions", payload });
+
+    expect(first.statusCode).toBe(200);
+    expect(retried.statusCode).toBe(200);
+    expect(first.json().session.title).toContain("企业如何进行 AI Native 转型");
+    expect(first.json().session.card.suggestedOpening).toContain("企业如何进行 AI Native 转型");
+    expect(first.json().session.card.historyReferences[0]).toContain("企业如何进行 AI Native 转型");
+    expect(retried.json().session.id).toBe(first.json().session.id);
+    expect(retried.json().state.sessions.filter((item: { status: string }) => item.status === "active")).toHaveLength(1);
+    await server.close();
+  });
+
   // M6: once a session is completed + raw-material-offloaded (turns moved to cold storage,
   // hot layer cleared), appending another turn would re-grow the hot layer and split it from
   // the cold copy. /turns and /record-turn must guard against that with 409 — but an

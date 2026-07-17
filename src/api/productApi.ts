@@ -294,6 +294,8 @@ export interface CreateInterviewSessionRequest {
   mode: InterviewMode;
   strength: InterviewStrength;
   searchBriefId?: string;
+  topicHint?: string;
+  clientRequestId?: string;
 }
 
 export interface SendInterviewTurnRequest {

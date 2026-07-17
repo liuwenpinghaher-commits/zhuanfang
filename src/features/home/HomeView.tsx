@@ -1,4 +1,5 @@
 import { BookOpen, Clock, Plus, Play, Sparkles, Target, TrendingUp } from "lucide-react";
+import { useState } from "react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import { buildTimeline } from "../../domain/timeline";
 import type { buildInterviewCard } from "../../domain/engine";
@@ -44,14 +45,29 @@ function formatAt(iso: string): string {
 interface HomeViewProps {
   state: ProductState;
   card: ReturnType<typeof buildInterviewCard>;
+  suggestedTopicHint?: string;
+  recommendedMode?: InterviewMode;
+  recommendationReason?: string;
   // P3-08:曾有 monthlyReview prop 但组件从不消费(死 prop),已移除。复盘在 ThemesView 呈现。
-  onStart: (mode?: InterviewMode) => void;
+  onStart: (mode?: InterviewMode, topicHint?: string) => void;
   onOpenTrack?: (themeId: string) => void;
   onNavigate?: (view: string) => void;
 }
 
-export function HomeView({ state, card, onStart, onOpenTrack, onNavigate }: HomeViewProps) {
+export function HomeView({
+  state,
+  card,
+  suggestedTopicHint = card.title,
+  recommendedMode = "daily",
+  recommendationReason = "先从最近发生的一件具体事情开始",
+  onStart,
+  onOpenTrack,
+  onNavigate
+}: HomeViewProps) {
   const timelineEvents = buildTimeline(state, 20);
+  const [topicInput, setTopicInput] = useState("");
+  const selectedTopic = topicInput.trim() || suggestedTopicHint;
+  const recommendedModeLabel = modeOptions.find((item) => item.id === recommendedMode)?.label ?? recommendedMode;
 
   function handleEventClick(ev: (typeof timelineEvents)[number]) {
     if (ev.href.view === "track" && ev.href.trackId) {
@@ -73,13 +89,34 @@ export function HomeView({ state, card, onStart, onOpenTrack, onNavigate }: Home
           <button
             className="primary-action"
             type="button"
-            onClick={() => onStart("decision")}
+            onClick={() => onStart(recommendedMode, selectedTopic)}
           >
             <Play size={18} />
-            一键开始
+            一键开始 · {recommendedModeLabel}
           </button>
         }
       />
+
+      <section className="panel interview-topic-launch" aria-label="专访启动设置">
+        <div className="panel-title">
+          <Sparkles size={18} />
+          <h2>这次想深入什么？</h2>
+        </div>
+        <p className="field-help">
+          推荐模式：<strong>{recommendedModeLabel}</strong> · {recommendationReason}
+        </p>
+        <label className="field-stack" htmlFor="home-interview-topic">
+          <span className="field-label">具体专访主题</span>
+          <input
+            id="home-interview-topic"
+            value={topicInput}
+            maxLength={160}
+            placeholder="输入具体专访主题，例如：企业如何进行 AI Native 转型"
+            onChange={(event) => setTopicInput(event.target.value)}
+          />
+          <span className="field-help">留空则沿用当前推荐主题：{suggestedTopicHint}</span>
+        </label>
+      </section>
 
       {card.historyReferences[0] && (
         <div className="quote-line hero-quote">
@@ -245,7 +282,7 @@ export function HomeView({ state, card, onStart, onOpenTrack, onNavigate }: Home
               className="mode-option"
               key={mode.id}
               type="button"
-              onClick={() => onStart(mode.id)}
+              onClick={() => onStart(mode.id, selectedTopic)}
             >
               <strong>{mode.label}</strong>
               <span>{mode.detail}</span>

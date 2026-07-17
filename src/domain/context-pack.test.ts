@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildInterviewCard, buildInterviewContextPack, buildInterviewGuide, buildOpinionEvolution, buildPointContradictions, buildSemanticRagContext, scoreMemoryForRetrieval } from "./context-pack";
+import { buildInterviewCard, buildInterviewContextPack, buildInterviewGuide, buildInterviewResumeCards, buildOpinionEvolution, buildPointContradictions, buildSemanticRagContext, createSessionDraft, scoreMemoryForRetrieval } from "./context-pack";
 import { createInitialProductState } from "./engine";
 import type { MemoryCorrection, MemoryRecord, PointAsset, RagChunk, ImportSource, SearchBrief } from "./types";
 
@@ -212,6 +212,17 @@ describe("collectRelevantMemories — confirmed memories ranked by score (M3b)",
 // ─── original context-pack tests (must remain passing) ────────────────────────
 
 describe("context-pack (de-hardcoded)", () => {
+  it("显式专访主题贯穿标题、开场和首条主题参照", () => {
+    const state = createInitialProductState();
+    const topic = "企业如何进行 AI Native 转型";
+
+    const card = buildInterviewCard(state, undefined, topic);
+
+    expect(card.title).toContain(topic);
+    expect(card.suggestedOpening).toContain(topic);
+    expect(card.historyReferences[0]).toContain(topic);
+  });
+
   it("does not parrot the 救火/控制感 demo when the user's themes are unrelated", () => {
     const state = createInitialProductState();
     state.themes = [{
@@ -246,6 +257,22 @@ describe("context-pack (de-hardcoded)", () => {
         expect(`${b.concept} ${b.reason}`).not.toMatch(/救火|授权/);
       }
     }
+  });
+});
+
+describe("buildInterviewResumeCards", () => {
+  it("返回全部 active 会话并按最近更新排序，不隐藏较早的未完成专访", () => {
+    const state = createInitialProductState();
+    const older = createSessionDraft(state, "daily", "standard", { topicHint: "较早主题" });
+    const newer = createSessionDraft(state, "organization", "standard", { topicHint: "较新主题" });
+    older.startedAt = "2026-07-17T08:00:00.000Z";
+    newer.startedAt = "2026-07-17T09:00:00.000Z";
+    state.sessions = [older, newer];
+
+    const cards = buildInterviewResumeCards(state);
+
+    expect(cards.map((card) => card.sessionId)).toEqual([newer.id, older.id]);
+    expect(cards.map((card) => card.currentTopic)).toEqual(["较新主题", "较早主题"]);
   });
 });
 

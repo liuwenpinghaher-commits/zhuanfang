@@ -43,6 +43,7 @@ interface CreateSessionPayload {
   strength?: unknown;
   searchBriefId?: unknown;
   topicHint?: unknown;
+  clientRequestId?: unknown;
 }
 
 interface TurnPayload {
@@ -125,6 +126,13 @@ export async function registerInterviewSessionRoutes(
     const payload = normalizeObject<CreateSessionPayload>(request.body);
     const topicHint = normalizeOptionalString(payload.topicHint);
     const searchBriefId = payload.searchBriefId != null ? normalizeOptionalString(payload.searchBriefId) : undefined;
+    const clientRequestId = normalizeOptionalString(payload.clientRequestId);
+    if (clientRequestId) {
+      const existing = state.sessions.find((item) => item.clientRequestId === clientRequestId);
+      if (existing) {
+        return { session: existing, state };
+      }
+    }
     // M3c: embed the topic that drives memory recall so the new session's guide ranks
     // confirmed memories by cosine instead of substring. P2b: resolveInterviewTopicHint 与域内
     // topicHint 对齐;surreal 权威时预召回原生图遍历/HNSW/溯源,作为纯数据喂给同步 createSessionDraft。
@@ -150,12 +158,13 @@ export async function registerInterviewSessionRoutes(
       console.warn(JSON.stringify({ event: "session_create_recall_failed", error: message }));
       return reply.code(502).send({ error: `创建会话失败（记忆召回不可用）：${message}` });
     }
-    const session = createSessionDraft(state, normalizeMode(payload.mode), normalizeStrength(payload.strength, state), {
+    const draft = createSessionDraft(state, normalizeMode(payload.mode), normalizeStrength(payload.strength, state), {
       ...(searchBriefId ? { searchBriefId } : {}),
       ...(topicHint ? { topicHint } : {}),
       ...(queryEmbedding ? { queryEmbedding } : {}),
       ...(recall ? { recall } : {})
     });
+    const session: InterviewSession = clientRequestId ? { ...draft, clientRequestId } : draft;
     // The deterministic card (createSessionDraft → buildInterviewCard) is already
     // de-hardcoded/personalized, so "开始专访" returns instantly. The LLM card
     // enrichment used to block here ~5s on a live call; moved off the create

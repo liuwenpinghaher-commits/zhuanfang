@@ -282,6 +282,43 @@ select:focus-visible {
   flex: 0 0 auto;
 }
 
+.resume-session-picker,
+.resume-session-picker .resume-banner-main {
+  width: 100%;
+}
+
+.resume-session-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.resume-session-option {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 11px 12px;
+  text-align: left;
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-base);
+  cursor: pointer;
+}
+
+.resume-session-option:hover,
+.resume-session-option:focus-visible {
+  border-color: var(--action-primary, #7c5cff);
+}
+
+.resume-session-option small {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .sync-conflict-banner {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
