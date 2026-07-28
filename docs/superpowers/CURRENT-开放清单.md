@@ -1,6 +1,7 @@
 # CURRENT 开放清单（Stage-3 · 2026-07-28）
 
 > 真源：Stage-1/2 已闭合；Stage-3 将第二大脑推到可评测 / 可巩固 / 可恢复层。
+> 收口 commit：`4391dafd`（pVAD-lite + 可选 S3 presign）及后续 workspace/docs 清理。
 
 ## Stage-1 / Stage-2
 
@@ -15,22 +16,37 @@
 | S3-B2 语音质量 | closed | interrupt stash + voice-slo-smoke；mouth-to-ear 预算参考 |
 | S3-B3 Grounding | closed | chat groundingMode；prompt 引用门禁；runtime grounding 计数 |
 | S3-B4 壳切片 | closed | useInterviewSessionShell + useInterruptedUtteranceStash + useRealtimeVoiceSession + startRealtimeVoiceConnect |
-| S3-B5 媒体运维 | closed | backup-export-smoke；本地 presign + 可选 S3 SigV4；pVAD-lite 启发式已接线 |
-| S3-docs | closed | README Stage-3 |
+| S3-B5 媒体运维 | closed | backup-export-smoke；本地 presign + 可选 S3 SigV4（`apps/api/src/s3-presign.ts`）；pVAD-lite 已接线 cascade |
+| S3-docs | closed | README Stage-3 + `.env.example` CORPUS_S3_* |
+
+## 已落地特性（用法摘要）
+
+### pVAD-lite
+- 配置：`ProductState.systemConfig.voice.endpointingMode = "pvad-experimental"`（亦可 `silence` / `semantic`）
+- 代码：`src/realtime/pvadEndpointing.ts` → `cascadedPipeline` → `startRealtimeVoiceConnect`
+- 信号：ASR `getRecentEnergy()` + expression + completeness；调整 pause/wait，可对 `uncertain` 偏置 respond
+- 边界：启发式，**不是**神经网络 pVAD 权重
+
+### 语料预签名
+- 本地：`POST /api/corpus/audio-files/presign` → `provider:"local"` + `uploadPath`
+- 云：设 `CORPUS_S3_BUCKET` + AWS/`CORPUS_S3_*` 密钥 → `provider:"s3"` + `uploadUrl`（SigV4 PutObject）
+- 公开读：本地靠 `CORPUS_AUDIO_PUBLIC_BASE_URL`；S3 靠 `CORPUS_S3_PUBLIC_BASE_URL` 或默认 virtual-host URL
 
 ## 仍 open / 后置
 
-- 真音频 e2e TTFA 全链路（`E2E_REAL=1` + key；voice-cascade 已有 skip 门控）
-- 真实神经网络 pVAD 权重（现为能量/表情启发式 pvad-lite）
-- OSS 兼容端点 / 多云对象存储适配（现支持标准 S3 SigV4 PutObject）
+- 真音频 e2e 分段 TTFA 生产级统计（`E2E_REAL=1` voice-cascade 已可跑通主路径）
+- 真实神经网络 pVAD 权重接入（替换 pvad-lite）
+- OSS 兼容 / path-style / 非 AWS 端点适配
 - 多设备 CRDT（非目标）
 
 ## 验收
 
 ```bash
 npm run typecheck
-REAL_PROVIDER_SMOKE=off npm test -- --run
-REAL_PROVIDER_SMOKE=off npm test -- --run src/domain/rag-golden.test.ts
+env -u DASHSCOPE_API_KEY -u BAILIAN_API_KEY REAL_PROVIDER_SMOKE=off npm test -- --run
+REAL_PROVIDER_SMOKE=off npm test -- --run src/realtime/pvadEndpointing.test.ts apps/api/src/s3-presign.test.ts
 npx tsx scripts/voice-slo-smoke.ts
 node scripts/backup-export-smoke.mjs
+npm run test:e2e
+# 可选：set -a; . ./agent/.env; set +a; npm run test:e2e:real
 ```

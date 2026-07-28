@@ -18,5 +18,8 @@ agent/*.pyc
 /memory
 *.bak
 .claude/launch.json
+.claude/worktrees/
+# Nested historical copies / accidental second checkouts (product root is the source of truth)
+/zhuanfang/
 # 受访者隐私资料(本地真实数据,禁止入库)
 /张小珺专访资料/

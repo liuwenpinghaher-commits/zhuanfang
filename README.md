@@ -171,6 +171,13 @@ PODCAST_AUTO_RENDER_ON_CREATE=false
 
 `CORPUS_AUDIO_PUBLIC_BASE_URL`：本地语料音频上传后会写入 `CORPUS_UPLOAD_DIR`（默认 `.data/corpus-audio`），并可通过鉴权路由 `GET /api/corpus/audio-files/:fileName` 读取。若设置本变量为可被百炼 SenseVoice 拉取的公网基址（例如反代后的 `https://your.host`，服务会拼 `/api/corpus/audio-files/<file>`；若基址已含该 path 前缀则直接拼文件名），本地上传即可自动转写。**未配置时**仍会落盘并返回诚实 422（说明原因与 `local-object://` 引用），不会伪造转写稿；也可继续直接提交公网 http/https/oss URL。
 
+`CORPUS_S3_*` / `AWS_*`（可选云预签名）：
+- 启用条件：`CORPUS_S3_BUCKET` + (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` 或 `CORPUS_S3_ACCESS_KEY_ID`/`CORPUS_S3_SECRET_ACCESS_KEY`)。
+- 区域：`AWS_REGION` 或 `CORPUS_S3_REGION`（默认 `us-east-1`）；临时凭证可用 `AWS_SESSION_TOKEN` / `CORPUS_S3_SESSION_TOKEN`。
+- 行为：`POST /api/corpus/audio-files/presign` 返回 `provider:"s3"`、`uploadUrl`、`uploadHeaders`、`publicUrl`（优先 `CORPUS_S3_PUBLIC_BASE_URL`，否则标准 `bucket.s3.region.amazonaws.com`）。
+- 未配置时保持 `provider:"local"` + `uploadPath` 本地 PUT，不伪造云上传。
+- 实现：`apps/api/src/s3-presign.ts`（最小 SigV4 PutObject，无额外 AWS SDK）。
+
 `HOST` / `PORT` 控制 Product API 监听地址；`VITE_PRODUCT_API_BASE_URL` 控制浏览器前端连接哪个 Product API；`PRODUCT_API_HEALTH_URL` 和 `PRODUCT_WEB_URL` 用于 `npm run dev:full` 判断是否复用已有服务。
 
 `PRODUCT_STATIC_DIR` 控制 Product API 是否托管前端构建产物；目录存在且包含 `index.html` 时，非 `/api/*` 的 GET 请求会返回静态资源或 SPA fallback。生产 Docker 镜像默认设置为 `/app/dist`；设置为 `disabled` 可关闭静态托管。
@@ -220,9 +227,16 @@ R7 起 SurrealDB（`.data/surreal`）是**唯一**持久仓库，`GET /api/state
 - **语音 SLO**：TTFA 分段 p50/p95、barge-in 成功率、interrupt recovery；打断 stash 注入下一轮（`previousAgentUtteranceInterrupted`）。本地参考预算 p50≤700ms / p95≤1200ms（非硬 SLA）。
 - **脚本**：`npx tsx scripts/voice-slo-smoke.ts`；`node scripts/backup-export-smoke.mjs`。
 - **语音 connect**：`src/realtime/startRealtimeVoiceConnect.ts` + `useRealtimeVoiceSession`（App 只负责建 session 与回调注入）。
-- **语料预签名**：`POST /api/corpus/audio-files/presign` 默认本地 Product API PUT；配置 `CORPUS_S3_BUCKET` + `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`（或 `CORPUS_S3_*`）时返回 S3 SigV4 预签名 PUT。SenseVoice 仍需可拉取的 `publicUrl`（`CORPUS_AUDIO_PUBLIC_BASE_URL` 或 `CORPUS_S3_PUBLIC_BASE_URL`）。
-- **pVAD-lite**：`systemConfig.voice.endpointingMode=pvad-experimental` 启用能量/表情启发式（`src/realtime/pvadEndpointing.ts`），非神经网络权重；`silence`/`semantic` 仍可用。
-- **非目标**：多租户、Surreal 原生 CRDT 多设备同步、强绑单一 S2S。
+- **语料预签名**：`POST /api/corpus/audio-files/presign`
+  - 默认：`provider:"local"` → `PUT /api/corpus/audio-files/:file`（JSON `{ audioBase64 }`，需鉴权）
+  - 云：配置 bucket + AWS 凭证后 → `provider:"s3"` → 客户端直传 `uploadUrl`（SigV4）
+  - SenseVoice 仍需可拉取的 `publicUrl`（`CORPUS_AUDIO_PUBLIC_BASE_URL` 或 `CORPUS_S3_PUBLIC_BASE_URL`）
+- **pVAD-lite**（`src/realtime/pvadEndpointing.ts` + cascade 接线）
+  - `systemConfig.voice.endpointingMode`：`silence` | `semantic`（默认）| `pvad-experimental`
+  - `pvad-experimental`：用 ASR `getRecentEnergy` + `ExpressionState` + completeness 调整 `minPauseMs`/`maxWaitMs`，并可把 `uncertain` 偏置为 `respond`
+  - **诚实边界**：不是神经网络 pVAD 权重；capabilities 标注为实验启发式
+  - 入口：`startRealtimeVoiceConnect` 从 `productState.systemConfig.voice` 注入 cascade `decisionOpts`
+- **非目标**：多租户、Surreal 原生 CRDT 多设备同步、强绑单一 S2S、OSS 私有兼容端点。
 
 ## Stage-2：记忆 / 召回 / 语音度量
 
@@ -255,7 +269,7 @@ React UI
 
 生产鉴权：`GET /api/runtime-bootstrap` 仅设置 HttpOnly cookie，**不**在 JSON body 回传长期 `PRODUCT_API_TOKEN`。同源 SPA 用 `credentials: include`；分域部署可另设 `VITE_PRODUCT_API_TOKEN`。
 
-`zhuanfang/` 为历史副本，**不是**当前产品入口；请以仓库根目录为准。
+产品入口始终是**仓库根目录**（`src/`、`apps/api/`、`packages/db/`）。历史上的嵌套副本/agent worktree 已从工作区移除，勿再以子目录副本为开发主路径。
 
 开放项真源：`docs/superpowers/CURRENT-开放清单.md`。
 
@@ -265,9 +279,14 @@ React UI
 
 ```bash
 npm run typecheck
-REAL_PROVIDER_SMOKE=off npm test -- --run
+# 本机若 shell 已 export DASHSCOPE_API_KEY，单测可能误开真实 client；建议显式关掉 provider smoke
+env -u DASHSCOPE_API_KEY -u BAILIAN_API_KEY REAL_PROVIDER_SMOKE=off npm test -- --run
+npx tsx scripts/voice-slo-smoke.ts
+node scripts/backup-export-smoke.mjs
 ```
 
-按需：`npm run test:e2e`、`npm run test:e2e:real`、`npm run build`。
+按需：`npm run test:e2e`、`npm run test:e2e:real`（需 `agent/.env` 或环境中的 key）、`npm run build`。
+
+聚焦单测：`src/realtime/pvadEndpointing.test.ts`、`apps/api/src/s3-presign.test.ts`、`apps/api/src/routes/corpus-presign.test.ts`。
 
 （具体通过数字以本机最近一次命令输出为准；审查报告见 `docs/superpowers/`。）
