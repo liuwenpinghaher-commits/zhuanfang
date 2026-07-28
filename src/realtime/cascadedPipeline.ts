@@ -14,6 +14,7 @@
 import type { ExpressionState, InteractionPreSignals } from "../domain/types";
 import { stripSpokenAsides, deriveSpeechProsody, type SpeechProsody } from "../domain/speech-text";
 import { decideCascadeTurn, shouldAcceptBargeIn } from "./cascadeTurnDecision";
+import { applyPvadDecisionBias, resolveEndpointingTuning, type EndpointingMode } from "./pvadEndpointing";
 import { assessTurnCompleteness, type Completeness } from "./turnCompleteness";
 import { createBackchannelPicker } from "./backchannel";
 
@@ -57,6 +58,11 @@ export interface AsrSource {
    * Test impl: returns a fixed or dynamically-set value.
    */
   getExpressionState(): ExpressionState;
+  /**
+   * Optional peak |sample| energy 0..1 from the latest speech window.
+   * Used by pvad-experimental endpointing; omitted by test doubles.
+   */
+  getRecentEnergy?(): number;
 }
 
 /**
@@ -135,7 +141,13 @@ export interface ConnectCascadedPipelineOptions {
   ) => Promise<{ assistantText: string; prosody?: SpeechProsody }>;
   callbacks: CascadedPipelineCallbacks;
   preSignals?: InteractionPreSignals | null;
-  decisionOpts?: { minPauseMs?: number; maxWaitMs?: number; minBargeInMs?: number };
+  decisionOpts?: {
+    minPauseMs?: number;
+    maxWaitMs?: number;
+    minBargeInMs?: number;
+    /** Stage-3: silence | semantic | pvad-experimental */
+    endpointingMode?: EndpointingMode;
+  };
   /** Layer-2 LLM endpoint: returns done=true when the transcript reads complete. */
   classifyEndpoint?: (transcript: string, signal: AbortSignal) => Promise<{ done: boolean; reason?: string }>;
   /** Called after every turn-taking decision with a structured trace. */
@@ -170,7 +182,12 @@ export function connectCascadedPipeline(
     asr, tts, sendUserTurn, callbacks, preSignals = null, decisionOpts = {},
     classifyEndpoint, onDecision, assessCompleteness = assessTurnCompleteness,
   } = opts;
-  const { minPauseMs = 600, maxWaitMs = 8000, minBargeInMs = 280 } = decisionOpts;
+  const {
+    minPauseMs: baseMinPauseMs = 600,
+    maxWaitMs: baseMaxWaitMs = 8000,
+    minBargeInMs = 280,
+    endpointingMode = "semantic"
+  } = decisionOpts;
 
   const pickBackchannel = createBackchannelPicker();
   let currentPreSignals: InteractionPreSignals | null = preSignals;
@@ -245,10 +262,10 @@ export function connectCascadedPipeline(
       // mid-TTS and respond to the AI's own echoed transcript — the half-duplex
       // feedback loop the echo guard exists to prevent.
       if (!closed && !micSuppressed && state !== "thinking" && state !== "speaking") {
-        onDecision?.({ layer: 0, action: "respond", reason: "max-wait timer fired", transcript, silenceMs: maxWaitMs, expressionState });
+        onDecision?.({ layer: 0, action: "respond", reason: "max-wait timer fired", transcript, silenceMs: baseMaxWaitMs, expressionState });
         void doRespond();
       }
-    }, maxWaitMs);
+    }, baseMaxWaitMs);
   }
 
   // ── Echo guard (half-duplex during AI speech) ─────────────────────────────
@@ -359,11 +376,35 @@ export function connectCascadedPipeline(
     // wrapping up — treat it as complete regardless of surface grammar analysis.
     const completeness: Completeness =
       expressionState === "concluding" ? "complete" : assessCompleteness(transcript);
-    const decision = decideCascadeTurn({ expressionState, silenceMs, completeness, minPauseMs, maxWaitMs });
+    const energy = typeof asr.getRecentEnergy === "function" ? asr.getRecentEnergy() : undefined;
+    const tuning = resolveEndpointingTuning({
+      mode: endpointingMode,
+      expressionState,
+      silenceMs,
+      completeness,
+      ...(energy != null ? { recentEnergy: energy } : {}),
+      baseMinPauseMs,
+      baseMaxWaitMs
+    });
+    const rawDecision = decideCascadeTurn({
+      expressionState,
+      silenceMs,
+      completeness,
+      minPauseMs: tuning.minPauseMs,
+      maxWaitMs: tuning.maxWaitMs
+    });
+    const decision = {
+      ...rawDecision,
+      action: applyPvadDecisionBias(rawDecision.action, tuning),
+      reason:
+        rawDecision.action !== applyPvadDecisionBias(rawDecision.action, tuning)
+          ? `${rawDecision.reason} + ${tuning.label} bias`
+          : rawDecision.reason
+    };
 
     onDecision?.({
       // layer 0 = VAD max-wait timeout fired synchronously; layer 1 = heuristic.
-      layer: silenceMs >= maxWaitMs ? 0 : 1,
+      layer: silenceMs >= tuning.maxWaitMs ? 0 : 1,
       action: decision.action, reason: decision.reason, transcript, silenceMs, expressionState,
     });
 

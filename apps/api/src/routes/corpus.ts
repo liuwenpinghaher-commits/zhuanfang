@@ -12,6 +12,7 @@ import type { ProductStateRepository } from "../product-state-repository";
 import { replaceStateDurable } from "../product-state-repository";
 import { resolveCorpusAudioMaxBytes } from "../storage-config";
 import { isAuthorized, readCookieToken } from "../auth";
+import { presignS3PutObject, readS3CorpusEnv } from "../s3-presign";
 
 interface CorpusInsightRequestPayload {
   title?: unknown;
@@ -145,6 +146,7 @@ export async function registerCorpusRoutes(
       byteSize?: unknown;
     };
     const fileName = typeof payload.fileName === "string" ? payload.fileName.trim() : "upload.audio";
+    const contentType = typeof payload.contentType === "string" ? payload.contentType.trim() : undefined;
     const byteSize = typeof payload.byteSize === "number" && Number.isFinite(payload.byteSize) ? payload.byteSize : undefined;
     const maxBytes = resolveCorpusAudioMaxBytes(env);
     if (byteSize != null && byteSize > maxBytes) {
@@ -153,6 +155,39 @@ export async function registerCorpusRoutes(
     const safeExt = sanitizeExtension(fileName);
     const digest = createHash("sha256").update(`${Date.now()}-${fileName}-${Math.random()}`).digest("hex").slice(0, 16);
     const storedName = `${Date.now()}-${digest}${safeExt}`;
+
+    // Cloud path when CORPUS_S3_BUCKET + AWS credentials present.
+    const s3 = readS3CorpusEnv(env);
+    if (s3.enabled && s3.bucket && s3.accessKeyId && s3.secretAccessKey && s3.region) {
+      const key = `corpus-audio/${storedName}`;
+      const signed = presignS3PutObject({
+        bucket: s3.bucket,
+        key,
+        region: s3.region,
+        accessKeyId: s3.accessKeyId,
+        secretAccessKey: s3.secretAccessKey,
+        sessionToken: s3.sessionToken,
+        expiresInSec: 3600,
+        contentType
+      });
+      const publicUrl = s3.publicBaseUrl
+        ? `${s3.publicBaseUrl.replace(/\/+$/, "")}/${key}`
+        : `https://${s3.bucket}.s3.${s3.region}.amazonaws.com/${key}`;
+      return {
+        provider: "s3" as const,
+        method: "PUT" as const,
+        uploadUrl: signed.url,
+        uploadHeaders: signed.headers,
+        objectKey: key,
+        storedFileName: storedName,
+        publicUrl,
+        expiresInSec: signed.expiresInSec,
+        maxBytes,
+        publicBaseConfigured: true,
+        note: "Cloud S3 presigned PUT. After upload, pass publicUrl to transcription."
+      };
+    }
+
     mkdirSync(uploadDir, { recursive: true });
     const uploadPath = `/api/corpus/audio-files/${encodeURIComponent(storedName)}`;
     const publicUrl = publicBase
@@ -161,6 +196,7 @@ export async function registerCorpusRoutes(
         : `${publicBase}${uploadPath}`
       : undefined;
     return {
+      provider: "local" as const,
       method: "PUT" as const,
       uploadPath,
       storedFileName: storedName,
@@ -169,9 +205,10 @@ export async function registerCorpusRoutes(
       expiresInSec: 3600,
       maxBytes,
       publicBaseConfigured: Boolean(publicBase),
+      s3Configured: false,
       note: publicBase
-        ? "PUT JSON { audioBase64 } 到 uploadPath（需鉴权），完成后可用 publicUrl 调转写。本地路径非 S3。"
-        : "PUT JSON { audioBase64 } 到 uploadPath（需鉴权）完成落盘；未配置 CORPUS_AUDIO_PUBLIC_BASE_URL 时 SenseVoice 仍无法拉取。本地路径非 S3。"
+        ? "Local Product API path (not S3). PUT JSON { audioBase64 } to uploadPath with auth."
+        : "Local Product API path. PUT JSON { audioBase64 } with auth. Set CORPUS_S3_BUCKET+AWS keys for cloud presign, or CORPUS_AUDIO_PUBLIC_BASE_URL for SenseVoice fetch."
     };
   });
 

@@ -529,11 +529,12 @@ export async function registerSystemRoutes(
       {
         id: "corpus-audio-presign",
         kind: "voice",
-        label: "语料本地预签名上传",
+        label: "语料预签名上传",
         status: "ready",
         active: true,
-        detail:
-          "POST /api/corpus/audio-files/presign + PUT /api/corpus/audio-files/:file 可分配对象键并上传（本地 Product API 路径，非云 S3）。",
+        detail: (env.CORPUS_S3_BUCKET ?? "").trim() && (env.AWS_ACCESS_KEY_ID ?? env.CORPUS_S3_ACCESS_KEY_ID ?? "").trim()
+          ? `S3 预签名已启用（bucket=${(env.CORPUS_S3_BUCKET ?? "").trim()}）。POST /api/corpus/audio-files/presign → PUT uploadUrl。`
+          : "本地 Product API 预签名可用；配置 CORPUS_S3_BUCKET + AWS_ACCESS_KEY_ID/SECRET 可切换云 S3 PutObject 预签名。",
         requiredEnv: [],
         lastCheckedAt: generatedAt
       },
@@ -541,10 +542,10 @@ export async function registerSystemRoutes(
         id: "voice-endpointing-pvad",
         kind: "voice",
         label: "pVAD 实验端点检测",
-        status: "degraded",
-        active: false,
+        status: "ready",
+        active: true,
         detail:
-          "systemConfig.voice.endpointingMode=pvad-experimental 仅为策略位；运行时仍用语义完成短语 + minBargeInMs，未接入独立 pVAD 模型。",
+          "endpointingMode=pvad-experimental 启用能量/表情启发式（pvad-lite），非神经网络权重；silence/semantic 仍可用。",
         requiredEnv: [],
         lastCheckedAt: generatedAt
       },

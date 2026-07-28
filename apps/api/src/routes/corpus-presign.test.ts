@@ -31,7 +31,8 @@ describe("corpus local presign", () => {
       payload: { fileName: "clip.wav", byteSize: 16 }
     });
     expect(presign.statusCode).toBe(200);
-    const body = presign.json() as { uploadPath: string; storedFileName: string };
+    const body = presign.json() as { provider?: string; uploadPath: string; storedFileName: string };
+    expect(body.provider ?? "local").toBe("local");
     expect(body.uploadPath).toContain("/api/corpus/audio-files/");
 
     const put = await app.inject({

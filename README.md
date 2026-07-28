@@ -146,6 +146,10 @@ PRODUCT_WEB_ORIGINS=http://127.0.0.1:3220,http://localhost:3220
 CORPUS_UPLOAD_DIR=.data/corpus-audio
 CORPUS_AUDIO_PUBLIC_BASE_URL=
 CORPUS_AUDIO_MAX_BYTES=52428800
+CORPUS_S3_BUCKET=
+CORPUS_S3_REGION=
+CORPUS_S3_PUBLIC_BASE_URL=
+# or AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION / AWS_SESSION_TOKEN
 PODCAST_AUTO_RENDER_ON_CREATE=false
 ```
 
@@ -216,8 +220,8 @@ R7 起 SurrealDB（`.data/surreal`）是**唯一**持久仓库，`GET /api/state
 - **语音 SLO**：TTFA 分段 p50/p95、barge-in 成功率、interrupt recovery；打断 stash 注入下一轮（`previousAgentUtteranceInterrupted`）。本地参考预算 p50≤700ms / p95≤1200ms（非硬 SLA）。
 - **脚本**：`npx tsx scripts/voice-slo-smoke.ts`；`node scripts/backup-export-smoke.mjs`。
 - **语音 connect**：`src/realtime/startRealtimeVoiceConnect.ts` + `useRealtimeVoiceSession`（App 只负责建 session 与回调注入）。
-- **语料本地预签名**：`POST /api/corpus/audio-files/presign` + `PUT .../audio-files/:file`（非云 S3；SenseVoice 仍需 `CORPUS_AUDIO_PUBLIC_BASE_URL`）。
-- **pVAD**：`systemConfig.voice.endpointingMode=pvad-experimental` 为诚实实验位，capabilities 标 degraded，未接模型。
+- **语料预签名**：`POST /api/corpus/audio-files/presign` 默认本地 Product API PUT；配置 `CORPUS_S3_BUCKET` + `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`（或 `CORPUS_S3_*`）时返回 S3 SigV4 预签名 PUT。SenseVoice 仍需可拉取的 `publicUrl`（`CORPUS_AUDIO_PUBLIC_BASE_URL` 或 `CORPUS_S3_PUBLIC_BASE_URL`）。
+- **pVAD-lite**：`systemConfig.voice.endpointingMode=pvad-experimental` 启用能量/表情启发式（`src/realtime/pvadEndpointing.ts`），非神经网络权重；`silence`/`semantic` 仍可用。
 - **非目标**：多租户、Surreal 原生 CRDT 多设备同步、强绑单一 S2S。
 
 ## Stage-2：记忆 / 召回 / 语音度量

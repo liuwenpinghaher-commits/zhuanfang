@@ -113,6 +113,7 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
 
   let latestExpressionState: ExpressionState = "fluent";
   let latestPartialTranscript = "";
+  let latestEnergy = 0;
   let lowEnergyFrames = 0;
   let frameMs = 256; // will be updated once AudioContext is created
 
@@ -228,8 +229,9 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
       }
       ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: btoa(binary) }));
 
-      // Update expression state
+      // Update expression state + recent energy for pVAD-lite endpointing
       const level = Math.max(...Array.from(inputData).map(Math.abs));
+      latestEnergy = level;
       if (analyser && freqData) {
         analyser.getByteFrequencyData(freqData);
         featureTracker.onCentroid(spectralCentroid(freqData, audioCtx!.sampleRate));
@@ -250,6 +252,10 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
   return {
     register(h: AsrEventHandlers) {
       handlers = h;
+    },
+
+    getRecentEnergy() {
+      return latestEnergy;
     },
 
     async start() {

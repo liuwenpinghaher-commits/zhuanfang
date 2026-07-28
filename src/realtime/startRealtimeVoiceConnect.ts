@@ -159,7 +159,10 @@ export async function startRealtimeVoiceConnect(deps: StartRealtimeVoiceConnectD
         tts,
         sendUserTurn,
         preSignals: interviewSession?.interactionPreSignals ?? null,
-        decisionOpts: deps.minBargeInMs != null ? { minBargeInMs: deps.minBargeInMs } : undefined,
+        decisionOpts: {
+          ...(deps.minBargeInMs != null ? { minBargeInMs: deps.minBargeInMs } : {}),
+          ...(deps.endpointingMode ? { endpointingMode: deps.endpointingMode } : {})
+        },
         callbacks: {
           onStateChange: (s) => {
             if (s === "listening" || s === "transcribing") deps.setVoiceStatus("listening");
@@ -192,10 +195,12 @@ export async function startRealtimeVoiceConnect(deps: StartRealtimeVoiceConnectD
       deps.setRecording(true);
       const eotNote =
         deps.endpointingMode === "pvad-experimental"
-          ? "（endpointing: pVAD 实验位，当前仍用语义短语+minBargeIn）"
+          ? "（endpointing: pVAD-lite 启发式，非神经网络权重）"
           : deps.endpointingMode === "semantic"
             ? "（endpointing: semantic）"
-            : "";
+            : deps.endpointingMode === "silence"
+              ? "（endpointing: silence）"
+              : "";
       deps.setNotice(buildNotice("success", "实时语音会话已就绪", `级联模式 (ASR→分析→TTS) 已连接${eotNote}`));
       void pipeline.startListening(suggestedOpening || undefined).catch((err) => {
         deps.setNotice(
