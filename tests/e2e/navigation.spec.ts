@@ -13,7 +13,7 @@ const views = [
   ["我的资产", "专访档案与认知资产库"],
   ["外部调研", "主动搜集热点、素材和可讨论主题"],
   ["记忆", "导入资料，审核长期记忆"],
-  ["系统配置", "状态页展示 Product API 的真实能力健康"],
+  ["系统配置", "状态页展示能力健康"],
   ["语料学习", "从外部专访中学习提问逻辑"],
   ["个人档案", "产品负责人 · AI 产品 / 创业"]
 ] as const;
@@ -83,7 +83,7 @@ test.describe("primary navigation", () => {
     });
     await resetDemoState(page);
     // 系统配置默认进入「状态」区，实时能力健康直接可见，无需再切分段。
-    await openView(page, "系统配置", "状态页展示 Product API 的真实能力健康");
+    await openView(page, "系统配置", "状态页展示能力健康");
 
     await expect(page.getByRole("heading", { name: "Product API 实时状态" })).toBeVisible();
     await expect(page.getByText("Product State Store")).toBeVisible();
@@ -191,7 +191,7 @@ test.describe("primary navigation", () => {
     });
 
     await resetDemoState(page);
-    await openView(page, "系统配置", "状态页展示 Product API 的真实能力健康");
+    await openView(page, "系统配置", "状态页展示能力健康");
     // 服务端配置(env)表单现在归到「参数」区。
     await page.getByRole("button", { name: /参数/ }).click();
 
@@ -212,7 +212,7 @@ test.describe("primary navigation", () => {
     // The available options depend on what the server returns — we read the first option value
     // at runtime instead of hard-coding a preset name that may not exist.
     await resetDemoState(page);
-    await openView(page, "系统配置", "状态页展示 Product API 的真实能力健康");
+    await openView(page, "系统配置", "状态页展示能力健康");
     // 产品策略表单现在归到「参数」区。
     await page.getByRole("button", { name: /参数/ }).click();
 
