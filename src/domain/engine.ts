@@ -694,3 +694,4 @@ function cloneConfig(config: SystemConfig): SystemConfig {
 }
 
 export { buildBootContextPack, retrievePersonalKnowledge, decideRecallAcceptance } from "./retrieval";
+export { applyImportanceDecay, detectMemoryContradictions, enrichStateAfterDedupe } from "./memory-consolidation";

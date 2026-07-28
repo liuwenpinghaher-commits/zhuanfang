@@ -85,6 +85,54 @@ export async function registerCorpusRoutes(
       .send(createReadStream(filePath));
   });
 
+
+  /** Stage-2: store local audio only (no ASR). Returns local-object URL + optional public URL for CDN/SenseVoice. */
+  server.post("/api/corpus/audio-files", async (request, reply) => {
+    const payload = (request.body && typeof request.body === "object" ? request.body : {}) as {
+      audioBase64?: unknown;
+      fileName?: unknown;
+    };
+    const audioBase64 = typeof payload.audioBase64 === "string" ? payload.audioBase64.trim() : "";
+    const fileName = typeof payload.fileName === "string" ? payload.fileName.trim() : "upload.audio";
+    if (!audioBase64) {
+      return reply.code(422).send({ error: "audioBase64 is required." });
+    }
+    if (audioBase64.length > MAX_AUDIO_BASE64_BYTES) {
+      return reply.code(422).send({ error: "上传的音频文件过大（base64 超过 25 MB）。" });
+    }
+    let bytes: Buffer;
+    try {
+      bytes = Buffer.from(audioBase64, "base64");
+    } catch {
+      return reply.code(422).send({ error: "音频 base64 无法解码。" });
+    }
+    if (!bytes.length) {
+      return reply.code(422).send({ error: "音频内容为空。" });
+    }
+    const maxBytes = resolveCorpusAudioMaxBytes(env);
+    if (bytes.length > maxBytes) {
+      return reply.code(413).send({ error: `音频文件超过 CORPUS_AUDIO_MAX_BYTES 上限（${maxBytes} 字节）。` });
+    }
+    const safeExt = sanitizeExtension(fileName);
+    const digest = createHash("sha256").update(bytes).digest("hex").slice(0, 16);
+    const storedName = `${Date.now()}-${digest}${safeExt}`;
+    mkdirSync(uploadDir, { recursive: true });
+    writeFileSync(join(uploadDir, storedName), bytes);
+    const localObjectUrl = `local-object://corpus-audio/${storedName}`;
+    const publicUrl = publicBase
+      ? publicBase.includes("/api/corpus/audio-files")
+        ? `${publicBase.replace(/\/+$/, "")}/${encodeURIComponent(storedName)}`
+        : `${publicBase}/api/corpus/audio-files/${encodeURIComponent(storedName)}`
+      : undefined;
+    return {
+      storedFileName: storedName,
+      localObjectUrl,
+      ...(publicUrl ? { publicUrl } : {}),
+      byteSize: bytes.length,
+      publicBaseConfigured: Boolean(publicBase)
+    };
+  });
+
   server.post("/api/corpus/transcriptions", async (request, reply) => {
     const input = normalizeTranscriptionInput(request.body);
 

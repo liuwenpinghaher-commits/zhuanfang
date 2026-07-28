@@ -64,6 +64,7 @@ import { CACHE_CORRUPTION_MARKER_KEY, isPristineDemoState, loadProductState, nor
 // F-05: 持久 outbox + 三方合并 + autosave 退避（逻辑在 useOfflineProductSync）。
 import { readOfflineOutbox, upsertOfflineOutbox, type OfflineOutbox } from "./domain/offline-sync";
 import { useOfflineProductSync } from "./hooks/useOfflineProductSync";
+import { useCascadeVoiceMetrics } from "./hooks/useCascadeVoiceMetrics";
 import { shouldStageLocalBeforeAdopt } from "./domain/adopt-stage";
 import type {
   AssetStatus,
@@ -149,6 +150,7 @@ export default function App() {
   const [runtimeConfigSaving, setRuntimeConfigSaving] = useState(false);
   const [view, setView] = useState<View>("home");
   const [session, setSession] = useState<InterviewSession | null>(null);
+  const { reportLatency } = useCascadeVoiceMetrics(session?.id);
   const [pendingMode, setPendingMode] = useState<InterviewMode>("decision");
   const [notice, setNotice] = useState<UiNotice | null>(null);
   // N-02:权威库(surreal)落库健康度——degraded 期间常驻顶栏警告(独立持久状态,区别于一次性 notice)。
@@ -1822,6 +1824,9 @@ const approveCandidate = (id: string, mode: "merge" | "add" = "merge") =>
                 },
                 onError: (err) => {
                   setNotice(buildNotice("warning", "级联语音错误", err.message));
+                },
+                onLatency: (sample) => {
+                  reportLatency(sample);
                 }
               },
               classifyEndpoint: interviewId

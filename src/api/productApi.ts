@@ -38,6 +38,7 @@ export interface ProductApiClient {
   getPrivacyReport(): Promise<PrivacyReport>;
   /** F-04:成功时附带服务端逐库清理回执;部分失败抛 ApiError(500, body 含 state+purgeReceipt)。 */
   purgeState(): Promise<ProductState & { purgeReceipt?: PurgeReceipt }>;
+  reportVoiceLatency(sample: { path?: string; ttfaMs?: number; vadEndToSttMs?: number; sttToLlmMs?: number; llmTtftMs?: number; ttsTtfbMs?: number; interrupted?: boolean; sessionId?: string }): Promise<void>;
   getSystemCapabilities(): Promise<SystemCapabilitiesResponse>;
   getSystemConfig(): Promise<SystemConfigResponse>;
   updateSystemConfig(updates: SystemConfigUpdateRequest): Promise<SystemConfigUpdateResponse>;
@@ -795,6 +796,26 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         Object.defineProperty(state, "purgeReceipt", { value: purgeReceipt, enumerable: false, configurable: true });
       }
       return state;
+    },
+    async reportVoiceLatency(sample: {
+      path?: "cascade" | "omni" | "livekit" | "interrupt" | "unknown";
+      ttfaMs?: number;
+      vadEndToSttMs?: number;
+      sttToLlmMs?: number;
+      llmTtftMs?: number;
+      ttsTtfbMs?: number;
+      interrupted?: boolean;
+      sessionId?: string;
+    }): Promise<void> {
+      try {
+        await requestJson("/api/system/runtime-metrics/voice", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(sample)
+        });
+      } catch {
+        /* best-effort telemetry — never block voice UX */
+      }
     },
     async getSystemCapabilities() {
       return (await requestJson("/api/system/capabilities", { method: "GET" })) as SystemCapabilitiesResponse;

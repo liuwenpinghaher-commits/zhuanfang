@@ -215,6 +215,8 @@ R7 起 SurrealDB（`.data/surreal`）是**唯一**持久仓库，`GET /api/state
 - **通道配额**：知识块按 memory / material / transcript / asset 分通道截断，避免长文素材挤掉个人记忆。
 - **运行时度量**：`GET /api/health` 附带 `metrics.voice`（ttfa p50/p95、interruptCount）与 `metrics.recall`；完整环形缓冲见 `GET /api/system/runtime-metrics`。配置页在 capabilities 返回 metrics 时展示 TTFA 与召回计数；p95>700ms 会 amber 提示。
 - **语音路径选型**：`cascade`（ASR→LLM→TTS）可控、易调试、transcript 一等公民；`bailian` omni / livekit 更自然但中间态更黑盒。生产默认优先 cascade；barge-in 走 `POST /api/realtime-voice/sessions/:id/interrupt` 截断已播并记 metrics。
+- **语料直传预热**：`POST /api/corpus/audio-files` 仅落盘并返回 `localObjectUrl` / 可选 `publicUrl`（需 `CORPUS_AUDIO_PUBLIC_BASE_URL`），供 CDN 或后续 SenseVoice 使用，不伪造转写。
+- **记忆巩固**：`POST /api/memory/consolidate` 在去重摘要后做 importance 衰减，并生成「待裁决矛盾」HITL 候选。
 - **配置边界**：服务端 env（密钥/模型/CORPUS_AUDIO_PUBLIC_BASE_URL）≠ ProductState.systemConfig（产品策略，含可选 `memory.minRecallScore`）。
 
 ## 当前架构

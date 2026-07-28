@@ -8,6 +8,7 @@ import {
 import { withMemoryCandidateReview } from "../../../../src/domain/memoryReview";
 import { makeId, nowIso, withAuditEvent } from "../../../../src/domain/utils";
 import type { MemoryCandidate, MemoryRecord, ProductState } from "../../../../src/domain/types";
+import { enrichStateAfterDedupe } from "../../../../src/domain/memory-consolidation";
 import type { ProductStateRepository } from "../product-state-repository"
 import { replaceStateDurable } from "../product-state-repository";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
@@ -281,8 +282,16 @@ export async function registerMemoryCandidateRoutes(
       }
     }
 
+    // Stage-2: importance decay + contradiction HITL candidates (pure, after dedupe/summary).
+    nextState = enrichStateAfterDedupe(nextState);
+    const contradictionCandidates = nextState.memoryCandidates.filter((c) =>
+      c.text.startsWith("【待裁决矛盾】") && c.status === "pending"
+    ).length;
     const persisted = /*durable*/await replaceStateDurable(repository, nextState);
-    return { state: persisted, summary: { deprecated } };
+    return {
+      state: persisted,
+      summary: { deprecated, contradictions: contradictionCandidates, decayApplied: true }
+    };
   });
 }
 
