@@ -215,6 +215,9 @@ R7 起 SurrealDB（`.data/surreal`）是**唯一**持久仓库，`GET /api/state
 - **记忆生命周期**：echo-chamber 过滤；矛盾 `POST /api/memory-candidates/:id/resolve-conflict`（supersede/demote-not-delete）；consolidate 支持 `mode=queue` 只预览。
 - **语音 SLO**：TTFA 分段 p50/p95、barge-in 成功率、interrupt recovery；打断 stash 注入下一轮（`previousAgentUtteranceInterrupted`）。本地参考预算 p50≤700ms / p95≤1200ms（非硬 SLA）。
 - **脚本**：`npx tsx scripts/voice-slo-smoke.ts`；`node scripts/backup-export-smoke.mjs`。
+- **语音 connect**：`src/realtime/startRealtimeVoiceConnect.ts` + `useRealtimeVoiceSession`（App 只负责建 session 与回调注入）。
+- **语料本地预签名**：`POST /api/corpus/audio-files/presign` + `PUT .../audio-files/:file`（非云 S3；SenseVoice 仍需 `CORPUS_AUDIO_PUBLIC_BASE_URL`）。
+- **pVAD**：`systemConfig.voice.endpointingMode=pvad-experimental` 为诚实实验位，capabilities 标 degraded，未接模型。
 - **非目标**：多租户、Surreal 原生 CRDT 多设备同步、强绑单一 S2S。
 
 ## Stage-2：记忆 / 召回 / 语音度量

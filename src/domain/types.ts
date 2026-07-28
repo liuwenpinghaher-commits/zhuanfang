@@ -41,6 +41,13 @@ export interface SystemConfig {
     podcastVoice: string;
     podcastFormat: "solo" | "host-guest";
     realtimeMode: "bailian" | "livekit" | "cascade";
+    /** Stage-3: cascade barge-in sustain ms (default 280 in pipeline). */
+    minBargeInMs?: number;
+    /**
+     * Stage-3 endpointing policy. `pvad-experimental` is honest capability only —
+     * runtime still uses semantic completion phrases + minBargeIn (no pVAD model wired).
+     */
+    endpointingMode?: "silence" | "semantic" | "pvad-experimental";
   };
   models: {
     planningModel: string;

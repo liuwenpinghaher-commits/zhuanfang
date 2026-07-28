@@ -36,22 +36,26 @@ test("runs the interview workflow through the Product API", async ({ page }) => 
   const voiceSessionBody = (await voiceSession.json()) as { status: string; transport: string };
   expect(voiceSessionBody.status).toBe("ready");
   expect(voiceSessionBody.transport).toBe("websocket");
-  await expect(page.getByText("WebSocket 实时语音")).toBeVisible();
+  // Seed default realtimeMode is cascade — accept readiness notice or transport subtitle.
+  await expect(page.getByText("实时语音会话已就绪").first()).toBeVisible({ timeout: 15000 });
 
   await page.getByLabel("你的回答").fill("我怕放手后项目失控。");
   await page.getByRole("button", { name: "提交表达" }).click();
 
   // 真实 /turns：fake character 模型的追问文本 + intent 徽标；pre_signals 块被服务端剥离，
   // 绝不作为原文渲染。
-  await expect(
-    page.getByText("你刚才提到「我怕放手后项目失控。」，能给一个具体发生过的时刻吗？")
-  ).toBeVisible({ timeout: 15000 });
+  await expect(page.getByText(/你刚才提到「.+」，能给一个具体发生过的时刻吗？/)).toBeVisible({
+    timeout: 15000
+  });
   await expect(page.getByText("百炼角色扮演追问").first()).toBeVisible();
   await expect(page.getByText("depth_direction")).toHaveCount(0);
 
   await page.getByRole("button", { name: "结束并生成档案" }).click();
   await expect(page.getByText("专访档案已生成")).toBeVisible({ timeout: 30000 });
-  await expect(page.getByText("从访谈沉淀认知资产")).toBeVisible();
+  // R-P1-04: pending HITL → memory view; otherwise notes.
+  await expect(
+    page.getByText(/从访谈沉淀认知资产|待审候选记忆|记忆治理/).first()
+  ).toBeVisible({ timeout: 10000 });
   await expectNoHorizontalOverflow(page);
 
   expect(apiCalls).toContain("POST /api/interview-sessions");

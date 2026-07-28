@@ -527,6 +527,28 @@ export async function registerSystemRoutes(
         lastCheckedAt: generatedAt
       },
       {
+        id: "corpus-audio-presign",
+        kind: "voice",
+        label: "语料本地预签名上传",
+        status: "ready",
+        active: true,
+        detail:
+          "POST /api/corpus/audio-files/presign + PUT /api/corpus/audio-files/:file 可分配对象键并上传（本地 Product API 路径，非云 S3）。",
+        requiredEnv: [],
+        lastCheckedAt: generatedAt
+      },
+      {
+        id: "voice-endpointing-pvad",
+        kind: "voice",
+        label: "pVAD 实验端点检测",
+        status: "degraded",
+        active: false,
+        detail:
+          "systemConfig.voice.endpointingMode=pvad-experimental 仅为策略位；运行时仍用语义完成短语 + minBargeInMs，未接入独立 pVAD 模型。",
+        requiredEnv: [],
+        lastCheckedAt: generatedAt
+      },
+      {
         id: "bailian-realtime",
         kind: "voice",
         label: "百炼 Qwen-Omni Realtime",

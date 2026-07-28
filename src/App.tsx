@@ -43,17 +43,7 @@ import { productApiClient, isNetworkError, ApiError, type PersistHealthLite, typ
 import type { ColdLayerMode, RealtimeVoiceSessionResponse, StateImportResult, SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigUpdateRequest, VoiceInfo } from "./api/productApi";
 // WebRTC omni client is incomplete (no callbacks/turn recording); the connect path is
 // downlined to WebSocket in startVoiceSession. Type kept for the connection union only.
-import type { BailianRealtimeWebrtcConnection } from "./realtime/realtimeTypes";
-import {
-  connectBailianRealtimeWebsocket,
-  type BailianRealtimeWebsocketConnection
-} from "./realtime/bailianWebsocket";
-import { createLivekitVoiceSession, type LivekitVoiceSession } from "./realtime/livekitVoice";
-import { connectCascadedPipeline, type CascadedPipeline, type TtsSink } from "./realtime/cascadedPipeline";
-import { createBrowserAsrSource } from "./realtime/cascadedAsrSource";
-import { createBrowserTtsSink } from "./realtime/cascadedTtsSink";
 import { pcmS16leMonoToWav } from "./realtime/pcmWav";
-import { createSessionAudioRecorder, type SessionAudioRecorder } from "./realtime/sessionAudioRecorder";
 import {
   dedupeGeneratedArtifacts,
   deleteCorpusInsightBundle,
@@ -68,6 +58,7 @@ import { useCascadeVoiceMetrics } from "./hooks/useCascadeVoiceMetrics";
 import { useInterruptedUtteranceStash } from "./hooks/useInterruptedUtteranceStash";
 import { useInterviewSessionShell } from "./hooks/useInterviewSessionShell";
 import { useRealtimeVoiceSession } from "./hooks/useRealtimeVoiceSession";
+import { startRealtimeVoiceConnect } from "./realtime/startRealtimeVoiceConnect";
 import { shouldStageLocalBeforeAdopt } from "./domain/adopt-stage";
 import type {
   AssetStatus,
@@ -107,7 +98,6 @@ import {
   type UiNotice,
   type View
 } from "./ui";
-import { appendAssistantTranscriptFinal } from "./domain/session-transcript";
 import { buildBootContextPack } from "./domain/retrieval";
 
 const navIconByView: Record<View, typeof Compass> = {
@@ -1660,385 +1650,52 @@ const approveCandidate = (id: string, mode: "merge" | "add" = "merge") =>
       setRealtimeVoiceSession(voiceSession);
       setApiPersistenceEnabled(true);
 
-      if (voiceSession.status === "ready") {
-        const voiceMode = productState.systemConfig.voice.realtimeMode ?? "cascade";
-
-        if (voiceMode === "cascade") {
-          // Cascade pipeline: real ASR (text-only omni WS) → LLM HTTP → CosyVoice TTS WS
-          try {
-            setVoiceStatus("connecting");
-            const baseWsUrl = realtimeApiWsBaseUrl();
-            const asrWsUrl = withAuthTokenQuery(`${baseWsUrl}/api/realtime-voice/ws/${voiceSession.sessionId}`);
-            const ttsWsUrl = withAuthTokenQuery(`${baseWsUrl}/api/realtime-voice/ws/tts/${voiceSession.sessionId}`);
-            const interviewId = session?.id ?? "";
-
-            const asr = createBrowserAsrSource({
-              asrWsUrl,
-              instructions: voiceSession.sessionUpdate.session.instructions,
-              // 审计修复(P2-22):中途断连如实上报并收尾——此前 UI 停在"聆听"假象,用户
-              // 继续说话被静默丢帧,只能自己困惑几十秒后手动重开。
-              onConnectionLost: () => {
-                setNotice(buildNotice("warning", "语音连接已断开", "语音识别中断,请重新点击录音继续。文字输入不受影响。"));
-                closeRealtimeVoiceSession();
-              },
-              // Tee the live mic into a whole-session recorder. Best-effort: guard
-              // construction so a recorder failure never breaks ASR start. The
-              // recording is uploaded at /end (see finishInterview).
-              onMicStream: (stream) => {
-                try {
-                  const recorder = createSessionAudioRecorder(stream);
-                  recorder.start();
-                  audioRecorderRef.current = recorder;
-                } catch (err) {
-                  audioRecorderRef.current = null;
-                  console.warn(JSON.stringify({
-                    event: "session_recorder_start_failed",
-                    error: err instanceof Error ? err.message : String(err),
-                  }));
-                }
-              }
-            });
-            const tts = createBrowserTtsSink(ttsWsUrl, productState.systemConfig.voice.defaultVoice);
-            // Hold the sink so finishInterview() can drain its host-audio PCM tap.
-            ttsSinkRef.current = tts;
-
-            // sendUserTurn: POST to /api/interview-sessions/:id/turns, return assistantText
-            const sendUserTurn = async (text: string, signal: AbortSignal) => {
-              if (!interviewId) {
-                return { assistantText: "" };
-              }
-              // Stage-3: consume barge-in stash once so the next LLM turn sees cut-off speech.
-              const stashFragment = interruptedStash.consumeForPrompt();
-              if (stashFragment) {
-                try {
-                  await productApiClient.refreshVoiceInstructions(interviewId, `${stashFragment}\n\n用户新输入：${text}`);
-                } catch {
-                  /* best-effort — turn still proceeds */
-                }
-              }
-              // P0-D: forward the pipeline's barge-in signal so an interrupted turn
-              // aborts the server LLM call rather than running to completion (which
-              // would overwrite the user's newly-started turn and waste budget).
-              const r = await productApiClient.sendInterviewTurn(interviewId, { content: text }, signal);
-              setSession(r.session);
-              adoptServerState(r.state);
-              setApiPersistenceEnabled(true);
-              if (r.preSignals) cascadePipelineRef.current?.updatePreSignals(r.preSignals);
-              const lastTurn = r.session.turns.at(-1);
-              // The server already stripped （…）asides from content and distilled the manner into
-              // turn.prosody — forward it so the voice keeps its emotion.
-              return { assistantText: lastTurn?.content ?? "", prosody: lastTurn?.prosody };
-            };
-
-            const preSignals = session?.interactionPreSignals ?? null;
-
-            const pipeline = connectCascadedPipeline({
-              asr,
-              tts,
-              sendUserTurn,
-              preSignals,
-              callbacks: {
-                onStateChange: (s) => {
-                  if (s === "listening" || s === "transcribing") setVoiceStatus("listening");
-                  else if (s === "thinking") setVoiceStatus("connecting");
-                  else if (s === "speaking") setVoiceStatus("speaking");
-                  else if (s === "interrupted") setVoiceStatus("interrupted");
-                  else if (s === "idle") setVoiceStatus("idle");
-                },
-                onUserTranscript: (text, isFinal) => {
-                  // Live transcript chip only. The final user turn is persisted
-                  // authoritatively by sendUserTurn → sendInterviewTurn (which adds
-                  // BOTH the user turn and the assistant reply). Recording it again
-                  // here was double-logging every turn (语音用户输入 + 用户表达).
-                  setLiveUserTranscript(isFinal ? "" : text);
-                },
-                onAssistantText: () => {
-                  // No-op: sendUserTurn already called setSession(r.session) with the
-                  // assistant turn. Recording it again here double-logged the reply
-                  // (百炼角色扮演追问 + 语音助手回应).
-                },
-                onError: (err) => {
-                  setNotice(buildNotice("warning", "级联语音错误", err.message));
-                },
-                onLatency: (sample) => {
-                  reportLatency(sample);
-                }
-              },
-              classifyEndpoint: interviewId
-                ? (text: string, signal: AbortSignal) => productApiClient.classifyTurnComplete(interviewId, text, signal)
-                : undefined,
-              onDecision: (trace) => {
-                console.debug("[cascade decision]", trace);
-                if (interviewId) void productApiClient.logCascadeDecision(interviewId, trace);
-              },
-            });
-
-            cascadePipelineRef.current = pipeline;
-
-            // Render the recording UI IMMEDIATELY. The opening playback + mic open
-            // run in the BACKGROUND (not awaited): awaiting startListening here froze
-            // the page for the whole ~9s opening before setRecording ran, and the
-            // opening played while the UI was still stuck on "connecting".
-            // voiceStatus is driven by the pipeline's onStateChange (speaking → listening).
-            setRecording(true);
-            setNotice(buildNotice("success", "实时语音会话已就绪", "级联模式 (ASR→分析→TTS) 已连接"));
-            void pipeline.startListening(card.suggestedOpening || undefined).catch((err) => {
-              setNotice(buildNotice("warning", "级联语音连接失败", err instanceof Error ? err.message : "请确认后端在线且 API key 已配置"));
-            });
-            return;
-          } catch (err) {
-            setNotice(buildNotice("warning", "级联语音连接失败", err instanceof Error ? err.message : "请确认后端在线且 API key 已配置"));
-            return;
-          }
-        }
-
-        if (voiceMode === "livekit") {
-          // LiveKit cascaded pipeline (browser → LiveKit server → Python agent → DashScope)
-          try {
-            setVoiceStatus("connecting");
-            const sessionId = voiceSession.sessionId;
-            const interviewId = session?.id ?? "";
-            // 走 productApi 的 authedFetch（getLivekitToken）：production bearer 鉴权下
-            // 裸 fetch 不带 Authorization 恒 401。失败仍抛错 → 下方 catch 提示连接失败。
-            const { token, serverUrl } = await productApiClient.getLivekitToken(sessionId, interviewId);
-
-            const livekitSession = await createLivekitVoiceSession({
-              serverUrl: serverUrl ?? "ws://127.0.0.1:7880",
-              token,
-              interviewSessionId: interviewId,
-              callbacks: {
-                onStateChange: (state) => {
-                  if (state === "connected") setVoiceStatus("listening");
-                  if (state === "disconnected") { setRecording(false); setVoiceStatus("idle"); }
-                },
-                onUserTranscript: (text, isFinal) => {
-                  setLiveUserTranscript(text);
-                  if (!isFinal || !text.trim()) return;
-                  // Record on the server session to keep it authoritative (no fork).
-                  productApiClient
-                    .recordInterviewTurn(interviewId, { role: "user", content: text })
-                    .then((r) => setSession(r.session))
-                    .catch((err) => recordTurnFailedFallback(text, err));
-                  // Phase 8: regenerate pre_signals — failures are observable (parity with omni).
-                  if (interviewId) {
-                    productApiClient
-                      .generateInterviewPreSignals(interviewId)
-                      .then((res) => {
-                        voiceRecallRefreshSucceeded();
-                        setSession((prev) => (prev ? { ...prev, interactionPreSignals: res.preSignals } : prev));
-                      })
-                      .catch((err) => voiceRecallRefreshFailed("pre_signals", err));
-                  }
-                  // LiveKit agent re-fetches agent-context server-side each turn; client
-                  // still records user turns authoritatively via record-turn above.
-                },
-                onAssistantTranscript: (text, isFinal) => {
-                  if (!isFinal || !text.trim()) return;
-                  setVoiceStatus("speaking");
-                  // Authoritative assistant trail on the server (not only local UI).
-                  if (interviewId) {
-                    productApiClient
-                      .recordInterviewTurn(interviewId, { role: "assistant", content: text })
-                      .then((r) => setSession(r.session))
-                      .catch(() => {
-                        setSession((prev) =>
-                          prev ? appendAssistantTranscriptFinal(prev, text, assistantTranscriptTurnRef) : prev
-                        );
-                      });
-                  } else {
-                    setSession((prev) =>
-                      prev ? appendAssistantTranscriptFinal(prev, text, assistantTranscriptTurnRef) : prev
-                    );
-                  }
-                },
-                onAudioLevel: (level) => setAudioLevel(level),
-                onError: (err) => {
-                  setNotice(buildNotice("warning", "语音连接失败", err.message));
-                },
-              },
-            });
-
-            // Publish the microphone — without this the agent never hears the user.
-            await livekitSession.startListening();
-            setLivekitVoiceSession(livekitSession);
-            setRecording(true);
-            setVoiceStatus("listening");
-            setNotice(
-              buildNotice(
-                "success",
-                "实时语音会话已就绪",
-                "LiveKit 级联 (Paraformer→Qwen→CosyVoice) 已连接"
-              )
-            );
-            return;
-          } catch {
-            setNotice(buildNotice("warning", "LiveKit 连接失败", "请确认 LiveKit Server 和 Python Agent 已启动"));
-            return;
-          }
-        }
-
-        // Bailian mode (default): direct DashScope omni via WebSocket proxy
-        // or WebRTC — single hop, integrated STT+LLM+TTS with server VAD.
-        try {
-          setVoiceStatus("connecting");
-          // Augment the session with the scripted opening line (sourced from the
-          // interview card's suggestedOpening). The WS path uses this to send an
-          // initial response.create so the AI proactively opens with the prepared
-          // tracking-point question rather than improvising small-talk.
-          const sessionWithOpening = {
-            ...voiceSession,
-            ...(card.suggestedOpening ? { openingLine: card.suggestedOpening } : {})
-          };
-          if (voiceSession.transport === "webrtc") {
-            // ponytail: the WebRTC omni client is incomplete (no transcript/audio/turn
-            // callbacks, no DataChannel parsing) — it would connect but record nothing.
-            // Until it's finished, fall back to the working WebSocket path.
-            console.warn(JSON.stringify({ event: "webrtc_incomplete_fallback_to_ws" }));
-            setNotice(buildNotice("info", "已改用 WebSocket 实时语音", "WebRTC 通道尚未完整支持，已自动切换。"));
-          }
-          const connection = await connectBailianRealtimeWebsocket(sessionWithOpening, {
-                productApiBaseUrl: realtimeApiWsBaseUrl(),
-                preSignals: session?.interactionPreSignals,
-                onAudioLevel: (level) => setAudioLevel(level),
-                onSpeechStart: () => setVoiceStatus("listening"),
-                onSpeechEnd: () => setVoiceStatus("speaking"),
-                onGuidance: (text) => {
-                  // Light up the in-conversation guidance indicator (the visual badge
-                  // in InterviewView), and whisper short guidance via SpeechSynthesis.
-                  setGuidanceState(prev => ({
-                    active: true,
-                    kind: "nudge",
-                    text,
-                    countThisTurn: prev.countThisTurn + 1,
-                    lastTimestamp: new Date().toISOString()
-                  }));
-                  if (text.length < 40) {
-                    try {
-                      const utterance = new SpeechSynthesisUtterance(text);
-                      utterance.lang = "zh-CN";
-                      utterance.rate = 1.1;
-                      utterance.volume = 0.7;
-                      speechSynthesis.cancel();
-                      speechSynthesis.speak(utterance);
-                    } catch { /* SpeechSynthesis not available */ }
-                  }
-                },
-                onUserTranscript: (text, isFinal) => {
-                  setLiveUserTranscript(text);
-                  if (!isFinal || !text.trim()) return;
-                  // Record on the server session to keep it authoritative (no fork).
-                  const voiceSid = session?.id ?? "";
-                  if (voiceSid) {
-                    productApiClient
-                      .recordInterviewTurn(voiceSid, { role: "user", content: text })
-                      .then((r) => setSession(r.session))
-                      .catch((err) => recordTurnFailedFallback(text, err));
-                  } else {
-                    setSession((prev) => (prev ? receiveUserTurn(prev, text) : prev));
-                  }
-                  // Phase 8: regenerate pre_signals for the next turn and push
-                  // them into the live connection (the voice model can't emit them).
-                  if (voiceSid) {
-                    productApiClient
-                      .generateInterviewPreSignals(voiceSid)
-                      .then((res) => {
-                        voiceRecallRefreshSucceeded();
-                        setSession((prev) => (prev ? { ...prev, interactionPreSignals: res.preSignals } : prev));
-                        if ("updatePreSignals" in connection) connection.updatePreSignals(res.preSignals);
-                      })
-                      .catch((err) => voiceRecallRefreshFailed("pre_signals", err));
-                    // 🔴-1: recompute the omni voice model's instructions against THIS
-                    // turn's utterance so its memory recall tracks the conversation
-                    // (the realtime session set instructions only once at open — an
-                    // opening-time snapshot). Push the refreshed string via
-                    // session.update. Non-blocking（实时策略）但失败可观测,
-                    // 连续失败会向用户提示（见 voiceRecallRefreshFailed）。
-                    productApiClient
-                      .refreshVoiceInstructions(voiceSid, text)
-                      .then((res) => {
-                        voiceRecallRefreshSucceeded();
-                        if ("updateInstructions" in connection) connection.updateInstructions(res.instructions);
-                        // C-P1-04: server now persists refreshed guide; adopt so UI/state
-                        // match the model context (no silent fork after voice turns).
-                        if (res.state) adoptServerState(res.state);
-                        if (res.session) setSession(res.session);
-                      })
-                      .catch((err) => voiceRecallRefreshFailed("voice_instructions", err));
-                  }
-                },
-                onAssistantTranscript: (text, isFinal) => {
-                  if (!isFinal || !text.trim()) return;
-                  // Omni: persist assistant turn server-side so session trail is not empty.
-                  const assistantSid = session?.id ?? "";
-                  if (assistantSid) {
-                    productApiClient
-                      .recordInterviewTurn(assistantSid, { role: "assistant", content: text })
-                      .then((r) => setSession(r.session))
-                      .catch(() => {
-                        setSession((prev) =>
-                          prev ? appendAssistantTranscriptFinal(prev, text, assistantTranscriptTurnRef) : prev
-                        );
-                      });
-                  } else {
-                    setSession((prev) =>
-                      prev ? appendAssistantTranscriptFinal(prev, text, assistantTranscriptTurnRef) : prev
-                    );
-                  }
-                },
-                // 重连过程对用户可见（此前 3 次重连期间 UI 仍显示"聆听中"，用户不知连接已断）。
-                onReconnecting: (attempt, maxAttempts) => {
-                  setVoiceStatus("connecting");
-                  setNotice(buildNotice("warning", "语音连接中断", `正在重连（第 ${attempt}/${maxAttempts} 次）…`));
-                },
-                onReconnected: () => {
-                  setVoiceStatus("listening");
-                  setNotice(buildNotice("success", "语音连接已恢复", "可以继续对话。"));
-                },
-                onError: (err) => {
-                  setNotice(buildNotice("warning", "语音连接异常", err.message));
-                }
-              });
-          setRealtimeVoiceConnection(connection);
-          setRecording(true);
-          setVoiceStatus("listening");
-          setNotice(
-            buildNotice(
-              "success",
-              "实时语音会话已就绪",
-              `${voiceSession.model} · WebSocket 已连接`
-            )
-          );
-        } catch {
-          setNotice(
-            buildNotice(
-              "warning",
-              "语音连接失败",
-              "百炼 WebSocket 连接失败。"
-            )
-          );
-          return;
-        }
-      } else {
-        setRecording(false);
-        setNotice(
-          buildNotice(
-            "warning",
-            "实时语音未完全配置",
-            "请检查 API Key 配置。"
-          )
-        );
+      const voiceMode = productState.systemConfig.voice.realtimeMode ?? "cascade";
+      const result = await startRealtimeVoiceConnect({
+        voiceSession,
+        voiceMode,
+        interviewSession: session,
+        defaultVoice: productState.systemConfig.voice.defaultVoice,
+        suggestedOpening: card.suggestedOpening,
+        baseWsUrl: realtimeApiWsBaseUrl(),
+        cascadePipelineRef,
+        audioRecorderRef,
+        ttsSinkRef,
+        assistantTranscriptTurnRef,
+        setRealtimeVoiceConnection,
+        setLivekitVoiceSession,
+        setRecording,
+        setVoiceStatus,
+        setLiveUserTranscript,
+        setAudioLevel,
+        setSession,
+        setGuidanceState,
+        setNotice,
+        setApiPersistenceEnabled,
+        adoptServerState,
+        closeRealtimeVoiceSession,
+        reportLatency,
+        consumeInterruptStashPrompt: () => interruptedStash.consumeForPrompt(),
+        recordTurnFailedFallback,
+        voiceRecallRefreshSucceeded,
+        voiceRecallRefreshFailed,
+        buildNotice,
+        endpointingMode: productState.systemConfig.voice.endpointingMode,
+        minBargeInMs: productState.systemConfig.voice.minBargeInMs
+      });
+      if (result === "connected" || result === "not-ready" || result === "failed") {
+        return;
       }
-      return;
     } catch {
       setApiPersistenceEnabled(false);
     } finally {
-      // P3-19:连接流程 settle(成功就绪 / 失败 / 早返回)后复位,让后续开关正常工作。
       togglingRef.current = false;
     }
 
     setRealtimeVoiceSession(null);
     setNotice(buildNotice("warning", "实时语音不可用", "Product API 不可用，无法开始语音专访，请检查服务后重试。"));
   }
+
 
   return (
     <>

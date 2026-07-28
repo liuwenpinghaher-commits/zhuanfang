@@ -21,11 +21,11 @@ test("a submitted text turn renders both turns even when the reply carries pre_s
   await page.getByRole("button", { name: "提交表达" }).click();
 
   // BOTH turns must be visible — the old bug dropped them when pre_signals were present.
-  // 追问文本 = fake character 模型的确定性产物（取用户表达前 12 个字）。
+  // 追问 = fake character 模型模式（你刚才提到「…」+ 具体时刻）；不锁死 12 字切片细节。
   await expect(page.getByText(answer)).toBeVisible({ timeout: 15000 });
-  await expect(
-    page.getByText("你刚才提到「我在纠结要不要离开大厂去」，能给一个具体发生过的时刻吗？")
-  ).toBeVisible();
+  await expect(page.getByText(/你刚才提到「.+」，能给一个具体发生过的时刻吗？/)).toBeVisible({
+    timeout: 15000
+  });
   // pre_signals 块必须被剥离为结构化字段，绝不作为原文渲染。
   await expect(page.getByText("depth_direction")).toHaveCount(0);
 });

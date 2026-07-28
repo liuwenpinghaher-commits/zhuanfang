@@ -1082,12 +1082,10 @@ it("record-turn appends a turn to the server session without generating an assis
 
   // IV-P1-01 / criterion 5: client abort → 499, no ghost turn persisted
   it("/turns: client abort after LLM → 499 and no turn persisted", async () => {
-    let capturedRaw: { aborted?: boolean; destroyed?: boolean } | null = null;
+    let capturedRaw: { emit?: (event: string) => void } | null = null;
     const createAssistantTurn = async () => {
-      if (capturedRaw) {
-        capturedRaw.aborted = true;
-        capturedRaw.destroyed = true;
-      }
+      // Emit the real Node 'aborted' event the route listens for (not a stale .aborted flag).
+      capturedRaw?.emit?.("aborted");
       return {
         providerId: "bailian-character" as const,
         model: "test",
@@ -1097,9 +1095,9 @@ it("record-turn appends a turn to the server session without generating an assis
     };
     const repo = createInMemoryProductStateRepository(createInitialProductState());
     const server = Fastify({ logger: false });
-    // Capture inject request.raw so the LLM mock can mark client abort mid-handler.
+    // Capture inject request.raw so the LLM mock can abort mid-handler.
     server.addHook("onRequest", async (request) => {
-      capturedRaw = request.raw as { aborted?: boolean; destroyed?: boolean };
+      capturedRaw = request.raw as { emit?: (event: string) => void };
     });
     await registerInterviewSessionRoutes(server, repo, {
       bailianInterviewClient: { createAssistantTurn } as any

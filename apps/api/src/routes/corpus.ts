@@ -133,6 +133,83 @@ export async function registerCorpusRoutes(
     };
   });
 
+  /**
+   * Stage-3: local "presign" — allocate a put URL + object key without base64 JSON body.
+   * Client PUT binary to uploadUrl, then may call transcription with publicUrl if configured.
+   * Not cloud S3; honest local product-api path for large files.
+   */
+  server.post("/api/corpus/audio-files/presign", async (request, reply) => {
+    const payload = (request.body && typeof request.body === "object" ? request.body : {}) as {
+      fileName?: unknown;
+      contentType?: unknown;
+      byteSize?: unknown;
+    };
+    const fileName = typeof payload.fileName === "string" ? payload.fileName.trim() : "upload.audio";
+    const byteSize = typeof payload.byteSize === "number" && Number.isFinite(payload.byteSize) ? payload.byteSize : undefined;
+    const maxBytes = resolveCorpusAudioMaxBytes(env);
+    if (byteSize != null && byteSize > maxBytes) {
+      return reply.code(413).send({ error: `音频文件超过 CORPUS_AUDIO_MAX_BYTES 上限（${maxBytes} 字节）。` });
+    }
+    const safeExt = sanitizeExtension(fileName);
+    const digest = createHash("sha256").update(`${Date.now()}-${fileName}-${Math.random()}`).digest("hex").slice(0, 16);
+    const storedName = `${Date.now()}-${digest}${safeExt}`;
+    mkdirSync(uploadDir, { recursive: true });
+    const uploadPath = `/api/corpus/audio-files/${encodeURIComponent(storedName)}`;
+    const publicUrl = publicBase
+      ? publicBase.includes("/api/corpus/audio-files")
+        ? `${publicBase.replace(/\/+$/, "")}/${encodeURIComponent(storedName)}`
+        : `${publicBase}${uploadPath}`
+      : undefined;
+    return {
+      method: "PUT" as const,
+      uploadPath,
+      storedFileName: storedName,
+      localObjectUrl: `local-object://corpus-audio/${storedName}`,
+      ...(publicUrl ? { publicUrl } : {}),
+      expiresInSec: 3600,
+      maxBytes,
+      publicBaseConfigured: Boolean(publicBase),
+      note: publicBase
+        ? "PUT JSON { audioBase64 } 到 uploadPath（需鉴权），完成后可用 publicUrl 调转写。本地路径非 S3。"
+        : "PUT JSON { audioBase64 } 到 uploadPath（需鉴权）完成落盘；未配置 CORPUS_AUDIO_PUBLIC_BASE_URL 时 SenseVoice 仍无法拉取。本地路径非 S3。"
+    };
+  });
+
+  server.put("/api/corpus/audio-files/:fileName", async (request, reply) => {
+    const params = request.params as { fileName?: string };
+    const fileName = typeof params.fileName === "string" ? params.fileName : "";
+    if (!fileName || fileName !== basenameSafe(fileName)) {
+      return reply.code(400).send({ error: "Invalid audio file name." });
+    }
+    if (!isAuthorized(env, authPresentation(request))) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    const payload = (request.body && typeof request.body === "object" ? request.body : {}) as { audioBase64?: unknown };
+    const audioBase64 = typeof payload.audioBase64 === "string" ? payload.audioBase64.trim() : "";
+    if (!audioBase64) {
+      return reply.code(422).send({ error: "audioBase64 is required on PUT body (local presign path)." });
+    }
+    if (audioBase64.length > MAX_AUDIO_BASE64_BYTES) {
+      return reply.code(422).send({ error: "上传的音频文件过大（base64 超过 25 MB）。" });
+    }
+    let bytes: Buffer;
+    try {
+      bytes = Buffer.from(audioBase64, "base64");
+    } catch {
+      return reply.code(422).send({ error: "音频 base64 无法解码。" });
+    }
+    const maxBytes = resolveCorpusAudioMaxBytes(env);
+    if (bytes.length > maxBytes) {
+      return reply.code(413).send({ error: `音频文件超过 CORPUS_AUDIO_MAX_BYTES 上限（${maxBytes} 字节）。` });
+    }
+    if (!bytes.length) {
+      return reply.code(422).send({ error: "音频内容为空。" });
+    }
+    mkdirSync(uploadDir, { recursive: true });
+    writeFileSync(join(uploadDir, fileName), bytes);
+    return { storedFileName: fileName, byteSize: bytes.length, localObjectUrl: `local-object://corpus-audio/${fileName}` };
+  });
+
   server.post("/api/corpus/transcriptions", async (request, reply) => {
     const input = normalizeTranscriptionInput(request.body);
 

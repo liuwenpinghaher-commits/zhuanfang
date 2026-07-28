@@ -291,9 +291,20 @@ export async function registerInterviewSessionRoutes(
       console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "interview_turn", sessionId: freshSession.id }));
       return reply.code(429).send({ error: "本会话 LLM 预算已用尽，追问暂不可用，请稍后重试。" });
     }
-    let updatedSession: Awaited<ReturnType<typeof receiveTurn>>;
+    // IV-P1-01: cascade barge-in aborts the client fetch; do not persist a ghost full turn.
+    // Listen for the abort *event* during the LLM await — do NOT use request.raw.aborted
+    // after await (Node/undici can report aborted/destroyed on a completed request and
+    // false-positive 499, dropping successful turns in e2e/browser).
+    let clientAborted = false;
+    const onClientAbort = () => {
+      clientAborted = true;
+    };
+    // Only the 'aborted' event is reliable mid-flight. Do not use raw.aborted/destroyed
+    // after await, and do not treat generic 'close' as cancel (races with successful end).
+    request.raw.once("aborted", onClientAbort);
+    let updatedResult: Awaited<ReturnType<typeof receiveTurn>>;
     try {
-      updatedSession = await receiveTurn(
+      updatedResult = await receiveTurn(
         freshSession,
         content,
         options.bailianInterviewClient,
@@ -301,13 +312,13 @@ export async function registerInterviewSessionRoutes(
         state.profile.explicitBoundaries
       );
     } catch (error) {
+      request.raw.off("aborted", onClientAbort);
       const message = error instanceof Error ? error.message : String(error);
       console.warn(JSON.stringify({ event: "llm_failed", capability: "interview_turn", sessionId: freshSession.id, error: message }));
       return reply.code(502).send({ error: `追问生成失败：${message}。本轮未记录，请重试。` });
     }
-    // IV-P1-01: cascade barge-in aborts the client fetch; do not persist a ghost full turn.
-    // Check after the long LLM await so supersession does not pollute archive/memory.
-    if (request.raw.aborted || request.raw.destroyed) {
+    request.raw.off("aborted", onClientAbort);
+    if (clientAborted) {
       console.info(JSON.stringify({
         event: "interview_turn_aborted_no_persist",
         sessionId: freshSession.id,
@@ -315,7 +326,7 @@ export async function registerInterviewSessionRoutes(
       }));
       return reply.code(499).send({ error: "客户端已取消本轮，未写入轮次。" });
     }
-    const { nextSession: rawNextSession, preSignals } = updatedSession;
+    const { nextSession: rawNextSession, preSignals } = updatedResult;
     // The character model conveys manner via （…）stage-direction asides (e.g. 「（身体微倾，
     // 表现出好奇）」). Strip them out of the stored question so the transcript / finalize / memory
     // read as clean words like a real interview; distill the manner into `prosody` so the voice
