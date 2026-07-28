@@ -198,7 +198,7 @@ describe("interview-sessions routes", () => {
     expect(userContents).toContain("并发回合乙：交付节奏总是延期");
     await server.close();
   });
-  it("record-turn appends a turn to the server session without generating an assistant reply", async () => {
+it("record-turn appends a turn to the server session without generating an assistant reply", async () => {
     const server = buildApiServer({ env: {} }); // no key -> no real LLM
     const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "decision" } })).json();
     const id = created.session.id;
@@ -210,6 +210,31 @@ describe("interview-sessions routes", () => {
     expect(session.turns.at(-1).content).toBe("语音转写的一句话");
     // must NOT auto-generate an assistant turn
     expect(session.turns.filter((t: any) => t.role === "assistant").length).toBe(before);
+    await server.close();
+  });
+
+  it("R-P1-03: assistant record-turn without strategy gets server-derived strategyTrace", async () => {
+    const server = buildApiServer({ env: {} });
+    const created = (await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "decision" } })).json();
+    const id = created.session.id as string;
+    await server.inject({
+      method: "POST",
+      url: `/api/interview-sessions/${id}/record-turn`,
+      payload: { role: "user", content: "我现在带的是 12 个人，最难的是放权。" }
+    });
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/interview-sessions/${id}/record-turn`,
+      payload: { role: "assistant", content: "放权具体卡在哪一步？" }
+    });
+    expect(res.statusCode).toBe(200);
+    const session = res.json().session;
+    const last = session.turns.at(-1);
+    expect(last.role).toBe("assistant");
+    expect(last.strategy).toBeTruthy();
+    expect(Array.isArray(session.strategyTrace)).toBe(true);
+    expect(session.strategyTrace.length).toBeGreaterThanOrEqual(1);
+    expect(String(session.strategyTrace.at(-1).reason)).toContain("语音路径服务端补全");
     await server.close();
   });
 

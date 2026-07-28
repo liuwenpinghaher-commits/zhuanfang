@@ -168,10 +168,10 @@ export function CorpusLearningView({
                   <span className="corpus-method-path-cond">条件：{ANALYSIS_PATHS.llm.condition}</span>
                   <p>{ANALYSIS_PATHS.llm.description}</p>
                 </div>
-                <div className="corpus-method-path">
-                  <span className="corpus-method-path-badge corpus-method-path-badge-det">{ANALYSIS_PATHS.deterministic.label}</span>
-                  <span className="corpus-method-path-cond">条件：{ANALYSIS_PATHS.deterministic.condition}</span>
-                  <p>{ANALYSIS_PATHS.deterministic.description}</p>
+<div className="corpus-method-path">
+                  <span className="corpus-method-path-badge corpus-method-path-badge-det">{ANALYSIS_PATHS.unavailable.label}</span>
+                  <span className="corpus-method-path-cond">条件：{ANALYSIS_PATHS.unavailable.condition}</span>
+                  <p>{ANALYSIS_PATHS.unavailable.description}</p>
                 </div>
               </div>
             </section>

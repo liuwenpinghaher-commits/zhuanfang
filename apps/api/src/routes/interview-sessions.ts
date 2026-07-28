@@ -663,13 +663,27 @@ export async function registerInterviewSessionRoutes(
     const intent =
       normalizeOptionalString(body.intent) ??
       (role === "user" ? "语音用户输入" : "语音助手回应");
-    const referencedMemory = normalizeOptionalString(body.referencedMemory);
+const referencedMemory = normalizeOptionalString(body.referencedMemory);
     const strategyRaw = normalizeOptionalString(body.strategy);
     // Optional structured strategy decision for quality/UI honesty on voice paths.
-    const strategyDecision =
+    let strategyDecision =
       body.strategyDecision && typeof body.strategyDecision === "object"
         ? (body.strategyDecision as NonNullable<InterviewSession["strategyTrace"]>[number])
         : undefined;
+    // R-P1-03: omni/livekit clients often only send role+content. For assistant turns,
+    // derive a deterministic strategy from the latest user utterance so qualityTrace /
+    // history_reference_rate are not systematically empty on the default voice path.
+    if (role === "assistant" && !strategyDecision && !strategyRaw) {
+      const lastUser = [...session.turns].reverse().find((turn) => turn.role === "user");
+      if (lastUser?.content?.trim()) {
+        const derived = decideInterviewStrategy(session, lastUser.content);
+        strategyDecision = {
+          ...derived,
+          turnIndex: session.turns.length,
+          reason: `${derived.reason}（语音路径服务端补全 strategyTrace）`
+        };
+      }
+    }
     const turn: InterviewTurn = {
       id: makeId("turn"),
       sessionId: session.id,
@@ -680,7 +694,10 @@ export async function registerInterviewSessionRoutes(
       ...(referencedMemory ? { referencedMemory } : {}),
       ...(strategyRaw ? { strategy: strategyRaw as InterviewTurn["strategy"] } : {}),
       ...(strategyDecision?.strategy ? { strategy: strategyDecision.strategy } : {}),
-      ...(strategyDecision?.depth ? { depth: strategyDecision.depth } : {})
+      ...(strategyDecision?.depth ? { depth: strategyDecision.depth } : {}),
+      ...(strategyDecision?.referencedMemory && !referencedMemory
+        ? { referencedMemory: strategyDecision.referencedMemory }
+        : {})
     };
     const nextSession: InterviewSession = {
       ...session,

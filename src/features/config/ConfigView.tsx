@@ -420,6 +420,52 @@ export function ConfigView({
                 </div>
               </section>
 
+<section className="runtime-config-section">
+                <h3>记忆与上下文</h3>
+                <div className="runtime-setting-grid">
+                  <label className="field-stack runtime-setting-field" htmlFor="product-memory-pending">
+                    <span className="field-label">待审候选可进专访上下文</span>
+                    <select
+                      id="product-memory-pending"
+                      name="memory.includePendingCandidatesInContext"
+                      value={String(productDraft.memory.includePendingCandidatesInContext)}
+                      onChange={(event) => {
+                        const nextValue = event.target.value === "true";
+                        updateProductConfig((config) => ({
+                          ...config,
+                          memory: { ...config.memory, includePendingCandidatesInContext: nextValue }
+                        }));
+                      }}
+                    >
+                      <option value="false">关闭（默认·须 HITL 确认后才跨会话召回）</option>
+                      <option value="true">开启（仅本场 guide 可引用重叠待审文案）</option>
+                    </select>
+                    <span className="field-help">
+                      开启后，与当前话题有词重叠的 pending 候选会进入本场 relevantMemories；关闭时待审永不进模型。跨会话向量召回仍须「确认记住」。
+                    </span>
+                  </label>
+                  <label className="field-stack runtime-setting-field" htmlFor="product-memory-sensitive">
+                    <span className="field-label">敏感记忆可进模型上下文</span>
+                    <select
+                      id="product-memory-sensitive"
+                      name="memory.includeSensitiveMemoriesInContext"
+                      value={String(productDraft.memory.includeSensitiveMemoriesInContext)}
+                      onChange={(event) => {
+                        const nextValue = event.target.value === "true";
+                        updateProductConfig((config) => ({
+                          ...config,
+                          memory: { ...config.memory, includeSensitiveMemoriesInContext: nextValue }
+                        }));
+                      }}
+                    >
+                      <option value="false">关闭（默认）</option>
+                      <option value="true">开启</option>
+                    </select>
+                    <span className="field-help">默认敏感 confirmed/pending 不进 prompt；仅在你明确需要时开启。</span>
+                  </label>
+                </div>
+              </section>
+
               <section className="runtime-config-section">
                 <h3>语音与访谈</h3>
                 <div className="runtime-setting-grid">

@@ -113,6 +113,7 @@ import {
   type UiNotice,
   type View
 } from "./ui";
+import { appendAssistantTranscriptFinal } from "./domain/session-transcript";
 
 const navIconByView: Record<View, typeof Compass> = {
   home: Compass,
@@ -3001,65 +3002,8 @@ const approveCandidate = (id: string, mode: "merge" | "add" = "merge") =>
   );
 }
 
-/**
- * P1-12: fold a `final` assistant transcript segment into the live session without
- * collapsing a multi-segment reply to its last segment.
- *
- * A single realtime assistant turn can emit several `final` segments:
- *  - omni (bailian): both `response.audio_transcript.done` and `response.text.done`
- *    fire for one response — usually the SAME text in two modalities (a duplicate),
- *    occasionally distinct;
- *  - livekit: the Python agent ships one `TranscriptionSegment` per sentence — genuine
- *    distinct continuation segments.
- *
- * Rules:
- *  - The FIRST final for a given assistant-turn index replaces that turn's content.
- *  - Later finals for the SAME turn append — UNLESS the segment is already contained in
- *    the accumulated content (the duplicate-modality case), which is skipped so the
- *    spoken+text duplicate doesn't double the reply.
- *  - The turn index advancing (a new user+assistant pair was appended) is what resets
- *    "first final" — so the next turn starts clean.
- *
- * `turnRef` carries the assistant-turn index that has already absorbed a final.
- */
-export function appendAssistantTranscriptFinal(
-  session: InterviewSession,
-  text: string,
-  turnRef: MutableRefObject<number>
-): InterviewSession {
-  const trimmed = text.trim();
-  if (!trimmed) {
-    return session;
-  }
-  const turns = [...session.turns];
-  const lastIdx = turns.length - 1;
-  if (lastIdx < 0 || turns[lastIdx].role !== "assistant") {
-    return session;
-  }
-
-  const isNewTurn = turnRef.current !== lastIdx;
-  const prevContent = turns[lastIdx].content;
-
-  if (isNewTurn) {
-    turns[lastIdx] = { ...turns[lastIdx], content: trimmed };
-    turnRef.current = lastIdx;
-    return { ...session, turns };
-  }
-
-  // Same turn, subsequent final: skip the duplicate-modality echo, otherwise append.
-  if (prevContent.includes(trimmed) || trimmed.includes(prevContent)) {
-    // Prefer the longer of the two so a fuller restatement isn't lost.
-    if (trimmed.length > prevContent.length) {
-      turns[lastIdx] = { ...turns[lastIdx], content: trimmed };
-      return { ...session, turns };
-    }
-    return session;
-  }
-
-  const separator = prevContent && !prevContent.endsWith(" ") ? " " : "";
-  turns[lastIdx] = { ...turns[lastIdx], content: `${prevContent}${separator}${trimmed}` };
-  return { ...session, turns };
-}
+/** Re-export domain helper for existing tests that import from App. */
+export { appendAssistantTranscriptFinal } from "./domain/session-transcript";
 
 // F-03/B2 notice 辅助:把 reset/purge 回执里 failed 的库翻译成用户可读的中文清单。
 // reset 与 purge 的 stores 三态口径一致(cleared/not-configured/failed: <原因>),共用一份翻译。

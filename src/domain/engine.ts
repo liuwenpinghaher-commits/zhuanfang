@@ -50,6 +50,8 @@ export {
   INTERVIEW_STRATEGY_LABELS, PLAYBOOK_DRIVEN_STRATEGIES,
 } from "./turn-builder";
 
+export { appendAssistantTranscriptFinal } from "./session-transcript";
+
 export type {
   AddTurnInput, CreateInterviewSessionInput,
 } from "./turn-builder";
