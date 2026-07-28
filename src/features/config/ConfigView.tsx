@@ -113,7 +113,7 @@ export function ConfigView({
       <HeaderBlock
         eyebrow="系统配置"
         title="实时能力状态与运行参数"
-        subtitle="状态页展示 Product API 的真实能力健康；参数页集中编辑服务端配置(env)和产品策略。"
+        subtitle="两套配置边界：服务端 env（密钥/模型/端点，PATCH /api/system/config）≠ 产品策略 systemConfig（搜索/语音/访谈默认，写入 ProductState）。状态页展示能力健康。"
       />
       <section className="panel config-tabs" aria-label="系统配置分段">
         {configSectionOptions.map((option) => (
@@ -223,7 +223,7 @@ export function ConfigView({
         <div className="view-stack">
           <section className="panel">
             <div className="panel-title"><ShieldCheck size={18} /><h2>服务端配置（env）</h2></div>
-            <p className="muted-copy">直接写入 API 的 .env，保存后通过 PATCH /api/system/config 生效。密钥字段留空表示保持不变。</p>
+            <p className="muted-copy">服务端运行配置（密钥、模型名、端点、部署开关）。写入 API 的 .env，经 PATCH /api/system/config 生效；密钥字段留空表示保持不变。与下方「产品策略」分离——这里不存访谈 playbook / 记忆开关。</p>
             {runtimeConfig ? (
               <>
                 <div className="config-hint">
@@ -274,7 +274,7 @@ export function ConfigView({
 
           <section className="panel">
             <div className="panel-title"><Sliders size={18} /><h2>产品策略</h2></div>
-            <p className="muted-copy">写入本地产品状态（自动保存），影响搜索、语音和访谈流程的默认行为。</p>
+            <p className="muted-copy">产品策略（ProductState.systemConfig）：搜索默认 provider、语音/访谈节奏、记忆召回开关等。写入产品状态并走 autosave，不包含 API 密钥。</p>
             <div className="runtime-config-sections">
               <section className="runtime-config-section">
                 <h3>联网素材</h3>

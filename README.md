@@ -165,7 +165,7 @@ PODCAST_AUTO_RENDER_ON_CREATE=false
 
 `CORPUS_AUDIO_MAX_BYTES` 控制本地语料音频单文件上传上限，默认 50MB；超过上限时 Product API 返回 413，不会写入本地对象目录。
 
-`CORPUS_AUDIO_PUBLIC_BASE_URL`（保留位，尚未启用）：本意是把上传得到的 `local-object://corpus-audio/...` 映射成公开 URL 交给百炼 SenseVoice 自动转写，但当前代码尚未读取该变量，也未提供 `/api/corpus/audio-files` 静态服务路由。**本地上传的音频目前一律走可编辑手工转写稿降级**；要自动转写，请在 `/api/corpus/transcriptions` 直接提供已可公网访问的 http/https/oss 音频 URL。
+`CORPUS_AUDIO_PUBLIC_BASE_URL`：本地语料音频上传后会写入 `CORPUS_UPLOAD_DIR`（默认 `.data/corpus-audio`），并可通过鉴权路由 `GET /api/corpus/audio-files/:fileName` 读取。若设置本变量为可被百炼 SenseVoice 拉取的公网基址（例如反代后的 `https://your.host`，服务会拼 `/api/corpus/audio-files/<file>`；若基址已含该 path 前缀则直接拼文件名），本地上传即可自动转写。**未配置时**仍会落盘并返回诚实 422（说明原因与 `local-object://` 引用），不会伪造转写稿；也可继续直接提交公网 http/https/oss URL。
 
 `HOST` / `PORT` 控制 Product API 监听地址；`VITE_PRODUCT_API_BASE_URL` 控制浏览器前端连接哪个 Product API；`PRODUCT_API_HEALTH_URL` 和 `PRODUCT_WEB_URL` 用于 `npm run dev:full` 判断是否复用已有服务。
 
@@ -201,6 +201,7 @@ R7 起 SurrealDB（`.data/surreal`）是**唯一**持久仓库，`GET /api/state
 - `src/domain`: 业务模型、确定性引擎、资产沉淀、配置版本、质量报告。
 - `src/features`: 前端业务视图。
 - `src/realtime`: 百炼 Realtime WebRTC 浏览器桥接。
+- `src/hooks`: 前端 feature hooks（如离线同步）。
 - `src/api`: 前端 Product API client。
 - `apps/api/src`: Fastify Product API、provider client、路由、运行配置。
 - `packages/db/src`: SurrealDB ProductState repository（`surreal/` 下热态 + 三冷层 + 混合召回）与内存 repo。

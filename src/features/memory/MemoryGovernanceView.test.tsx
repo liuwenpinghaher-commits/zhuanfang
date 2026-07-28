@@ -503,7 +503,7 @@ describe("inline edit", () => {
 
 // ── 5. Approve / reject callbacks ─────────────────────────────────────────
 describe("approval actions", () => {
-  it("approve button calls onApprove with candidate id", async () => {
+  it("approve button calls onApprove with candidate id and default mode", async () => {
     const onApprove = vi.fn();
     const state = makeState({
       memoryCandidates: [makeCandidate()]
@@ -533,7 +533,7 @@ describe("approval actions", () => {
       approveBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(onApprove).toHaveBeenCalledWith("c1");
+    expect(onApprove).toHaveBeenCalledWith("c1", "add");
   });
 
   it("reject button calls onReject with candidate id", async () => {

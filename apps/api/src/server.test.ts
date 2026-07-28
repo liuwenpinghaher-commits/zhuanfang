@@ -719,16 +719,14 @@ expect(response.json()).toEqual({ ok: true, ready: true, service: "interview-pro
     });
   });
 
-  it("rejects a locally uploaded audio file with 422 instead of faking a transcript", async () => {
-    // SenseVoice 录音转写只接受公网 file_urls；本地文件没有可行的 base64 内联转写路径。
-    // 真实性重构:这是能力边界 → 如实 422 拒绝（此前返回 degraded 占位草稿,已剔除）。
-    // 即使 ASR client 已配置，本地文件上传也绝不调 ASR、绝不冒充真转写。
+  it("persists local audio but 422s without CORPUS_AUDIO_PUBLIC_BASE_URL (no fake transcript)", async () => {
+    // SenseVoice 只收公网 file_urls。未配置公开基址时：落盘 + 诚实 422，绝不调 ASR / 冒充转写。
     let asrCalled = false;
     const server = buildApiServer({
       bailianTranscriptionClient: {
         async transcribe() {
           asrCalled = true;
-          throw new Error("ASR should never be called for a local file upload.");
+          throw new Error("ASR should never be called without a public base URL.");
         }
       }
     });
@@ -745,10 +743,50 @@ expect(response.json()).toEqual({ ok: true, ready: true, service: "interview-pro
 
     expect(asrCalled).toBe(false);
     expect(response.statusCode).toBe(422);
-    // 诚实文案：说明已收到文件、点名转写引擎需要公网 URL、给出可执行的下一步。
     const error = response.json().error as string;
     expect(error).toContain("interview.m4a");
-    expect(error).toContain("公网");
+    expect(error).toMatch(/CORPUS_AUDIO_PUBLIC_BASE_URL|公网/);
+    expect(error).toContain("local-object://corpus-audio/");
+  });
+
+  it("maps local upload via CORPUS_AUDIO_PUBLIC_BASE_URL and calls SenseVoice", async () => {
+    const seen: string[] = [];
+    const server = buildApiServer({
+      env: {
+        CORPUS_AUDIO_PUBLIC_BASE_URL: "https://cdn.example.com",
+        CORPUS_UPLOAD_DIR: ".data/test-corpus-audio"
+      },
+      bailianTranscriptionClient: {
+        async transcribe(input) {
+          seen.push(input.sourceUrl);
+          return {
+            providerId: "bailian-sensevoice",
+            model: "sensevoice-v1",
+            sourceUrl: input.sourceUrl,
+            taskId: "task-local-1",
+            transcriptionUrl: "https://transcription.example.com/local.json",
+            durationSec: 12,
+            text: "本地上传转写成功"
+          };
+        }
+      }
+    });
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/corpus/transcriptions",
+      payload: {
+        title: "本地可转写样本",
+        audioBase64: Buffer.from("real-enough-audio").toString("base64"),
+        fileName: "clip.wav",
+        languageHint: "zh"
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(seen[0]).toMatch(/^https:\/\/cdn\.example\.com\/api\/corpus\/audio-files\//);
+    expect(response.json().transcription.text).toBe("本地上传转写成功");
+    expect(response.json().localObjectUrl).toMatch(/^local-object:\/\/corpus-audio\//);
   });
 
   it("rejects an oversized locally uploaded audio file with a 422", async () => {

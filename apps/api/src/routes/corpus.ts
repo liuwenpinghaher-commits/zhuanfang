@@ -1,11 +1,17 @@
-import type { FastifyInstance } from "fastify";
+import { createHash } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { extname, join } from "node:path";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { sanitizeExternalMaterialText } from "../../../../src/domain/engine";
 import type { AudioTranscription, AudioTranscriptionInput, CorpusImportInput } from "../../../../src/domain/types";
 import { analyzeCorpusWithLlm } from "../intelligence/corpus-llm";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
+import { resolveCorpusUploadDir } from "../local-object-artifacts";
 import type { BailianAudioTranscriptionClient, BailianChatClient } from "../providers/bailian";
 import type { ProductStateRepository } from "../product-state-repository";
 import { replaceStateDurable } from "../product-state-repository";
+import { resolveCorpusAudioMaxBytes } from "../storage-config";
+import { isAuthorized, readCookieToken } from "../auth";
 
 interface CorpusInsightRequestPayload {
   title?: unknown;
@@ -32,6 +38,10 @@ interface CorpusRouteOptions {
   bailianTranscriptionClient?: BailianAudioTranscriptionClient;
   bailianChatClient?: BailianChatClient;
   llmBudget?: LlmBudget;
+  env?: Record<string, string | undefined>;
+  /** Absolute public origin for local audio files (e.g. https://cdn.example.com). */
+  corpusAudioPublicBaseUrl?: string;
+  corpusUploadDir?: string;
 }
 
 export async function registerCorpusRoutes(
@@ -40,25 +50,141 @@ export async function registerCorpusRoutes(
   options: CorpusRouteOptions = {}
 ) {
   const budget = options.llmBudget ?? createLlmBudget();
+  const env = options.env ?? process.env;
+  const uploadDir = resolveCorpusUploadDir({
+    corpusUploadDir: options.corpusUploadDir,
+    env,
+    cwd: process.cwd()
+  });
+  const publicBase =
+    (options.corpusAudioPublicBaseUrl ?? env.CORPUS_AUDIO_PUBLIC_BASE_URL ?? "").trim().replace(/\/+$/, "");
+
+  // Authenticated (or local-open) static serve for files written under CORPUS_UPLOAD_DIR.
+  // Required when CORPUS_AUDIO_PUBLIC_BASE_URL points back at this Product API so SenseVoice
+  // (or any external ASR) can fetch the object via a real https/http URL.
+  server.get("/api/corpus/audio-files/:fileName", async (request, reply) => {
+    const params = request.params as { fileName?: string };
+    const fileName = typeof params.fileName === "string" ? params.fileName : "";
+    if (!fileName || fileName !== basenameSafe(fileName)) {
+      return reply.code(400).send({ error: "Invalid audio file name." });
+    }
+    if (!isAuthorized(env, authPresentation(request))) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    const { createReadStream, existsSync, statSync } = await import("node:fs");
+    const filePath = join(uploadDir, fileName);
+    if (!existsSync(filePath)) {
+      return reply.code(404).send({ error: "Audio file not found." });
+    }
+    const stat = statSync(filePath);
+    const mime = mimeFromFileName(fileName);
+    return reply
+      .header("Content-Type", mime)
+      .header("Content-Length", String(stat.size))
+      .header("Cache-Control", "private, max-age=3600")
+      .send(createReadStream(filePath));
+  });
 
   server.post("/api/corpus/transcriptions", async (request, reply) => {
     const input = normalizeTranscriptionInput(request.body);
 
-    // Local file upload branch. There is no inline-base64 transcription path on the
-    // backend: SenseVoice 录音转写只接受公网 file_urls，唯一的 base64 音频能力是浏览器
-    // 侧流式实时 ASR（omni-realtime，不是一次性的“收 base64 → 返回文字”接口）。这是
-    // 能力边界——如实拒绝，绝不返回占位稿冒充转写。
+    // Local file upload branch.
+    // SenseVoice only accepts publicly fetchable file_urls. When CORPUS_AUDIO_PUBLIC_BASE_URL
+    // is set, we persist the bytes under CORPUS_UPLOAD_DIR and map them to a public URL so
+    // ASR can pull them. Without that base URL we fail loud (422) — never fake a transcript.
     if (input.audioBase64) {
       if (input.audioBase64.length > MAX_AUDIO_BASE64_BYTES) {
         return reply
           .code(422)
           .send({ error: "上传的音频文件过大（base64 超过 25 MB），请压缩后重试或改用公网音频 URL。" });
       }
-      const approxMb = (estimateBase64Bytes(input.audioBase64) / (1024 * 1024)).toFixed(1);
-      const fileLabel = input.fileName ?? "你上传的音频文件";
-      return reply.code(422).send({
-        error: `已接收文件「${fileLabel}」（约 ${approxMb} MB），但当前转写引擎（百炼 SenseVoice）只支持可公网访问的音频 URL，本地文件无法自动转写。请直接粘贴转写稿，或改用公网音频 URL。`
-      });
+
+      let bytes: Buffer;
+      try {
+        bytes = Buffer.from(input.audioBase64, "base64");
+      } catch {
+        return reply.code(422).send({ error: "音频 base64 无法解码。" });
+      }
+      if (!bytes.length) {
+        return reply.code(422).send({ error: "音频内容为空。" });
+      }
+
+      const maxBytes = resolveCorpusAudioMaxBytes(env);
+      if (bytes.length > maxBytes) {
+        return reply
+          .code(413)
+          .send({ error: `音频文件超过 CORPUS_AUDIO_MAX_BYTES 上限（${maxBytes} 字节）。` });
+      }
+
+      const fileLabel = input.fileName ?? "upload.audio";
+      const safeExt = sanitizeExtension(fileLabel);
+      const digest = createHash("sha256").update(bytes).digest("hex").slice(0, 16);
+      const storedName = `${Date.now()}-${digest}${safeExt}`;
+      mkdirSync(uploadDir, { recursive: true });
+      const filePath = join(uploadDir, storedName);
+      writeFileSync(filePath, bytes);
+
+      if (!publicBase) {
+        const approxMb = (bytes.length / (1024 * 1024)).toFixed(1);
+        return reply.code(422).send({
+          error:
+            `已保存本地文件「${fileLabel}」（约 ${approxMb} MB）到 ${uploadDir}，` +
+            `但未配置 CORPUS_AUDIO_PUBLIC_BASE_URL，百炼 SenseVoice 无法拉取本地对象。` +
+            `请设置可公网访问的基址（可指向本服务的 /api/corpus/audio-files），或直接粘贴转写稿 / 使用公网音频 URL。` +
+            ` 本地引用：local-object://corpus-audio/${storedName}`
+        });
+      }
+
+      if (!options.bailianTranscriptionClient) {
+        return reply
+          .code(503)
+          .send({ error: "缺少 DASHSCOPE_API_KEY 或 BAILIAN_API_KEY，无法调用百炼 SenseVoice 录音转写。" });
+      }
+
+      const publicUrl = `${publicBase}/api/corpus/audio-files/${encodeURIComponent(storedName)}`;
+      // If public base already includes the path prefix, avoid double /api/...
+      const mappedUrl = publicBase.includes("/api/corpus/audio-files")
+        ? `${publicBase.replace(/\/+$/, "")}/${encodeURIComponent(storedName)}`
+        : publicUrl;
+
+      try {
+        const result = await options.bailianTranscriptionClient.transcribe({
+          title: input.title,
+          sourceUrl: mappedUrl,
+          languageHint: input.languageHint
+        });
+        const transcription: AudioTranscription = {
+          providerId: result.providerId,
+          model: result.model,
+          status: "ready",
+          title: input.title,
+          sourceUrl: mappedUrl,
+          text: result.text,
+          taskId: result.taskId,
+          transcriptionUrl: result.transcriptionUrl,
+          durationSec: result.durationSec,
+          createdAt: new Date().toISOString()
+        };
+        return {
+          transcription,
+          localObjectUrl: `local-object://corpus-audio/${storedName}`,
+          storedFileName: storedName
+        };
+      } catch (error) {
+        const message = error instanceof Error && error.message ? error.message : "unknown error";
+        console.warn(
+          JSON.stringify({
+            event: "transcription_failed",
+            provider: "bailian-sensevoice",
+            path: "local-upload",
+            error: message,
+            storedFileName: storedName
+          })
+        );
+        return reply.code(502).send({
+          error: `百炼 SenseVoice 转写失败：${message}（本地文件已保存为 local-object://corpus-audio/${storedName}）`
+        });
+      }
     }
 
     if (!input.sourceUrl) {
@@ -131,6 +257,42 @@ export async function registerCorpusRoutes(
   });
 }
 
+function authPresentation(request: FastifyRequest) {
+  const q = request.query as { token?: string };
+  return {
+    authHeader: request.headers.authorization,
+    tokenQuery: typeof q?.token === "string" ? q.token : undefined,
+    cookieToken: readCookieToken(request.headers.cookie)
+  };
+}
+
+function basenameSafe(name: string) {
+  // Reject path traversal / empty / directory segments.
+  if (!name || name.includes("/") || name.includes("\\") || name.includes("..")) return "";
+  return name;
+}
+
+function sanitizeExtension(fileName: string) {
+  const ext = extname(fileName).toLowerCase();
+  const allowed = new Set([".wav", ".mp3", ".m4a", ".aac", ".ogg", ".flac", ".webm", ".mp4"]);
+  return allowed.has(ext) ? ext : ".audio";
+}
+
+function mimeFromFileName(fileName: string) {
+  const ext = extname(fileName).toLowerCase();
+  const map: Record<string, string> = {
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".ogg": "audio/ogg",
+    ".flac": "audio/flac",
+    ".webm": "audio/webm",
+    ".mp4": "audio/mp4"
+  };
+  return map[ext] ?? "application/octet-stream";
+}
+
 function normalizeFocus(value: unknown): string | undefined {
   const payload = normalizePayload(value);
   if (typeof payload.focus !== "string" || !payload.focus.trim()) {
@@ -167,12 +329,6 @@ function normalizeTranscriptionInput(value: unknown): AudioTranscriptionInput {
   };
 }
 
-/** Approximate decoded byte length of a base64 string (ignoring padding). */
-function estimateBase64Bytes(base64: string): number {
-  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
-  return Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
-}
-
 function normalizePayload(value: unknown): CorpusInsightRequestPayload {
   if (!value || typeof value !== "object") {
     return {};
@@ -194,4 +350,3 @@ function normalizeText(value: unknown, fallback: string) {
 function isSupportedAudioSourceUrl(sourceUrl: string) {
   return /^(https?:\/\/|oss:\/\/)/.test(sourceUrl);
 }
-

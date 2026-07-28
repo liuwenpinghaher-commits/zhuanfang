@@ -242,7 +242,7 @@ export function CorpusLearningView({
                   </div>
                 )}
                 <span className="field-help">
-                  本地文件最大 25 MB。受转写引擎约束，本地文件不会自动转写——上传后请手动补全转写稿，或改用公网 URL。
+                  本地文件最大 25 MB。服务端会落盘；若配置了 CORPUS_AUDIO_PUBLIC_BASE_URL（SenseVoice 可拉取的公网基址）则可自动转写，否则请粘贴转写稿或改用公网 URL。
                 </span>
                 {fileError && <p className="form-error">{fileError}</p>}
               </div>

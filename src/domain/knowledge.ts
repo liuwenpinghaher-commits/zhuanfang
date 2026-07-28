@@ -24,17 +24,25 @@ function makeChunk(
   title: string,
   text: string,
   createdAt: string,
+  opts?: { embedding?: number[]; embeddingProvider?: string; id?: string }
 ): KnowledgeChunk {
   const cleanText = text.trim();
   return {
-    id: makeId("kc"),
+    id: opts?.id ?? makeId("kc"),
     sourceType,
     sourceId,
     title: title.trim(),
     text: cleanText,
     keywords: [...tokenizeMemoryGraphText(cleanText)],
     createdAt,
-    // 离线切块阶段不挂 embedding——嵌入在后续异步阶段补齐。
+    // Prefer embeddings already on ragChunks (import path) so chat vector path
+    // matches interview RAG without waiting for a second embed pass.
+    ...(opts?.embedding && opts.embedding.length > 0
+      ? {
+          embedding: opts.embedding,
+          ...(opts.embeddingProvider ? { embeddingProvider: opts.embeddingProvider } : {})
+        }
+      : {})
   };
 }
 
@@ -111,7 +119,16 @@ export function buildKnowledgeChunks(
         const text = truncate(chunk.text, MATERIAL_TEXT_LIMIT);
         if (!text.trim()) continue;
         chunks.push(
-          makeChunk("material", source.id, chunk.title || source.title, text, chunk.createdAt || createdAt)
+          makeChunk("material", source.id, chunk.title || source.title, text, chunk.createdAt || createdAt, {
+            // Stable id tied to rag chunk so reindex upserts stay deterministic.
+            id: `kc-mat-${chunk.id}`,
+            ...(Array.isArray(chunk.embedding) && chunk.embedding.length > 0
+              ? {
+                  embedding: chunk.embedding,
+                  ...(chunk.embeddingProvider ? { embeddingProvider: chunk.embeddingProvider } : {})
+                }
+              : {})
+          })
         );
       }
     } else {

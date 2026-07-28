@@ -117,9 +117,51 @@ describe("buildKnowledgeChunks", () => {
     expect(material.length).toBe(3);
     expect(material.every((c) => c.sourceId === sourceId)).toBe(true);
     expect(material.map((c) => c.text).join(" ")).toContain("放权验证路径");
-    expect(material.map((c) => c.text).join(" ")).toContain("关键决策准则");
+expect(material.map((c) => c.text).join(" ")).toContain("关键决策准则");
     // Must not collapse to a single head-only truncation of source.content
     expect(material.some((c) => c.text.includes("HEAD_ONLY_SHOULD_NOT_BE_SOLE_INDEX"))).toBe(false);
+  });
+
+  it("import material: ragChunk embeddings are carried into knowledge chunks (IM-P1-02)", () => {
+    const base = createInitialProductState();
+    const sourceId = "import-src-embed";
+    const vec = [0.11, 0.22, 0.33];
+    const state: ProductState = {
+      ...base,
+      importSources: [
+        {
+          id: sourceId,
+          title: "带向量资料",
+          sourceType: "text",
+          content: "正文",
+          status: "chunked",
+          sensitivity: "normal",
+          chunkIds: ["ce1"],
+          createdAt: "2026-07-23T00:00:00.000Z",
+          updatedAt: "2026-07-23T00:00:00.000Z"
+        }
+      ],
+      ragChunks: [
+        {
+          id: "ce1",
+          sourceId,
+          title: "带向量资料",
+          text: "可向量召回的片段",
+          keywords: [],
+          tokenEstimate: 8,
+          usage: "interview-context",
+          createdAt: "2026-07-23T00:00:00.000Z",
+          embedding: vec,
+          embeddingProvider: "test-embed"
+        }
+      ] as ProductState["ragChunks"]
+    };
+    const material = buildKnowledgeChunks(state, new Map()).filter(
+      (c) => c.sourceType === "material" && c.sourceId === sourceId
+    );
+    expect(material).toHaveLength(1);
+    expect(material[0].embedding).toEqual(vec);
+    expect(material[0].embeddingProvider).toBe("test-embed");
   });
 });
 

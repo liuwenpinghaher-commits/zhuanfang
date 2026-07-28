@@ -198,6 +198,9 @@ describe("Journey 2: search → podcast → TTS resilience", () => {
   });
 
   it("TTS client failure → 200, script intact, audioRenderStatus=failed, episode persisted", async () => {
+    const __prevAutoRender = process.env.PODCAST_AUTO_RENDER_ON_CREATE;
+    process.env.PODCAST_AUTO_RENDER_ON_CREATE = "true";
+    try {
     // 真实性重构:TTS 失败入库为 "failed"（真错误），不再伪装成可自动恢复的 "fallback" 中间态。
     // 创建端点先持久化脚本再尝试 TTS，因此 TTS 失败仍 200、脚本不丢。
     const failingTtsClient = {
@@ -240,7 +243,12 @@ describe("Journey 2: search → podcast → TTS resilience", () => {
     expect(typeof persistedEpisode!.script).toBe("string");
     expect(persistedEpisode!.script.length).toBeGreaterThan(0);
 
-    await server.close();
+
+      await server.close();
+    } finally {
+      if (__prevAutoRender === undefined) delete process.env.PODCAST_AUTO_RENDER_ON_CREATE;
+      else process.env.PODCAST_AUTO_RENDER_ON_CREATE = __prevAutoRender;
+    }
   });
 });
 

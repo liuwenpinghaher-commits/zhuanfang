@@ -493,6 +493,9 @@ describe("Full cross-feature business journey: 团队授权与控制感", () => 
   // 补充：播客 TTS 失败暴露（failing TTS client → 创建仍 200，audioRenderStatus=failed 真错误入库）
   // =========================================================================
   it("podcast TTS failure: failing TTS client → 200, script intact, status=failed", async () => {
+    const __prevAutoRender = process.env.PODCAST_AUTO_RENDER_ON_CREATE;
+    process.env.PODCAST_AUTO_RENDER_ON_CREATE = "true";
+    try {
     const failingTtsClient = {
       synthesize: vi.fn(async () => {
         throw new Error("TTS synthesis error");
@@ -544,7 +547,12 @@ describe("Full cross-feature business journey: 团队授权与控制感", () => 
     expect(persistedEpisode).toBeDefined();
     expect(persistedEpisode!.audioRenderStatus).toBe("failed");
 
-    await server.close();
+
+      await server.close();
+    } finally {
+      if (__prevAutoRender === undefined) delete process.env.PODCAST_AUTO_RENDER_ON_CREATE;
+      else process.env.PODCAST_AUTO_RENDER_ON_CREATE = __prevAutoRender;
+    }
   });
 
   // =========================================================================

@@ -194,7 +194,7 @@ export const initialProductState: ProductState = {
         label: "Deterministic Interview Engine",
         status: "ready",
         active: true,
-        description: "本地规则引擎，模拟专访追问、总结和资产沉淀。",
+        description: "确定性本地引擎：用于资产沉淀/卡片/雷达等非 LLM 路径；文本专访追问在无 key 时 fail-loud，不会用本引擎冒充 AI。",
         lastCheckedAt: "2026-06-10T00:00:00.000Z"
       }
     ],

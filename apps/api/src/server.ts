@@ -289,7 +289,8 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   });
   void server.register(async (registeredServer) => {
     await registerCorpusRoutes(registeredServer, productStateRepository, withLiveProviderClients({
-      llmBudget: sharedBudget
+      llmBudget: sharedBudget,
+      env: runtimeEnv
     }));
   });
   void server.register(async (registeredServer) => {

@@ -473,7 +473,7 @@ export async function registerSystemRoutes(
         status: options.bailianTranscriptionClient ? "ready" : "needs-key",
         active: true,
         detail: options.bailianTranscriptionClient
-          ? "已配置服务端 ASR provider，可把公网音频 URL 转写为语料分析稿。"
+          ? "已配置 SenseVoice：公网 URL 可直接转写；本地上传需 CORPUS_AUDIO_PUBLIC_BASE_URL（见 env；未配置则落盘后诚实 422）。"
           : "缺少 DASHSCOPE_API_KEY 或 BAILIAN_API_KEY，音频导入会要求人工转写稿。",
         requiredEnv: ["DASHSCOPE_API_KEY"],
         model: env.BAILIAN_ASR_MODEL ?? BAILIAN_TRANSCRIPTION_MODEL,
@@ -488,7 +488,7 @@ export async function registerSystemRoutes(
         active: state.systemConfig.models.interviewModel === "qwen-plus-character",
         detail: options.bailianInterviewClient
           ? "已配置 qwen-plus-character，文本专访追问可走百炼角色扮演。"
-          : "缺少 DASHSCOPE_API_KEY 或 BAILIAN_API_KEY，文本专访会使用本地规则引擎。",
+          : "缺少 DASHSCOPE_API_KEY 或 BAILIAN_API_KEY，文本专访无法调用角色扮演模型（接口 fail-loud 返回 5xx，不会用本地模板冒充 AI 追问）。",
         requiredEnv: ["DASHSCOPE_API_KEY"],
         model: env.BAILIAN_CHARACTER_MODEL ?? BAILIAN_ROLE_PLAY_MODEL,
         lastCheckedAt: generatedAt
