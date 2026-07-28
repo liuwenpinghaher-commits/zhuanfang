@@ -86,7 +86,12 @@ export async function runStateCommand(
       return repo.replaceState(next, { expectedRevision: state.revision ?? 0 });
     };
     try {
-      return opts.writeGate ? await opts.writeGate.runExclusive(label, attemptOnce) : attemptOnce();
+      const result = opts.writeGate ? await opts.writeGate.runExclusive(label, attemptOnce) : attemptOnce();
+      // Fine-grained CAS writes: wait for durable confirm before treating as saved.
+      if (result !== null) {
+        await repo.confirmPersisted?.();
+      }
+      return result;
     } catch (err) {
       if (err instanceof GovernanceInFlightError) {
         // 治理事务(reset/purge/import)在途:重试只会再次撞上,直接上抛。

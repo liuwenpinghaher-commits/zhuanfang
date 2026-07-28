@@ -37,8 +37,9 @@ function linkedRecallState(): ProductState {
     ],
     decisions: [{ id: "de_1", title: "挂主题决策", decisionKind: "用户决策" as const, confirmationStatus: "用户确认" as const, choice: "ch", tradeOff: "", riskHypothesis: "", reviewAt: "", status: "待复盘" as const, updatedAt: "2026-06-27T00:00:00.000Z", relatedThemeIds: ["th_1"] }],
     memoryRecords: [
-      { id: "me_a", text: "记忆A", status: "confirmed" as const, sourceType: "profile" as const, sourceId: "p", evidenceQuote: "", sensitivity: "normal" as const, createdAt: "2026-06-27T00:00:00.000Z", updatedAt: "2026-06-27T00:00:00.000Z" },
-      { id: "me_b", text: "记忆B", status: "confirmed" as const, sourceType: "profile" as const, sourceId: "p", evidenceQuote: "", sensitivity: "normal" as const, createdAt: "2026-06-27T00:00:00.000Z", updatedAt: "2026-06-27T00:00:00.000Z" }
+      // texts include topic token 放权 so relevance floor does not drop them on substring path
+      { id: "me_a", text: "记忆A：放权相关", status: "confirmed" as const, sourceType: "profile" as const, sourceId: "p", evidenceQuote: "", sensitivity: "normal" as const, createdAt: "2026-06-27T00:00:00.000Z", updatedAt: "2026-06-27T00:00:00.000Z" },
+      { id: "me_b", text: "记忆B：放权相关", status: "confirmed" as const, sourceType: "profile" as const, sourceId: "p", evidenceQuote: "", sensitivity: "normal" as const, createdAt: "2026-06-27T00:00:00.000Z", updatedAt: "2026-06-27T00:00:00.000Z" }
     ]
   } as ProductState;
 }
@@ -53,10 +54,10 @@ describe("collectRelevantMemories: recall 消费(经 guide)", () => {
     expect(joined).not.toContain("不挂主题观点");
   });
   it("有 memoryHits:仅候选 id 进入记忆池(me_b 命中,me_a 不命中)", () => {
-    const recall: RecallResult = { memoryHits: [{ id: "me_b", text: "记忆B" }] };
+    const recall: RecallResult = { memoryHits: [{ id: "me_b", text: "记忆B：放权相关" }] };
     const guide = buildInterviewGuide(linkedRecallState(), { topicHint: "放权" }, recall);
-    expect(guide.relevantMemories).toContain("记忆B");
-    expect(guide.relevantMemories).not.toContain("记忆A");
+    expect(guide.relevantMemories.some((m) => m.includes("记忆B"))).toBe(true);
+    expect(guide.relevantMemories.some((m) => m.includes("记忆A"))).toBe(false);
   });
   it("无 recall:回落等价(两条记忆都在候选)", () => {
     const guide = buildInterviewGuide(linkedRecallState(), { topicHint: "放权" });
@@ -68,9 +69,9 @@ describe("collectRelevantMemories: recall 消费(经 guide)", () => {
 
 describe("buildInterviewContextPack: recall 消费", () => {
   it("有 memoryHits:confirmedMemories 仅含候选并精排", () => {
-    const pack = buildInterviewContextPack(linkedRecallState(), { topicHint: "放权" }, { memoryHits: [{ id: "me_b", text: "记忆B" }] });
-    expect(pack.confirmedMemories).toContain("记忆B");
-    expect(pack.confirmedMemories).not.toContain("记忆A");
+    const pack = buildInterviewContextPack(linkedRecallState(), { topicHint: "放权" }, { memoryHits: [{ id: "me_b", text: "记忆B：放权相关" }] });
+    expect(pack.confirmedMemories.some((m) => m.includes("记忆B"))).toBe(true);
+    expect(pack.confirmedMemories.some((m) => m.includes("记忆A"))).toBe(false);
   });
   it("有 provenance:provenanceTurns 透出;无则 undefined", () => {
     const prov = [{ assetTable: "point", assetId: "pt_1", turns: [{ id: "tu_1", content: "原话", sessionId: "se_1", role: "user" }] }];
@@ -101,8 +102,8 @@ describe("P2b 审查修复", () => {
   it("C-3:confirmedMemories 并入 themeAssets.memories(与 collectRelevantMemories 口径一致)", () => {
     const recall: RecallResult = { memoryHits: [{ id: "me_b", text: "记忆B" }], themeAssets: { points: [], decisions: [], questions: [], memories: ["me_a"] } };
     const pack = buildInterviewContextPack(linkedRecallState(), { topicHint: "放权" }, recall);
-    expect(pack.confirmedMemories).toContain("记忆A"); // themeAssets.memories 并入
-    expect(pack.confirmedMemories).toContain("记忆B"); // memoryHits
+    expect(pack.confirmedMemories.some((m) => m.includes("记忆A"))).toBe(true); // themeAssets.memories 并入
+    expect(pack.confirmedMemories.some((m) => m.includes("记忆B"))).toBe(true); // memoryHits
   });
   it("B-3:buildInterviewContextPack 不传 topicHint 时用最高频主题(与 guide/prefetch 口径一致,非 themes[0])", () => {
     const base = createInitialProductState();
@@ -141,5 +142,164 @@ describe("buildInterviewContextPack: ragHits 消费(方案一)", () => {
     const withRecall = buildInterviewContextPack(s, {}, gatedOut);
     const without = buildInterviewContextPack(s, {});
     expect(withRecall.ragChunks.map((c) => c.id)).toEqual(without.ragChunks.map((c) => c.id));
+  });
+});
+
+
+describe("C-P1 context pack honesty", () => {
+  it("C-P1-05: empty memoryHits falls back to full confirmed pool (not collapse)", () => {
+    const recall: RecallResult = { memoryHits: [] };
+    const guide = buildInterviewGuide(linkedRecallState(), { topicHint: "放权" }, recall);
+    const joined = guide.relevantMemories.join(" | ");
+    // Empty native hits must not shrink the pool — both confirmed memories remain candidates.
+    expect(joined).toContain("记忆A");
+    expect(joined).toContain("记忆B");
+  });
+
+  it("C-P1-05 pack: empty memoryHits confirmedMemories not emptied", () => {
+    const pack = buildInterviewContextPack(linkedRecallState(), { topicHint: "放权" }, { memoryHits: [] });
+    expect(pack.confirmedMemories.some((m) => m.includes("记忆A") || m.includes("记忆B"))).toBe(true);
+  });
+
+  it("C-P1-01: sensitive confirmed memory excluded from card historyReferences by default", () => {
+    const base = linkedRecallState();
+    const state = {
+      ...base,
+      memoryRecords: [
+        ...base.memoryRecords,
+        {
+          id: "me_sensitive",
+          text: "SENSITIVE_SECRET_MEMORY_XYZ",
+          status: "confirmed" as const,
+          sourceType: "profile" as const,
+          sourceId: "p",
+          evidenceQuote: "",
+          sensitivity: "sensitive" as const,
+          createdAt: "2026-06-27T00:00:00.000Z",
+          updatedAt: "2026-06-27T00:00:00.000Z"
+        }
+      ]
+    } as ProductState;
+    const card = buildInterviewCard(state, undefined, "放权");
+    expect(card.historyReferences.join(" | ")).not.toContain("SENSITIVE_SECRET_MEMORY_XYZ");
+    const pack = buildInterviewContextPack(state, { topicHint: "放权" });
+    expect(pack.memoryRecords.map((r) => r.id)).not.toContain("me_sensitive");
+  });
+
+  it("C-P1-01: sensitive included when policy allows", () => {
+    const base = linkedRecallState();
+    const state = {
+      ...base,
+      systemConfig: {
+        ...base.systemConfig,
+        memory: { ...base.systemConfig.memory, includeSensitiveMemoriesInContext: true }
+      },
+      memoryRecords: [
+        {
+          id: "me_sensitive",
+          text: "SENSITIVE_ALLOWED_ABC",
+          status: "confirmed" as const,
+          sourceType: "profile" as const,
+          sourceId: "p",
+          evidenceQuote: "",
+          sensitivity: "sensitive" as const,
+          createdAt: "2026-06-27T00:00:00.000Z",
+          updatedAt: "2026-06-27T00:00:00.000Z"
+        }
+      ]
+    } as ProductState;
+    const card = buildInterviewCard(state, undefined, "放权");
+    expect(card.historyReferences.join(" | ")).toContain("SENSITIVE_ALLOWED_ABC");
+  });
+
+  it("R-P2-01: confirmed memory with zero relevance is not kept by recency/importance alone", () => {
+    const base = linkedRecallState();
+    const state = {
+      ...base,
+      themes: [],
+      points: [],
+      decisions: [],
+      questions: [],
+      notes: [],
+      memoryRecords: [
+        {
+          id: "me_noise",
+          text: "完全无关的笔记内容XYZABC",
+          status: "confirmed" as const,
+          sensitivity: "normal" as const,
+          sourceType: "interview_session" as const,
+          sourceId: "s0",
+          evidenceQuote: "",
+          importance: 10,
+          createdAt: "2026-07-23T00:00:00.000Z",
+          updatedAt: "2026-07-23T00:00:00.000Z",
+          lastAccessedAt: "2026-07-23T00:00:00.000Z"
+        }
+      ]
+    } as ProductState;
+    const guide = buildInterviewGuide(state, { topicHint: "量子计算超导" });
+    expect(guide.relevantMemories.some((m) => m.includes("完全无关的笔记内容XYZABC"))).toBe(false);
+  });
+
+  it("R-P1-05: includePendingCandidatesInContext injects topic-overlapping pending into relevantMemories", () => {
+    const base = linkedRecallState();
+    const state = {
+      ...base,
+      systemConfig: {
+        ...base.systemConfig,
+        memory: {
+          ...base.systemConfig.memory,
+          includePendingCandidatesInContext: true
+        }
+      },
+      memoryRecords: [],
+      memoryCandidates: [
+        {
+          id: "mc_pending",
+          text: "待审：放权后团队交付变慢",
+          status: "pending" as const,
+          sourceType: "interview_session" as const,
+          sourceId: "s0",
+          evidenceQuote: "",
+          reason: "test",
+          sensitivity: "normal" as const,
+          reviewScore: 70,
+          reviewSignals: [],
+          createdAt: "2026-07-23T00:00:00.000Z"
+        }
+      ]
+    } as unknown as ProductState;
+    const guide = buildInterviewGuide(state, { topicHint: "放权" });
+    expect(guide.relevantMemories.some((m) => m.includes("待审：放权后团队交付变慢"))).toBe(true);
+  });
+
+  it("C-P2-01: rankMemoryTexts drops zero-score items (no top-3 padding) via theme-free others path", () => {
+    // rankMemoryTexts is used for otherCandidates when no themeAssets recall.
+    // Build a state where notes have no token overlap with the topic — they must not
+    // be force-padded into relevantMemories just by list order.
+    const base = linkedRecallState();
+    const state = {
+      ...base,
+      themes: [],
+      points: [],
+      decisions: [],
+      questions: [],
+      notes: [
+        {
+          id: "no_1",
+          sessionId: "se_x",
+          title: "完全无关笔记标题",
+          summary: "内容也不沾边",
+          keyQuote: "",
+          saidTrack: [],
+          learnedTrack: [],
+          nextQuestions: [],
+          createdAt: "2026-06-27T00:00:00.000Z"
+        }
+      ],
+      memoryRecords: [] // isolate otherCandidates path
+    } as ProductState;
+    const guide = buildInterviewGuide(state, { topicHint: "量子计算超导" });
+    expect(guide.relevantMemories.some((m) => m.includes("完全无关笔记标题"))).toBe(false);
   });
 });

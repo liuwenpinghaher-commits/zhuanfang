@@ -113,7 +113,7 @@ export function ConfigView({
       <HeaderBlock
         eyebrow="系统配置"
         title="实时能力状态与运行参数"
-        subtitle="状态页展示 Product API 的真实能力健康；参数页集中编辑服务端配置(env)和产品策略。"
+        subtitle="两套配置边界：服务端 env（密钥/模型/端点，PATCH /api/system/config）≠ 产品策略 systemConfig（搜索/语音/访谈默认，写入 ProductState）。状态页展示能力健康。"
       />
       <section className="panel config-tabs" aria-label="系统配置分段">
         {configSectionOptions.map((option) => (
@@ -141,6 +141,46 @@ export function ConfigView({
                   <span>引擎版本：{systemCapabilities.configVersion}</span>
                   <span>检查时间：{new Date(systemCapabilities.generatedAt).toLocaleString("zh-CN")}</span>
                 </div>
+                {(systemCapabilities as { metrics?: { voice?: { ttfaP50Ms?: number; ttfaP95Ms?: number; sampleCount?: number; interruptCount?: number; bargeInSuccessRate?: number; interruptRecoveryRate?: number; budgetHint?: { ttfaP95TargetMs?: number } }; recall?: { empty?: number; low_score?: number; hit?: number }; grounding?: { grounded?: number; refused?: number; citationPresentRate?: number } } }).metrics && (
+                  <div className="config-hint" data-testid="runtime-metrics-strip">
+                    <span>
+                      语音 TTFA p50/p95：
+                      {(systemCapabilities as any).metrics?.voice?.ttfaP50Ms ?? "—"}
+                      {" / "}
+                      {(systemCapabilities as any).metrics?.voice?.ttfaP95Ms ?? "—"}
+                      ms
+                      {typeof (systemCapabilities as any).metrics?.voice?.ttfaP95Ms === "number" &&
+                      (systemCapabilities as any).metrics.voice.ttfaP95Ms >
+                        ((systemCapabilities as any).metrics?.voice?.budgetHint?.ttfaP95TargetMs ?? 1200)
+                        ? " ⚠ 高于 mouth-to-ear p95 预算"
+                        : typeof (systemCapabilities as any).metrics?.voice?.ttfaP95Ms === "number" &&
+                            (systemCapabilities as any).metrics.voice.ttfaP95Ms > 700
+                          ? " ⚠ 高于 700ms 人感参考"
+                          : ""}
+                    </span>
+                    <span>
+                      召回 hit/empty/low：
+                      {(systemCapabilities as any).metrics?.recall?.hit ?? 0}/
+                      {(systemCapabilities as any).metrics?.recall?.empty ?? 0}/
+                      {(systemCapabilities as any).metrics?.recall?.low_score ?? 0}
+                    </span>
+                    <span>打断样本：{(systemCapabilities as any).metrics?.voice?.interruptCount ?? 0}</span>
+                    <span>
+                      barge-in 成功率：
+                      {typeof (systemCapabilities as any).metrics?.voice?.bargeInSuccessRate === "number"
+                        ? `${Math.round((systemCapabilities as any).metrics.voice.bargeInSuccessRate * 100)}%`
+                        : "—"}
+                    </span>
+                    <span>
+                      引用/拒召：
+                      {(systemCapabilities as any).metrics?.grounding?.grounded ?? 0}/
+                      {(systemCapabilities as any).metrics?.grounding?.refused ?? 0}
+                      {typeof (systemCapabilities as any).metrics?.grounding?.citationPresentRate === "number"
+                        ? ` · cite ${Math.round((systemCapabilities as any).metrics.grounding.citationPresentRate * 100)}%`
+                        : ""}
+                    </span>
+                  </div>
+                )}
                 <div className="provider-grid">
                   {systemCapabilities.capabilities.map((capability) => (
                     <article className="provider-card live-provider-card" key={capability.id}>
@@ -223,7 +263,7 @@ export function ConfigView({
         <div className="view-stack">
           <section className="panel">
             <div className="panel-title"><ShieldCheck size={18} /><h2>服务端配置（env）</h2></div>
-            <p className="muted-copy">直接写入 API 的 .env，保存后通过 PATCH /api/system/config 生效。密钥字段留空表示保持不变。</p>
+            <p className="muted-copy">服务端运行配置（密钥、模型名、端点、部署开关）。写入 API 的 .env，经 PATCH /api/system/config 生效；密钥字段留空表示保持不变。与下方「产品策略」分离——这里不存访谈 playbook / 记忆开关。</p>
             {runtimeConfig ? (
               <>
                 <div className="config-hint">
@@ -274,7 +314,7 @@ export function ConfigView({
 
           <section className="panel">
             <div className="panel-title"><Sliders size={18} /><h2>产品策略</h2></div>
-            <p className="muted-copy">写入本地产品状态（自动保存），影响搜索、语音和访谈流程的默认行为。</p>
+            <p className="muted-copy">产品策略（ProductState.systemConfig）：搜索默认 provider、语音/访谈节奏、记忆召回开关等。写入产品状态并走 autosave，不包含 API 密钥。</p>
             <div className="runtime-config-sections">
               <section className="runtime-config-section">
                 <h3>联网素材</h3>
@@ -416,6 +456,52 @@ export function ConfigView({
                       }}
                     />
                     <span className="field-help">默认 1440（24 小时）。最短 15 分钟。非常驻部署可改用「外部调研 → 自动盯梢」手动触发。</span>
+                  </label>
+                </div>
+              </section>
+
+<section className="runtime-config-section">
+                <h3>记忆与上下文</h3>
+                <div className="runtime-setting-grid">
+                  <label className="field-stack runtime-setting-field" htmlFor="product-memory-pending">
+                    <span className="field-label">待审候选可进专访上下文</span>
+                    <select
+                      id="product-memory-pending"
+                      name="memory.includePendingCandidatesInContext"
+                      value={String(productDraft.memory.includePendingCandidatesInContext)}
+                      onChange={(event) => {
+                        const nextValue = event.target.value === "true";
+                        updateProductConfig((config) => ({
+                          ...config,
+                          memory: { ...config.memory, includePendingCandidatesInContext: nextValue }
+                        }));
+                      }}
+                    >
+                      <option value="false">关闭（默认·须 HITL 确认后才跨会话召回）</option>
+                      <option value="true">开启（仅本场 guide 可引用重叠待审文案）</option>
+                    </select>
+                    <span className="field-help">
+                      开启后，与当前话题有词重叠的 pending 候选会进入本场 relevantMemories；关闭时待审永不进模型。跨会话向量召回仍须「确认记住」。
+                    </span>
+                  </label>
+                  <label className="field-stack runtime-setting-field" htmlFor="product-memory-sensitive">
+                    <span className="field-label">敏感记忆可进模型上下文</span>
+                    <select
+                      id="product-memory-sensitive"
+                      name="memory.includeSensitiveMemoriesInContext"
+                      value={String(productDraft.memory.includeSensitiveMemoriesInContext)}
+                      onChange={(event) => {
+                        const nextValue = event.target.value === "true";
+                        updateProductConfig((config) => ({
+                          ...config,
+                          memory: { ...config.memory, includeSensitiveMemoriesInContext: nextValue }
+                        }));
+                      }}
+                    >
+                      <option value="false">关闭（默认）</option>
+                      <option value="true">开启</option>
+                    </select>
+                    <span className="field-help">默认敏感 confirmed/pending 不进 prompt；仅在你明确需要时开启。</span>
                   </label>
                 </div>
               </section>

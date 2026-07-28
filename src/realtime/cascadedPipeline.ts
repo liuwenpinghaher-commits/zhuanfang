@@ -13,7 +13,7 @@
 
 import type { ExpressionState, InteractionPreSignals } from "../domain/types";
 import { stripSpokenAsides, deriveSpeechProsody, type SpeechProsody } from "../domain/speech-text";
-import { decideCascadeTurn } from "./cascadeTurnDecision";
+import { decideCascadeTurn, shouldAcceptBargeIn } from "./cascadeTurnDecision";
 import { assessTurnCompleteness, type Completeness } from "./turnCompleteness";
 import { createBackchannelPicker } from "./backchannel";
 
@@ -105,6 +105,13 @@ export interface CascadedPipelineCallbacks {
   onUserTranscript: (text: string, isFinal: boolean) => void;
   onAssistantText: (text: string) => void;
   onError: (e: Error) => void;
+  /** Stage-2 TTFA probe: fired when first assistant audio/speak begins after user stop. */
+  onLatency?: (sample: {
+    ttfaMs: number;
+    vadEndToSttMs?: number;
+    sttToLlmMs?: number;
+    llmTtftMs?: number;
+  }) => void;
 }
 
 /** Trace emitted for each layer-0/1/2 turn decision, for logging / UI. */
@@ -128,7 +135,7 @@ export interface ConnectCascadedPipelineOptions {
   ) => Promise<{ assistantText: string; prosody?: SpeechProsody }>;
   callbacks: CascadedPipelineCallbacks;
   preSignals?: InteractionPreSignals | null;
-  decisionOpts?: { minPauseMs?: number; maxWaitMs?: number };
+  decisionOpts?: { minPauseMs?: number; maxWaitMs?: number; minBargeInMs?: number };
   /** Layer-2 LLM endpoint: returns done=true when the transcript reads complete. */
   classifyEndpoint?: (transcript: string, signal: AbortSignal) => Promise<{ done: boolean; reason?: string }>;
   /** Called after every turn-taking decision with a structured trace. */
@@ -163,7 +170,7 @@ export function connectCascadedPipeline(
     asr, tts, sendUserTurn, callbacks, preSignals = null, decisionOpts = {},
     classifyEndpoint, onDecision, assessCompleteness = assessTurnCompleteness,
   } = opts;
-  const { minPauseMs = 600, maxWaitMs = 8000 } = decisionOpts;
+  const { minPauseMs = 600, maxWaitMs = 8000, minBargeInMs = 280 } = decisionOpts;
 
   const pickBackchannel = createBackchannelPicker();
   let currentPreSignals: InteractionPreSignals | null = preSignals;
@@ -183,13 +190,34 @@ export function connectCascadedPipeline(
   // only). interrupt() returns it so the server can truncate the persisted assistant turn to
   // what the guest really heard, instead of the full reply the AI never finished saying.
   let spokenText = "";
+  let userSpeechStartedAt: number | null = null;
+  // Stage-2 TTFA probe marks
+  let markSpeechStoppedAt: number | null = null;
+  let markThinkingAt: number | null = null;
+  let markFirstAudioAt: number | null = null;
+  let pendingBargeTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastPlannedSpokenText = "";
   // Max-wait safety-net timer handle
   let maxWaitTimer: ReturnType<typeof setTimeout> | null = null;
 
   function setState(next: CascadePipelineState) {
     if (state === next) return;
+    const prev = state;
     state = next;
     callbacks.onStateChange(next);
+    if (next === "speaking" && prev !== "speaking" && markSpeechStoppedAt != null) {
+      markFirstAudioAt = Date.now();
+      const ttfaMs = markFirstAudioAt - markSpeechStoppedAt;
+      const llmTtftMs =
+        markThinkingAt != null ? markFirstAudioAt - markThinkingAt : undefined;
+      callbacks.onLatency?.({
+        ttfaMs,
+        ...(llmTtftMs != null ? { llmTtftMs } : {}),
+        ...(markThinkingAt != null && markSpeechStoppedAt != null
+          ? { sttToLlmMs: Math.max(0, markThinkingAt - markSpeechStoppedAt) }
+          : {})
+      });
+    }
   }
 
   function clearMaxWaitTimer() {
@@ -255,13 +283,44 @@ export function connectCascadedPipeline(
    * Called when ASR fires speech_started.
    * Returns true if a barge-in was performed (was thinking/speaking).
    */
-  function handleSpeechStarted(): boolean {
+  async function performBargeIn(): Promise<boolean> {
     if (closed) return false;
+    if (state !== "thinking" && state !== "speaking") return false;
+    if (activeAbort) {
+      activeAbort.abort();
+      activeAbort = null;
+    }
+    tts.stop();
+    classifyAbort?.abort();
+    classifyAbort = null;
+    clearMaxWaitTimer();
+    setState("interrupted");
+    committedTranscript = "";
+    partialTranscript = "";
+    return true;
+  }
+
+  function handleSpeechStarted(nowMs: number = Date.now()): boolean {
+
+    if (closed) return false;
+    userSpeechStartedAt = nowMs;
     // Echo guard: while the AI's TTS is playing, the mic is hearing the AI's own
     // voice — do NOT treat it as the user barging in. (Real user barge-in during
     // the LLM "thinking" window — before any audio plays — is still honored.)
     if (micSuppressed) return false;
-    const wasActive = state === "thinking" || state === "speaking";
+    // False-barge suppression during speaking: require speech to sustain minBargeInMs
+    // before cancelling TTS (filters coughs / blips after echo guard lifts).
+    if (state === "speaking") {
+      if (pendingBargeTimer != null) clearTimeout(pendingBargeTimer);
+      pendingBargeTimer = setTimeout(() => {
+        pendingBargeTimer = null;
+        if (closed || micSuppressed || state !== "speaking") return;
+        // Re-enter as confirmed barge-in
+        void performBargeIn();
+      }, minBargeInMs);
+      return false;
+    }
+    const wasActive = state === "thinking";
     if (wasActive) {
       // Abort in-flight LLM call
       if (activeAbort) {
@@ -362,7 +421,7 @@ export function connectCascadedPipeline(
     const fullTranscript = (committedTranscript + partialTranscript).trim();
     callbacks.onUserTranscript(fullTranscript, true);
 
-    setState("thinking");
+    markThinkingAt = Date.now(); setState("thinking");
     const ctrl = new AbortController();
     activeAbort = ctrl;
 
@@ -429,7 +488,8 @@ export function connectCascadedPipeline(
 
     setState("speaking");
     suppressMic();
-    spokenText = ""; // set to the full spoken text ONLY if the utterance finishes uninterrupted
+    spokenText = ""; // set to full text on clean finish; interrupt falls back to lastPlannedSpokenText
+    lastPlannedSpokenText = spokenSource;
     try {
       // ONE batch call: the TTS sink streams every sentence gaplessly off a single scheduling
       // clock. Calling speak() per-sentence resets that clock and waits for each sentence to
@@ -517,10 +577,13 @@ export function connectCascadedPipeline(
       tts.stop();
       clearMaxWaitTimer();
       setState("interrupted");
-      return { spokenTextSoFar: spokenText };
+      // Prefer confirmed progress; if still empty mid-batch-TTS, keep planned text non-empty
+      // so truncateAssistantTurn does not wipe the assistant turn.
+      return { spokenTextSoFar: spokenText || lastPlannedSpokenText };
     },
 
     close() {
+    if (pendingBargeTimer != null) { clearTimeout(pendingBargeTimer); pendingBargeTimer = null; }
       closed = true;
       clearMaxWaitTimer();
       if (echoGuardTimer !== null) { clearTimeout(echoGuardTimer); echoGuardTimer = null; }

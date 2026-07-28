@@ -140,4 +140,19 @@ describe("truncateAssistantTurn", () => {
     expect(result.truncatedTurn?.id).toBe("small");
     expect(result.truncatedTurn?.content).toBe("ab");
   });
+
+  it("keeps original content when spokenTextSoFar is empty on user_interrupt", () => {
+    const original = makeAssistantTurn({ id: "turn-empty", content: "完整追问内容不应被清空" });
+    const session = makeSession([original]);
+    const result = truncateAssistantTurn(session, {
+      turnId: "turn-empty",
+      spokenTextSoFar: "",
+      reason: "user_interrupt"
+    });
+    expect(result.changed).toBe(true);
+    expect(result.truncatedTurn?.content).toBe("完整追问内容不应被清空");
+    expect(result.truncatedTurn?.truncated?.reason).toBe("user_interrupt");
+    expect(result.truncatedTurn?.truncated?.spokenChars).toBe(0);
+  });
+
 });

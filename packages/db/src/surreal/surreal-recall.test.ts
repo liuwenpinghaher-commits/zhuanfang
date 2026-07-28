@@ -415,7 +415,9 @@ describe("P0 persist 确定性失败家族根修", () => {
     const [rows] = await repo.query<[Array<{ id: unknown }>]>("SELECT id FROM note;");
     expect((rows ?? []).length).toBe(1);                                 // DB 同样保留(不再发散)
     const audit = await repo.auditGraphConsistency();
-    expect(audit.ok, JSON.stringify(audit)).toBe(true);
+    // session 已删 → turn 级联清 → note/point 的 derived_from 悬空:ok 必须 false(P0 假绿闭合)。
+    expect(audit.ok, JSON.stringify(audit)).toBe(false);
+    expect(audit.danglingProvenanceCount).toBeGreaterThan(0);
     // 隐私核心不回退:session 的 turn 仍被级联清掉
     const [turns] = await repo.query<[Array<{ id: unknown }>]>("SELECT id FROM turn;");
     expect((turns ?? []).length).toBe(0);
@@ -448,7 +450,9 @@ describe("P0 persist 确定性失败家族根修", () => {
     const [pts] = await repo.query<[Array<{ id: unknown }>]>("SELECT id FROM point;");
     expect((pts ?? []).length).toBe(2);                                 // 资产真实落库
     const audit = await repo.auditGraphConsistency();
-    expect(audit.ok, JSON.stringify(audit)).toBe(true);
+    // 悬空 derived_from 被丢弃 → dangling>0 → ok 必须 false
+    expect(audit.ok, JSON.stringify(audit)).toBe(false);
+    expect(audit.danglingProvenanceCount).toBeGreaterThan(0);
   });
 
   it("P0-3b(必填 string 兜底): 缺 content 的 point 被 normalize 补空串,persist 不被 coerce 拒", async () => {
@@ -500,9 +504,41 @@ describe("④根修:悬空溯源不再拒整事务(reset→重引入形状,E2E �
     const [df] = await repo.query<[Array<Record<string, unknown>>]>("SELECT * FROM derived_from;");
     expect((df ?? []).length).toBe(0);               // 悬空溯源不投影(turn 真的不存在)
     const audit = await repo.auditGraphConsistency();
-    expect(audit.ok, `悬空溯源应归 dangling 而非漂移: ${JSON.stringify(audit)}`).toBe(true);
+    // P0:dangling 仍单列可观测,但顶层 ok 必须 fail-closed(备份恢复假绿的根因)。
+    expect(audit.ok, `有悬空溯源时 ok 必须为 false: ${JSON.stringify(audit)}`).toBe(false);
     expect(audit.danglingProvenanceCount).toBe(1);   // 单列可观测
-    expect(audit.missingCount).toBe(0);
+    expect(audit.missingCount).toBe(0);              // 不进 missing(与漂移区分)
+  });
+
+  it("P0 import:空库治理恢复冷层 turns + 降冷热态 → recallProvenanceTurns 非空且审计 ok", async () => {
+    // createSurrealStores exposes governance; standalone repo may not.
+    const { createSurrealStores } = await import("./surreal-cold-repositories");
+    const stores = await createSurrealStores({ url: "mem://" });
+    open.push(stores.productState);
+    const repo = stores.productState;
+    const seed = linkedState();
+    // Source shape after offload: hot turns empty, cold raw keeps original turns, assets keep anchors.
+    const offloadedHot = {
+      ...seed,
+      sessions: seed.sessions.map((s) => ({ ...s, turns: [], status: "completed" as const })),
+    };
+    const coldRaw = [{
+      sessionId: "se_1",
+      turns: [{ id: "tu_1", role: "user" as const, content: "原话", intent: "", timestamp: "2026-06-27T00:00:00.000Z" }],
+      strategyTrace: [],
+      createdAt: "2026-06-27T00:00:00.000Z",
+    }];
+    // Empty-store import: replace hot + cold raw in one governance transaction.
+    await repo.runGovernanceTransaction!(
+      { kind: "replace", next: offloadedHot as typeof seed },
+      { rawMaterial: { action: "replace", materials: coldRaw } },
+    );
+    const turns = await repo.recallProvenanceTurns("point", "pt_1");
+    expect(turns.map((t) => t.id)).toContain("tu_1");
+    expect(turns.find((t) => t.id === "tu_1")?.content).toBe("原话");
+    const audit = await repo.auditGraphConsistency();
+    expect(audit.danglingProvenanceCount, JSON.stringify(audit)).toBe(0);
+    expect(audit.ok, JSON.stringify(audit)).toBe(true);
   });
 
   it("H1 降冷不受影响:会话未删除、turns 剥离 → 溯源边保留(端点仍在 DB)", async () => {

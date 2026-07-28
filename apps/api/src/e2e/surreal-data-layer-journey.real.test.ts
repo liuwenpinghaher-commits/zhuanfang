@@ -6,14 +6,16 @@
  * 背景:R7 后 surreal 是唯一持久档权威库,但大多现有 e2e 都走 in-memory repo,SurrealStore 的
  * 资产往返 / 原生 RELATE 边投影 / 图遍历召回 / 溯源 在真实端到端从未被验证。
  *
- * 本测试用真实 SurrealStore(mem://,同进程)+ 真实本地 embedding(node onnxruntime)+ 离线确定性
- * finalize(env 无 key),端到端跑完整采访闭环,直查 surreal 表/边断言数据层真实工作。
+ * 本测试用真实 SurrealStore(mem://,同进程)+ 真实本地 embedding(node onnxruntime)+ 假 LLM
+ * client(测试替身,真实性重构后 /turns、/end 都是 LLM 必选——离线确定性兜底已剔除),
+ * 端到端跑完整采访闭环,直查 surreal 表/边断言数据层真实工作。
  * gate:bge 模型缓存存在(创建 session 的召回 embedding 需要)。
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { buildApiServer } from "../server";
+import { createFakeChatClient, createFakeInterviewClient } from "../test-helpers/fake-llm-clients";
 // 跨包动态 import surreal repo:vite transform 下直接 import 可行(server.ts 的 Function-import 绕 tsconfig
 // 技巧在 vite 报 "dynamic import callback not specified")。apps/api tsconfig 不检查 .real.test(见 tsconfig)。
 import { createSurrealProductStateRepository } from "../../../../packages/db/src/surreal/surreal-product-state-repository";
@@ -31,7 +33,13 @@ describe.skipIf(!hasModel)("SurrealDB 真实数据层 e2e(采访闭环 → 落�
 
   beforeAll(async () => {
     repo = await makeSurrealRepo();
-    server = buildApiServer({ env: { EMBEDDING_PROVIDER: "local" }, productStateRepository: repo });
+    server = buildApiServer({
+      env: { EMBEDDING_PROVIDER: "local" },
+      productStateRepository: repo,
+      // 真实性重构:/turns、/end 是 LLM 必选(无 client 即 503)。注入假 client 走真实 LLM 代码路径。
+      bailianInterviewClient: createFakeInterviewClient(),
+      bailianChatClient: createFakeChatClient()
+    });
 
     await server.inject({ method: "POST", url: "/api/state/reset", payload: { confirm: "RESET_ALL_DATA" } });
     const createRes = await server.inject({

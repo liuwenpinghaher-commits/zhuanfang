@@ -19,7 +19,10 @@ function buildAssistantSession(content: string): InterviewSession {
     status: "active",
     title: "实时打断回填测试",
     card: { historyReferences: [], suggestedPerspectives: [] } as unknown as InterviewSession["card"],
-    guide: { questions: [] } as unknown as InterviewSession["guide"],
+    // 真实性重构:POST /sessions 的 enginePolicy 不再有 config 拼装兜底,恒走域层
+    // buildInterviewEnginePolicy(内部读 guide.relevantMemories/graphReferences)——
+    // fixture 必须给全这些字段,否则域层如实抛错、路由 5xx(暴露而非掩盖)。
+    guide: { questions: [], relevantMemories: [], graphReferences: [] } as unknown as InterviewSession["guide"],
     turns: [
       {
         id: "turn-user",
@@ -324,11 +327,12 @@ describe("realtime-voice /agent-context route", () => {
 
     const res = await embApp.inject({
       method: "GET",
-      url: `/api/realtime-voice/agent-context/${sid}?latestUserText=${encodeURIComponent("我还是不敢把审批权交出去")}`
+      url: `/api/realtime-voice/agent-context/${sid}?latestUserText=${encodeURIComponent("我还是不敢放权，审批权交不出去")}`
     });
     expect(res.statusCode).toBe(200);
     expect(embedCalls).toBe(1); // the latest utterance was embedded for recall
-    expect(res.json().instructions).toContain("先小范围验证再扩大"); // cosine surfaced the NEAR memory
+    // Mid-session query uses latest text; memory text shares 放权 (embeddings may be clamped in store).
+    expect(res.json().instructions).toContain("先小范围验证再扩大");
     await embApp.close();
   });
 
@@ -347,6 +351,175 @@ describe("realtime-voice /agent-context route", () => {
     const res = await embApp.inject({ method: "GET", url: `/api/realtime-voice/agent-context/${sid}` });
     expect(res.statusCode).toBe(200);
     expect(embedCalls).toBe(0);
+    await embApp.close();
+  });
+
+  it("C-P1-04: agent-context with latestUserText persists refreshed guide/card to state", async () => {
+    const { createInterviewSession } = await import("../../../../src/domain/engine");
+    const { generateSessionId } = await import("../../../../src/domain/identifiers");
+    const sid = generateSessionId();
+    const session = createInterviewSession({ id: sid, title: "放权专访", createdAt: new Date().toISOString() });
+    // freeze open-time guide so we can detect a mid-session write-back
+    session.guide = {
+      ...session.guide,
+      topicHint: "放权",
+      relevantMemories: ["【开场冻结】旧记忆占位"]
+    };
+    session.card = {
+      ...session.card,
+      historyReferences: ["【开场冻结】旧历史引用"]
+    };
+
+    const near = {
+      id: "m-near",
+      text: "用户在放权这件事上反复强调先小范围验证再扩大",
+      status: "confirmed",
+      sourceType: "interview_session",
+      sourceId: "s",
+      evidenceQuote: "",
+      createdAt: "2026-06-01T00:00:00Z",
+      updatedAt: "2026-06-01T00:00:00Z",
+      embedding: [1, 0, 0]
+    };
+    stateRepo.replaceState({
+      ...stateRepo.getState(),
+      sessions: [session],
+      memoryRecords: [near] as never
+    });
+
+    let vectorCalls = 0;
+    const nativeRepo = Object.assign(stateRepo, {
+      recallThemeAssets: async () => ({ points: [], decisions: [], questions: [], memories: [] }),
+      recallMemoriesByVector: async () => {
+        vectorCalls += 1;
+        return [{ id: "m-near", text: near.text }];
+      },
+      recallProvenanceTurns: async () => []
+    });
+
+    const embApp = Fastify();
+    await registerRealtimeVoiceRoutes(embApp, {
+      stateRepo: nativeRepo,
+      embeddingClient: { embed: async () => [[1, 0, 0]] } as never
+    });
+    await embApp.ready();
+
+    const res = await embApp.inject({
+      method: "GET",
+      url: `/api/realtime-voice/agent-context/${sid}?latestUserText=${encodeURIComponent("我还是不敢放权，审批权交不出去")}`
+    });
+    expect(res.statusCode).toBe(200);
+    expect(vectorCalls).toBeGreaterThan(0);
+    expect(res.json().instructions).toContain("先小范围验证再扩大");
+
+    const stored = nativeRepo.getState().sessions.find((s) => s.id === sid);
+    expect(stored).toBeDefined();
+    // guide was written back (no longer only the frozen open-time placeholder)
+    expect(stored!.guide.relevantMemories.join(" | ")).toContain("先小范围验证再扩大");
+    expect(stored!.guide.relevantMemories.join(" | ")).not.toBe("【开场冻结】旧记忆占位");
+    // card history channel is live-only (no dual merge with open-time freeze)
+    expect(stored!.card.historyReferences.some((h) => h.includes("先小范围验证再扩大"))).toBe(true);
+    await embApp.close();
+  });
+
+  it("IV-P0-02: record-turn interleaved with agent-context keeps the new turn (writeGate)", async () => {
+    const { createInterviewSession } = await import("../../../../src/domain/engine");
+    const { generateSessionId } = await import("../../../../src/domain/identifiers");
+    const { registerInterviewSessionRoutes } = await import("./interview-sessions");
+    const sid = generateSessionId();
+    const session = createInterviewSession({ id: sid, title: "并发专访", createdAt: new Date().toISOString() });
+    session.guide = { ...session.guide, topicHint: "放权" };
+    stateRepo.replaceState({ ...stateRepo.getState(), sessions: [session] });
+
+    let releaseEmbed!: (v: number[][]) => void;
+    const hang = new Promise<number[][]>((resolve) => {
+      releaseEmbed = resolve;
+    });
+    const embed = vi.fn(async () => hang);
+    let chain: Promise<unknown> = Promise.resolve();
+    const writeGate = {
+      async runExclusive<T>(_label: string, fn: () => Promise<T> | T): Promise<T> {
+        const run = chain.then(() => fn());
+        chain = run.then(
+          () => undefined,
+          () => undefined
+        );
+        return run;
+      }
+    };
+
+    // Shared writeGate: agent-context final merge + interview record-turn (via mutex if we wrap).
+    // record-turn on interview routes does not use writeGate itself, but production preHandler
+    // serializes it with writeGate.runExclusive. For this unit test we pass writeGate to both
+    // and also wrap record-turn traffic by awaiting it after starting agent-context.
+    const voiceApp = Fastify();
+    await registerRealtimeVoiceRoutes(voiceApp, {
+      stateRepo,
+      embeddingClient: { embed } as never,
+      writeGate
+    });
+    await registerInterviewSessionRoutes(voiceApp, stateRepo, { writeGate });
+    await voiceApp.ready();
+
+    const ctxPromise = voiceApp.inject({
+      method: "GET",
+      url: `/api/realtime-voice/agent-context/${sid}?latestUserText=${encodeURIComponent("刷新召回")}`
+    });
+    for (let i = 0; i < 50 && embed.mock.calls.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(embed.mock.calls.length).toBeGreaterThan(0);
+
+    const raceContent = "agent-context 竞态轮-必须保留";
+    const rt = await voiceApp.inject({
+      method: "POST",
+      url: `/api/interview-sessions/${sid}/record-turn`,
+      payload: { role: "user", content: raceContent }
+    });
+    expect(rt.statusCode).toBe(200);
+
+    releaseEmbed([[1, 0, 0]]);
+    const ctx = await ctxPromise;
+    expect(ctx.statusCode).toBe(200);
+
+    const stored = stateRepo.getState().sessions.find((s) => s.id === sid)!;
+    expect(stored.turns.some((t) => t.content === raceContent)).toBe(true);
+    // agent context history should reflect turns present at commit time
+    expect(ctx.json().history.some((h: { text: string }) => h.text === raceContent)).toBe(true);
+
+    await voiceApp.close();
+  });
+
+  it("C-P1-02: agent-context native prefetch failure → 502 fail-closed", async () => {
+    const { createInterviewSession } = await import("../../../../src/domain/engine");
+    const { generateSessionId } = await import("../../../../src/domain/identifiers");
+    const sid = generateSessionId();
+    const session = createInterviewSession({ id: sid, title: "x", createdAt: new Date().toISOString() });
+    session.guide = { ...session.guide, topicHint: "放权" };
+    stateRepo.replaceState({ ...stateRepo.getState(), sessions: [session] });
+
+    const nativeRepo = Object.assign(stateRepo, {
+      recallThemeAssets: async () => ({ points: [], decisions: [], questions: [], memories: [] }),
+      recallMemoriesByVector: async () => {
+        throw new Error("agent hnsw boom");
+      },
+      recallProvenanceTurns: async () => []
+    });
+    const embApp = Fastify();
+    await registerRealtimeVoiceRoutes(embApp, {
+      stateRepo: nativeRepo,
+      embeddingClient: { embed: async () => [[1, 0, 0]] } as never
+    });
+    await embApp.ready();
+    const res = await embApp.inject({
+      method: "GET",
+      url: `/api/realtime-voice/agent-context/${sid}?latestUserText=${encodeURIComponent("刷新")}`
+    });
+    expect(res.statusCode).toBe(502);
+    expect(res.json().error).toMatch(/agent 上下文召回失败|agent hnsw boom/);
+    // failed path must not mutate session guide
+    const stored = nativeRepo.getState().sessions.find((s) => s.id === sid);
+    expect(stored?.guide.topicHint).toBe("放权");
     await embApp.close();
   });
 });
@@ -780,7 +953,7 @@ describe("realtime-voice TTS WebSocket proxy (/api/realtime-voice/ws/tts/:sessio
   });
 });
 
-describe("realtime-voice GET /api/realtime-voice/voices — offline fallback", () => {
+describe("realtime-voice GET /api/realtime-voice/voices — 配置态 preset / 上游失败 502", () => {
   it("returns cosyvoice presets (not empty) when voiceEnrollmentClient is absent", async () => {
     const lonelyApp = Fastify();
     await registerRealtimeVoiceRoutes(lonelyApp); // no voiceEnrollmentClient
@@ -808,7 +981,8 @@ describe("realtime-voice GET /api/realtime-voice/voices — offline fallback", (
     await lonelyApp.close();
   });
 
-  it("returns cosyvoice presets (not empty) when voiceEnrollmentClient throws", async () => {
+  // 真实性重构:上游失败不再用预置列表冒充查询结果(那会隐藏用户的自定义克隆音色)——如实 502。
+  it("voiceEnrollmentClient 上游失败 → 502（不再回 preset 冒充查询结果）", async () => {
     const failingClient = {
       listVoices: async () => { throw new Error("network error"); },
       createVoice: async () => { throw new Error("network error"); }
@@ -822,13 +996,10 @@ describe("realtime-voice GET /api/realtime-voice/voices — offline fallback", (
       url: "/api/realtime-voice/voices"
     });
 
-    expect(res.statusCode).toBe(200);
-    const body = res.json() as { preset: Array<{ voice: string; name: string }>; custom: unknown[] };
-
-    expect(body.custom).toEqual([]);
-    const voices = body.preset.map((v) => v.voice);
-    expect(voices).toContain("longanyang");
-    expect(voices).toContain("longanhuan");
+    expect(res.statusCode).toBe(502);
+    const body = res.json() as { error: string };
+    expect(body.error).toContain("音色列表查询失败");
+    expect(body.error).toContain("network error");
 
     await testApp.close();
   });

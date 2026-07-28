@@ -6,7 +6,8 @@ test("persists product state changes to the Product API after remote bootstrap",
   let storedState = createInitialProductState();
   const savedStates: ProductState[] = [];
 
-  await page.route("http://127.0.0.1:8787/api/state", async (route) => {
+  // 前端 API base 是 127.0.0.1:3210（8787 是历史遗留端口，mock 打过去永远拦不到请求）。
+  await page.route("http://127.0.0.1:3210/api/state", async (route) => {
     const request = route.request();
 
     if (request.method() === "GET") {

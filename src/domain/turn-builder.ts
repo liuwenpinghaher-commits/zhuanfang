@@ -94,11 +94,14 @@ function buildAssistantTurn(session: InterviewSession, userText: string): Interv
 
   return {
     id: makeId("turn-assistant"),
+    sessionId: session.id,
     role: "assistant",
     content,
     intent,
     timestamp: nowIso(),
-    referencedMemory: decision.referencedMemory ?? session.card.historyReferences[0],
+    // C-P1-03: offline deterministic path must not invent a history ref the strategy
+    // did not pick (same honesty contract as receiveUserTurnWithAssistant).
+    referencedMemory: decision.referencedMemory,
     strategy: decision.strategy,
     depth: decision.depth,
     strategyDecision: {
@@ -176,6 +179,7 @@ export function receiveUserTurnWithAssistant(
   const timestamp = nowIso();
   const userTurn: InterviewTurn = {
     id: makeId("turn-user"),
+    sessionId: session.id,
     role: "user",
     content: trimmed,
     intent: "用户表达",
@@ -189,11 +193,18 @@ export function receiveUserTurnWithAssistant(
       userTurn,
       {
         id: makeId("turn-assistant"),
+        sessionId: session.id,
         role: "assistant",
         content: assistant.content,
         intent: assistant.intent,
         timestamp,
-        referencedMemory: assistant.referencedMemory ?? session.card.historyReferences[0],
+        // C-P1-03 honesty: when strategyDecision is present, never invent a card
+        // fallback the strategy did not pick. Offline path (no strategy) still
+        // may surface the first open-time history ref as a best-effort label.
+        referencedMemory:
+          assistant.referencedMemory ??
+          assistant.strategyDecision?.referencedMemory ??
+          (assistant.strategyDecision ? undefined : session.card.historyReferences[0]),
         strategy: assistant.strategyDecision?.strategy,
         depth: assistant.strategyDecision?.depth
       }
@@ -219,6 +230,7 @@ export function updateInterviewControl(session: InterviewSession, action: Interv
       ...session.turns,
       {
         id: makeId("turn-control"),
+        sessionId: session.id,
         role: "assistant",
         content: feedback.content,
         intent: "控制反馈",
@@ -342,6 +354,7 @@ export function addTurn(session: InterviewSession, input: AddTurnInput): Intervi
   const strategy = coerceStrategyId(input.strategy);
   const turn: InterviewTurn = {
     id: makeId(`turn-${input.role}`),
+    sessionId: session.id,
     role: input.role,
     content: input.content,
     intent: input.intent ?? (input.role === "user" ? "用户表达" : "主持人发言"),

@@ -14,7 +14,15 @@ export const MAX_EVENT_LOG = 1000;
 const MAX_ANNOTATIONS = 500;
 const MAX_CHAT_SESSIONS = 50;
 
-export function normalizeProductState(value: unknown): ProductState {
+/** A-19 可观测性选项:clamp(可持久化性规整)实际改写了哪些字段。
+ *  - 提供 onClamped:调用方拿到「路径: 原值 → 规整值」明细自行处置(写入口 PUT /api/state
+ *    据此 422 拒收畸形数据,不再静默改写用户数据)。
+ *  - 省略:改写发生时 console.warn 一条汇总(读回/内部路径的兜底可观测,绝不再无声)。 */
+export interface NormalizeProductStateOptions {
+  onClamped?: (violations: string[]) => void;
+}
+
+export function normalizeProductState(value: unknown, opts?: NormalizeProductStateOptions): ProductState {
   const fallback = createInitialProductState();
   if (!value || typeof value !== "object") {
     return fallback;
@@ -134,7 +142,69 @@ export function normalizeProductState(value: unknown): ProductState {
   delete legacy.artifactPurge;
   delete legacy.deletedScope;
   delete legacy.deletedCount;
-  return pruneDanglingContainmentRefs(clampPersistableEnums(pruneDanglingThemeRefs(normalized)));
+  const pruned = pruneDanglingThemeRefs(normalized);
+  const clamped = clampPersistableEnums(pruned);
+  // A-19:clamp 改写数据必须可观测——钳制前后 diff 出被改写的字段。此前两侧(写入+读回)
+  // 全程零日志零标记,畸形值被静默改成默认值(1970 哨兵日期/空串/丢整条向量)是比 wedge
+  // 更隐蔽的数据失真。
+  const violations: string[] = [];
+  collectClampViolations(pruned, clamped, "", violations, MAX_CLAMP_VIOLATIONS);
+  if (violations.length > 0) {
+    if (opts?.onClamped) {
+      opts.onClamped(violations);
+    } else {
+      console.warn(JSON.stringify({
+        event: "persistable_values_clamped",
+        count: violations.length,
+        sample: violations.slice(0, 5)
+      }));
+    }
+  }
+  return pruneDanglingContainmentRefs(clamped);
+}
+
+/** A-19:钳制前后的结构化 diff(有界)。同型数组逐元素、对象逐键;命中差异即记
+ *  「路径: 原值 → 规整值」。纯结构游走,量级与 clamp 本身同为 O(state)。 */
+const MAX_CLAMP_VIOLATIONS = 50;
+
+function shortValue(value: unknown): string {
+  if (value === undefined) return "undefined";
+  let s: string;
+  try {
+    s = JSON.stringify(value) ?? "undefined";
+  } catch {
+    s = String(value);
+  }
+  return s.length > 60 ? `${s.slice(0, 60)}…` : s;
+}
+
+function collectClampViolations(before: unknown, after: unknown, path: string, out: string[], limit: number): void {
+  if (out.length >= limit || Object.is(before, after)) return;
+  if (Array.isArray(before) && Array.isArray(after)) {
+    if (before.length !== after.length) {
+      out.push(`${path}: 数组被规整(长度 ${before.length}→${after.length})`);
+      return;
+    }
+    for (let i = 0; i < before.length && out.length < limit; i++) {
+      collectClampViolations(before[i], after[i], `${path}[${i}]`, out, limit);
+    }
+    return;
+  }
+  if (before && after && typeof before === "object" && typeof after === "object") {
+    const keys = new Set([...Object.keys(before as object), ...Object.keys(after as object)]);
+    for (const key of keys) {
+      if (out.length >= limit) return;
+      collectClampViolations(
+        (before as Record<string, unknown>)[key],
+        (after as Record<string, unknown>)[key],
+        path ? `${path}.${key}` : key,
+        out,
+        limit
+      );
+    }
+    return;
+  }
+  out.push(`${path}: ${shortValue(before)} → ${shortValue(after)}`);
 }
 
 // ── 审计修复(P0-3):可持久化性规整 · 枚举钳制 ─────────────────────────────
@@ -962,6 +1032,11 @@ export function isPristineDemoState(state: ProductState): boolean {
   return productStateContentSignature(state) === productStateContentSignature(createInitialProductState());
 }
 
+/** 本地缓存损坏标记（sessionStorage）。loadProductState 在 useState 初始化器里跑,
+ *  没法直接弹 notice——用标记让 App 挂载后如实告知用户,绝不把"本地数据损坏"
+ *  静默掩盖成"看起来正常的初始数据"。 */
+export const CACHE_CORRUPTION_MARKER_KEY = "interview-product:cache-corrupted";
+
 export function loadProductState(): ProductState {
   if (typeof window === "undefined") {
     return createInitialProductState();
@@ -974,7 +1049,16 @@ export function loadProductState(): ProductState {
 
   try {
     return normalizeProductState(JSON.parse(raw));
-  } catch {
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: "local_cache_corrupted",
+      error: error instanceof Error ? error.message : String(error)
+    }));
+    try {
+      window.sessionStorage.setItem(CACHE_CORRUPTION_MARKER_KEY, new Date().toISOString());
+    } catch {
+      // sessionStorage 不可用（隐私模式等）:只剩 console 信号。
+    }
     return createInitialProductState();
   }
 }

@@ -64,9 +64,13 @@ docker compose --env-file .env.production.local up --build
 ```bash
 npm test -- --run
 npm run test:e2e
+# 真实供应商 / surreal 隔离库（需要 key；不污染仓库 .data/）
+npm run test:e2e:real
 ```
 
-`npm run test:e2e` 会自动启动 `Product API` 和前端 dev server；测试中的 API 使用 `PRODUCT_STORE=memory` + `PRODUCT_STATE_DB_PATH=memory`（globalSetup 会核验实际档位是 memory，否则熔断），不会写入默认的 `.data/surreal` 数据目录。
+`npm run test:e2e` 会自动启动 `Product API` 和前端 dev server；测试中的 API 使用 `PRODUCT_STORE=memory` + `PRODUCT_STATE_DB_PATH=memory`（globalSetup 会核验实际档位是 memory，否则熔断），不会写入默认的 `.data/surreal` 数据目录。默认族 **不会** 跑 `real-*.spec.ts` / `voice-cascade`。
+
+`npm run test:e2e:real`（或 `E2E_REAL=1 playwright test`）使用临时 surreal 数据目录 + 真实 key 跑 real 族与语音 cascade；无 key 时相关用例 skip。语音门控是 `E2E_REAL=1` + DashScope/Bailian key，**没有** `E2E_REAL_VOICE` 环境变量。
 
 `*.real.test.ts` 是外部 provider smoke（从 `.env.local` 读真实 key，会真调 DashScope / AnySearch）。在持有真实 key 的机器上跑全量 vitest 而不想触发外部调用时，设 `REAL_PROVIDER_SMOKE=off`（也接受 `0`/`false`，大小写不敏感）即可让这些用例全部按"未配置 key"跳过。
 
@@ -142,7 +146,7 @@ PRODUCT_WEB_ORIGINS=http://127.0.0.1:3220,http://localhost:3220
 CORPUS_UPLOAD_DIR=.data/corpus-audio
 CORPUS_AUDIO_PUBLIC_BASE_URL=
 CORPUS_AUDIO_MAX_BYTES=52428800
-PODCAST_AUTO_RENDER_ON_CREATE=auto
+PODCAST_AUTO_RENDER_ON_CREATE=false
 ```
 
 `BAILIAN_BASE_URL` 用于百炼兼容模式的联网搜索和角色扮演专访；`BAILIAN_AUDIO_BASE_URL` 用于 CosyVoice TTS 与 SenseVoice ASR。两类 API 默认域名不同，部署到代理或企业网关时应分别配置。
@@ -161,7 +165,7 @@ PODCAST_AUTO_RENDER_ON_CREATE=auto
 
 `CORPUS_AUDIO_MAX_BYTES` 控制本地语料音频单文件上传上限，默认 50MB；超过上限时 Product API 返回 413，不会写入本地对象目录。
 
-`CORPUS_AUDIO_PUBLIC_BASE_URL`（保留位，尚未启用）：本意是把上传得到的 `local-object://corpus-audio/...` 映射成公开 URL 交给百炼 SenseVoice 自动转写，但当前代码尚未读取该变量，也未提供 `/api/corpus/audio-files` 静态服务路由。**本地上传的音频目前一律走可编辑手工转写稿降级**；要自动转写，请在 `/api/corpus/transcriptions` 直接提供已可公网访问的 http/https/oss 音频 URL。
+`CORPUS_AUDIO_PUBLIC_BASE_URL`：本地语料音频上传后会写入 `CORPUS_UPLOAD_DIR`（默认 `.data/corpus-audio`），并可通过鉴权路由 `GET /api/corpus/audio-files/:fileName` 读取。若设置本变量为可被百炼 SenseVoice 拉取的公网基址（例如反代后的 `https://your.host`，服务会拼 `/api/corpus/audio-files/<file>`；若基址已含该 path 前缀则直接拼文件名），本地上传即可自动转写。**未配置时**仍会落盘并返回诚实 422（说明原因与 `local-object://` 引用），不会伪造转写稿；也可继续直接提交公网 http/https/oss URL。
 
 `HOST` / `PORT` 控制 Product API 监听地址；`VITE_PRODUCT_API_BASE_URL` 控制浏览器前端连接哪个 Product API；`PRODUCT_API_HEALTH_URL` 和 `PRODUCT_WEB_URL` 用于 `npm run dev:full` 判断是否复用已有服务。
 
@@ -197,37 +201,69 @@ R7 起 SurrealDB（`.data/surreal`）是**唯一**持久仓库，`GET /api/state
 - `src/domain`: 业务模型、确定性引擎、资产沉淀、配置版本、质量报告。
 - `src/features`: 前端业务视图。
 - `src/realtime`: 百炼 Realtime WebRTC 浏览器桥接。
+- `src/hooks`: 前端 feature hooks（如离线同步）。
 - `src/api`: 前端 Product API client。
 - `apps/api/src`: Fastify Product API、provider client、路由、运行配置。
 - `packages/db/src`: SurrealDB ProductState repository（`surreal/` 下热态 + 三冷层 + 混合召回）与内存 repo。
 - `tests/e2e`: Playwright 验收流程。
 - `docs/superpowers`: 阶段开发方案和规格文档。
 
+## Stage-3：评测 / 记忆生命周期 / 语音 SLO
+
+- **RAG golden**：`tests/fixtures/rag-golden/cases.json`（30+ 中文个人域 query）+ `src/domain/rag-golden.ts` 确定性 hit@k / 拒召正确率（CI 无 LLM-judge）。
+- **Citation envelope + groundingMode**：召回命中带 sourceId/score；chat 返回 `grounded | partial | refused` 并记 runtime metrics。
+- **记忆生命周期**：echo-chamber 过滤；矛盾 `POST /api/memory-candidates/:id/resolve-conflict`（supersede/demote-not-delete）；consolidate 支持 `mode=queue` 只预览。
+- **语音 SLO**：TTFA 分段 p50/p95、barge-in 成功率、interrupt recovery；打断 stash 注入下一轮（`previousAgentUtteranceInterrupted`）。本地参考预算 p50≤700ms / p95≤1200ms（非硬 SLA）。
+- **脚本**：`npx tsx scripts/voice-slo-smoke.ts`；`node scripts/backup-export-smoke.mjs`。
+- **语音 connect**：`src/realtime/startRealtimeVoiceConnect.ts` + `useRealtimeVoiceSession`（App 只负责建 session 与回调注入）。
+- **语料本地预签名**：`POST /api/corpus/audio-files/presign` + `PUT .../audio-files/:file`（非云 S3；SenseVoice 仍需 `CORPUS_AUDIO_PUBLIC_BASE_URL`）。
+- **pVAD**：`systemConfig.voice.endpointingMode=pvad-experimental` 为诚实实验位，capabilities 标 degraded，未接模型。
+- **非目标**：多租户、Surreal 原生 CRDT 多设备同步、强绑单一 S2S。
+
+## Stage-2：记忆 / 召回 / 语音度量
+
+- **低置信拒召**：chat 与访谈相关记忆在 hybrid 分数过低或空命中时不硬塞资料；prompt 注入「无可靠记忆」说明（`src/domain/retrieval.ts`）。
+- **Boot context**：`buildBootContextPack` 按字符预算组装画像 + 近场专访 + 语义事实 + 记忆策略，供开场/语音指令复用。
+- **通道配额**：知识块按 memory / material / transcript / asset 分通道截断，避免长文素材挤掉个人记忆。
+- **运行时度量**：`GET /api/health` 附带 `metrics.voice`（ttfa p50/p95、interruptCount）与 `metrics.recall`；完整环形缓冲见 `GET /api/system/runtime-metrics`。配置页在 capabilities 返回 metrics 时展示 TTFA 与召回计数；p95>700ms 会 amber 提示。
+- **语音路径选型**：`cascade`（ASR→LLM→TTS）可控、易调试、transcript 一等公民；`bailian` omni / livekit 更自然但中间态更黑盒。生产默认优先 cascade；barge-in 走 `POST /api/realtime-voice/sessions/:id/interrupt` 截断已播并记 metrics。
+- **语料直传预热**：`POST /api/corpus/audio-files` 仅落盘并返回 `localObjectUrl` / 可选 `publicUrl`（需 `CORPUS_AUDIO_PUBLIC_BASE_URL`），供 CDN 或后续 SenseVoice 使用，不伪造转写。
+- **记忆巩固**：`POST /api/memory/consolidate` 在去重摘要后做 importance 衰减，并生成「待裁决矛盾」HITL 候选。
+- **配置边界**：服务端 env（密钥/模型/CORPUS_AUDIO_PUBLIC_BASE_URL）≠ ProductState.systemConfig（产品策略，含可选 `memory.minRecallScore`）。
+
 ## 当前架构
 
 ```text
 React UI
-  -> Product API
-     -> ProductStateRepository
-     -> Search providers
-     -> Bailian Character interview provider
-     -> Bailian Realtime WebRTC SDP proxy
+  -> Product API (Fastify)
+     -> ProductStateRepository (Surreal 默认 / memory 测试)
+     -> Search providers (AnySearch / Tavily / Exa / Brave)
+     -> Bailian Character interview (文本追问，fail-loud)
+     -> Bailian Realtime / LiveKit / cascade 语音栈
      -> Bailian TTS / ASR providers
-  -> local fallback engine
 ```
 
-文本专访和实时语音转写现在共用 `interview-turn-runner`：优先走百炼角色扮演 provider，失败或未配置时降级到本地规则引擎，并统一记录 AI 运行事件。实时语音的留白、打断和语音追问信号会写入会话 `realtimeSignals`，进入"实时轮替"质量门，并在系统配置的透明追踪里展示。
-实时打断现在支持回填：浏览器语音侧累积已合成的字符与音频时长，触发打断时调用 `POST /api/realtime-voice/sessions/:id/interrupt`，服务端通过 `truncateAssistantTurn` 把对应 assistant turn 的 `content` 截断为 `spokenTextSoFar`，并写入 `realtimeSignals`（`eventType=agent_speech_interrupted`）和 `aiRunEvents.metrics`，避免后续轮次基于"模型完整输出"做出错乱的追问。详见 [docs/realtime-improvement-plan.md](docs/realtime-improvement-plan.md)。
-系统配置里的“默认访谈声音”会在创建 Realtime session 时传给 Product API；`BAILIAN_REALTIME_VOICE` 作为服务端默认/回退音色保留。
+**真实性立场**：专访追问与归档是 LLM 能力——未配置或调用失败返回 5xx/429，**不会**静默用确定性模板冒充 AI 追问。演示用的 `local-demo` 搜索等须显式标记 degraded / needs-review。
+
+实时语音的留白、打断和语音追问信号会写入会话 `realtimeSignals`。实时打断支持回填：调用 `POST /api/realtime-voice/sessions/:id/interrupt`，服务端 `truncateAssistantTurn` 截断已说出口的内容。详见 [docs/realtime-improvement-plan.md](docs/realtime-improvement-plan.md)。
+
+播客：创建剧集默认只落脚本；仅当 `PODCAST_AUTO_RENDER_ON_CREATE=true|1|yes|on` 时创建即 TTS。否则请在工作台确认脚本后调用 synthesize。
+
+生产鉴权：`GET /api/runtime-bootstrap` 仅设置 HttpOnly cookie，**不**在 JSON body 回传长期 `PRODUCT_API_TOKEN`。同源 SPA 用 `credentials: include`；分域部署可另设 `VITE_PRODUCT_API_TOKEN`。
+
+`zhuanfang/` 为历史副本，**不是**当前产品入口；请以仓库根目录为准。
+
+开放项真源：`docs/superpowers/CURRENT-开放清单.md`。
 
 ## 验证状态
 
-最近一次（2026-06-21）：
+优先命令：
 
-- `npm run typecheck`（`tsc -b` + API 工程，零错误）
-- `npx vitest run`（84 文件 / 797 用例通过，1 个需真实 API key 的 `*.real.test.ts` 跳过）
+```bash
+npm run typecheck
+REAL_PROVIDER_SMOKE=off npm test -- --run
+```
 
-未在本次验证中运行（按需自查）：
+按需：`npm run test:e2e`、`npm run test:e2e:real`、`npm run build`。
 
-- `npx playwright test`（端到端）
-- `npm run build`（dist 产物）
+（具体通过数字以本机最近一次命令输出为准；审查报告见 `docs/superpowers/`。）

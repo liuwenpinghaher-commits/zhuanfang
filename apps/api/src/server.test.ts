@@ -3,6 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildApiServer, isDirectCliExecution, createGracefulShutdown } from "./server";
+import {
+  createFakeChatClient,
+  createFakeEmbeddingClient,
+  createFakeInterviewClient
+} from "./test-helpers/fake-llm-clients";
 
 describe("Product API", () => {
   const tempDirs: string[] = [];
@@ -75,7 +80,7 @@ describe("Product API", () => {
     const response = await server.inject({ method: "GET", url: "/api/health" });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ ok: true, service: "interview-product-api" });
+expect(response.json()).toMatchObject({ ok: true, ready: true, service: "interview-product-api" });
   });
 
   it("allows browser clients on the Vite dev origin to call the Product API", async () => {
@@ -401,7 +406,47 @@ describe("Product API", () => {
     });
   });
 
-  it("creates and persists search briefs through the Product API", async () => {
+  // 真实性重构:联网 provider 未配置 client 时不再用 local-demo 占位简报冒充（degraded 兜底已删）。
+  // 成功持久化路径改为用户【显式选择】local-demo 演示 provider（唯一保留的确定性简报入口）。
+  it("creates and persists search briefs through the Product API (explicit local-demo provider)", async () => {
+    const server = buildApiServer();
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/search/briefs",
+      payload: {
+        topic: "AI 产品商业化热点",
+        providerId: "local-demo",
+        maxSources: 3,
+        recencyDays: 14
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      brief: {
+        topic: "AI 产品商业化热点",
+        provider: "local-demo",
+        sources: expect.any(Array)
+      },
+      task: {
+        status: "succeeded",
+        providerId: "local-demo"
+      },
+      state: {
+        searchBriefs: expect.any(Array)
+      }
+    });
+
+    const stateResponse = await server.inject({ method: "GET", url: "/api/state" });
+    expect(stateResponse.json().searchBriefs[0]).toMatchObject({
+      topic: "AI 产品商业化热点",
+      provider: "local-demo"
+    });
+  });
+
+  // 真实性重构:选定联网 provider 但无对应 client → 如实 503（不能用就暴露）。
+  it("returns 503 when a networked search provider is selected without its client", async () => {
     const server = buildApiServer();
 
     const response = await server.inject({
@@ -415,27 +460,8 @@ describe("Product API", () => {
       }
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
-      brief: {
-        topic: "AI 产品商业化热点",
-        provider: "anysearch",
-        sources: expect.any(Array)
-      },
-      task: {
-        status: "degraded",
-        providerId: "anysearch"
-      },
-      state: {
-        searchBriefs: expect.any(Array)
-      }
-    });
-
-    const stateResponse = await server.inject({ method: "GET", url: "/api/state" });
-    expect(stateResponse.json().searchBriefs[0]).toMatchObject({
-      topic: "AI 产品商业化热点",
-      provider: "anysearch"
-    });
+    expect(response.statusCode).toBe(503);
+    expect(response.json().error).toContain("AnySearch 未配置");
   });
 
   it("uses Bailian built-in web search when the provider client is configured", async () => {
@@ -557,7 +583,9 @@ describe("Product API", () => {
   });
 
   it("creates and persists podcast episodes through the Product API", async () => {
-    const server = buildApiServer();
+    // 真实性重构:note 路径播客脚本是 LLM 必选能力（无 client → 503），注入假 chat client 走真实脚本生成路径。
+    // 无 TTS client 时创建仍 200,audioRenderStatus 保持 "pending"（尚未渲染是诚实状态）。
+    const server = buildApiServer({ bailianChatClient: createFakeChatClient() });
     const stateResponse = await server.inject({ method: "GET", url: "/api/state" });
     const noteId = stateResponse.json().notes[0].id;
 
@@ -577,12 +605,14 @@ describe("Product API", () => {
         noteId,
         format: "solo",
         voice: "calm-host",
-        status: "draft"
+        status: "draft",
+        audioRenderStatus: "pending"
       },
       state: {
         podcastEpisodes: expect.any(Array)
       }
     });
+    expect(response.json().episode.script).toContain("播客脚本正文");
 
     const persistedStateResponse = await server.inject({ method: "GET", url: "/api/state" });
     expect(persistedStateResponse.json().podcastEpisodes[0]).toMatchObject({
@@ -592,7 +622,8 @@ describe("Product API", () => {
   });
 
   it("analyzes and persists imported interview corpus through the Product API", async () => {
-    const server = buildApiServer();
+    // 真实性重构:语料分析是 LLM 必选能力（无 client → 503），注入假 chat client 走真实分析路径。
+    const server = buildApiServer({ bailianChatClient: createFakeChatClient() });
 
     const response = await server.inject({
       method: "POST",
@@ -624,7 +655,8 @@ describe("Product API", () => {
     });
   });
 
-  it("returns a degraded audio transcription draft when ASR is not configured", async () => {
+  // 真实性重构:无转写 client → 如实 503（此前返回 status:"degraded" 的占位稿冒充转写草稿,已剔除）。
+  it("returns 503 for audio transcription when ASR is not configured", async () => {
     const server = buildApiServer();
 
     const response = await server.inject({
@@ -636,18 +668,8 @@ describe("Product API", () => {
       }
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
-      transcription: {
-        providerId: "local-fallback",
-        model: "manual-transcript-required",
-        status: "degraded",
-        title: "音频专访样本",
-        sourceUrl: "https://example.com/interview-audio.mp3",
-        degradedReason: "缺少 DASHSCOPE_API_KEY 或 BAILIAN_API_KEY，无法调用百炼 SenseVoice 录音转写。"
-      }
-    });
-    expect(response.json().transcription.text).toContain("主持人：");
+    expect(response.statusCode).toBe(503);
+    expect(response.json().error).toContain("SenseVoice");
   });
 
   it("transcribes imported audio through the configured Bailian ASR client", async () => {
@@ -697,15 +719,14 @@ describe("Product API", () => {
     });
   });
 
-  it("honestly degrades a locally uploaded audio file instead of faking a transcript", async () => {
-    // SenseVoice 录音转写只接受公网 file_urls；本地文件没有可行的 base64 内联转写路径。
-    // 即使 ASR client 已配置，本地文件上传也必须诚实降级 —— 绝不冒充真转写。
+  it("persists local audio but 422s without CORPUS_AUDIO_PUBLIC_BASE_URL (no fake transcript)", async () => {
+    // SenseVoice 只收公网 file_urls。未配置公开基址时：落盘 + 诚实 422，绝不调 ASR / 冒充转写。
     let asrCalled = false;
     const server = buildApiServer({
       bailianTranscriptionClient: {
         async transcribe() {
           asrCalled = true;
-          throw new Error("ASR should never be called for a local file upload.");
+          throw new Error("ASR should never be called without a public base URL.");
         }
       }
     });
@@ -721,15 +742,51 @@ describe("Product API", () => {
     });
 
     expect(asrCalled).toBe(false);
+    expect(response.statusCode).toBe(422);
+    const error = response.json().error as string;
+    expect(error).toContain("interview.m4a");
+    expect(error).toMatch(/CORPUS_AUDIO_PUBLIC_BASE_URL|公网/);
+    expect(error).toContain("local-object://corpus-audio/");
+  });
+
+  it("maps local upload via CORPUS_AUDIO_PUBLIC_BASE_URL and calls SenseVoice", async () => {
+    const seen: string[] = [];
+    const server = buildApiServer({
+      env: {
+        CORPUS_AUDIO_PUBLIC_BASE_URL: "https://cdn.example.com",
+        CORPUS_UPLOAD_DIR: ".data/test-corpus-audio"
+      },
+      bailianTranscriptionClient: {
+        async transcribe(input) {
+          seen.push(input.sourceUrl);
+          return {
+            providerId: "bailian-sensevoice",
+            model: "sensevoice-v1",
+            sourceUrl: input.sourceUrl,
+            taskId: "task-local-1",
+            transcriptionUrl: "https://transcription.example.com/local.json",
+            durationSec: 12,
+            text: "本地上传转写成功"
+          };
+        }
+      }
+    });
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/corpus/transcriptions",
+      payload: {
+        title: "本地可转写样本",
+        audioBase64: Buffer.from("real-enough-audio").toString("base64"),
+        fileName: "clip.wav",
+        languageHint: "zh"
+      }
+    });
+
     expect(response.statusCode).toBe(200);
-    const transcription = response.json().transcription;
-    expect(transcription.status).toBe("degraded");
-    expect(transcription.providerId).toBe("local-fallback");
-    // 诚实文案：说明已收到文件、点名转写引擎需要公网 URL、给出可执行的下一步。
-    expect(transcription.degradedReason).toContain("interview.m4a");
-    expect(transcription.degradedReason).toContain("公网");
-    // 草稿把文件名带入上下文，且不假装这就是转写结果。
-    expect(transcription.text).toContain("interview.m4a");
+    expect(seen[0]).toMatch(/^https:\/\/cdn\.example\.com\/api\/corpus\/audio-files\//);
+    expect(response.json().transcription.text).toBe("本地上传转写成功");
+    expect(response.json().localObjectUrl).toMatch(/^local-object:\/\/corpus-audio\//);
   });
 
   it("rejects an oversized locally uploaded audio file with a 422", async () => {
@@ -764,7 +821,13 @@ describe("Product API", () => {
   });
 
   it("runs an interview session through the Product API and persists the generated note", async () => {
-    const server = buildApiServer();
+    // 真实性重构:追问（/turns）与归档（/end 的记忆抽取+finalize+矛盾精判）均为 LLM 必选能力，
+    // 注入全套假 client 走真实 LLM 代码路径（prompt 组装/解析/校验/落库全真）。
+    const server = buildApiServer({
+      bailianInterviewClient: createFakeInterviewClient(),
+      bailianChatClient: createFakeChatClient(),
+      embeddingClient: createFakeEmbeddingClient()
+    });
 
     const createResponse = await server.inject({
       method: "POST",
@@ -794,9 +857,10 @@ describe("Product API", () => {
 
     expect(turnResponse.statusCode).toBe(200);
     expect(turnResponse.json().session.turns).toHaveLength(2);
+    // intent 来自注入的假专访 client（createFakeInterviewClient 与真实 client 同契约的固定 intent）。
     expect(turnResponse.json().session.turns[1]).toMatchObject({
       role: "assistant",
-      intent: "追问机制"
+      intent: "百炼角色扮演追问"
     });
 
     const controlResponse = await server.inject({
@@ -889,11 +953,17 @@ describe("Product API", () => {
   // 持久化(surreal 跨进程 reload)由 packages/db/src/surreal/surreal-product-state-repository.test.ts
   // 的重连往返用例覆盖(surrealkv 落盘 + 新连接读回)。
 
-  it("renders podcast audio through Bailian CosyVoice when the audio client is configured", async () => {
+it("renders podcast audio through Bailian CosyVoice when the audio client is configured", async () => {
+    // PO-P1-01: create defaults to script-only; TTS is explicit synthesize (or env opt-in).
+    // 真实性重构:note 路径脚本由 LLM 生成（假 chat client 的 canned 播客脚本），TTS 收到的
+    // 是 LLM 脚本而非确定性模板（"开场：今天我们回到"模板已剔除）。
+    const previousAuto = process.env.PODCAST_AUTO_RENDER_ON_CREATE;
+    delete process.env.PODCAST_AUTO_RENDER_ON_CREATE;
     const server = buildApiServer({
+      bailianChatClient: createFakeChatClient(),
       bailianPodcastAudioClient: {
         async synthesize(input) {
-          expect(input.text).toContain("开场：今天我们回到");
+          expect(input.text).toContain("播客脚本正文");
           expect(input.voice).toBeUndefined();
           return {
             providerId: "bailian-cosyvoice",
@@ -905,34 +975,50 @@ describe("Product API", () => {
         }
       }
     });
-    const stateResponse = await server.inject({ method: "GET", url: "/api/state" });
-    const noteId = stateResponse.json().notes[0].id;
+    try {
+      const stateResponse = await server.inject({ method: "GET", url: "/api/state" });
+      const noteId = stateResponse.json().notes[0].id;
 
-    const response = await server.inject({
-      method: "POST",
-      url: "/api/podcast/episodes",
-      payload: {
-        noteId,
-        format: "solo",
-        voice: "calm-host"
-      }
-    });
+      const createResponse = await server.inject({
+        method: "POST",
+        url: "/api/podcast/episodes",
+        payload: {
+          noteId,
+          format: "solo",
+          voice: "calm-host"
+        }
+      });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
-      episode: {
+      expect(createResponse.statusCode).toBe(200);
+      const created = createResponse.json();
+      expect(created.episode.noteId).toBe(noteId);
+      expect(created.episode.script).toContain("播客脚本正文");
+      // Default: no auto TTS on create
+      expect(created.episode.audioUrl).not.toBe("https://dashscope-result.example.com/podcast.mp3");
+
+      const synthResponse = await server.inject({
+        method: "POST",
+        url: `/api/podcast/episodes/${created.episode.id}/synthesize`
+      });
+      expect(synthResponse.statusCode).toBe(200);
+      expect(synthResponse.json()).toMatchObject({
+        episode: {
+          noteId,
+          voice: "longyuan_v3",
+          audioUrl: "https://dashscope-result.example.com/podcast.mp3"
+        }
+      });
+
+      const persistedStateResponse = await server.inject({ method: "GET", url: "/api/state" });
+      expect(persistedStateResponse.json().podcastEpisodes[0]).toMatchObject({
         noteId,
         voice: "longyuan_v3",
         audioUrl: "https://dashscope-result.example.com/podcast.mp3"
-      }
-    });
-
-    const persistedStateResponse = await server.inject({ method: "GET", url: "/api/state" });
-    expect(persistedStateResponse.json().podcastEpisodes[0]).toMatchObject({
-      noteId,
-      voice: "longyuan_v3",
-      audioUrl: "https://dashscope-result.example.com/podcast.mp3"
-    });
+      });
+    } finally {
+      if (previousAuto === undefined) delete process.env.PODCAST_AUTO_RENDER_ON_CREATE;
+      else process.env.PODCAST_AUTO_RENDER_ON_CREATE = previousAuto;
+    }
   });
 
   it("returns safe realtime voice configuration without exposing API keys", async () => {
@@ -1080,6 +1166,96 @@ describe("Product API", () => {
       const response = await server.inject({ method: "GET", url: "/api/health" });
 
       expect(response.statusCode).toBe(200);
+    });
+
+    it("runtime-bootstrap is auth-exempt, sets HttpOnly cookie without body secret; cookie authorizes /api/state", async () => {
+      const server = buildApiServer({
+        env: { DEPLOYMENT_PROFILE: "production", PRODUCT_API_TOKEN: "secret-bootstrap" }
+      });
+
+      // Unauthenticated bootstrap must succeed (SPA has no VITE bake-in yet).
+      // inject() is HTTP — production must NOT set Secure or browsers drop the cookie.
+      const boot = await server.inject({ method: "GET", url: "/api/runtime-bootstrap" });
+      expect(boot.statusCode).toBe(200);
+      const body = boot.json() as {
+        authRequired: boolean;
+        cookieSet: boolean;
+        secureCookie?: boolean;
+        token?: unknown;
+      };
+      expect(body.authRequired).toBe(true);
+      expect(body.cookieSet).toBe(true);
+      expect(body.secureCookie).toBe(false);
+      // Long-lived secret must NOT appear in free JSON body.
+      expect(body.token).toBeUndefined();
+      expect(JSON.stringify(body)).not.toContain("secret-bootstrap");
+      const setCookie = boot.headers["set-cookie"];
+      const cookieHeader = Array.isArray(setCookie) ? setCookie.join(";") : String(setCookie ?? "");
+      expect(cookieHeader).toMatch(/product_api_token=/);
+      expect(cookieHeader.toLowerCase()).toContain("httponly");
+      expect(cookieHeader.toLowerCase()).not.toMatch(/(?:^|;\s*)secure(?:;|$)/);
+
+      // Cookie alone authorizes subsequent API calls (HTTP production docker path).
+      const viaCookie = await server.inject({
+        method: "GET",
+        url: "/api/state",
+        headers: { cookie: "product_api_token=secret-bootstrap" }
+      });
+      expect(viaCookie.statusCode).toBe(200);
+
+      // Query token path still works for WS/media when explicitly provisioned (not via bootstrap body).
+      const viaQuery = await server.inject({
+        method: "GET",
+        url: "/api/state?token=secret-bootstrap"
+      });
+      expect(viaQuery.statusCode).toBe(200);
+    });
+
+    it("runtime-bootstrap sets Secure cookie only when request.protocol is https", async () => {
+      const server = buildApiServer({
+        env: { DEPLOYMENT_PROFILE: "production", PRODUCT_API_TOKEN: "secret-https" }
+      });
+      // Simulate TLS terminator: trustProxy + X-Forwarded-Proto → request.protocol === https
+      const boot = await server.inject({
+        method: "GET",
+        url: "/api/runtime-bootstrap",
+        headers: { "x-forwarded-proto": "https", host: "app.example.com" }
+      });
+      expect(boot.statusCode).toBe(200);
+      const body = boot.json() as { secureCookie?: boolean };
+      expect(body.secureCookie).toBe(true);
+      const setCookie = boot.headers["set-cookie"];
+      const cookieHeader = Array.isArray(setCookie) ? setCookie.join(";") : String(setCookie ?? "");
+      expect(cookieHeader.toLowerCase()).toMatch(/(?:^|;\s*)secure(?:;|$)/);
+      expect(JSON.stringify(boot.json())).not.toContain("secret-https");
+    });
+
+    it("CORS allows credentials for allowlisted Origin (cookie SPA model)", async () => {
+      const server = buildApiServer({
+        env: {
+          DEPLOYMENT_PROFILE: "production",
+          PRODUCT_API_TOKEN: "secret-cors",
+          PRODUCT_WEB_ORIGINS: "http://127.0.0.1:3220"
+        }
+      });
+      const res = await server.inject({
+        method: "OPTIONS",
+        url: "/api/state",
+        headers: {
+          origin: "http://127.0.0.1:3220",
+          "access-control-request-method": "GET"
+        }
+      });
+      expect(res.statusCode).toBe(204);
+      expect(res.headers["access-control-allow-origin"]).toBe("http://127.0.0.1:3220");
+      expect(res.headers["access-control-allow-credentials"]).toBe("true");
+    });
+
+    it("runtime-bootstrap reports authRequired=false when auth guard inactive (local)", async () => {
+      const server = buildApiServer({ env: {} });
+      const boot = await server.inject({ method: "GET", url: "/api/runtime-bootstrap" });
+      expect(boot.statusCode).toBe(200);
+      expect(boot.json()).toEqual({ authRequired: false, cookieSet: false });
     });
 
     it("does not enforce auth when DEPLOYMENT_PROFILE is not set (local zero-friction)", async () => {
@@ -1267,7 +1443,7 @@ describe("Product API", () => {
       const response = await server.inject({ method: "GET", url: "/api/health" });
 
       expect(response.statusCode).toBe(200);
-      expect(response.json()).toEqual({ ok: true, service: "interview-product-api" });
+expect(response.json()).toMatchObject({ ok: true, ready: true, service: "interview-product-api" });
     });
   });
 });

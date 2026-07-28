@@ -22,6 +22,10 @@ const TRAILING_REQUIRE_OBJECT = ["和", "跟", "与", "或", "把", "被"];
 const FINAL_PARTICLES = ["吗", "呢", "吧", "啊", "呀", "嘛", "哈", "咯", "啦"];
 // Terminal punctuation — done.
 const TERMINAL_PUNCT = ["。", "！", "？", "!", "?", "…"];
+// Semantic end-of-turn phrases (Layer-1 EoT upgrade) — common "I'm done" closers.
+const SEMANTIC_DONE_PHRASES = [
+  "就这些", "就这样", "说完了", "我的意思是这样", "大概就是这样", "先这样", "没了", "完毕"
+];
 
 export function assessTurnCompleteness(transcript: string): Completeness {
   // Strip trailing soft separators / whitespace (a comma is a pause, not an end).
@@ -39,6 +43,10 @@ export function assessTurnCompleteness(transcript: string): Completeness {
   if (TERMINAL_PUNCT.includes(t[t.length - 1])) return "complete";
   // Strong "complete": ends on a sentence-final particle.
   if (FINAL_PARTICLES.includes(t[t.length - 1])) return "complete";
+  // Strong "complete": semantic done phrases.
+  for (const w of SEMANTIC_DONE_PHRASES) {
+    if (t.endsWith(w)) return "complete";
+  }
 
   // No clear surface signal → let the LLM endpoint decide.
   return "ambiguous";

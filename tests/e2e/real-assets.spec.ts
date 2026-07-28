@@ -67,11 +67,16 @@ async function seedAssets(page: Page): Promise<AnyState> {
         id: sid,
         title: "授权边界与控制感(E2E 种子)",
         status: "completed",
-        mode: "text",
+        mode: "daily",
         strength: "standard",
+        startedAt: "2026-06-05T09:00:00.000Z",
         createdAt: "2026-06-05T09:00:00.000Z",
         updatedAt: "2026-06-05T09:30:00.000Z",
         turns: [],
+        guide: {
+          anchorQuestion: "",
+          questions: [],
+        },
         // card 必填(InterviewSession.card: InterviewCard):前端 buildPerspectiveCoverage 等同步读
         // session.card.title/suggestedPerspectives,缺它 buildInterviewCard 会崩、整个 app 白屏。
         card: {

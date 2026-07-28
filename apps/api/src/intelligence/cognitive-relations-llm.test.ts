@@ -3,8 +3,8 @@
  * reasoning (本体论欠账②). Rule pre-filter (collectCandidatePointPairs) feeds it
  * same-theme point pairs; the LLM classifies each as contradict / supersede / none.
  *
- * Fail-safe contract: no chatClient, budget exhausted, no pairs, parse failure, or any
- * thrown error → returns empty relations (never throws, never blocks finalize).
+ * 真实性契约(2026-07 重构):chatClient 必选;预算耗尽/解析失败/LLM 抛错 → 向上抛,
+ * 由 /end 统一 catch 原子中止并如实 5xx。"返回空关系"只保留给「确实没有候选对」。
  */
 import { describe, expect, it, vi } from "vitest";
 import type { BailianChatClient } from "../providers/bailian";
@@ -32,10 +32,8 @@ const neverBudget: LlmBudget = { tryConsume: () => false, reset: () => {} };
 const pairOf = (a: string, b: string): [PointAsset, PointAsset] => [point(a), point(b)];
 
 describe("judgeCognitiveRelations", () => {
-  it("no chatClient → empty relations, no throw", async () => {
-    const out = await judgeCognitiveRelations([pairOf("pt_1", "pt_2")], undefined, alwaysBudget, "s1");
-    expect(out).toEqual({ contradicts: [], supersedes: [] });
-  });
+  // 真实性重构:剔除「no chatClient → 空关系」用例——签名已改 chatClient 必选(调用方 /end 保证存在),
+  // "没有 client 也悄悄返回空"的兜底路径已不存在。
 
   it("no pairs → empty relations, does NOT consume budget or call LLM", async () => {
     const budget: LlmBudget = { tryConsume: vi.fn(() => true), reset: () => {} };
@@ -46,10 +44,11 @@ describe("judgeCognitiveRelations", () => {
     expect(complete).not.toHaveBeenCalled();
   });
 
-  it("budget exhausted → empty relations, no LLM call", async () => {
+  it("budget exhausted → throws (预算已用尽), no LLM call", async () => {
     const complete = vi.fn(async () => "{}");
-    const out = await judgeCognitiveRelations([pairOf("pt_1", "pt_2")], { complete }, neverBudget, "s1");
-    expect(out).toEqual({ contradicts: [], supersedes: [] });
+    await expect(
+      judgeCognitiveRelations([pairOf("pt_1", "pt_2")], { complete }, neverBudget, "s1")
+    ).rejects.toThrow("预算已用尽");
     expect(complete).not.toHaveBeenCalled();
   });
 
@@ -94,14 +93,16 @@ describe("judgeCognitiveRelations", () => {
     expect(out.supersedes).toEqual([{ oldId: "pt_2", newId: "pt_1" }]);
   });
 
-  it("malformed JSON → empty relations (fail-safe, no throw)", async () => {
-    const out = await judgeCognitiveRelations([pairOf("pt_1", "pt_2")], mockChat("not json"), alwaysBudget, "s1");
-    expect(out).toEqual({ contradicts: [], supersedes: [] });
+  it("malformed JSON → throws (解析失败不可伪装成'无矛盾')", async () => {
+    await expect(
+      judgeCognitiveRelations([pairOf("pt_1", "pt_2")], mockChat("not json"), alwaysBudget, "s1")
+    ).rejects.toThrow("cognitive relations LLM returned unparseable JSON");
   });
 
-  it("LLM throws → empty relations (fail-safe, no throw)", async () => {
+  it("LLM throws → propagates (不吞错、不返回空关系)", async () => {
     const throwing: BailianChatClient = { async complete() { throw new Error("boom"); } };
-    const out = await judgeCognitiveRelations([pairOf("pt_1", "pt_2")], throwing, alwaysBudget, "s1");
-    expect(out).toEqual({ contradicts: [], supersedes: [] });
+    await expect(
+      judgeCognitiveRelations([pairOf("pt_1", "pt_2")], throwing, alwaysBudget, "s1")
+    ).rejects.toThrow("boom");
   });
 });

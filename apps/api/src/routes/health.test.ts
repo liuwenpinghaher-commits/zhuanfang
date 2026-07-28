@@ -3,20 +3,25 @@ import Fastify from "fastify";
 import { registerHealthRoutes } from "./health";
 
 describe("health route", () => {
-  it("无探针(sqlite/测试)→ ok:true,无 persist 字段", async () => {
+it("无探针(sqlite/测试)→ ok:true ready:true,无 persist 字段", async () => {
     const app = Fastify();
     await app.register(registerHealthRoutes());
     const res = await app.inject({ method: "GET", url: "/api/health" });
-    expect(res.json()).toEqual({ ok: true, service: "interview-product-api" });
+    expect(res.json()).toMatchObject({ ok: true, ready: true, service: "interview-product-api" });
     await app.close();
   });
 
-  it("E:探针报连续失败 → 响应附 persist.degraded(运维/监控可感知静默丢数据)", async () => {
+  it("E:探针报连续失败 → ready:false + persist.degraded(运维/监控可感知静默丢数据)", async () => {
     const app = Fastify();
     await app.register(registerHealthRoutes(() => ({ consecutiveFailures: 3, lastErrorAt: "2026-06-28T00:00:00.000Z" })));
     const res = await app.inject({ method: "GET", url: "/api/health" });
-    const body = res.json() as { ok: boolean; persist?: { degraded: boolean; consecutiveFailures: number; lastErrorAt?: string } };
+    const body = res.json() as {
+      ok: boolean;
+      ready?: boolean;
+      persist?: { degraded: boolean; consecutiveFailures: number; lastErrorAt?: string };
+    };
     expect(body.ok).toBe(true);
+    expect(body.ready).toBe(false);
     expect(body.persist).toEqual({ degraded: true, consecutiveFailures: 3, lastErrorAt: "2026-06-28T00:00:00.000Z" });
     await app.close();
   });

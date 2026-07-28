@@ -188,19 +188,13 @@ export function mergeFinalizedState(
   nextState.searchBriefs = markSearchBriefAppliedToSession(nextState.searchBriefs, completedSession);
   nextState.notes = [finalNote, ...nextState.notes];
   if (providedCandidates && providedCandidates.length > 0) {
-    // Use externally provided candidates (e.g. from LLM extraction in Task 2+).
+    // Use externally provided candidates (from LLM extraction over the real conversation).
     const annotated = annotateCandidatesWithDedupHint(providedCandidates, nextState.memoryRecords);
     const anchored = stampFinalizeAnchors(annotated, session.id, session.turns);
     nextState.memoryCandidates = [...anchored, ...(nextState.memoryCandidates ?? [])];
-  } else if (note.keyQuote.trim()) {
-    // Derive candidate from actual session content (deterministic fallback).
-    const memoryCandidate = buildMemoryCandidateFromSession(session, finalNote, note.keyQuote, completedAt);
-    const [annotated] = annotateCandidatesWithDedupHint([memoryCandidate], nextState.memoryRecords);
-    // M3: anchor the offline/deterministic candidate too, so the evidence chain isn't
-    // exclusive to the LLM path.
-    const [anchored] = stampFinalizeAnchors([annotated], session.id, session.turns);
-    nextState.memoryCandidates = [anchored, ...(nextState.memoryCandidates ?? [])];
   }
+  // providedCandidates 为空数组 = LLM 明确判定本次对话没有值得沉淀的长期记忆——诚实的空。
+  // （旧的"从 keyQuote 启发式造一条模板候选"回退已剔除：不能用就暴露，不伪造记忆候选。）
   nextState.points = [...content.points.map(p => ({ ...p, sourceSessionId: session.id })), ...nextState.points];
   nextState.questions = upsertFinalizeQuestions(nextState.questions, content.questions, session.id, completedAt);
   nextState.decisions = [...content.decisions.map(d => ({ ...d, sourceSessionId: session.id })), ...nextState.decisions];

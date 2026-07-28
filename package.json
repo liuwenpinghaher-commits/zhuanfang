@@ -50,5 +50,9 @@
     "@types/ws": "^8.18.1",
     "jsdom": "^26.1.0",
     "vitest": "^4.0.15"
+  },
+  "allowScripts": {
+    "esbuild@0.27.7": true,
+    "esbuild@0.28.0": true
   }
 }

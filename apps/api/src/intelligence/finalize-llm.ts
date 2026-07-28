@@ -1,7 +1,7 @@
 // LLM-backed diary synthesis. Produces the dual-track note (双轨笔记) and
-// long-term assets grounded in the ACTUAL conversation, replacing the
-// deterministic "救火/授权" script. Throws on any LLM/parse failure so the
-// route falls back to the deterministic finalizeSession.
+// long-term assets grounded in the ACTUAL conversation. Throws on any
+// LLM/parse failure so the route exposes the error — /end fails loudly and
+// the session stays open for retry; there is no deterministic substitute.
 import {
   mergeFinalizedState,
   type FinalizeContent,
@@ -71,8 +71,8 @@ export async function finalizeSessionWithLlm(
     temperature: 0.4,
     // A rich 20K-char interview produces a large finalize JSON (note + points + questions +
     // decisions + debts + themes, each with quotes/evidence). The client default of 2048 tokens
-    // truncates it mid-object → invalid JSON → degrade to a no-asset light record. 5000 gives
-    // ample room (a full asset set is ~3000 tokens); the loose parser salvages the rest.
+    // truncates it mid-object → invalid JSON → the whole finalize fails loudly. 5000 gives
+    // ample room (a full asset set is ~3000 tokens).
     maxTokens: 5000,
     // ...and generating that much over a dense 20K transcript takes well over the 60s default
     // for technical guests — which timed out → aborted → degrade. Allow up to 3 min.
@@ -188,13 +188,10 @@ function buildFinalizePrompt(state: ProductState, session: InterviewSession): st
     .join("\n");
 }
 
-function parseFinalizeJson(raw: string, session: InterviewSession): ParsedFinalize {
-  // Tolerant parse: if the model truncated the JSON (despite the raised token cap), salvage
-  // the assets it DID emit instead of throwing and degrading the whole finalize to a no-asset
-  // light record.
+function parseFinalizeJson(raw: string, _session: InterviewSession): ParsedFinalize {
   const json = parseJsonObjectLoose(raw);
   if (!json) {
-    throw new Error("finalize LLM returned unparseable JSON");
+    throw new Error("finalize LLM returned unparseable JSON (possibly truncated at max_tokens)");
   }
 
   const summary = asNonEmptyString(json.summary);
@@ -204,10 +201,11 @@ function parseFinalizeJson(raw: string, session: InterviewSession): ParsedFinali
     throw new Error("LLM finalize output missing required note fields (summary/saidTrack/learnedTrack).");
   }
 
-  const fallbackQuote = pickLongestUserTurn(session);
-  const keyQuote = asNonEmptyString(json.keyQuote) || fallbackQuote;
+  // keyQuote 必须是 LLM 从对话里逐字摘的关键引用——缺了就是失败，
+  // 绝不用"最长用户发言"启发式冒充。
+  const keyQuote = asNonEmptyString(json.keyQuote);
   if (!keyQuote) {
-    throw new Error("LLM finalize output has no keyQuote and the session has no user turns.");
+    throw new Error("LLM finalize output has no keyQuote.");
   }
 
   return {
@@ -269,14 +267,15 @@ function mapToFinalizeContent(
 ): FinalizeContent {
   // Resolve theme ids up front so assets can link to them and so existing
   // themes (matched by name) keep their id through mergeFinalizedState.
+  // 缺失的次级字段一律保持空——空表示"LLM 没产出"，绝不用罐头文案或 keyQuote 冒充。
   const themes: FinalizeThemeUpsert[] = parsed.themes.map((theme) => {
     const existing = state.themes.find((item) => item.name.trim() === theme.name.trim());
     return {
       id: existing?.id ?? makeId("theme"),
       name: theme.name,
-      summary: theme.summary || theme.name,
-      representativeQuote: theme.representativeQuote || parsed.keyQuote,
-      nextQuestion: theme.nextQuestion || "下次值得就这个主题继续追问什么？",
+      summary: theme.summary,
+      representativeQuote: theme.representativeQuote,
+      nextQuestion: theme.nextQuestion,
       maturity: clampMaturity(theme.maturity)
     };
   });
@@ -347,7 +346,7 @@ function mapToFinalizeContent(
     content: point.content,
     status: "临时想法",
     confidence: "AI 推断",
-    evidence: point.evidence.length ? point.evidence : [parsed.keyQuote],
+    evidence: point.evidence,
     relatedThemeIds: resolveOrAttribute(point.themeRefs, `${point.title} ${point.content}`),
     important: false,
     updatedAt: completedAt
@@ -356,13 +355,13 @@ function mapToFinalizeContent(
   const questions: QuestionAsset[] = parsed.questions.map((question) => ({
     id: makeId("question"),
     question: question.question,
-    whyImportant: question.whyImportant || "这个问题值得在后续专访中继续追问。",
+    whyImportant: question.whyImportant,
     // 审计修复(P2-11):出生态统一为「开放」(与简报路径一致;此前 LLM 路硬编码「正在聚焦」造成
     // 出生口径分裂)。「正在聚焦」由 note-feedback 的用户动作晋升,「反复出现」由 upsert 复现晋升。
     status: "开放",
     appearances: 1,
     relatedThemeIds: resolveOrAttribute(question.themeRefs, `${question.question} ${question.whyImportant ?? ""}`),
-    nextPrompt: question.nextPrompt || question.question,
+    nextPrompt: question.nextPrompt,
     important: false,
     updatedAt: completedAt
   }));
@@ -372,12 +371,12 @@ function mapToFinalizeContent(
     title: decision.title,
     decisionKind: "候选决策",
     confirmationStatus: "待用户确认",
-    choice: decision.choice || "（待用户补充具体选择）",
-    tradeOff: decision.tradeOff || "（待补充取舍）",
-    riskHypothesis: decision.riskHypothesis || "（待补充风险假设）",
+    choice: decision.choice,
+    tradeOff: decision.tradeOff,
+    riskHypothesis: decision.riskHypothesis,
     reviewAt: normalizeReviewAt(decision.reviewAt, completedAt),
     status: "待复盘",
-    evidence: decision.evidence.length ? decision.evidence : [parsed.keyQuote],
+    evidence: decision.evidence,
     relatedThemeIds: resolveOrAttribute(decision.themeRefs, `${decision.title} ${decision.choice ?? ""}`),
     updatedAt: completedAt
   }));
@@ -385,11 +384,11 @@ function mapToFinalizeContent(
   const debts: KnowledgeDebt[] = parsed.debts.map((debt) => ({
     id: makeId("debt"),
     concept: debt.concept,
-    context: debt.context || "本次专访中出现，值得后续补全理解。",
-    whyImportant: debt.whyImportant || "补全它有助于把模糊判断说清楚。",
+    context: debt.context,
+    whyImportant: debt.whyImportant,
     status: "待了解",
-    nextQuestion: debt.nextQuestion || `你能用一个具体例子说明「${debt.concept}」吗？`,
-    evidence: debt.evidence.length ? debt.evidence : [parsed.keyQuote],
+    nextQuestion: debt.nextQuestion,
+    evidence: debt.evidence,
     relatedThemeIds: resolveOrAttribute(debt.themeRefs, `${debt.concept} ${debt.context ?? ""}`),
     updatedAt: completedAt
   }));
@@ -402,7 +401,7 @@ function mapToFinalizeContent(
     field: p.field as ProfileSuggestionField,
     suggestedValue: p.suggestedValue,
     reason: p.reason,
-    evidenceQuote: p.evidenceQuote || parsed.keyQuote
+    evidenceQuote: p.evidenceQuote
   }));
 
   return { note, points, questions, decisions, debts, themes, profileSuggestions };
@@ -453,9 +452,3 @@ function normalizeReviewAt(value: string, completedAt: string): string {
   return base.toISOString().slice(0, 10);
 }
 
-function pickLongestUserTurn(session: InterviewSession): string {
-  return session.turns
-    .filter((turn) => turn.role === "user")
-    .map((turn) => turn.content)
-    .sort((a, b) => b.length - a.length)[0] ?? "";
-}

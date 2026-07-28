@@ -33,7 +33,8 @@ export {
 
 export {
   addMemoryGraphToken, buildInterviewCard, buildInterviewContextPack,
-  buildInterviewGuide, buildInterviewResumeCard,
+  buildInterviewGuide,
+  buildInterviewResumeCard,
   collectAppliedPlaybookRules,
   computeRecordThemeIds,
   createSessionDraft, formatMemoryGraphTargetLabel,
@@ -49,6 +50,8 @@ export {
   receiveUserTurn, receiveUserTurnWithAssistant, updateInterviewControl,
   INTERVIEW_STRATEGY_LABELS, PLAYBOOK_DRIVEN_STRATEGIES,
 } from "./turn-builder";
+
+export { appendAssistantTranscriptFinal } from "./session-transcript";
 
 export type {
   AddTurnInput, CreateInterviewSessionInput,
@@ -689,3 +692,25 @@ function flattenConfig(value: unknown, prefix = ""): Record<string, string> {
 function cloneConfig(config: SystemConfig): SystemConfig {
   return JSON.parse(JSON.stringify(config)) as SystemConfig;
 }
+
+export {
+  buildBootContextPack,
+  retrievePersonalKnowledge,
+  decideRecallAcceptance,
+  decideGroundingMode,
+  toCitationEnvelopes,
+  noReliableMemoryNotice
+} from "./retrieval";
+export {
+  applyImportanceDecay,
+  detectMemoryContradictions,
+  enrichStateAfterDedupe,
+  filterEchoChamberTexts,
+  resolveMemoryConflict,
+  buildConsolidationQueuePreview,
+  findConflictPairRecords
+} from "./memory-consolidation";
+export {
+  buildInterruptedStash,
+  formatInterruptedStashForPrompt
+} from "./voice-interrupt-stash";

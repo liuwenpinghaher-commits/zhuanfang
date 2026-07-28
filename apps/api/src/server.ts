@@ -40,7 +40,7 @@ import {
   createBailianStreamingTtsClient,
   type BailianStreamingTtsClient
 } from "./providers/bailian-streaming-tts";
-import { isAuthGuardActive, isAuthorized } from "./auth";
+import { isAuthGuardActive, isAuthorized, readCookieToken } from "./auth";
 import { createLlmBudget } from "./llm-budget";
 import { registerAssetRoutes } from "./routes/assets";
 import { registerCorpusRoutes } from "./routes/corpus";
@@ -121,6 +121,7 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   const runtimeEnv = options.env ?? process.env;
   registerCors(server, runtimeEnv);
   registerProductionAuth(server, runtimeEnv);
+  registerRuntimeBootstrap(server, runtimeEnv);
   const writeGate = registerWriteSerialization(server);
   registerErrorHandler(server);
   // R7:默认工厂只构造内存仓库(surreal 需异步连接,只能由 startServer 经 createSurrealStores 注入)。
@@ -258,7 +259,8 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     await registerInterviewSessionRoutes(registeredServer, productStateRepository, withLiveProviderClients({
       rawMaterialRepository,
       knowledgeIndexRepository,
-      llmBudget: sharedBudget
+      llmBudget: sharedBudget,
+      writeGate
     }));
   });
   void server.register(async (registeredServer) => {
@@ -281,12 +283,14 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   void server.register(async (registeredServer) => {
     await registerRealtimeVoiceRoutes(registeredServer, withLiveProviderClients({
       stateRepo: productStateRepository,
-      env: runtimeEnv
+      env: runtimeEnv,
+      writeGate
     }));
   });
   void server.register(async (registeredServer) => {
     await registerCorpusRoutes(registeredServer, productStateRepository, withLiveProviderClients({
-      llmBudget: sharedBudget
+      llmBudget: sharedBudget,
+      env: runtimeEnv
     }));
   });
   void server.register(async (registeredServer) => {
@@ -297,7 +301,8 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   void server.register(async (registeredServer) => {
     await registerImportRoutes(registeredServer, productStateRepository, withLiveProviderClients({
       knowledgeIndexRepository,
-      llmBudget: sharedBudget
+      llmBudget: sharedBudget,
+      writeGate
     }));
   });
   void server.register(async (registeredServer) => {
@@ -345,7 +350,8 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   });
   void server.register(async (registeredServer) => {
     await registerChatRoutes(registeredServer, productStateRepository, knowledgeIndexRepository, withLiveProviderClients({
-      llmBudget: sharedBudget
+      llmBudget: sharedBudget,
+      writeGate
     }));
   });
 
@@ -588,11 +594,36 @@ const WRITE_GATE_EXEMPTIONS: WriteGateExemption[] = [
     reason: "P3-17:无 state 终写(纯外呼删声纹),持锁无意义"
   },
   {
-    // P3-17:构建实时语音指令——await embedQueryText(慢嵌入 IO,数百 ms)后只读拼指令返回,
-    // 【无 replaceState】。此前整段持锁把嵌入耗时算进全局写串行,纯读+外呼→豁免。
+    // voice-instructions: embed/prefetch 在 handler 内;终写 re-read latest session 后
+    // 仅 merge guide/card/enginePolicy(不覆盖 turns)。外呼慢 IO 不宜占全局写 slot。
     method: "POST",
     matches: (p) => p.startsWith("/api/interview-sessions/") && p.endsWith("/voice-instructions"),
-    reason: "P3-17:无 state 终写(纯读+嵌入外呼),持锁无意义"
+    reason: "慢 embed+召回;终写=重读 latest 字段合并 guide/card(保 turns)"
+  },
+  {
+    // SR-P1-03: HTTP 创建简报含外网 search + 可选 LLM enrich（可达数十秒）。
+    // 终写经 writeGate.runExclusive 重读 latest 后 create（search.ts）。
+    method: "POST",
+    matches: (p) => p === "/api/search/briefs",
+    reason: "长联网+enrich;终写=重读 latest 经写门(D3)"
+  },
+  {
+    // SR-P1-03: 手动 refresh 同构（外网+enrich）；终写 merge + lastRefreshedAt 经写门。
+    method: "POST",
+    matches: (p) => p.startsWith("/api/search/briefs/") && p.endsWith("/refresh"),
+    reason: "长联网+enrich;终写=重读 latest merge 经写门(D3)"
+  },
+  {
+    // IM-P1-03: 导入抽取记忆 LLM 可达 60s；终写 ingest+durable 经写门。
+    method: "POST",
+    matches: (p) => p === "/api/import/documents",
+    reason: "长 LLM 抽取;终写=重读 latest ingest 经写门(D3)"
+  },
+  {
+    // IM-P1-03: chat embed+召回+LLM 可达数十秒；终写 append 双消息经写门。
+    method: "POST",
+    matches: (p) => p === "/api/chat",
+    reason: "长 embed+LLM;终写=重读 latest append 经写门(D3)"
   }
 ];
 
@@ -766,7 +797,11 @@ function registerCors(server: ReturnType<typeof Fastify>, env: Record<string, st
     }
 
     if (allowedOrigin) {
+      // Reflect a specific origin (never *): required when Allow-Credentials is true so
+      // split-origin SPA (vite:3220 → api:3210) can send HttpOnly bootstrap cookies.
       reply.header("access-control-allow-origin", allowedOrigin);
+      reply.header("access-control-allow-credentials", "true");
+      reply.header("vary", "Origin");
     }
     // 审计修复(P1-1 CSRF 面):浏览器跨站"简单请求"(无预检 POST)不受 CORS 拦【发送】——
     // dev/无 token 档下任意网页可盲发 POST /api/state/reset 清库(purge/import 有 confirm
@@ -780,6 +815,8 @@ function registerCors(server: ReturnType<typeof Fastify>, env: Record<string, st
       }
     }
     reply.header("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+    // authorization for optional VITE/Bearer override; cookie is sent automatically when
+    // Access-Control-Allow-Credentials is true (no Cookie request header preflight needed).
     reply.header("access-control-allow-headers", "content-type,authorization");
     reply.header("access-control-max-age", "86400");
 
@@ -805,7 +842,35 @@ export function assertProductionAuthConfigured(env: Record<string, string | unde
 }
 
 // Paths exempted from bearer auth in production profile (healthcheck, metrics, etc.)
-const AUTH_EXEMPT_PREFIXES = ["/api/health"];
+const AUTH_EXEMPT_PREFIXES = ["/api/health", "/api/runtime-bootstrap"];
+
+/**
+ * Same-origin SPA auth bootstrap (criterion 2): without baking PRODUCT_API_TOKEN into
+ * the static Vite bundle as the only model. Sets an HttpOnly cookie only — never returns
+ * the long-lived secret in a free JSON body to unauthenticated callers (XSS/network
+ * scrapers). Browser HTTP (credentials:include) and same-origin WS upgrades send the cookie.
+ * Optional VITE_PRODUCT_API_TOKEN remains a deploy-time override for split-origin setups.
+ */
+function registerRuntimeBootstrap(server: ReturnType<typeof Fastify>, env: Record<string, string | undefined>) {
+  server.get("/api/runtime-bootstrap", async (request: FastifyRequest, reply: FastifyReply) => {
+    if (!isAuthGuardActive(env) || !env.PRODUCT_API_TOKEN) {
+      return { authRequired: false, cookieSet: false };
+    }
+    const token = env.PRODUCT_API_TOKEN;
+    // Secure ONLY on real HTTPS. Production docker-compose defaults to http://127.0.0.1:3210;
+    // a Secure cookie is rejected by browsers on HTTP responses → whole SPA 401 after we
+    // stopped returning the token in the JSON body. trustProxy makes request.protocol honor
+    // X-Forwarded-Proto behind a TLS terminator.
+    const secure = request.protocol === "https";
+    // HttpOnly + SameSite=Lax: not readable by page JS; sent on same-site API/WS.
+    reply.header(
+      "Set-Cookie",
+      `product_api_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax${secure ? "; Secure" : ""}`
+    );
+    // Deliberately omit the long-lived secret from the response body.
+    return { authRequired: true, cookieSet: true, secureCookie: secure };
+  });
+}
 
 function registerProductionAuth(server: ReturnType<typeof Fastify>, env: Record<string, string | undefined>) {
   // Auth guard is only active in production profile WITH a token — keeps local dev friction-free.
@@ -829,7 +894,10 @@ function registerProductionAuth(server: ReturnType<typeof Fastify>, env: Record<
     // 同时接受 ?token= 查询:浏览器原生媒体请求(<audio src>/<img>)无法带 Authorization 头,
     // 没有这条,生产环境下原生 src 形式的音频回放等 GET 会被 401。与 WS 升级路径口径一致。
     const tokenQuery = new URLSearchParams(request.url.split("?")[1] ?? "").get("token") ?? undefined;
-    if (isAuthorized(env, { authHeader: request.headers.authorization, tokenQuery })) {
+    const cookieToken = readCookieToken(
+      typeof request.headers.cookie === "string" ? request.headers.cookie : undefined
+    );
+    if (isAuthorized(env, { authHeader: request.headers.authorization, tokenQuery, cookieToken })) {
       return;
     }
 

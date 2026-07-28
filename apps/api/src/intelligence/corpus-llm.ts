@@ -1,8 +1,8 @@
 // LLM analysis of an imported interview SAMPLE: extract the interviewer's
 // techniques (questioning moves, pacing, challenge style) into scored
 // dimensions, an improvement plan for our engine, and a playbook patch.
-// Replaces the keyword-template analyzer. Throws on failure so the route falls
-// back to the deterministic analyzeImportedInterview.
+// Replaces the keyword-template analyzer. Throws on failure so the route
+// exposes the error — analysis is LLM-only, there is no template substitute.
 import { analyzeImportedInterview, sanitizeExternalMaterialBlock, type CorpusLlmAnalysis , sanitizeExternalMaterialText } from "../../../../src/domain/engine";
 import type { CorpusImportInput, CorpusInsight, ProductState } from "../../../../src/domain/types";
 import type { BailianChatClient } from "../providers/bailian";
@@ -76,9 +76,14 @@ function parseCorpusAnalysis(raw: string): CorpusLlmAnalysis {
   const dimensions = asArray(json.dimensions)
     .map((item) => {
       const obj = asObject(item);
+      const score = typeof obj.score === "number" ? obj.score : Number(obj.score);
+      if (!Number.isFinite(score) || score < 1 || score > 5) {
+        // 评分是该维度的核心产出——非法评分不能用默认分冒充，如实失败。
+        throw new Error(`Corpus analysis dimension has an invalid score: ${String(obj.score)}`);
+      }
       return {
         name: asString(obj.name),
-        score: typeof obj.score === "number" ? obj.score : Number(obj.score) || 3,
+        score,
         finding: asString(obj.finding),
         example: asString(obj.example),
         recommendedAction: asString(obj.recommendedAction)
@@ -105,6 +110,10 @@ function parseCorpusAnalysis(raw: string): CorpusLlmAnalysis {
 
   const patchObj = asObject(json.patch);
   const impactRaw = asString(patchObj.impact);
+  if (!IMPACTS.has(impactRaw)) {
+    // impact 决定补丁的呈现与优先级——非法值不能静默改写成 medium。
+    throw new Error(`Corpus analysis patch has an invalid impact: ${impactRaw || "(empty)"}`);
+  }
   const validRuleTypes = new Set(["concrete-moment", "mechanism-reversal", "follow-up"]);
   const ruleTypes = asStringArray(patchObj.ruleTypes).filter((type): type is "concrete-moment" | "mechanism-reversal" | "follow-up" =>
     validRuleTypes.has(type)
@@ -113,7 +122,7 @@ function parseCorpusAnalysis(raw: string): CorpusLlmAnalysis {
     title: asString(patchObj.title),
     description: asString(patchObj.description),
     rules: asStringArray(patchObj.rules),
-    impact: (IMPACTS.has(impactRaw) ? impactRaw : "medium") as "low" | "medium" | "high",
+    impact: impactRaw as "low" | "medium" | "high",
     ...(ruleTypes.length ? { ruleTypes } : {})
   };
 

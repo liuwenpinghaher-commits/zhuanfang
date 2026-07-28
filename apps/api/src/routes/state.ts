@@ -1,3 +1,4 @@
+import { replaceStateDurable } from "../product-state-repository";
 import type { FastifyInstance } from "fastify";
 import { assessStateExportCompleteness, buildBackupRestoreRehearsalReport } from "../../../../src/domain/backup";
 import { fnv1aDigest } from "../../../../src/domain/stateDigest";
@@ -93,11 +94,34 @@ export async function registerStateRoutes(
     if (typeof incomingRevision !== "number" || incomingRevision !== stored.revision) {
       return reply.code(409).send({ error: "stale revision", current: stored });
     }
-    // N-02:PUT 响应保持纯净、不再装饰 persist 降级信号。落库降级(persist.degraded)是**共享异步
-    // persistQueue 的属性,与触发路由无关**——只在 PUT 上采样会漏掉那些只做资产确认/记忆编辑而从不
-    // PUT /api/state 的用户。改由前端低频轮询 route-agnostic 的 GET /api/health(health.ts 暴露
-    // persist.degraded)驱动持久顶栏 banner,覆盖全部"200+异步落库"写路径。
-    return repository.replaceState(normalizeProductState(request.body));
+    // A-19:PUT 是外部畸形数据的主要入口——clamp 若需要改写(非法枚举/坏日期/坏向量等),
+    // 如实 422 列明细拒收,不再静默把用户数据钳成默认值(1970 哨兵/空串/丢向量)落库。
+    const violations: string[] = [];
+    const normalized = normalizeProductState(request.body, { onClamped: (v) => violations.push(...v) });
+    if (violations.length > 0) {
+      return reply.code(422).send({
+        error: "状态包含无法持久化的非法字段值，已整体拒绝写入（未做任何变更）。",
+        violations
+      });
+    }
+    const next = repository.replaceState(normalized);
+    // A-18:主写通道等待本笔真实落库结果。失败 → 503 + 附权威内存态(客户端同步 revision 用),
+    // 明确告知"已接受但未落库、重启会丢";repo 侧已熔断后续写并后台自动重试。
+    // (N-02 的 health 轮询 banner 继续覆盖其余"200+异步落库"细粒度路由。)
+    try {
+      await repository.confirmPersisted?.();
+    } catch (err) {
+      // P1-12: do not splice raw Surreal field values into the client-facing error.
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(JSON.stringify({ event: "state_put_confirm_failed", error: message }));
+      const isProduction = (process.env.DEPLOYMENT_PROFILE ?? "").trim().toLowerCase() === "production";
+      return reply.code(503).send({
+        error: "写入已被接受但未能落库。服务端已暂停接受新写并在后台自动重试；在恢复前的改动重启会丢失。",
+        ...(isProduction ? {} : { detail: message }),
+        state: next
+      });
+    }
+    return next;
   });
   server.post("/api/state/reset", async (request, reply) => {
     const body = request.body as { confirm?: unknown } | undefined;
@@ -568,10 +592,10 @@ export async function registerStateRoutes(
     steps.push({
       store: "hot-state",
       status: "pending",
-      run: () => {
+      run: async () => {
         // 回归审查 R4-3(保留):跳过包装层增量重索引——下方显式 rebuildKnowledgeIndex 全量
         // 重建(含冷层逐字稿),增量与全量并跑是重复嵌入(浪费预算)。
-        replaced = repository.replaceState(imported, { skipReindex: true });
+        replaced = await replaceStateDurable(repository, imported, { skipReindex: true });
       }
     });
 
@@ -807,7 +831,7 @@ export async function registerStateRoutes(
       // 哪里还残留、该重试什么",而不是假装什么都没发生。
       // 回归审查 R4-3(保留):跳过增量重索引——上方已直接清空整个知识索引。
       const stores = await clearColdStoresBestEffort();   // R2a:已异步化
-      const nextState = repository.replaceState(purged, { skipReindex: true });
+      const nextState = await replaceStateDurable(repository, purged, { skipReindex: true });
       const failedStores = listFailedStores(stores);
       const purgeReceipt = { partialFailure: failedStores.length > 0, hotStateCommitted: true, stores };
       if (purgeReceipt.partialFailure) {
@@ -849,7 +873,7 @@ export async function registerStateRoutes(
     }
 
     const { nextState: scopedState, deletedScope, deletedCount } = createScopedPurge(state, scope);
-    const nextState = repository.replaceState(scopedState);
+    const nextState = await replaceStateDurable(repository, scopedState);
     // 审计修复(P3-38):assets 档的知识索引清理此前只靠异步增量 diff(失败/进程退出即永久残留
     // 已清资产的可召回块)。与 all/interviews 对齐:同步全量重建(存活的会话/素材块随重建回来)。
     if (scope === "assets") {

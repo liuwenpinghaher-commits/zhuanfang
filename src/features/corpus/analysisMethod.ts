@@ -45,7 +45,8 @@ export const ANALYSIS_OUTPUTS = [
   {
     key: "patch",
     label: "PlaybookPatch（可应用规则）",
-    detail: "一条可直接写入追问引擎的规则集，含 low/medium/high 影响级别，确认后进入引擎。"
+    detail:
+      "确认后会写入 enginePolicy：最多 3 条规则软注入提示词，并按 ruleType 做有限硬路由（如 depth/challenge）。不是任意规则都能改写全部策略树——以「软注入 + 分类路由」为准。"
   }
 ] as const;
 
@@ -59,7 +60,7 @@ export const ANALYSIS_PRINCIPLES = [
 ] as const;
 
 /**
- * 两条分析路径说明（源自 server.ts corpus 路由逻辑：有 DASHSCOPE_API_KEY 走 LLM，否则走确定性）
+ * 分析路径说明：有 DASHSCOPE key 走 LLM；否则/失败时 fail-loud（无确定性冒充）。
  */
 export const ANALYSIS_PATHS = {
   llm: {
@@ -67,9 +68,10 @@ export const ANALYSIS_PATHS = {
     condition: "配置了 DASHSCOPE API Key",
     description: "调用通义千问大模型，从样本全文中提炼维度、改进计划和 PlaybookPatch；维度数量和名称由模型根据样本内容决定。"
   },
-  deterministic: {
-    label: "确定性模板兜底",
-    condition: "未配置 DASHSCOPE API Key 或 LLM 调用失败",
-    description: "使用基于规则的分析器（追问动作/节奏控制/反方推动三个固定维度），根据对话轮次和关键词统计生成评分和改进建议。"
+  unavailable: {
+    label: "不可用时如实失败",
+    condition: "未配置 API Key 或 LLM 调用失败",
+    description:
+      "语料分析是 LLM 能力：未配置或调用失败时返回 503/429/502，不会用确定性模板评分冒充分析成功。请配置密钥后重试。"
   }
 } as const;

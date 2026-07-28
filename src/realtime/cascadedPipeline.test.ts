@@ -263,12 +263,11 @@ describe("connectCascadedPipeline", () => {
   });
 
   // -------------------------------------------------------------------------
-  // 2a. interrupt() during playback reports NO spoken text. The reply is streamed to the
-  //     TTS sink as one gapless batch (per-sentence calls would gap the audio), so we can't
-  //     know how much was heard mid-utterance — we report "" rather than over-claim, and the
-  //     server truncates the persisted assistant turn conservatively.
+  // 2a. interrupt() during playback: batch TTS cannot report exact heard chars, but we
+  //     fall back to the planned full reply (lastPlannedSpokenText) so truncateAssistantTurn
+  //     does not wipe the assistant turn to empty content.
   // -------------------------------------------------------------------------
-  it("interrupt() during playback reports no spoken text (conservative, never over-claims)", async () => {
+  it("interrupt() during playback keeps planned spoken text non-empty (no empty wipe)", async () => {
     asr.setExpressionState("concluding");
     const heldTts = {
       segments: [] as string[][],
@@ -286,7 +285,7 @@ describe("connectCascadedPipeline", () => {
     await new Promise((r) => setTimeout(r, 0)); // now speaking (held)
 
     const info = pipeline.interrupt();
-    expect(info.spokenTextSoFar).toBe(""); // interrupted mid-utterance → nothing confirmed heard
+    expect(info.spokenTextSoFar.length).toBeGreaterThan(0);
     // the whole reply went to the sink in a SINGLE speak() call (gapless), not one-per-sentence
     expect(heldTts.segments).toHaveLength(1);
 

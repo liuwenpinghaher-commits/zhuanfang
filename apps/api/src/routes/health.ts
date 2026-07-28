@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { getRuntimeMetricsSnapshot, recordVoiceLatency } from "../observability/runtime-metrics";
 
 /** E:权威库落库健康度快照(内联,避免跨包 import PersistHealth)。 */
 type PersistHealthLite = { consecutiveFailures: number; lastError?: string; lastErrorAt?: string };
@@ -32,16 +33,61 @@ export function registerHealthRoutes(
   auditGraphConsistency?: () => Promise<GraphAuditLite> | undefined
 ) {
   return async function healthPlugin(server: FastifyInstance) {
-    server.get("/api/health", async () => {
+server.get("/api/health", async () => {
       const ph = getPersistHealth?.();
+      const persistDegraded = Boolean(ph && ph.consecutiveFailures > 0);
+      // GV: separate liveness (ok) from readiness (ready). Docker/process probes use ok;
+      // operators / readiness gates should require ready && !persist.degraded.
+      const metrics = getRuntimeMetricsSnapshot();
       return {
         ok: true,
+        ready: !persistDegraded,
         service: "interview-product-api",
-        ...(ph && ph.consecutiveFailures > 0
-          ? { persist: { degraded: true, consecutiveFailures: ph.consecutiveFailures, lastErrorAt: ph.lastErrorAt } }
-          : {})
+        ...(persistDegraded
+          ? { persist: { degraded: true, consecutiveFailures: ph!.consecutiveFailures, lastErrorAt: ph!.lastErrorAt } }
+          : {}),
+        metrics: {
+          voice: {
+            sampleCount: metrics.voice.sampleCount,
+            ttfaP50Ms: metrics.voice.ttfaP50Ms,
+            ttfaP95Ms: metrics.voice.ttfaP95Ms,
+            interruptCount: metrics.voice.interruptCount
+          },
+          recall: {
+            eventCount: metrics.recall.eventCount,
+            hit: metrics.recall.hit,
+            empty: metrics.recall.empty,
+            low_score: metrics.recall.low_score,
+            error: metrics.recall.error
+          }
+        }
       };
     });
+
+    server.get("/api/system/runtime-metrics", async () => getRuntimeMetricsSnapshot());
+
+    server.post("/api/system/runtime-metrics/voice", async (request) => {
+      const body = request.body && typeof request.body === "object" ? (request.body as Record<string, unknown>) : {};
+      const pathRaw = typeof body.path === "string" ? body.path : "cascade";
+      const path =
+        pathRaw === "omni" || pathRaw === "livekit" || pathRaw === "interrupt" || pathRaw === "cascade"
+          ? pathRaw
+          : "unknown";
+      const num = (k: string) =>
+        typeof body[k] === "number" && Number.isFinite(body[k] as number) ? (body[k] as number) : undefined;
+      recordVoiceLatency({
+        path,
+        ttfaMs: num("ttfaMs"),
+        vadEndToSttMs: num("vadEndToSttMs"),
+        sttToLlmMs: num("sttToLlmMs"),
+        llmTtftMs: num("llmTtftMs"),
+        ttsTtfbMs: num("ttsTtfbMs"),
+        interrupted: body.interrupted === true,
+        sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined
+      });
+      return { ok: true, metrics: getRuntimeMetricsSnapshot().voice };
+    });
+
     // 方案二:图↔软链双表示一致性审计(公理引擎的图层对偶)。无能力档位(memory)→ 501;
     // 审计自身失败 → 500 且不吞错误细节。只读、不修复——发现漂移由运维决定处置。
     server.get("/api/ops/graph-consistency", async (_request, reply) => {

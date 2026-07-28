@@ -1,8 +1,8 @@
 // LLM-backed review synthesis. The quantitative parts (radar metrics, monthly
 // metrics) stay deterministic — they're real counts, not narrative. Only the
 // NARRATIVE fields (changedView, avoidedQuestion, yearly synthesis, nextYearFocus)
-// are produced by the LLM over the user's real assets. Falls back to the
-// deterministic review on any failure.
+// are produced by the LLM over the user's real assets. Throws on any failure so
+// the route exposes the error instead of substituting template narrative.
 import { buildCognitiveRadar, buildMonthlyReview, buildYearlyReview } from "../../../../src/domain/engine";
 import type { CognitiveRadar, MonthlyReview, ProductState, YearlyReview } from "../../../../src/domain/types";
 import type { BailianChatClient } from "../providers/bailian";
@@ -51,22 +51,25 @@ export async function buildReviewsWithLlm(state: ProductState, chatClient: Baili
   const monthlyJson = asObject(parsed.monthly);
   const yearlyJson = asObject(parsed.yearly);
 
+  // 叙事字段全部直接采用 LLM 产出——空值表示 LLM 基于稀疏数据诚实地没写（宁缺毋滥），
+  // 绝不逐字段回落到确定性模板文案冒充 LLM 洞察。只有量化部分（radar/metrics=真实计数）
+  // 保持确定性。
   return {
     radar: base.radar, // counts stay deterministic
     monthly: {
       ...base.monthly, // keep metrics (real counts)
-      topTheme: asString(monthlyJson.topTheme) || base.monthly.topTheme,
-      changedView: asString(monthlyJson.changedView) || base.monthly.changedView,
-      avoidedQuestion: asString(monthlyJson.avoidedQuestion) || base.monthly.avoidedQuestion,
-      recommendedNextInterview: asString(monthlyJson.recommendedNextInterview) || base.monthly.recommendedNextInterview
+      topTheme: asString(monthlyJson.topTheme),
+      changedView: asString(monthlyJson.changedView),
+      avoidedQuestion: asString(monthlyJson.avoidedQuestion),
+      recommendedNextInterview: asString(monthlyJson.recommendedNextInterview)
     },
     yearly: {
-      coreQuestions: asStringArray(yearlyJson.coreQuestions, base.yearly.coreQuestions),
-      changedViews: asStringArray(yearlyJson.changedViews, base.yearly.changedViews),
-      unresolvedPatterns: asStringArray(yearlyJson.unresolvedPatterns, base.yearly.unresolvedPatterns),
-      importantDecisions: asStringArray(yearlyJson.importantDecisions, base.yearly.importantDecisions),
-      missingPerspectives: asStringArray(yearlyJson.missingPerspectives, base.yearly.missingPerspectives),
-      nextYearFocus: asString(yearlyJson.nextYearFocus) || base.yearly.nextYearFocus
+      coreQuestions: asStringArray(yearlyJson.coreQuestions),
+      changedViews: asStringArray(yearlyJson.changedViews),
+      unresolvedPatterns: asStringArray(yearlyJson.unresolvedPatterns),
+      importantDecisions: asStringArray(yearlyJson.importantDecisions),
+      missingPerspectives: asStringArray(yearlyJson.missingPerspectives),
+      nextYearFocus: asString(yearlyJson.nextYearFocus)
     }
   };
 }

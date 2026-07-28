@@ -354,7 +354,8 @@ test.describe("真实业务·记忆治理（UI→真后端 3210，无 mock）", 
     );
 
     // 进记忆视图，approve 这条真实候选。
-    await page.getByRole("button", { name: "记忆" }).click();
+    // 主导航「记忆」与页面内其它含「记忆」的 button 可能并存 → 限定 sidebar nav-item。
+    await page.locator("nav.nav-list button.nav-item", { hasText: /^记忆$/ }).click();
     await expect(page.getByText("导入资料，审核长期记忆")).toBeVisible({ timeout: 10_000 });
 
     const card = page.locator("article.record-row").filter({ hasText: target.text });

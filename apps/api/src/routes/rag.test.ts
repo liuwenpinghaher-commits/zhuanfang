@@ -6,6 +6,7 @@ import { createInitialProductState } from "../../../../src/domain/engine";
 import type { RagChunk, ImportSource } from "../../../../src/domain/types";
 import { createLlmBudget } from "../llm-budget";
 import { registerRagRoutes } from "./rag";
+import { createFakeChatClient } from "../test-helpers/fake-llm-clients";
 
 // ---------- helpers ----------
 
@@ -66,7 +67,8 @@ describe("POST /api/rag/query", () => {
     const fakeEmbeddingClient = {
       embed: async (_texts: string[]) => [QUERY_VEC]
     };
-    const fakeAnswer = "AI在产品设计中扮演重要角色。";
+    // Model must mark used sources as [n] — same contract as /api/chat (C-P2-03).
+    const fakeAnswer = "AI在产品设计中扮演重要角色[1]。";
     const fakeChatClient = {
       complete: async () => fakeAnswer
     };
@@ -87,14 +89,16 @@ describe("POST /api/rag/query", () => {
     const body = res.json();
     expect(body.answer).toBe(fakeAnswer);
     expect(Array.isArray(body.citations)).toBe(true);
-    expect(body.citations.length).toBeGreaterThan(0);
+    expect(body.citations.length).toBe(1);
     expect(body.citations[0].id).toBe(chunkId);
     expect(body.citations[0].title).toBe("AI 产品分析");
+    expect(body.citations[0].citationIndex).toBe(1);
 
     await server.close();
   });
 
-  it("离线路径: 无 embeddingClient/chatClient → 200, 关键词召回 + 确定性 fallback 答案", async () => {
+  // 真实性重构：buildFallbackAnswer 拼接答案已删除——无 chatClient 即"问答不可用"，如实 503。
+  it("无 chatClient → 503（有资料也不做召回白工，不再用拼接片段冒充答案）", async () => {
     const sourceId = "src-2";
     const chunkId = "chunk-2";
 
@@ -126,20 +130,14 @@ describe("POST /api/rag/query", () => {
       payload: { question: "产品战略" }
     });
 
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(typeof body.answer).toBe("string");
-    expect(body.answer.length).toBeGreaterThan(0);
-    // fallback answer should not be the "no data" message since we have matching chunks
-    expect(body.answer).not.toContain("暂无相关资料");
-    expect(Array.isArray(body.citations)).toBe(true);
-    // should have at least one citation from keyword match
-    expect(body.citations.length).toBeGreaterThan(0);
+    expect(res.statusCode).toBe(503);
+    expect(res.json().error).toContain("未配置");
 
     await server.close();
   });
 
-  it("预算耗尽: chatClient 不被调用，走 fallback，citations 仅含 fallback 实际引用的 chunk", async () => {
+  // 真实性重构：预算耗尽不再走 fallback 拼接——如实 429，chatClient 一次不被调用。
+  it("预算耗尽 → 429，chatClient 不被调用", async () => {
     const sourceId = "src-3";
     const chunkId = "chunk-3";
 
@@ -187,21 +185,10 @@ describe("POST /api/rag/query", () => {
       payload: { question: "AI大模型" }
     });
 
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
+    expect(res.statusCode).toBe(429);
+    expect(res.json().error).toContain("预算已用尽");
     // 预算耗尽 → chatClient 一次都不应被调用
     expect(chatCallCount).toBe(0);
-    // 走 fallback 路径：answer 有内容且不是通用错误
-    expect(typeof body.answer).toBe("string");
-    expect(body.answer).not.toContain("暂无相关资料");
-    // citations 仅含 fallback 实际引用的 chunk（≤3），不超出
-    expect(Array.isArray(body.citations)).toBe(true);
-    expect(body.citations.length).toBeGreaterThan(0);
-    // 所有 citations 的 id 都应在实际 chunk 列表内
-    const validIds = new Set([chunkId]);
-    body.citations.forEach((c: { id: string }) => {
-      expect(validIds.has(c.id)).toBe(true);
-    });
 
     await server.close();
   });
@@ -241,55 +228,11 @@ describe("POST /api/rag/query", () => {
     await server.close();
   });
 
-  // ── 修复5: citations 与答案实际引用 chunk 集合一致 ────────────────────────
-  it("离线 fallback: citations 仅含答案实际引用的前 3 个 chunk，不超出", async () => {
-    // 准备 5 个 chunks，关键词都匹配 → top-k 全部召回
-    const chunks = Array.from({ length: 5 }, (_, i) => {
-      const id = `chunk-align-${i}`;
-      const sourceId = `src-align-${i}`;
-      return {
-        chunk: makeChunk({
-          id,
-          sourceId,
-          title: `资料${i + 1}`,
-          text: `产品战略内容${i + 1}，这是战略文本。`,
-          keywords: ["产品", "战略"]
-        }),
-        source: makeSource(sourceId)
-      };
-    });
+  // （已剔除）"离线 fallback: citations 仅含答案实际引用的前 3 个 chunk"——buildFallbackAnswer
+  // 拼接答案已随真实性重构删除，无 chatClient 即 503；citations 与召回集合的对齐由下方在线用例钉住。
 
-    const initialState = {
-      ...createInitialProductState(),
-      ragChunks: chunks.map((x) => x.chunk),
-      importSources: chunks.map((x) => x.source)
-    };
-    const repository = createInMemoryProductStateRepository(initialState);
-
-    // 无 embeddingClient / chatClient → 走离线 fallback
-    const server = Fastify();
-    await registerRagRoutes(server, repository, {});
-
-    const res = await server.inject({
-      method: "POST",
-      url: "/api/rag/query",
-      payload: { question: "产品战略" }
-    });
-
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    // fallback 答案使用前 3 chunk，citations 应 ≤ 3（而非全部 5 个）
-    expect(body.citations.length).toBeLessThanOrEqual(3);
-    // answer 中引用的资料标题与 citations 一一对应
-    body.citations.forEach((citation: { id: string; title: string }) => {
-      expect(body.answer).toContain(citation.title);
-    });
-
-    await server.close();
-  });
-
-  it("在线路径: citations 与 LLM 实际用于生成答案的所有 chunk 对齐（含全部 top-k）", async () => {
-    // 3 个 chunks，embedding 完全匹配 → 全部进入 top-k
+  it("C-P2-03: citations only include chunks the model marked with [n] (not full top-k)", async () => {
+    // 3 个 chunks，embedding 完全匹配 → 全部进入 top-k 召回；但答案只标 [1][3]
     const sources = Array.from({ length: 3 }, (_, i) => {
       const id = `chunk-online-${i}`;
       const srcId = `src-online-${i}`;
@@ -317,7 +260,7 @@ describe("POST /api/rag/query", () => {
       embed: async (_texts: string[]) => [QUERY_VEC]
     };
     const fakeChatClient = {
-      complete: async () => "AI 内容综合回答"
+      complete: async () => "综合 [1] 与 [3] 的观点，第二份未直接使用。"
     };
 
     const server = buildApiServer({
@@ -334,13 +277,42 @@ describe("POST /api/rag/query", () => {
 
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    // 在线路径: LLM 使用全部召回 chunk，citations 应含 3 个
-    expect(body.citations).toHaveLength(3);
-    const citationIds = body.citations.map((c: { id: string }) => c.id);
-    sources.forEach(({ chunk }) => {
-      expect(citationIds).toContain(chunk.id);
-    });
+    expect(body.citations).toHaveLength(2);
+    expect(body.citations.map((c: { id: string }) => c.id)).toEqual([
+      sources[0]!.chunk.id,
+      sources[2]!.chunk.id
+    ]);
+    expect(body.citations.map((c: { citationIndex: number }) => c.citationIndex)).toEqual([1, 3]);
 
+    await server.close();
+  });
+
+  it("C-P2-03: answer without [n] markers → empty citations (no silent top-k dump)", async () => {
+    const chunk = makeChunk({
+      id: "chunk-no-cite",
+      sourceId: "src-no-cite",
+      title: "未标注资料",
+      text: "AI 内容",
+      keywords: ["ai"],
+      embedding: CHUNK_VEC
+    });
+    const repository = createInMemoryProductStateRepository({
+      ...createInitialProductState(),
+      ragChunks: [chunk],
+      importSources: [makeSource("src-no-cite")]
+    });
+    const server = buildApiServer({
+      productStateRepository: repository,
+      embeddingClient: { embed: async () => [QUERY_VEC] } as never,
+      bailianChatClient: { complete: async () => "没有任何编号的回答" } as never
+    });
+    const res = await server.inject({
+      method: "POST",
+      url: "/api/rag/query",
+      payload: { question: "AI" }
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().citations).toEqual([]);
     await server.close();
   });
 
@@ -371,32 +343,38 @@ describe("POST /api/rag/query", () => {
       { id: "chunk-b", text: "完全无关的内容片段。" }
     ]);
     const server = Fastify();
-    await registerRagRoutes(server, repository, {}); // 无 LLM → 确定性 fallback,citations 与召回严格对齐
+    // 真实性重构:答案生成是必选 LLM 能力——注入确定性假 client 走真实生成路径。
+    await registerRagRoutes(server, repository, { bailianChatClient: createFakeChatClient() });
     const res = await server.inject({ method: "POST", url: "/api/rag/query", payload: { question: "AI 产品" } });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     // 原生命中 chunk-b;若走域层关键词路径则会是 chunk-a → 证明原生路径真被优先采用
     expect(body.citations.map((c: { id: string }) => c.id)).toEqual(["chunk-b"]);
+    expect(typeof body.answer).toBe("string");
+    expect(body.answer.length).toBeGreaterThan(0);
     await server.close();
   });
 
-  it("方案一 fail-safe: 原生召回抛错 → 回落域层排序,仍 200 且召回关键词命中", async () => {
+  // 真实性重构:原生召回抛错不再回落域层排序掩盖差异——如实 502。
+  it("原生召回抛错 → 502（不再静默回落域层排序）", async () => {
     const { state } = nativeRecallState();
     const repository = withNativeRecall(createInMemoryProductStateRepository(state), async () => {
       throw new Error("native boom");
     });
     const server = Fastify();
-    await registerRagRoutes(server, repository, {});
+    await registerRagRoutes(server, repository, { bailianChatClient: createFakeChatClient() });
     const res = await server.inject({ method: "POST", url: "/api/rag/query", payload: { question: "AI 产品" } });
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode).toBe(502);
     const body = res.json();
-    expect(body.citations.map((c: { id: string }) => c.id)).toContain("chunk-a"); // 域层关键词路径兜底
+    expect(body.error).toContain("资料召回失败");
+    expect(body.error).toContain("native boom");
     await server.close();
   });
 
-  it("方案一 fail-safe: 原生命中全被域层门控滤掉(usage 不符)→ 回落域层排序", async () => {
+  // 真实性重构:原生命中被域层门控全滤 = 没有相关资料（诚实的空），不再回落域层排序。
+  it("原生命中全被域层门控滤掉(usage 不符)→ 200 诚实的空（不回落域层排序）", async () => {
     const { state } = nativeRecallState();
-    // 把 chunk-b 改成 memory-candidate:原生桩仍返回它,但域层重验 usage 后为空 → 回落。
+    // 把 chunk-b 改成 memory-candidate:原生桩仍返回它,但域层重验 usage 后为空。
     const gated = {
       ...state,
       ragChunks: state.ragChunks.map((c) => (c.id === "chunk-b" ? { ...c, usage: "memory-candidate" as const } : c))
@@ -405,11 +383,12 @@ describe("POST /api/rag/query", () => {
       { id: "chunk-b", text: "完全无关的内容片段。" }
     ]);
     const server = Fastify();
-    await registerRagRoutes(server, repository, {});
+    await registerRagRoutes(server, repository, { bailianChatClient: createFakeChatClient() });
     const res = await server.inject({ method: "POST", url: "/api/rag/query", payload: { question: "AI 产品" } });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.citations.map((c: { id: string }) => c.id)).toContain("chunk-a"); // 门控滤空 → 域层兜底
+    expect(body.answer).toContain("暂无相关资料");
+    expect(body.citations).toEqual([]);
     await server.close();
   });
 });

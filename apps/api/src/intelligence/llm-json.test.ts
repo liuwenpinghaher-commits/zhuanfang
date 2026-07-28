@@ -14,28 +14,26 @@ describe("parseJsonObjectLoose", () => {
     expect(parseJsonObjectLoose('{"a":1,"b":["x"]}')).toEqual({ a: 1, b: ["x"] });
   });
 
-  it("salvages JSON truncated inside a string value (keeps earlier fields)", () => {
+  // 真实性重构:打捞截断 JSON 的兜底已剔除——截断=资产不完整,打捞会把"半成功"伪装成"完整成功"。
+  // 以下用例从"能打捞出早期字段"改写为"结构损坏 → null,由调用方如实暴露失败"。
+  it("returns null for JSON truncated inside a string value (no salvage)", () => {
     const truncated = '{"summary":"ok","saidTrack":["第一条","第二条没说完';
-    const out = parseJsonObjectLoose(truncated);
-    expect(out).not.toBeNull();
-    expect(out!.summary).toBe("ok");
-    expect(Array.isArray(out!.saidTrack)).toBe(true);
-    expect((out!.saidTrack as string[])[0]).toBe("第一条");
+    expect(parseJsonObjectLoose(truncated)).toBeNull();
   });
 
-  it("salvages JSON truncated right after a comma (drops the dangling element)", () => {
+  it("returns null for JSON truncated right after a comma (no salvage)", () => {
     const truncated = '{"summary":"ok","points":[{"title":"t1"}],';
-    const out = parseJsonObjectLoose(truncated);
-    expect(out).not.toBeNull();
-    expect(out!.summary).toBe("ok");
-    expect((out!.points as unknown[]).length).toBe(1);
+    expect(parseJsonObjectLoose(truncated)).toBeNull();
   });
 
-  it("salvages a truncated nested object (closes open braces)", () => {
+  it("returns null for a truncated nested object (no salvage)", () => {
     const truncated = '{"summary":"ok","points":[{"title":"t1","content":"c1"';
-    const out = parseJsonObjectLoose(truncated);
-    expect(out).not.toBeNull();
-    expect(out!.summary).toBe("ok");
+    expect(parseJsonObjectLoose(truncated)).toBeNull();
+  });
+
+  it("still tolerates benign chatter before/after the object (format normalization)", () => {
+    expect(parseJsonObjectLoose('好的，输出如下：{"a":1} 以上。')).toEqual({ a: 1 });
+    expect(parseJsonObjectLoose('```json\n{"a":1}\n```')).toEqual({ a: 1 });
   });
 
   it("returns null on hopeless garbage", () => {

@@ -254,7 +254,9 @@ describe("interview business engine", () => {
     expect(result.note.keyQuote).toBe("");
   });
 
-  it("finalize with real user turns still produces a memory candidate", () => {
+  it("finalize with real user turns keeps the keyQuote but fabricates NO memory candidate", () => {
+    // 真实性重构:记忆候选只来自 LLM 真实抽取(providedCandidates)。确定性 finalize 即使有
+    // 真实 keyQuote 也不再从它启发式造模板候选——不能用就暴露,不伪造记忆候选。
     const state = createInitialProductState();
     const session = createSessionDraft(state, "decision");
     const afterFirst = receiveUserTurn(session, "我其实不是不想管，是不想每次都替他们兜底。");
@@ -262,9 +264,8 @@ describe("interview business engine", () => {
 
     const result = finalizeSession(state, afterSecond);
 
-    // A real keyQuote should yield exactly one new memory candidate
     expect(result.note.keyQuote).not.toBe("");
-    expect(result.nextState.memoryCandidates.length).toBe(state.memoryCandidates.length + 1);
+    expect(result.nextState.memoryCandidates.length).toBe(state.memoryCandidates.length);
   });
 
   it("engine re-exports the strong injection patterns that strip stacked qualifiers (忽略以上所有指令)", () => {

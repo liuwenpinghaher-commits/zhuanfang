@@ -18,6 +18,8 @@ interface ProfileViewProps {
   onPrivacyReport: () => Promise<PrivacyReport>;
   onPurge: () => Promise<ProductState>;
   onSetProductState: (state: ProductState) => void;
+  /** When provided, profile save waits for this before showing 已保存. */
+  onSaveProfilePersist?: (state: ProductState) => Promise<void>;
 }
 
 type GovernanceAction = "export" | "import" | "privacy" | "purge";
@@ -73,7 +75,8 @@ export function ProfileView({
   onExport,
   onPrivacyReport,
   onPurge,
-  onSetProductState
+  onSetProductState,
+  onSaveProfilePersist
 }: ProfileViewProps) {
   const [form, setForm] = useState({
     name: state.profile.name,
@@ -86,8 +89,22 @@ export function ProfileView({
   const [profileSaved, setProfileSaved] = useState(false);
   const [boundaryText, setBoundaryText] = useState("");
 
-  function handleSaveProfile() {
-    onSetProductState(updateProfile(state, form));
+  const [profileSaveError, setProfileSaveError] = useState<string | null>(null);
+  async function handleSaveProfile() {
+    const next = updateProfile(state, form);
+    setProfileSaved(false);
+    setProfileSaveError(null);
+    if (onSaveProfilePersist) {
+      try {
+        await onSaveProfilePersist(next);
+        setProfileSaved(true);
+      } catch (err) {
+        setProfileSaved(false);
+        setProfileSaveError(err instanceof Error && err.message ? err.message : "保存失败，请稍后重试。");
+      }
+      return;
+    }
+    onSetProductState(next);
     setProfileSaved(true);
   }
   function handleAddBoundary() {
@@ -279,6 +296,7 @@ export function ProfileView({
             <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
               <button className="primary-action" type="button" onClick={handleSaveProfile}>保存档案</button>
               {profileSaved && <span style={{ color: "var(--color-success, #22c55e)", fontSize: "0.875rem" }}>已保存</span>}
+              {profileSaveError && <span style={{ color: "var(--color-danger, #ef4444)", fontSize: "0.875rem" }}>{profileSaveError}</span>}
             </div>
           </div>
         </section>

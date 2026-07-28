@@ -41,6 +41,13 @@ export interface SystemConfig {
     podcastVoice: string;
     podcastFormat: "solo" | "host-guest";
     realtimeMode: "bailian" | "livekit" | "cascade";
+    /** Stage-3: cascade barge-in sustain ms (default 280 in pipeline). */
+    minBargeInMs?: number;
+    /**
+     * Stage-3 endpointing policy. `pvad-experimental` is honest capability only —
+     * runtime still uses semantic completion phrases + minBargeIn (no pVAD model wired).
+     */
+    endpointingMode?: "silence" | "semantic" | "pvad-experimental";
   };
   models: {
     planningModel: string;
@@ -62,6 +69,8 @@ export interface SystemConfig {
     includeSensitiveMemoriesInContext: boolean;
     includePendingCandidatesInContext: boolean;
     externalMaterialMemoryPolicy: "review-only" | "never" | "auto-candidate";
+    /** Stage-2: minimum hybrid score (0..1) to accept a memory/RAG hit; below → reject grounding. */
+    minRecallScore?: number;
   };
   research?: {
     /** 是否启用后台自动调研调度（默认 false；常驻服务时生效，非常驻靠手动触发 auto-run） */
@@ -157,7 +166,14 @@ export interface KnowledgeChunk {
   createdAt: string;
 }
 
-export interface ChatCitation { sourceType: KnowledgeSourceType; sourceId: string; title: string; snippet: string; }
+export interface ChatCitation {
+  sourceType: KnowledgeSourceType;
+  sourceId: string;
+  title: string;
+  snippet: string;
+  /** 1-based index matching `[n]` in the answer body (not the display list order). */
+  citationIndex?: number;
+}
 export interface ChatMessage { id: string; role: "user" | "assistant"; content: string; citations?: ChatCitation[]; createdAt: string; }
 export interface ChatSession { id: string; title: string; messages: ChatMessage[]; createdAt: string; updatedAt: string; }
 
@@ -267,6 +283,9 @@ export interface InterviewGuideOptions {
 
 export interface InterviewTurn {
   id: string;
+  /** 所属会话 id。域层构造时即打上（持久层 turn 表以它建 part_of 边）；
+   *  旧数据可能缺失，由 normalize 读回时补齐（clamp 会记 persistable_values_clamped）。 */
+  sessionId?: string;
   role: "user" | "assistant";
   content: string;
   intent: string;
@@ -919,6 +938,15 @@ export interface MemoryRecord extends Memory {
    *  退役了独立的 MemoryEdge / state.memoryEdges 双轨建模;边投影(about_theme)与
    *  记忆召回(buildMemoryGraphReferences / recallThemeAssets)统一从此字段派生。 */
   relatedThemeIds?: string[];
+  /**
+   * Stage-3: this record supersedes older phrasing (demote-not-delete).
+   * Graph projection can emit evolves_into / supersedes edges from this field.
+   */
+  supersedesRecordIds?: string[];
+  /** Stage-3: ids this record is known to contradict (symmetric soft links). */
+  contradictsRecordIds?: string[];
+  /** Stage-3: when demoted via conflict resolve, points at the winning record. */
+  supersededByRecordId?: string;
 }
 
 export interface MemoryCandidate {
@@ -1106,7 +1134,7 @@ export interface PodcastChapter {
 }
 
 export type PodcastSourceType = "note" | "search-brief" | "theme" | "knowledge-debt";
-export type PodcastAudioRenderStatus = "pending" | "rendered" | "fallback";
+export type PodcastAudioRenderStatus = "pending" | "rendered" | "failed";
 
 export interface PodcastEpisode {
   id: string;

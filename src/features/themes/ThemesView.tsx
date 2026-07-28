@@ -5,16 +5,18 @@ import type { InterviewMode, ProductState } from "../../domain/types";
 
 interface ThemesViewProps {
   state: ProductState;
-  review: ReturnType<typeof buildMonthlyReview>;
-  yearlyReview: ReturnType<typeof buildYearlyReview>;
+  /** LLM 综述（服务端）。null = 尚未加载或不可用（见 reviewsError）——绝不用本地模板顶替。 */
+  review: ReturnType<typeof buildMonthlyReview> | null;
+  yearlyReview: ReturnType<typeof buildYearlyReview> | null;
+  /** 认知雷达是本地确定性真实计数（非 LLM 叙事），始终可渲染。 */
   radar: ReturnType<typeof buildCognitiveRadar>;
-  /** P3-08:LLM 复盘不可用、退回确定性本地复盘时为 true——如实标注,别让用户误以为是 LLM 综述。 */
-  reviewsDegraded?: boolean;
+  /** LLM 复盘不可用时的真实原因（服务端错误信息）——如实展示，不能用就暴露。 */
+  reviewsError?: string | null;
   onStart: (mode?: InterviewMode) => void;
   onOpenTrack?: (id: string) => void;
 }
 
-export function ThemesView({ state, review, yearlyReview, radar, reviewsDegraded, onStart, onOpenTrack }: ThemesViewProps) {
+export function ThemesView({ state, review, yearlyReview, radar, reviewsError, onStart, onOpenTrack }: ThemesViewProps) {
   return (
     <section className="view-stack">
       <HeaderBlock
@@ -25,15 +27,18 @@ export function ThemesView({ state, review, yearlyReview, radar, reviewsDegraded
       />
       <section className="panel">
         <div className="panel-title"><Brain size={18} /><h2>本月回顾</h2></div>
-        {reviewsDegraded && (
-          <p className="review-degraded-hint" role="status">本地生成(LLM 复盘暂不可用,已用确定性回顾兜底)。</p>
+        {review ? (
+          <div className="review-grid">
+            <ReviewItem label="一直在谈" value={review.topTheme} />
+            <ReviewItem label="正在变化" value={review.changedView} />
+            <ReviewItem label="仍在回避" value={review.avoidedQuestion} />
+            <ReviewItem label="下次建议" value={review.recommendedNextInterview} />
+          </div>
+        ) : (
+          <p className="review-degraded-hint" role="status">
+            {reviewsError ? `复盘不可用：${reviewsError}` : "复盘生成中…"}
+          </p>
         )}
-        <div className="review-grid">
-          <ReviewItem label="一直在谈" value={review.topTheme} />
-          <ReviewItem label="正在变化" value={review.changedView} />
-          <ReviewItem label="仍在回避" value={review.avoidedQuestion} />
-          <ReviewItem label="下次建议" value={review.recommendedNextInterview} />
-        </div>
       </section>
       <section className="panel">
         <div className="panel-title"><ChartNoAxesCombined size={18} /><h2>认知雷达</h2></div>
@@ -46,13 +51,21 @@ export function ThemesView({ state, review, yearlyReview, radar, reviewsDegraded
       </section>
       <section className="panel">
         <div className="panel-title"><History size={18} /><h2>年度回顾草稿</h2></div>
-        <div className="yearly-grid">
-          <ReviewList title="核心问题" items={yearlyReview.coreQuestions} />
-          <ReviewList title="变化中的观点" items={yearlyReview.changedViews} />
-          <ReviewList title="未解决模式" items={yearlyReview.unresolvedPatterns} />
-          <ReviewList title="重要决策" items={yearlyReview.importantDecisions} />
-        </div>
-        <div className="quote-line">下一年焦点：{yearlyReview.nextYearFocus}</div>
+        {yearlyReview ? (
+          <>
+            <div className="yearly-grid">
+              <ReviewList title="核心问题" items={yearlyReview.coreQuestions} />
+              <ReviewList title="变化中的观点" items={yearlyReview.changedViews} />
+              <ReviewList title="未解决模式" items={yearlyReview.unresolvedPatterns} />
+              <ReviewList title="重要决策" items={yearlyReview.importantDecisions} />
+            </div>
+            <div className="quote-line">下一年焦点：{yearlyReview.nextYearFocus}</div>
+          </>
+        ) : (
+          <p className="review-degraded-hint" role="status">
+            {reviewsError ? `复盘不可用：${reviewsError}` : "复盘生成中…"}
+          </p>
+        )}
       </section>
       <div className="record-list">
         {state.themes.length === 0 && (

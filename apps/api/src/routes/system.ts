@@ -18,6 +18,7 @@ import type {
   BailianSearchClient
 } from "../providers/bailian";
 import { writeEnvFileUpdates, type RuntimeEnv } from "../env";
+import { getRuntimeMetricsSnapshot } from "../observability/runtime-metrics";
 import type { ProductStateRepository } from "../product-state-repository";
 
 type CapabilityStatus = "ready" | "degraded" | "needs-key" | "needs-endpoint" | "disabled";
@@ -50,6 +51,10 @@ interface SystemRouteOptions {
   bailianInterviewClient?: BailianCharacterInterviewClient;
   bailianRealtimeVoiceClient?: BailianRealtimeVoiceClient;
   bailianTranscriptionClient?: BailianAudioTranscriptionClient;
+  /** Stage-2: optional embedding readiness (cloud or local). */
+  embeddingConfigured?: boolean;
+  /** Optional LLM budget snapshot getter. */
+  getLlmBudgetRemaining?: () => number | undefined;
 }
 
 type ConfigSectionId = "secrets" | "models" | "search" | "voice" | "storage";
@@ -473,7 +478,7 @@ export async function registerSystemRoutes(
         status: options.bailianTranscriptionClient ? "ready" : "needs-key",
         active: true,
         detail: options.bailianTranscriptionClient
-          ? "已配置服务端 ASR provider，可把公网音频 URL 转写为语料分析稿。"
+          ? "已配置 SenseVoice：公网 URL 可直接转写；本地上传需 CORPUS_AUDIO_PUBLIC_BASE_URL（见 env；未配置则落盘后诚实 422）。"
           : "缺少 DASHSCOPE_API_KEY 或 BAILIAN_API_KEY，音频导入会要求人工转写稿。",
         requiredEnv: ["DASHSCOPE_API_KEY"],
         model: env.BAILIAN_ASR_MODEL ?? BAILIAN_TRANSCRIPTION_MODEL,
@@ -488,9 +493,59 @@ export async function registerSystemRoutes(
         active: state.systemConfig.models.interviewModel === "qwen-plus-character",
         detail: options.bailianInterviewClient
           ? "已配置 qwen-plus-character，文本专访追问可走百炼角色扮演。"
-          : "缺少 DASHSCOPE_API_KEY 或 BAILIAN_API_KEY，文本专访会使用本地规则引擎。",
+          : "缺少 DASHSCOPE_API_KEY 或 BAILIAN_API_KEY，文本专访无法调用角色扮演模型（接口 fail-loud 返回 5xx，不会用本地模板冒充 AI 追问）。",
         requiredEnv: ["DASHSCOPE_API_KEY"],
         model: env.BAILIAN_CHARACTER_MODEL ?? BAILIAN_ROLE_PLAY_MODEL,
+        lastCheckedAt: generatedAt
+      },
+      {
+        id: "embedding",
+        kind: "llm",
+        label: "向量嵌入（记忆/知识召回）",
+        status: options.embeddingConfigured || Boolean(env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY) || (env.EMBEDDING_PROVIDER ?? "").trim().toLowerCase() === "local"
+          ? "ready"
+          : "needs-key",
+        active: true,
+        detail: (env.EMBEDDING_PROVIDER ?? "").trim().toLowerCase() === "local"
+          ? "本地 embedding（EMBEDDING_PROVIDER=local）已启用。"
+          : (env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY)
+            ? "云端 embedding 可用（DashScope/百炼 key）。"
+            : "未配置 embedding：chat/interview 语义召回会受限（关键词仍可用）。",
+        requiredEnv: (env.EMBEDDING_PROVIDER ?? "").trim().toLowerCase() === "local" ? ["EMBEDDING_PROVIDER"] : ["DASHSCOPE_API_KEY"],
+        lastCheckedAt: generatedAt
+      },
+      {
+        id: "corpus-audio-public",
+        kind: "voice",
+        label: "语料本地音频公开基址",
+        status: (env.CORPUS_AUDIO_PUBLIC_BASE_URL ?? "").trim() ? "ready" : "degraded",
+        active: Boolean((env.CORPUS_AUDIO_PUBLIC_BASE_URL ?? "").trim()),
+        detail: (env.CORPUS_AUDIO_PUBLIC_BASE_URL ?? "").trim()
+          ? `本地上传可映射到公开 URL 后走 SenseVoice：${(env.CORPUS_AUDIO_PUBLIC_BASE_URL ?? "").trim()}`
+          : "未配置 CORPUS_AUDIO_PUBLIC_BASE_URL：本地音频会落盘并诚实 422；公网 URL 仍可转写。",
+        requiredEnv: ["CORPUS_AUDIO_PUBLIC_BASE_URL"],
+        lastCheckedAt: generatedAt
+      },
+      {
+        id: "corpus-audio-presign",
+        kind: "voice",
+        label: "语料本地预签名上传",
+        status: "ready",
+        active: true,
+        detail:
+          "POST /api/corpus/audio-files/presign + PUT /api/corpus/audio-files/:file 可分配对象键并上传（本地 Product API 路径，非云 S3）。",
+        requiredEnv: [],
+        lastCheckedAt: generatedAt
+      },
+      {
+        id: "voice-endpointing-pvad",
+        kind: "voice",
+        label: "pVAD 实验端点检测",
+        status: "degraded",
+        active: false,
+        detail:
+          "systemConfig.voice.endpointingMode=pvad-experimental 仅为策略位；运行时仍用语义完成短语 + minBargeInMs，未接入独立 pVAD 模型。",
+        requiredEnv: [],
         lastCheckedAt: generatedAt
       },
       {
@@ -515,6 +570,7 @@ export async function registerSystemRoutes(
       }
     ];
 
+    const metrics = getRuntimeMetricsSnapshot();
     return {
       generatedAt,
       configVersion: state.systemConfig.version,
@@ -524,6 +580,36 @@ export async function registerSystemRoutes(
       runtime: {
         service: "interview-product-api",
         stateStore: options.stateStore
+      },
+      metrics: {
+        voice: {
+          sampleCount: metrics.voice.sampleCount,
+          ttfaP50Ms: metrics.voice.ttfaP50Ms,
+          ttfaP95Ms: metrics.voice.ttfaP95Ms,
+          interruptCount: metrics.voice.interruptCount,
+          bargeInSuccessCount: metrics.voice.bargeInSuccessCount,
+          bargeInFailCount: metrics.voice.bargeInFailCount,
+          bargeInSuccessRate: metrics.voice.bargeInSuccessRate,
+          interruptRecoveryCount: metrics.voice.interruptRecoveryCount,
+          interruptRecoveryRate: metrics.voice.interruptRecoveryRate,
+          segments: metrics.voice.segments,
+          budgetHint: metrics.voice.budgetHint
+        },
+        recall: {
+          eventCount: metrics.recall.eventCount,
+          hit: metrics.recall.hit,
+          empty: metrics.recall.empty,
+          low_score: metrics.recall.low_score
+        },
+        grounding: {
+          eventCount: metrics.grounding.eventCount,
+          grounded: metrics.grounding.grounded,
+          partial: metrics.grounding.partial,
+          refused: metrics.grounding.refused,
+          groundedAnswerRate: metrics.grounding.groundedAnswerRate,
+          refuseRate: metrics.grounding.refuseRate,
+          citationPresentRate: metrics.grounding.citationPresentRate
+        }
       },
       capabilities
     };

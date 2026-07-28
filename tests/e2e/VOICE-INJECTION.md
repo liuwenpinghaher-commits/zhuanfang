@@ -32,7 +32,7 @@ node scripts/gen-voice-fixtures.mjs script-reason.json tests/e2e/fixtures/voice/
 npx playwright test voice-fakemic-mechanism --project=chromium
 
 # 3) App 级真实语音访谈(需真 key):自己用真 key 起 api+web,然后
-E2E_REAL_VOICE=1 npx playwright test voice-cascade --project=chromium
+E2E_REAL=1 npx playwright test voice-cascade --project=chromium
 ```
 
 在自己的 spec 里:
@@ -60,3 +60,12 @@ await speak(page, fixture.utterances[0].pcmBase64);   // 说一轮,内部已等 
   随之沿用;若将来迁移到 AudioWorkletNode,fakeMic 的合成流注入方式不变,只是上游节点换掉。
 - 轮间 `waitForReply` 的判据(回到 listening/idle)请按真实状态机微调;barge-in(说话打断主持人)
   可在主持人 speaking 态时提前 `speak` 来触发。
+
+
+## 正确入口
+
+```bash
+npm run test:e2e:real
+# 或: E2E_REAL=1 npx playwright test voice-cascade
+```
+语音用例还需要 `DASHSCOPE_API_KEY` 或 `BAILIAN_API_KEY`。

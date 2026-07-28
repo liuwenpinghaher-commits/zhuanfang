@@ -150,7 +150,10 @@ export async function ingestImportSource(
     sourceUrl: input.sourceUrl,
     content: input.content,
     status: "chunked",
-    sensitivity: candidates.some((candidate) => candidate.sensitivity === "sensitive") ? "sensitive" : "normal",
+    // IM-P1-01: do not mark the entire import source sensitive because one
+    // candidate is sensitive — that hid all chunks from RAG/chat. Candidates keep
+    // their own sensitivity; source stays normal for retrieval of the document body.
+    sensitivity: "normal",
     searchBriefId: undefined,
     chunkIds: ragChunks.map((chunk) => chunk.id),
     relatedThemeIds: tagSourceThemes(`${input.title} ${input.content}`, state.themes),

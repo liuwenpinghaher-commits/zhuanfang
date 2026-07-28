@@ -1,10 +1,17 @@
-import type { FastifyInstance } from "fastify";
-import { analyzeImportedInterview, sanitizeExternalMaterialText } from "../../../../src/domain/engine";
+import { createHash } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { extname, join } from "node:path";
+import type { FastifyInstance, FastifyRequest } from "fastify";
+import { sanitizeExternalMaterialText } from "../../../../src/domain/engine";
 import type { AudioTranscription, AudioTranscriptionInput, CorpusImportInput } from "../../../../src/domain/types";
 import { analyzeCorpusWithLlm } from "../intelligence/corpus-llm";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
+import { resolveCorpusUploadDir } from "../local-object-artifacts";
 import type { BailianAudioTranscriptionClient, BailianChatClient } from "../providers/bailian";
 import type { ProductStateRepository } from "../product-state-repository";
+import { replaceStateDurable } from "../product-state-repository";
+import { resolveCorpusAudioMaxBytes } from "../storage-config";
+import { isAuthorized, readCookieToken } from "../auth";
 
 interface CorpusInsightRequestPayload {
   title?: unknown;
@@ -31,6 +38,10 @@ interface CorpusRouteOptions {
   bailianTranscriptionClient?: BailianAudioTranscriptionClient;
   bailianChatClient?: BailianChatClient;
   llmBudget?: LlmBudget;
+  env?: Record<string, string | undefined>;
+  /** Absolute public origin for local audio files (e.g. https://cdn.example.com). */
+  corpusAudioPublicBaseUrl?: string;
+  corpusUploadDir?: string;
 }
 
 export async function registerCorpusRoutes(
@@ -39,25 +50,266 @@ export async function registerCorpusRoutes(
   options: CorpusRouteOptions = {}
 ) {
   const budget = options.llmBudget ?? createLlmBudget();
+  const env = options.env ?? process.env;
+  const uploadDir = resolveCorpusUploadDir({
+    corpusUploadDir: options.corpusUploadDir,
+    env,
+    cwd: process.cwd()
+  });
+  const publicBase =
+    (options.corpusAudioPublicBaseUrl ?? env.CORPUS_AUDIO_PUBLIC_BASE_URL ?? "").trim().replace(/\/+$/, "");
+
+  // Authenticated (or local-open) static serve for files written under CORPUS_UPLOAD_DIR.
+  // Required when CORPUS_AUDIO_PUBLIC_BASE_URL points back at this Product API so SenseVoice
+  // (or any external ASR) can fetch the object via a real https/http URL.
+  server.get("/api/corpus/audio-files/:fileName", async (request, reply) => {
+    const params = request.params as { fileName?: string };
+    const fileName = typeof params.fileName === "string" ? params.fileName : "";
+    if (!fileName || fileName !== basenameSafe(fileName)) {
+      return reply.code(400).send({ error: "Invalid audio file name." });
+    }
+    if (!isAuthorized(env, authPresentation(request))) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    const { createReadStream, existsSync, statSync } = await import("node:fs");
+    const filePath = join(uploadDir, fileName);
+    if (!existsSync(filePath)) {
+      return reply.code(404).send({ error: "Audio file not found." });
+    }
+    const stat = statSync(filePath);
+    const mime = mimeFromFileName(fileName);
+    return reply
+      .header("Content-Type", mime)
+      .header("Content-Length", String(stat.size))
+      .header("Cache-Control", "private, max-age=3600")
+      .send(createReadStream(filePath));
+  });
+
+
+  /** Stage-2: store local audio only (no ASR). Returns local-object URL + optional public URL for CDN/SenseVoice. */
+  server.post("/api/corpus/audio-files", async (request, reply) => {
+    const payload = (request.body && typeof request.body === "object" ? request.body : {}) as {
+      audioBase64?: unknown;
+      fileName?: unknown;
+    };
+    const audioBase64 = typeof payload.audioBase64 === "string" ? payload.audioBase64.trim() : "";
+    const fileName = typeof payload.fileName === "string" ? payload.fileName.trim() : "upload.audio";
+    if (!audioBase64) {
+      return reply.code(422).send({ error: "audioBase64 is required." });
+    }
+    if (audioBase64.length > MAX_AUDIO_BASE64_BYTES) {
+      return reply.code(422).send({ error: "上传的音频文件过大（base64 超过 25 MB）。" });
+    }
+    let bytes: Buffer;
+    try {
+      bytes = Buffer.from(audioBase64, "base64");
+    } catch {
+      return reply.code(422).send({ error: "音频 base64 无法解码。" });
+    }
+    if (!bytes.length) {
+      return reply.code(422).send({ error: "音频内容为空。" });
+    }
+    const maxBytes = resolveCorpusAudioMaxBytes(env);
+    if (bytes.length > maxBytes) {
+      return reply.code(413).send({ error: `音频文件超过 CORPUS_AUDIO_MAX_BYTES 上限（${maxBytes} 字节）。` });
+    }
+    const safeExt = sanitizeExtension(fileName);
+    const digest = createHash("sha256").update(bytes).digest("hex").slice(0, 16);
+    const storedName = `${Date.now()}-${digest}${safeExt}`;
+    mkdirSync(uploadDir, { recursive: true });
+    writeFileSync(join(uploadDir, storedName), bytes);
+    const localObjectUrl = `local-object://corpus-audio/${storedName}`;
+    const publicUrl = publicBase
+      ? publicBase.includes("/api/corpus/audio-files")
+        ? `${publicBase.replace(/\/+$/, "")}/${encodeURIComponent(storedName)}`
+        : `${publicBase}/api/corpus/audio-files/${encodeURIComponent(storedName)}`
+      : undefined;
+    return {
+      storedFileName: storedName,
+      localObjectUrl,
+      ...(publicUrl ? { publicUrl } : {}),
+      byteSize: bytes.length,
+      publicBaseConfigured: Boolean(publicBase)
+    };
+  });
+
+  /**
+   * Stage-3: local "presign" — allocate a put URL + object key without base64 JSON body.
+   * Client PUT binary to uploadUrl, then may call transcription with publicUrl if configured.
+   * Not cloud S3; honest local product-api path for large files.
+   */
+  server.post("/api/corpus/audio-files/presign", async (request, reply) => {
+    const payload = (request.body && typeof request.body === "object" ? request.body : {}) as {
+      fileName?: unknown;
+      contentType?: unknown;
+      byteSize?: unknown;
+    };
+    const fileName = typeof payload.fileName === "string" ? payload.fileName.trim() : "upload.audio";
+    const byteSize = typeof payload.byteSize === "number" && Number.isFinite(payload.byteSize) ? payload.byteSize : undefined;
+    const maxBytes = resolveCorpusAudioMaxBytes(env);
+    if (byteSize != null && byteSize > maxBytes) {
+      return reply.code(413).send({ error: `音频文件超过 CORPUS_AUDIO_MAX_BYTES 上限（${maxBytes} 字节）。` });
+    }
+    const safeExt = sanitizeExtension(fileName);
+    const digest = createHash("sha256").update(`${Date.now()}-${fileName}-${Math.random()}`).digest("hex").slice(0, 16);
+    const storedName = `${Date.now()}-${digest}${safeExt}`;
+    mkdirSync(uploadDir, { recursive: true });
+    const uploadPath = `/api/corpus/audio-files/${encodeURIComponent(storedName)}`;
+    const publicUrl = publicBase
+      ? publicBase.includes("/api/corpus/audio-files")
+        ? `${publicBase.replace(/\/+$/, "")}/${encodeURIComponent(storedName)}`
+        : `${publicBase}${uploadPath}`
+      : undefined;
+    return {
+      method: "PUT" as const,
+      uploadPath,
+      storedFileName: storedName,
+      localObjectUrl: `local-object://corpus-audio/${storedName}`,
+      ...(publicUrl ? { publicUrl } : {}),
+      expiresInSec: 3600,
+      maxBytes,
+      publicBaseConfigured: Boolean(publicBase),
+      note: publicBase
+        ? "PUT JSON { audioBase64 } 到 uploadPath（需鉴权），完成后可用 publicUrl 调转写。本地路径非 S3。"
+        : "PUT JSON { audioBase64 } 到 uploadPath（需鉴权）完成落盘；未配置 CORPUS_AUDIO_PUBLIC_BASE_URL 时 SenseVoice 仍无法拉取。本地路径非 S3。"
+    };
+  });
+
+  server.put("/api/corpus/audio-files/:fileName", async (request, reply) => {
+    const params = request.params as { fileName?: string };
+    const fileName = typeof params.fileName === "string" ? params.fileName : "";
+    if (!fileName || fileName !== basenameSafe(fileName)) {
+      return reply.code(400).send({ error: "Invalid audio file name." });
+    }
+    if (!isAuthorized(env, authPresentation(request))) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    const payload = (request.body && typeof request.body === "object" ? request.body : {}) as { audioBase64?: unknown };
+    const audioBase64 = typeof payload.audioBase64 === "string" ? payload.audioBase64.trim() : "";
+    if (!audioBase64) {
+      return reply.code(422).send({ error: "audioBase64 is required on PUT body (local presign path)." });
+    }
+    if (audioBase64.length > MAX_AUDIO_BASE64_BYTES) {
+      return reply.code(422).send({ error: "上传的音频文件过大（base64 超过 25 MB）。" });
+    }
+    let bytes: Buffer;
+    try {
+      bytes = Buffer.from(audioBase64, "base64");
+    } catch {
+      return reply.code(422).send({ error: "音频 base64 无法解码。" });
+    }
+    const maxBytes = resolveCorpusAudioMaxBytes(env);
+    if (bytes.length > maxBytes) {
+      return reply.code(413).send({ error: `音频文件超过 CORPUS_AUDIO_MAX_BYTES 上限（${maxBytes} 字节）。` });
+    }
+    if (!bytes.length) {
+      return reply.code(422).send({ error: "音频内容为空。" });
+    }
+    mkdirSync(uploadDir, { recursive: true });
+    writeFileSync(join(uploadDir, fileName), bytes);
+    return { storedFileName: fileName, byteSize: bytes.length, localObjectUrl: `local-object://corpus-audio/${fileName}` };
+  });
 
   server.post("/api/corpus/transcriptions", async (request, reply) => {
     const input = normalizeTranscriptionInput(request.body);
 
-    // Local file upload branch. There is no inline-base64 transcription path on the
-    // backend: SenseVoice 录音转写只接受公网 file_urls，唯一的 base64 音频能力是浏览器
-    // 侧流式实时 ASR（omni-realtime，不是一次性的“收 base64 → 返回文字”接口）。因此我们
-    // 诚实地确认收到文件并降级，绝不冒充真转写。
+    // Local file upload branch.
+    // SenseVoice only accepts publicly fetchable file_urls. When CORPUS_AUDIO_PUBLIC_BASE_URL
+    // is set, we persist the bytes under CORPUS_UPLOAD_DIR and map them to a public URL so
+    // ASR can pull them. Without that base URL we fail loud (422) — never fake a transcript.
     if (input.audioBase64) {
       if (input.audioBase64.length > MAX_AUDIO_BASE64_BYTES) {
         return reply
           .code(422)
           .send({ error: "上传的音频文件过大（base64 超过 25 MB），请压缩后重试或改用公网音频 URL。" });
       }
-      const approxMb = (estimateBase64Bytes(input.audioBase64) / (1024 * 1024)).toFixed(1);
-      const fileLabel = input.fileName ?? "你上传的音频文件";
-      return {
-        transcription: buildLocalFileTranscription(input, fileLabel, approxMb)
-      };
+
+      let bytes: Buffer;
+      try {
+        bytes = Buffer.from(input.audioBase64, "base64");
+      } catch {
+        return reply.code(422).send({ error: "音频 base64 无法解码。" });
+      }
+      if (!bytes.length) {
+        return reply.code(422).send({ error: "音频内容为空。" });
+      }
+
+      const maxBytes = resolveCorpusAudioMaxBytes(env);
+      if (bytes.length > maxBytes) {
+        return reply
+          .code(413)
+          .send({ error: `音频文件超过 CORPUS_AUDIO_MAX_BYTES 上限（${maxBytes} 字节）。` });
+      }
+
+      const fileLabel = input.fileName ?? "upload.audio";
+      const safeExt = sanitizeExtension(fileLabel);
+      const digest = createHash("sha256").update(bytes).digest("hex").slice(0, 16);
+      const storedName = `${Date.now()}-${digest}${safeExt}`;
+      mkdirSync(uploadDir, { recursive: true });
+      const filePath = join(uploadDir, storedName);
+      writeFileSync(filePath, bytes);
+
+      if (!publicBase) {
+        const approxMb = (bytes.length / (1024 * 1024)).toFixed(1);
+        return reply.code(422).send({
+          error:
+            `已保存本地文件「${fileLabel}」（约 ${approxMb} MB）到 ${uploadDir}，` +
+            `但未配置 CORPUS_AUDIO_PUBLIC_BASE_URL，百炼 SenseVoice 无法拉取本地对象。` +
+            `请设置可公网访问的基址（可指向本服务的 /api/corpus/audio-files），或直接粘贴转写稿 / 使用公网音频 URL。` +
+            ` 本地引用：local-object://corpus-audio/${storedName}`
+        });
+      }
+
+      if (!options.bailianTranscriptionClient) {
+        return reply
+          .code(503)
+          .send({ error: "缺少 DASHSCOPE_API_KEY 或 BAILIAN_API_KEY，无法调用百炼 SenseVoice 录音转写。" });
+      }
+
+      const publicUrl = `${publicBase}/api/corpus/audio-files/${encodeURIComponent(storedName)}`;
+      // If public base already includes the path prefix, avoid double /api/...
+      const mappedUrl = publicBase.includes("/api/corpus/audio-files")
+        ? `${publicBase.replace(/\/+$/, "")}/${encodeURIComponent(storedName)}`
+        : publicUrl;
+
+      try {
+        const result = await options.bailianTranscriptionClient.transcribe({
+          title: input.title,
+          sourceUrl: mappedUrl,
+          languageHint: input.languageHint
+        });
+        const transcription: AudioTranscription = {
+          providerId: result.providerId,
+          model: result.model,
+          status: "ready",
+          title: input.title,
+          sourceUrl: mappedUrl,
+          text: result.text,
+          taskId: result.taskId,
+          transcriptionUrl: result.transcriptionUrl,
+          durationSec: result.durationSec,
+          createdAt: new Date().toISOString()
+        };
+        return {
+          transcription,
+          localObjectUrl: `local-object://corpus-audio/${storedName}`,
+          storedFileName: storedName
+        };
+      } catch (error) {
+        const message = error instanceof Error && error.message ? error.message : "unknown error";
+        console.warn(
+          JSON.stringify({
+            event: "transcription_failed",
+            provider: "bailian-sensevoice",
+            path: "local-upload",
+            error: message,
+            storedFileName: storedName
+          })
+        );
+        return reply.code(502).send({
+          error: `百炼 SenseVoice 转写失败：${message}（本地文件已保存为 local-object://corpus-audio/${storedName}）`
+        });
+      }
     }
 
     if (!input.sourceUrl) {
@@ -69,12 +321,7 @@ export async function registerCorpusRoutes(
     }
 
     if (!options.bailianTranscriptionClient) {
-      return {
-        transcription: buildFallbackTranscription(
-          input,
-          "缺少 DASHSCOPE_API_KEY 或 BAILIAN_API_KEY，无法调用百炼 SenseVoice 录音转写。"
-        )
-      };
+      return reply.code(503).send({ error: "缺少 DASHSCOPE_API_KEY 或 BAILIAN_API_KEY，无法调用百炼 SenseVoice 录音转写。" });
     }
 
     try {
@@ -93,12 +340,9 @@ export async function registerCorpusRoutes(
       };
       return { transcription };
     } catch (error) {
-      return {
-        transcription: buildFallbackTranscription(
-          input,
-          error instanceof Error && error.message ? `百炼 SenseVoice 转写失败：${error.message}` : "百炼 SenseVoice 转写失败。"
-        )
-      };
+      const message = error instanceof Error && error.message ? error.message : "unknown error";
+      console.warn(JSON.stringify({ event: "transcription_failed", provider: "bailian-sensevoice", error: message }));
+      return reply.code(502).send({ error: `百炼 SenseVoice 转写失败：${message}` });
     }
   });
 
@@ -114,34 +358,64 @@ export async function registerCorpusRoutes(
     }
     const focus = normalizeFocus(request.body);
 
-    const state = repository.getState();
-    const allowLlm = !!options.bailianChatClient && budget.tryConsume("system");
-    if (!!options.bailianChatClient && !allowLlm) {
-      console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "corpus_insights" }));
+    // 语料分析是 LLM 能力：不可用就如实暴露，绝不回落到关键词模板分析冒充。
+    if (!options.bailianChatClient) {
+      return reply.code(503).send({ error: "语料分析 LLM 未配置（缺少 DASHSCOPE_API_KEY），无法分析样本。" });
     }
-    const { insight, nextState } = await analyzeCorpus(state, input, allowLlm ? options.bailianChatClient : undefined, focus);
+    if (!budget.tryConsume("system")) {
+      console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "corpus_insights" }));
+      return reply.code(429).send({ error: "本时段 LLM 预算已用尽，语料分析暂不可用，请稍后重试。" });
+    }
+
+    const state = repository.getState();
+    let analyzed: Awaited<ReturnType<typeof analyzeCorpusWithLlm>>;
+    try {
+      analyzed = await analyzeCorpusWithLlm(state, input, options.bailianChatClient, focus);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(JSON.stringify({ event: "llm_failed", capability: "corpus", error: message }));
+      return reply.code(502).send({ error: `语料分析失败：${message}` });
+    }
     // state 必须是 replaceState 返回的权威态(revision 已 bump),否则客户端下一次乐观 PUT 必 409。
-    const persisted = repository.replaceState(nextState);
-    return { insight, state: persisted };
+    const persisted = await replaceStateDurable(repository, analyzed.nextState);
+    return { insight: analyzed.insight, state: persisted };
   });
 }
 
-async function analyzeCorpus(
-  state: Parameters<typeof analyzeImportedInterview>[0],
-  input: CorpusImportInput,
-  chatClient: BailianChatClient | undefined,
-  focus?: string
-) {
-  if (chatClient) {
-    try {
-      return await analyzeCorpusWithLlm(state, input, chatClient, focus);
-    } catch (error) {
-      console.warn(JSON.stringify({ event: "llm_fallback", capability: "corpus", error: error instanceof Error ? error.message : String(error) }));
-    }
-  }
-  // Deterministic path ignores focus (the templated analyzer does not use free-form
-  // guidance); it must still succeed when focus is supplied.
-  return analyzeImportedInterview(state, input);
+function authPresentation(request: FastifyRequest) {
+  const q = request.query as { token?: string };
+  return {
+    authHeader: request.headers.authorization,
+    tokenQuery: typeof q?.token === "string" ? q.token : undefined,
+    cookieToken: readCookieToken(request.headers.cookie)
+  };
+}
+
+function basenameSafe(name: string) {
+  // Reject path traversal / empty / directory segments.
+  if (!name || name.includes("/") || name.includes("\\") || name.includes("..")) return "";
+  return name;
+}
+
+function sanitizeExtension(fileName: string) {
+  const ext = extname(fileName).toLowerCase();
+  const allowed = new Set([".wav", ".mp3", ".m4a", ".aac", ".ogg", ".flac", ".webm", ".mp4"]);
+  return allowed.has(ext) ? ext : ".audio";
+}
+
+function mimeFromFileName(fileName: string) {
+  const ext = extname(fileName).toLowerCase();
+  const map: Record<string, string> = {
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".ogg": "audio/ogg",
+    ".flac": "audio/flac",
+    ".webm": "audio/webm",
+    ".mp4": "audio/mp4"
+  };
+  return map[ext] ?? "application/octet-stream";
 }
 
 function normalizeFocus(value: unknown): string | undefined {
@@ -180,12 +454,6 @@ function normalizeTranscriptionInput(value: unknown): AudioTranscriptionInput {
   };
 }
 
-/** Approximate decoded byte length of a base64 string (ignoring padding). */
-function estimateBase64Bytes(base64: string): number {
-  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
-  return Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
-}
-
 function normalizePayload(value: unknown): CorpusInsightRequestPayload {
   if (!value || typeof value !== "object") {
     return {};
@@ -206,49 +474,4 @@ function normalizeText(value: unknown, fallback: string) {
 
 function isSupportedAudioSourceUrl(sourceUrl: string) {
   return /^(https?:\/\/|oss:\/\/)/.test(sourceUrl);
-}
-
-function buildFallbackTranscription(input: AudioTranscriptionInput, degradedReason: string): AudioTranscription {
-  return {
-    providerId: "local-fallback",
-    model: "manual-transcript-required",
-    status: "degraded",
-    title: input.title,
-    sourceUrl: input.sourceUrl,
-    text: [
-      `主持人：这段音频来自 ${input.sourceUrl}，当前还没有完成自动转写。`,
-      "被访者：请先补充这段专访里最关键的回答、原话和停顿。",
-      "主持人：补齐后我会重点分析它如何索要具体时刻、推动反方观点，以及控制追问节奏。"
-    ].join("\n"),
-    degradedReason,
-    createdAt: new Date().toISOString()
-  };
-}
-
-/**
- * Honest degradation for a locally uploaded audio file. We acknowledge the exact
- * file we received, then state plainly that automatic transcription needs a public
- * URL — and seed an editable draft that carries the file name into context. This is
- * a deliberate constraint of SenseVoice 录音转写 (file_urls only); we never return a
- * fabricated transcript dressed up as the real thing.
- */
-function buildLocalFileTranscription(
-  input: AudioTranscriptionInput,
-  fileLabel: string,
-  approxMb: string
-): AudioTranscription {
-  return {
-    providerId: "local-fallback",
-    model: "manual-transcript-required",
-    status: "degraded",
-    title: input.title,
-    sourceUrl: input.sourceUrl,
-    text: [
-      `主持人：这段专访音频来自本地文件「${fileLabel}」，目前还没有自动转写。`,
-      "被访者：请在这里补充被访者的关键原话、停顿和情绪变化。",
-      "主持人：补齐后我会分析这段专访如何索要具体时刻、推进反方观点和控制节奏。"
-    ].join("\n"),
-    degradedReason: `已接收文件「${fileLabel}」（约 ${approxMb} MB）。当前转写引擎（百炼 SenseVoice）需要可公网访问的音频 URL，本地文件暂不能自动转写——请直接粘贴/手敲转写稿，或改用公网音频 URL。`,
-    createdAt: new Date().toISOString()
-  };
 }

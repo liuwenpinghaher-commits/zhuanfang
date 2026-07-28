@@ -168,10 +168,10 @@ export function CorpusLearningView({
                   <span className="corpus-method-path-cond">条件：{ANALYSIS_PATHS.llm.condition}</span>
                   <p>{ANALYSIS_PATHS.llm.description}</p>
                 </div>
-                <div className="corpus-method-path">
-                  <span className="corpus-method-path-badge corpus-method-path-badge-det">{ANALYSIS_PATHS.deterministic.label}</span>
-                  <span className="corpus-method-path-cond">条件：{ANALYSIS_PATHS.deterministic.condition}</span>
-                  <p>{ANALYSIS_PATHS.deterministic.description}</p>
+<div className="corpus-method-path">
+                  <span className="corpus-method-path-badge corpus-method-path-badge-det">{ANALYSIS_PATHS.unavailable.label}</span>
+                  <span className="corpus-method-path-cond">条件：{ANALYSIS_PATHS.unavailable.condition}</span>
+                  <p>{ANALYSIS_PATHS.unavailable.description}</p>
                 </div>
               </div>
             </section>
@@ -242,7 +242,7 @@ export function CorpusLearningView({
                   </div>
                 )}
                 <span className="field-help">
-                  本地文件最大 25 MB。受转写引擎约束，本地文件不会自动转写——上传后请手动补全转写稿，或改用公网 URL。
+                  本地文件最大 25 MB。服务端会落盘；若配置了 CORPUS_AUDIO_PUBLIC_BASE_URL（SenseVoice 可拉取的公网基址）则可自动转写，否则请粘贴转写稿或改用公网 URL。
                 </span>
                 {fileError && <p className="form-error">{fileError}</p>}
               </div>

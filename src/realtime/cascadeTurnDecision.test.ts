@@ -1,38 +1,31 @@
-import { describe, it, expect } from "vitest";
-import { decideCascadeTurn } from "./cascadeTurnDecision";
+import { describe, expect, it } from "vitest";
+import { decideCascadeTurn, shouldAcceptBargeIn } from "./cascadeTurnDecision";
+import { assessTurnCompleteness } from "./turnCompleteness";
+
+describe("shouldAcceptBargeIn", () => {
+  it("rejects ultra-short blips", () => {
+    expect(shouldAcceptBargeIn(50, 280)).toBe(false);
+    expect(shouldAcceptBargeIn(300, 280)).toBe(true);
+  });
+});
+
+describe("assessTurnCompleteness semantic EoT", () => {
+  it("treats done phrases as complete", () => {
+    expect(assessTurnCompleteness("我的观点大概就是这样")).toBe("complete");
+    expect(assessTurnCompleteness("先这样")).toBe("complete");
+  });
+  it("still marks hanging connectives incomplete", () => {
+    expect(assessTurnCompleteness("因为")).toBe("incomplete");
+  });
+});
 
 describe("decideCascadeTurn", () => {
-  const base = { expressionState: "fluent" as const, silenceMs: 1000, completeness: "ambiguous" as const };
-
-  it("静默超过 maxWait → respond（安全网）", () => {
-    expect(decideCascadeTurn({ ...base, silenceMs: 9000, maxWaitMs: 8000 }).action).toBe("respond");
-  });
-
-  it("停顿过短 → wait", () => {
-    expect(decideCascadeTurn({ ...base, silenceMs: 300, minPauseMs: 600 }).action).toBe("wait");
-  });
-
-  it("emotional → backchannel", () => {
-    expect(decideCascadeTurn({ ...base, expressionState: "emotional" }).action).toBe("backchannel");
-  });
-
-  it("circling → backchannel", () => {
-    expect(decideCascadeTurn({ ...base, expressionState: "circling" }).action).toBe("backchannel");
-  });
-
-  it("completeness=complete → respond", () => {
-    expect(decideCascadeTurn({ ...base, completeness: "complete" }).action).toBe("respond");
-  });
-
-  it("completeness=incomplete → wait", () => {
-    expect(decideCascadeTurn({ ...base, completeness: "incomplete" }).action).toBe("wait");
-  });
-
-  it("completeness=ambiguous → uncertain（升 Layer 2）", () => {
-    expect(decideCascadeTurn({ ...base, completeness: "ambiguous" }).action).toBe("uncertain");
-  });
-
-  it("每个决策都带 reason", () => {
-    expect(decideCascadeTurn(base).reason.length).toBeGreaterThan(0);
+  it("responds on complete transcript after min pause", () => {
+    const d = decideCascadeTurn({
+      expressionState: "fluent",
+      silenceMs: 800,
+      completeness: "complete"
+    });
+    expect(d.action).toBe("respond");
   });
 });

@@ -25,6 +25,7 @@ import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, formatSearc
 
 import { buildInterviewEnginePolicy } from "./strategy";
 import { cosineSimilarity, topKByCosine } from "./vector";
+import { decideRecallAcceptance, resolveMinRecallScore, scoreMemoryTextsForReject } from "./retrieval";
 
 // ponytail: 有界常量 — 上下文包中最多携带的 corrections 条数
 const MAX_CONTEXT_CORRECTIONS = 20;
@@ -337,17 +338,25 @@ export function buildInterviewContextPack(state: ProductState, options: Intervie
   // three-factor scorer (cosine relevance + recency + importance) so the context
   // pack mirrors the same semantic recall as guide.relevantMemories. Without it,
   // fall back to the substring ranking (unchanged behaviour).
-  // P2b:有 recall.memoryHits(向量 HNSW 召回)→ 候选 record 三因子精排;否则现状(queryEmbedding 走语义,无则子串)。
-  const confirmedMemories = recall?.memoryHits
-    ? rankMemoryRecordsBySemantics(
-        // P2b:与 collectRelevantMemories 的记忆池口径统一 —— memoryHits ∪ themeAssets.memories(图主题记忆)。
-        (() => { const ids = new Set([...recall.memoryHits.map((h) => h.id), ...(recall.themeAssets?.memories ?? [])]); return memoryRecords.filter((record) => ids.has(record.id)); })(),
-        topicHint,
-        options.queryEmbedding ?? []
-      )
-    : options.queryEmbedding
-      ? rankMemoryRecordsBySemantics(memoryRecords, topicHint, options.queryEmbedding)
-      : rankMemoryTexts(memoryRecords.map((record) => record.text), topicHint);
+  // P2b:有非空 memoryHits(向量 HNSW 召回)→ 候选 record 三因子精排。
+  // C-P1-05:空数组 [] 是 truthy 但表示「原生召回无命中」→ 必须回落全量 eligible confirmed 池,
+  // 否则 confirmedMemories 被缩成空、跨会话上下文整段消失。
+  // Always rank MemoryRecord[] via three-factor scorer (not rankMemoryTexts) so empty-hit
+  // fallback still keeps confirmed memories by recency/importance when topic tokens miss.
+  const confirmedMemoryPool = hasNonEmptyMemoryHits(recall)
+    ? (() => {
+        const ids = new Set([
+          ...recall!.memoryHits!.map((h) => h.id),
+          ...(recall!.themeAssets?.memories ?? [])
+        ]);
+        return memoryRecords.filter((record) => ids.has(record.id));
+      })()
+    : memoryRecords;
+  const confirmedMemories = rankMemoryRecordsBySemantics(
+    confirmedMemoryPool,
+    topicHint,
+    options.queryEmbedding ?? []
+  );
   const graphReferences = buildMemoryGraphReferences(state, memoryRecords, topicHint);
   const pendingCandidates = memoryPolicy.includePendingCandidatesInContext
     ? state.memoryCandidates.filter(
@@ -421,6 +430,55 @@ export function buildInterviewContextPack(state: ProductState, options: Intervie
  * P2b:解析驱动召回的当前主题。抽出 buildInterviewGuide 原 topicHint 表达式,使 server 预召回
  * 与域内召回用同一主题(DRY + 一致)。纯函数,无副作用。
  */
+/**
+ * Mid-session card refresh after guide/pack rebuild (R-P1-02).
+ * - historyReferences: live guide memories only when present (no dual merge with open-time freeze).
+ * - sourceHighlights: when a mid-session pack was built, ALWAYS take the pack channel
+ *   (including empty) so open-time freeze cannot linger after a live rebuild.
+ */
+export function applyMidSessionCardRefresh(
+  card: InterviewCard,
+  guide: InterviewGuide,
+  livePack?: InterviewContextPack
+): InterviewCard {
+  return {
+    ...card,
+    historyReferences:
+      guide.relevantMemories.length > 0
+        ? guide.relevantMemories.slice(0, 4)
+        : card.historyReferences,
+    ...(livePack
+      ? { sourceHighlights: livePack.sourceHighlights.slice(0, 4) }
+      : {})
+  };
+}
+
+/**
+ * Mid-session recall topic resolution (R-P1-01).
+ * - queryText: always the latest user utterance when present (drives BM25/lexical).
+ * - themeTopic: a theme name that appears in the latest utterance (longest match wins);
+ *   when none matches, empty string so graph/provenance do NOT silently stay on open-time theme.
+ * - When no latest text, both fall back to opening topicHint.
+ */
+export function resolveMidSessionRecallTopic(
+  state: ProductState,
+  openingTopicHint: string,
+  latestUserText?: string
+): { themeTopic: string; queryText: string } {
+  const opening = (openingTopicHint ?? "").trim();
+  const latest = (latestUserText ?? "").trim();
+  if (!latest) {
+    return { themeTopic: opening, queryText: opening };
+  }
+  const matched = [...state.themes]
+    .filter((theme) => theme.name && latest.includes(theme.name))
+    .sort((a, b) => b.name.length - a.name.length || b.appearances - a.appearances)[0];
+  return {
+    themeTopic: matched?.name ?? "",
+    queryText: latest
+  };
+}
+
 export function resolveInterviewTopicHint(state: ProductState, options: InterviewGuideOptions = {}): string {
   const explicitTopicHint = options.topicHint?.trim();
   const searchBrief = resolveInterviewContextSearchBrief(state, options);
@@ -740,7 +798,10 @@ export function buildSemanticRagContext(
     })
     .filter((item): item is { chunk: RagChunk; source: ImportSource } => Boolean(item));
 
-  // Cosine path: queryEmbedding present AND at least one candidate has an embedding
+  // Cosine path: queryEmbedding present AND at least one candidate has an embedding.
+  // R-P2-02: topKByCosine drops non-positive scores (parity with chat). If every
+  // embedded chunk scores ≤0 (common with hash/fake vectors or true orthogonal),
+  // fall through to keyword path instead of padding zero-relevance chunks.
   const hasEmbeddedChunks = candidates.some((item) => Array.isArray(item.chunk.embedding));
   if (queryEmbedding && hasEmbeddedChunks) {
     const embeddedCandidates = candidates.filter(
@@ -748,17 +809,19 @@ export function buildSemanticRagContext(
         Array.isArray(item.chunk.embedding)
     );
     const topChunks = topKByCosine(queryEmbedding, embeddedCandidates.map((item) => item.chunk), limit);
-    const topChunkIds = new Set(topChunks.map((c) => c.id));
-    const matches = embeddedCandidates.filter((item) => topChunkIds.has(item.chunk.id));
-    // Restore cosine-sorted order
-    matches.sort((a, b) => topChunks.findIndex((c) => c.id === a.chunk.id) - topChunks.findIndex((c) => c.id === b.chunk.id));
+    if (topChunks.length > 0) {
+      const topChunkIds = new Set(topChunks.map((c) => c.id));
+      const matches = embeddedCandidates.filter((item) => topChunkIds.has(item.chunk.id));
+      // Restore cosine-sorted order
+      matches.sort((a, b) => topChunks.findIndex((c) => c.id === a.chunk.id) - topChunks.findIndex((c) => c.id === b.chunk.id));
 
-    const importSources = Array.from(new Map(matches.map((match) => [match.source.id, match.source])).values());
-    return {
-      chunks: matches.map((match) => match.chunk),
-      sourceHighlights: matches.map((match, index) => buildSemanticRagSourceHighlight(match.source, match.chunk, 10 - index, index)),
-      importSources
-    };
+      const importSources = Array.from(new Map(matches.map((match) => [match.source.id, match.source])).values());
+      return {
+        chunks: matches.map((match) => match.chunk),
+        sourceHighlights: matches.map((match, index) => buildSemanticRagSourceHighlight(match.source, match.chunk, 10 - index, index)),
+        importSources
+      };
+    }
   }
 
   // Keyword fallback path (original behaviour, fully preserved)
@@ -933,14 +996,26 @@ export function collectAppliedPlaybookRuleTypes(state: ProductState) {
 }
 function collectConfirmedMemoryTexts(state: ProductState) {
   // M4: single source of truth — confirmed memory texts come from memoryRecords only.
+  // C-P1-01: align with memoryRecords/relevantMemories — sensitive confirmed memories stay
+  // out of card historyReferences (and thus text/voice prompts + sidebar) unless policy allows.
+  const includeSensitive = state.systemConfig.memory.includeSensitiveMemoriesInContext;
   return Array.from(
     new Set(
       state.memoryRecords
-        .filter((record) => record.status === "confirmed")
+        .filter(
+          (record) =>
+            record.status === "confirmed" &&
+            (includeSensitive || isModelSafeMemoryRecord(record))
+        )
         .map((record) => record.text.trim())
         .filter(Boolean)
     )
   );
+}
+
+/** True only when native HNSW returned at least one hit (empty [] must fall back to full pool). */
+function hasNonEmptyMemoryHits(recall?: RecallResult): boolean {
+  return Array.isArray(recall?.memoryHits) && recall!.memoryHits!.length > 0;
 }
 /** P2b:按 recall.themeAssets 的 id 从内存 state 取资产文本(格式与现状 otherCandidates 一致)。 */
 function collectThemeAssetTexts(state: ProductState, assets: NonNullable<RecallResult["themeAssets"]>): string[] {
@@ -964,19 +1039,39 @@ function collectRelevantMemories(
   const topicTokens = splitTopicTokens(topicHint);
 
   // 1) confirmed 长期记忆：三因子评分（relevance + recency + importance）精排。
-  //    P2b:有 memoryHits(向量 HNSW 召回)时,记忆池 = memoryHits ∪ themeAssets.memories(图主题记忆)对应 record;
-  //    无向量召回(如 voice 无 embedding)→ 全量回落,不降级。三因子精排不变。
-  const memoryPool = recall?.memoryHits
+  //    P2b:有非空 memoryHits 时,记忆池 = memoryHits ∪ themeAssets.memories 对应 record;
+  //    无召回或空 hits(C-P1-05)→ 全量回落。三因子精排不变。
+  const memoryPool = hasNonEmptyMemoryHits(recall)
     ? (() => {
-        const ids = new Set<string>([...recall.memoryHits.map((h) => h.id), ...(recall.themeAssets?.memories ?? [])]);
+        const ids = new Set<string>([
+          ...recall!.memoryHits!.map((h) => h.id),
+          ...(recall!.themeAssets?.memories ?? [])
+        ]);
         return contextPack.memoryRecords.filter((record) => ids.has(record.id));
       })()
     : contextPack.memoryRecords;
+  // R-P2-01: drop zero-relevance confirmed memories (no recency/importance-only padding).
+  // Native HNSW hits already passed vector/BM25 ranking — treat as relevant even when
+  // substring tokens miss (Chinese short labels without topic words).
+  const nativeHitIds = hasNonEmptyMemoryHits(recall)
+    ? new Set(recall!.memoryHits!.map((h) => h.id))
+    : new Set<string>();
   const rankedMemoryTexts = [...memoryPool]
-    .map((record) => ({
-      text: record.text,
-      score: scoreMemoryForRetrieval(record, { topicTokens, ...(queryEmbedding ? { queryEmbedding } : {}), now })
-    }))
+    .map((record) => {
+      const relevance = nativeHitIds.has(record.id)
+        ? Math.max(0.01, computeMemoryRelevance(record, { topicTokens, queryEmbedding }))
+        : computeMemoryRelevance(record, { topicTokens, queryEmbedding });
+      return {
+        text: record.text,
+        relevance,
+        score: scoreMemoryForRetrieval(record, {
+          topicTokens,
+          ...(queryEmbedding ? { queryEmbedding } : {}),
+          now
+        })
+      };
+    })
+    .filter((item) => item.relevance > 0)
     .sort((a, b) => b.score - a.score)
     .map((item) => item.text);
 
@@ -1004,15 +1099,35 @@ function collectRelevantMemories(
         .map((x) => x.text)
     : rankMemoryTexts(otherCandidates, topicHint);
 
+  // R-P1-05: when includePendingCandidatesInContext is on, actually feed pending texts
+  // into model-facing relevantMemories (with topic overlap floor) — no pack-only empty claim.
+  const pendingTexts =
+    state.systemConfig.memory.includePendingCandidatesInContext
+      ? state.memoryCandidates
+          .filter(
+            (candidate) =>
+              candidate.status === "pending" &&
+              (state.systemConfig.memory.includeSensitiveMemoriesInContext ||
+                candidate.sensitivity !== "sensitive")
+          )
+          .map((candidate) => candidate.text)
+          .filter((text) => {
+            if (topicTokens.length === 0) return false;
+            return topicTokens.some((token) => text.includes(token));
+          })
+      : [];
+
   // 记忆优先于其余资产，去重后取前 5。
   const seen = new Set<string>();
   const merged: string[] = [];
-  for (const text of [...rankedMemoryTexts, ...rankedOthers]) {
+  for (const text of [...rankedMemoryTexts, ...pendingTexts, ...rankedOthers]) {
     if (!seen.has(text)) {
       seen.add(text);
       merged.push(text);
     }
   }
+  // Stage-2: chat path applies hybrid reject + channel quotas. Interview relevantMemories
+  // already use relevance>0 floors (R-P2-01); do not second-guess and empty the guide channel.
   return merged.slice(0, 5);
 }
 function countOccurrences(text: string, signal: string) {
@@ -1198,11 +1313,20 @@ const memoryGraphStopTokens = new Set([
 function rankMemoryRecordsBySemantics(records: MemoryRecord[], topicHint: string, queryEmbedding: number[]) {
   const topicTokens = splitTopicTokens(topicHint);
   const now = nowIso();
+  // R-P2-01: same relevance floor as collectRelevantMemories.
   return [...records]
-    .map((record) => ({
-      text: record.text,
-      score: scoreMemoryForRetrieval(record, { topicTokens, queryEmbedding, now })
-    }))
+    .map((record) => {
+      const relevance = computeMemoryRelevance(record, {
+        topicTokens,
+        queryEmbedding: queryEmbedding.length > 0 ? queryEmbedding : undefined
+      });
+      return {
+        text: record.text,
+        relevance,
+        score: scoreMemoryForRetrieval(record, { topicTokens, queryEmbedding, now })
+      };
+    })
+    .filter((item) => item.relevance > 0)
     .sort((a, b) => b.score - a.score)
     .map((item) => item.text);
 }
@@ -1214,9 +1338,9 @@ function rankMemoryTexts(memoryCandidates: string[], topicHint: string) {
       score: tokens.reduce((score, token) => score + (memory.includes(token) ? 1 : 0), 0)
     }))
     .sort((a, b) => b.score - a.score);
-  return scored
-    .filter((item, index) => item.score > 0 || index < 3)
-    .map((item) => item.memory);
+  // C-P2-01: only keep positive topic overlap — never force zero-score "top 3 padding"
+  // that pollutes guide/card with unrelated confirmed memories or demo seed text.
+  return scored.filter((item) => item.score > 0).map((item) => item.memory);
 }
 
 /**
@@ -1232,6 +1356,23 @@ function rankMemoryTexts(memoryCandidates: string[], topicHint: string) {
  *
  * @returns 加权得分（默认权重 0.6/0.25/0.15）。
  */
+/** Pure relevance component of memory scoring (0..1). Exported for floors/tests. */
+export function computeMemoryRelevance(
+  record: MemoryRecord,
+  opts: { topicTokens: string[]; queryEmbedding?: number[] }
+): number {
+  const { topicTokens, queryEmbedding } = opts;
+  if (queryEmbedding && queryEmbedding.length > 0 && record.embedding && record.embedding.length > 0) {
+    return Math.max(0, cosineSimilarity(queryEmbedding, record.embedding));
+  }
+  const tokens = topicTokens.filter((token) => token.length > 0);
+  if (tokens.length === 0) {
+    return 0;
+  }
+  const hits = tokens.reduce((count, token) => count + (record.text.includes(token) ? 1 : 0), 0);
+  return hits / tokens.length;
+}
+
 export function scoreMemoryForRetrieval(
   record: MemoryRecord,
   opts: { topicTokens: string[]; queryEmbedding?: number[]; now: string; alpha?: number; beta?: number; gamma?: number }
@@ -1242,18 +1383,7 @@ export function scoreMemoryForRetrieval(
   const gamma = opts.gamma ?? 0.15;
 
   // relevance ∈ [0,1]
-  let relevance: number;
-  if (queryEmbedding && queryEmbedding.length > 0 && record.embedding && record.embedding.length > 0) {
-    relevance = Math.max(0, cosineSimilarity(queryEmbedding, record.embedding));
-  } else {
-    const tokens = topicTokens.filter((token) => token.length > 0);
-    if (tokens.length === 0) {
-      relevance = 0;
-    } else {
-      const hits = tokens.reduce((count, token) => count + (record.text.includes(token) ? 1 : 0), 0);
-      relevance = hits / tokens.length;
-    }
-  }
+  const relevance = computeMemoryRelevance(record, { topicTokens, queryEmbedding });
 
   // recency ∈ (0,1]，未来/不可解析时间兜底为 0
   const referenceTime = Date.parse(record.lastAccessedAt ?? record.createdAt);
@@ -1286,16 +1416,31 @@ function resolveInterviewSearchBrief(state: ProductState, searchBriefId?: string
     const brief = state.searchBriefs.find((item) => item.id === searchBriefId);
     return brief && isSearchBriefAllowedInInterviewContext(state, brief) ? brief : undefined;
   }
-  // 无显式 id 时：优先选最近的 tracked:true 且允许进上下文的 brief（兑现"持续追踪自动喂专访"语义）
+  // C-P2-02: auto-inject only when a profile/theme topic signal overlaps the brief.
+  // Do NOT call resolveInterviewTopicHint here (it depends on this function → stack overflow).
+  const topTheme = [...state.themes].sort((a, b) => b.appearances - a.appearances)[0];
+  const topicSignals = [state.profile.currentFocus, topTheme?.name]
+    .map((s) => (s ?? "").trim())
+    .filter(Boolean);
+  if (topicSignals.length === 0) {
+    return undefined;
+  }
+  const overlapsAny = (brief: SearchBrief) =>
+    topicSignals.some((signal) => isSearchBriefDiscussionTopic(brief, signal));
   const trackedBrief = state.searchBriefs.find(
-    (item) => item.tracked && isSearchBriefAllowedInInterviewContext(state, item)
+    (item) =>
+      item.tracked &&
+      isSearchBriefAllowedInInterviewContext(state, item) &&
+      overlapsAny(item)
   );
   if (trackedBrief) {
     return trackedBrief;
   }
-  // 无 tracked brief 时回退到原 [0] 逻辑
   const first = state.searchBriefs[0];
-  return first && isSearchBriefAllowedInInterviewContext(state, first) ? first : undefined;
+  if (first && isSearchBriefAllowedInInterviewContext(state, first) && overlapsAny(first)) {
+    return first;
+  }
+  return undefined;
 }
 function scoreRagChunkForTopic(chunk: RagChunk, source: ImportSource, topicTokens: Set<string>) {
   const primaryTokens = tokenizeMemoryGraphText(chunk.text);

@@ -154,27 +154,30 @@ describe("finalizeSessionWithLlm", () => {
     expect(result.nextState.debts.length).toBe(beforeDebts);
   });
 
-  it("malformed JSON → throws so the route can fall back", async () => {
+  it("malformed JSON → throws (/end 如实失败,会话保持 open 可重试)", async () => {
     await expect(
       finalizeSessionWithLlm(baseState, makeSession(), mockChat("not valid json at all"))
     ).rejects.toThrow();
   });
 
-  it("keyQuote missing from LLM but session has user turns → uses longest user turn as fallback", async () => {
+  // 真实性重构:剔除「keyQuote 缺失 → 用最长用户发言冒充」的启发式兜底。
+  // keyQuote 必须是 LLM 逐字摘录的关键引用,缺了就是失败,如实抛错。
+  it("keyQuote missing from LLM → throws (不再用最长用户发言冒充)", async () => {
     const json = JSON.stringify({
       summary: "总结",
       saidTrack: ["说了"],
       learnedTrack: ["学了"],
-      keyQuote: "" // empty → asNonEmptyString returns "" → pickLongestUserTurn fallback
+      keyQuote: "" // empty → asNonEmptyString returns ""
     });
     const session = makeSession({
       turns: [
-        { id: "t1", role: "user", content: "这是最长的用户发言内容用于回退", intent: "normal", timestamp: new Date().toISOString() },
+        { id: "t1", role: "user", content: "这是最长的用户发言内容", intent: "normal", timestamp: new Date().toISOString() },
         { id: "t2", role: "assistant", content: "助手回复", intent: "normal", timestamp: new Date().toISOString() }
       ]
     });
-    const result = await finalizeSessionWithLlm(baseState, session, mockChat(json));
-    expect(result.note.keyQuote).toBe("这是最长的用户发言内容用于回退");
+    await expect(
+      finalizeSessionWithLlm(baseState, session, mockChat(json))
+    ).rejects.toThrow("no keyQuote");
   });
 
   // --- Controlled theme grounding (本体论欠账①: attributeThemeIds 下线, LLM 直出受控主题归属) ---

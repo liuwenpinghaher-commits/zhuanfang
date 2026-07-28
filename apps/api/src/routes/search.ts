@@ -11,6 +11,7 @@ import {
 import { buildSearchBrief, createSearchBriefFromInput } from "../../../../src/domain/engine";
 import { sanitizeSearchBriefInputFields } from "../../../../src/domain/search-brief";
 import type { ProductState, SearchBrief, SearchBriefInput, SearchProviderId } from "../../../../src/domain/types";
+import { nowIso } from "../../../../src/domain/utils";
 import {
   dedupeBriefSources,
   planResearchAgendaRun
@@ -19,7 +20,8 @@ import { enrichBriefInput } from "../intelligence/search-synthesis-llm";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import { formatProviderErrorMessage } from "../provider-error";
 import type { BailianChatClient } from "../providers/bailian";
-import type { ProductStateRepository } from "../product-state-repository";
+import type { ProductStateRepository } from "../product-state-repository"
+import { replaceStateDurable } from "../product-state-repository";
 
 const searchProviderIds: SearchProviderId[] = ["local-demo", "bailian", "anysearch"];
 
@@ -61,6 +63,13 @@ export async function registerSearchRoutes(
       maxSources: normalizePositiveInteger(payload.maxSources, state.systemConfig.search.maxSources),
       recencyDays: normalizePositiveInteger(payload.recencyDays, state.systemConfig.search.recencyDays)
     };
+    // 联网 provider 选定但未配置 key → 如实 503（不再用壳 provider 生成占位简报冒充联网结果）。
+    if (providerId === "bailian" && !options.bailianSearchClient) {
+      return reply.code(503).send({ error: "百炼联网搜索未配置（缺少 DASHSCOPE_API_KEY），无法生成联网简报。" });
+    }
+    if (providerId === "anysearch" && !options.anySearchClient) {
+      return reply.code(503).send({ error: "AnySearch 未配置（缺少 ANYSEARCH_API_KEY），无法生成联网简报。" });
+    }
     const run =
       providerId === "bailian" && options.bailianSearchClient
         ? await executeBailianSearchProvider(options.bailianSearchClient, {
@@ -72,35 +81,47 @@ export async function registerSearchRoutes(
               ...searchInput,
               providerId: "anysearch"
             })
-        : await executeSearchProvider(searchInput);
+        : await executeSearchProvider(searchInput); // 仅 local-demo（用户显式选择的演示 provider）
 
     if (run.task.status === "failed" || run.result === undefined) {
-      // P0-E: a provider failure no longer hard-502s. Degrade to a deterministic local-demo
-      // brief (returned 200, flagged degraded) so this main route behaves like auto-briefs /
-      // refresh / generateBriefForTopic, which all fall back instead of erroring.
-      const { brief, nextState } = buildSearchBrief(state, searchInput.topic, "local-demo");
-      // state 必须是 replaceState 返回的权威态(revision 已 bump),否则客户端下一次乐观 PUT 必 409。
-      const persistedDegraded = repository.replaceState(nextState);
-      return { brief, state: persistedDegraded, task: run.task, degraded: true };
+      // 联网搜索失败 → 如实 502（不再用 local-demo 占位简报冒充调研结果落库）。
+      return reply.code(502).send({ error: run.task.error ?? "联网搜索失败。", task: run.task });
     }
 
     // Replace templated insights with LLM synthesis over the real sources
     // (no-op for bailian, which already synthesizes via its Responses API).
-    // Guard with budget to avoid uncapped LLM calls.
-    const allowLlm = !!options.bailianChatClient && budget.tryConsume("system");
-    if (!!options.bailianChatClient && !allowLlm) {
+    // 无 chatClient = 配置态（简报按 provider 原样产出）;有 client 但预算耗尽 → 429;富化失败 → 502。
+    const needsEnrichment =
+      !!options.bailianChatClient && run.result.provider !== "bailian" && run.result.status === "ready" && run.result.sources.length > 0;
+    if (needsEnrichment && !budget.tryConsume("system")) {
       console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "search_briefs" }));
+      return reply.code(429).send({ error: "本时段 LLM 预算已用尽，简报生成暂不可用，请稍后重试。" });
     }
-    const enriched = await enrichBriefInput(run.result, allowLlm ? options.bailianChatClient : undefined);
-    const { brief, nextState } = createSearchBriefFromInput(state, enriched);
-    const persisted = repository.replaceState(nextState);
-    return { brief, state: persisted, task: run.task };
+    let enriched: SearchBriefInput;
+    try {
+      enriched = await enrichBriefInput(run.result, needsEnrichment ? options.bailianChatClient : undefined);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(JSON.stringify({ event: "llm_failed", capability: "search_briefs", error: message }));
+      return reply.code(502).send({ error: `简报洞察生成失败：${message}。请重试。` });
+    }
+    // SR-P1-03: provider/enrich ran outside write slot (route is write-gate exempt);
+    // commit re-reads latest so concurrent writes during long IO are not clobbered.
+    const commitCreate = async () => {
+      const latest = repository.getState();
+      const { brief, nextState } = createSearchBriefFromInput(latest, enriched);
+      const persisted = /*durable*/await replaceStateDurable(repository, nextState);
+      return { brief, state: persisted, task: run.task };
+    };
+    return options.writeGate
+      ? await options.writeGate.runExclusive("search-brief-create", commitCreate)
+      : await commitCreate();
   });
 
   // ---------------------------------------------------------------------------
   // POST /api/search/briefs/:id/refresh
   // Re-runs the research for an existing brief, preserving id/tracked/appliedToSessionIds.
-  // Falls back to local-demo when no live provider is configured.
+  // provider 未配置/失败 → 如实 503/502，原简报原样保留（不落任何变更）。
   // ---------------------------------------------------------------------------
   server.post("/api/search/briefs/:id/refresh", async (request, reply) => {
     const { id } = request.params as { id: string };
@@ -112,6 +133,15 @@ export async function registerSearchRoutes(
 
     const topic = existing.topic;
     const providerId = isSearchProviderId(existing.provider) ? existing.provider : state.systemConfig.search.activeProvider;
+    if (providerId === "local-demo") {
+      return reply.code(422).send({ error: "演示简报（local-demo）不支持联网刷新。" });
+    }
+    if (providerId === "bailian" && !options.bailianSearchClient) {
+      return reply.code(503).send({ error: "百炼联网搜索未配置（缺少 DASHSCOPE_API_KEY），无法刷新简报。" });
+    }
+    if (providerId === "anysearch" && !options.anySearchClient) {
+      return reply.code(503).send({ error: "AnySearch 未配置（缺少 ANYSEARCH_API_KEY），无法刷新简报。" });
+    }
     const searchInput = {
       topic,
       providerId,
@@ -119,66 +149,80 @@ export async function registerSearchRoutes(
       recencyDays: state.systemConfig.search.recencyDays
     };
 
-    // Run provider — reuse same flow as creation
-    let freshInput: SearchBriefInput | undefined;
+    // Run provider — reuse same flow as creation. 失败如实 502，原简报不动。
+    let freshInput: SearchBriefInput;
     try {
-      if (providerId === "bailian" && options.bailianSearchClient) {
-        freshInput = await options.bailianSearchClient.createSearchBrief({ ...searchInput, providerId: "bailian" });
-      } else if (providerId === "anysearch" && options.anySearchClient) {
-        freshInput = await options.anySearchClient.createSearchBrief({ ...searchInput, providerId: "anysearch" });
-      }
+      freshInput =
+        providerId === "bailian"
+          ? await options.bailianSearchClient!.createSearchBrief({ ...searchInput, providerId: "bailian" })
+          : await options.anySearchClient!.createSearchBrief({ ...searchInput, providerId: "anysearch" });
     } catch (error) {
-      console.warn(JSON.stringify({ event: "refresh_provider_error", briefId: id, error: error instanceof Error ? error.message : String(error) }));
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(JSON.stringify({ event: "refresh_provider_error", briefId: id, error: message }));
+      return reply.code(502).send({ error: `简报刷新失败（联网搜索出错）：${message}。原简报未变。` });
     }
 
-    // LLM enrichment (budget-guarded)
-    const allowLlm = !!options.bailianChatClient && budget.tryConsume("system");
-    const enriched = freshInput
-      ? await enrichBriefInput(freshInput, allowLlm ? options.bailianChatClient : undefined)
-      : undefined;
-
-    // 审计修复(P2-24):降级不再用离线占位模板【覆盖】真实调研内容——只标 needs-review 供复核、
-    // 内容原样保留,响应带 degraded 标志(与创建路由契约对齐)并记事件。
-    if (!enriched) {
-      console.warn(JSON.stringify({ event: "refresh_degraded", briefId: id, topic }));
-      const kept = { ...existing, status: "needs-review" as const, lastRefreshedAt: new Date().toISOString() };
-      const keptState = { ...state, searchBriefs: state.searchBriefs.map((b) => (b.id === id ? kept : b)) };
-      const persistedKept = repository.replaceState(keptState);
-      return { brief: kept, state: persistedKept, degraded: true };
+    // LLM enrichment（无 chatClient=配置态;预算耗尽 → 429;失败 → 502,原简报不动）。
+    const needsEnrichment =
+      !!options.bailianChatClient && freshInput.provider !== "bailian" && freshInput.status === "ready" && freshInput.sources.length > 0;
+    if (needsEnrichment && !budget.tryConsume("system")) {
+      console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "search_refresh" }));
+      return reply.code(429).send({ error: "本时段 LLM 预算已用尽，简报刷新暂不可用，请稍后重试。" });
+    }
+    let enriched: SearchBriefInput;
+    try {
+      enriched = await enrichBriefInput(freshInput, needsEnrichment ? options.bailianChatClient : undefined);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(JSON.stringify({ event: "llm_failed", capability: "search_refresh", error: message }));
+      return reply.code(502).send({ error: `简报洞察生成失败：${message}。原简报未变。` });
     }
     // 审计修复(F1):refresh 路径的 provider 文本与 create 同口径清洗(此前直接 spread 落库)。
     const refreshedBriefInput: SearchBriefInput = sanitizeSearchBriefInputFields(enriched);
 
-    // Merge: preserve id, tracked, appliedToSessionIds, createdAt
-    const updatedBrief = {
-      ...existing,
-      topic: refreshedBriefInput.topic,
-      provider: refreshedBriefInput.provider,
-      status: refreshedBriefInput.status,
-      summary: refreshedBriefInput.summary,
-      facts: refreshedBriefInput.facts,
-      controversies: refreshedBriefInput.controversies,
-      opposingViews: refreshedBriefInput.opposingViews,
-      interviewAngles: refreshedBriefInput.interviewAngles,
-      discussionTopics: refreshedBriefInput.discussionTopics,
-      sourceAngles: refreshedBriefInput.sourceAngles,
-      sources: refreshedBriefInput.sources,
-      sourceTrace: refreshedBriefInput.sourceTrace ?? existing.sourceTrace,
-      agendaTrace: refreshedBriefInput.agendaTrace,
-      // preserve these identity fields:
-      id: existing.id,
-      tracked: existing.tracked,
-      appliedToSessionIds: existing.appliedToSessionIds,
-      createdAt: existing.createdAt
+    // SR-P1-01/03: stamp lastRefreshedAt; re-read latest under write gate after long IO.
+    const commitRefresh = async () => {
+      const latest = repository.getState();
+      const current = latest.searchBriefs.find((b) => b.id === id);
+      if (!current) {
+        // Deleted during long refresh window — do not resurrect.
+        return null;
+      }
+      const updatedBrief = {
+        ...current,
+        topic: refreshedBriefInput.topic,
+        provider: refreshedBriefInput.provider,
+        status: refreshedBriefInput.status,
+        summary: refreshedBriefInput.summary,
+        facts: refreshedBriefInput.facts,
+        controversies: refreshedBriefInput.controversies,
+        opposingViews: refreshedBriefInput.opposingViews,
+        interviewAngles: refreshedBriefInput.interviewAngles,
+        discussionTopics: refreshedBriefInput.discussionTopics,
+        sourceAngles: refreshedBriefInput.sourceAngles,
+        sources: refreshedBriefInput.sources,
+        sourceTrace: refreshedBriefInput.sourceTrace ?? current.sourceTrace,
+        agendaTrace: refreshedBriefInput.agendaTrace,
+        id: current.id,
+        tracked: current.tracked,
+        appliedToSessionIds: current.appliedToSessionIds,
+        createdAt: current.createdAt,
+        lastRefreshedAt: nowIso()
+      };
+      const nextState = {
+        ...latest,
+        searchBriefs: latest.searchBriefs.map((b) => (b.id === id ? updatedBrief : b))
+      };
+      const persisted = /*durable*/await replaceStateDurable(repository, nextState);
+      return { brief: updatedBrief, state: persisted };
     };
-
-    const nextState = {
-      ...state,
-      searchBriefs: state.searchBriefs.map((b) => (b.id === id ? updatedBrief : b))
-    };
-    const persisted = repository.replaceState(nextState);
-
-    return { brief: updatedBrief, state: persisted };
+    const committed = options.writeGate
+      ? await options.writeGate.runExclusive("search-brief-refresh", commitRefresh)
+      : await commitRefresh();
+    if (!committed) {
+      return reply.code(404).send({ error: "Brief not found" });
+    }
+    return committed;
   });
 
   // ---------------------------------------------------------------------------
@@ -201,7 +245,7 @@ export async function registerSearchRoutes(
       ...state,
       searchBriefs: state.searchBriefs.map((b) => (b.id === id ? updatedBrief : b))
     };
-    const persisted = repository.replaceState(nextState);
+    const persisted = /*durable*/await replaceStateDurable(repository, nextState);
 
     return { brief: updatedBrief, state: persisted };
   });
@@ -243,18 +287,27 @@ export async function registerSearchRoutes(
     }
 
     // --- 生成新简报（每个 agendaItem 一条） ---
+    // 逐条隔离:单条失败不拖垮整轮,但失败【必须】进 summary.failures 如实汇报——
+    // 不再用 local-demo 占位简报冒充生成成功、也不再把失败静默计入 generated。
     const currentState = repository.getState();
     const generated: SearchBrief[] = [];
+    const failures: Array<{ topic: string; error: string }> = [];
     let runningState: ProductState = currentState;
     for (const item of agendaItems) {
-      const { brief, nextState } = await generateBriefForTopic(
-        runningState,
-        item.query,
-        options,
-        allowLlm
-      );
-      generated.push(brief);
-      runningState = nextState;
+      try {
+        const { brief, nextState } = await generateBriefForTopic(
+          runningState,
+          item.query,
+          options,
+          allowLlm
+        );
+        generated.push(brief);
+        runningState = nextState;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(JSON.stringify({ event: "auto_run_generate_failed", topic: item.query, error: message }));
+        failures.push({ topic: item.query, error: message });
+      }
     }
 
     // --- 刷新过期 tracked 简报 ---
@@ -262,15 +315,21 @@ export async function registerSearchRoutes(
     for (const briefId of staleTrackedBriefIds) {
       const existing = runningState.searchBriefs.find((b) => b.id === briefId);
       if (!existing) continue;
-      const { updatedBrief, nextState } = await refreshExistingBrief(
-        runningState,
-        existing,
-        options,
-        allowLlm,
-        now
-      );
-      refreshed.push(updatedBrief);
-      runningState = nextState;
+      try {
+        const { updatedBrief, nextState } = await refreshExistingBrief(
+          runningState,
+          existing,
+          options,
+          allowLlm,
+          now
+        );
+        refreshed.push(updatedBrief);
+        runningState = nextState;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(JSON.stringify({ event: "auto_run_refresh_failed", briefId, error: message }));
+        failures.push({ topic: existing.topic, error: message });
+      }
     }
 
     // --- 跨简报来源去重 + 基于 latest 原子合并 ---
@@ -280,7 +339,7 @@ export async function registerSearchRoutes(
     // 因此既不阻塞其它写、又不会 clobber 期间的用户写(lost-update)。
     // 审计修复(D3):终写经全局写门排队——豁免只豁免"联网期间不持锁",最终读-合并-写必须与
     // 串行写互斥,否则会落在某个长持锁写(如 /end)的读写窗口内被整态回滚(反向 clobber)。
-    const commitFinal = () => {
+    const commitFinal = async () => {
       // N-05:终写前(已在 writeGate 独占块内,与治理成功递增代际的时刻可比对)复查代际。已变=联网期间
       // 发生过 reset/purge/import,整库已换,本轮 generated/refreshed 全部基于陈旧状态 → 整体丢弃、记事件,
       // 不回写。(若治理恰在此刻在途,下方 replaceState 还会被 M1 守卫拒 → 409,由端点冒泡,亦不复活。)
@@ -302,18 +361,21 @@ export async function registerSearchRoutes(
       for (const b of generated) briefById.set(b.id, b);
       const { briefs: dedupedBriefs, duplicateCount } = dedupeBriefSources([...briefById.values()]);
       const finalState: ProductState = { ...latest, searchBriefs: dedupedBriefs };
-      return { persisted: repository.replaceState(finalState), duplicateCount };
+      return { persisted: await replaceStateDurable(repository, finalState), duplicateCount };
     };
     const { persisted, duplicateCount } = options.writeGate
       ? await options.writeGate.runExclusive("auto-run-final-write", commitFinal)
-      : commitFinal();
+      : await commitFinal();
 
     return {
       state: persisted,
       summary: {
         generated: generated.length,
         refreshed: refreshed.length,
-        dedupedSources: duplicateCount
+        dedupedSources: duplicateCount,
+        // 失败逐条如实汇报（主题+原因），不再静默吞掉或用占位简报顶替。
+        failed: failures.length,
+        ...(failures.length > 0 ? { failures } : {})
       }
     };
     } finally {
@@ -339,41 +401,26 @@ export async function registerSearchRoutes(
     }
 
     const provider = state.systemConfig.search.activeProvider;
-    const searchInput = {
-      topic,
-      maxSources: state.systemConfig.search.maxSources,
-      recencyDays: state.systemConfig.search.recencyDays
-    };
 
     // Guard auto-brief LLM enrichment with budget.
     const allowLlm = !!options.bailianChatClient && budget.tryConsume("system");
     if (!!options.bailianChatClient && !allowLlm) {
       console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "search_auto_briefs" }));
+      return reply.code(429).send({ error: "本时段 LLM 预算已用尽，自动简报暂不可用，请稍后重试。" });
     }
 
-    // Actually run the configured provider so auto-briefs hit the live web
-    // instead of returning the templated demo brief.
+    // 与 generateBriefForTopic 同一策略:provider 未配置 → 503;联网/富化失败 → 502;
+    // 仅显式 local-demo 配置走确定性演示简报。不再静默降级。
     try {
-      let result: SearchBriefInput | undefined;
-      if (provider === "bailian" && options.bailianSearchClient) {
-        result = await options.bailianSearchClient.createSearchBrief({ ...searchInput, providerId: "bailian" });
-      } else if (provider === "anysearch" && options.anySearchClient) {
-        result = await options.anySearchClient.createSearchBrief({ ...searchInput, providerId: "anysearch" });
-      }
-      if (result) {
-        const enriched = await enrichBriefInput(result, allowLlm ? options.bailianChatClient : undefined);
-        const { brief, nextState } = createSearchBriefFromInput(state, enriched);
-        const persistedLlm = repository.replaceState(nextState);
-        return { brief, state: persistedLlm };
-      }
+      const { brief, nextState } = await generateBriefForTopic(state, topic, options, allowLlm);
+      const persisted = /*durable*/await replaceStateDurable(repository, nextState);
+      return { brief, state: persisted };
     } catch (error) {
-      console.warn(JSON.stringify({ event: "llm_fallback", capability: "search", error: error instanceof Error ? error.message : String(error) }));
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(JSON.stringify({ event: "auto_brief_failed", topic, error: message }));
+      const code = message.includes("未配置") ? 503 : 502;
+      return reply.code(code).send({ error: `自动简报生成失败：${message}` });
     }
-
-    // Fallback: deterministic local brief when no live provider is configured.
-    const { brief, nextState } = buildSearchBrief(state, topic, provider);
-    const persisted = repository.replaceState(nextState);
-    return { brief, state: persisted };
   });
 }
 
@@ -458,7 +505,9 @@ function isSearchProviderId(value: unknown): value is SearchProviderId {
 
 /**
  * 按 topic 生成一条搜索简报，并将结果合入传入的 state 返回新 state。
- * 无 provider 时降级走 local-demo（不报错，仍返回简报）。
+ * 真实性原则:provider 未配置/联网失败/富化失败 → 抛错,由调用方如实暴露
+ * （HTTP 路由 5xx;auto-run/调度器逐条记失败并汇报）。
+ * 仅当 activeProvider 显式配置为 local-demo 时走确定性演示简报（用户主动选择,非降级）。
  */
 export async function generateBriefForTopic(
   state: ProductState,
@@ -472,27 +521,28 @@ export async function generateBriefForTopic(
     maxSources: state.systemConfig.search.maxSources,
     recencyDays: state.systemConfig.search.recencyDays
   };
-  try {
-    let result: SearchBriefInput | undefined;
-    if (provider === "bailian" && options.bailianSearchClient) {
-      result = await options.bailianSearchClient.createSearchBrief({ ...searchInput, providerId: "bailian" });
-    } else if (provider === "anysearch" && options.anySearchClient) {
-      result = await options.anySearchClient.createSearchBrief({ ...searchInput, providerId: "anysearch" });
-    }
-    if (result) {
-      const enriched = await enrichBriefInput(result, allowLlm ? options.bailianChatClient : undefined);
-      return createSearchBriefFromInput(state, enriched);
-    }
-  } catch (error) {
-    console.warn(JSON.stringify({ event: "generate_brief_provider_error", topic, error: error instanceof Error ? error.message : String(error) }));
+  if (provider === "local-demo") {
+    return buildSearchBrief(state, topic, provider);
   }
-  // 降级：local-demo 确定性简报
-  return buildSearchBrief(state, topic, provider);
+  let result: SearchBriefInput;
+  if (provider === "bailian") {
+    if (!options.bailianSearchClient) {
+      throw new Error("百炼联网搜索未配置（缺少 DASHSCOPE_API_KEY）");
+    }
+    result = await options.bailianSearchClient.createSearchBrief({ ...searchInput, providerId: "bailian" });
+  } else {
+    if (!options.anySearchClient) {
+      throw new Error("AnySearch 未配置（缺少 ANYSEARCH_API_KEY）");
+    }
+    result = await options.anySearchClient.createSearchBrief({ ...searchInput, providerId: "anysearch" });
+  }
+  const enriched = await enrichBriefInput(result, allowLlm ? options.bailianChatClient : undefined);
+  return createSearchBriefFromInput(state, enriched);
 }
 
 /**
  * 刷新一条已有简报，更新 lastRefreshedAt，返回 updatedBrief 和新 state。
- * 无 provider 时降级走 local-demo，仍更新 lastRefreshedAt。
+ * 真实性原则:provider 未配置/联网失败/富化失败 → 抛错,原简报不动,由调用方如实暴露。
  */
 export async function refreshExistingBrief(
   state: ProductState,
@@ -500,7 +550,7 @@ export async function refreshExistingBrief(
   options: SearchRouteOptions,
   allowLlm: boolean,
   now: string
-): Promise<{ updatedBrief: SearchBrief; nextState: ProductState; degraded?: boolean }> {
+): Promise<{ updatedBrief: SearchBrief; nextState: ProductState }> {
   const topic = existing.topic;
   const providerId = isSearchProviderId(existing.provider) ? existing.provider : state.systemConfig.search.activeProvider;
   const searchInput = {
@@ -509,31 +559,23 @@ export async function refreshExistingBrief(
     recencyDays: state.systemConfig.search.recencyDays
   };
 
-  let freshInput: SearchBriefInput | undefined;
-  try {
-    if (providerId === "bailian" && options.bailianSearchClient) {
-      freshInput = await options.bailianSearchClient.createSearchBrief({ ...searchInput, providerId: "bailian" });
-    } else if (providerId === "anysearch" && options.anySearchClient) {
-      freshInput = await options.anySearchClient.createSearchBrief({ ...searchInput, providerId: "anysearch" });
+  if (providerId === "local-demo") {
+    throw new Error("演示简报（local-demo）不支持联网刷新");
+  }
+  let freshInput: SearchBriefInput;
+  if (providerId === "bailian") {
+    if (!options.bailianSearchClient) {
+      throw new Error("百炼联网搜索未配置（缺少 DASHSCOPE_API_KEY）");
     }
-  } catch (error) {
-    console.warn(JSON.stringify({ event: "refresh_brief_provider_error", briefId: existing.id, error: error instanceof Error ? error.message : String(error) }));
+    freshInput = await options.bailianSearchClient.createSearchBrief({ ...searchInput, providerId: "bailian" });
+  } else {
+    if (!options.anySearchClient) {
+      throw new Error("AnySearch 未配置（缺少 ANYSEARCH_API_KEY）");
+    }
+    freshInput = await options.anySearchClient.createSearchBrief({ ...searchInput, providerId: "anysearch" });
   }
 
-  const enriched = freshInput
-    ? await enrichBriefInput(freshInput, allowLlm ? options.bailianChatClient : undefined)
-    : undefined;
-
-  // 审计修复(P2-24):降级不覆盖真实内容,只标 needs-review + 刷新时间戳(scheduler/auto-run 共用)。
-  if (!enriched) {
-    console.warn(JSON.stringify({ event: "refresh_degraded", briefId: existing.id, topic }));
-    const kept: SearchBrief = { ...existing, status: "needs-review", lastRefreshedAt: now };
-    return {
-      updatedBrief: kept,
-      nextState: { ...state, searchBriefs: state.searchBriefs.map((b) => (b.id === existing.id ? kept : b)) },
-      degraded: true
-    };
-  }
+  const enriched = await enrichBriefInput(freshInput, allowLlm ? options.bailianChatClient : undefined);
   // 审计修复(F1):与 create 同口径清洗。
   const refreshedBriefInput: SearchBriefInput = sanitizeSearchBriefInputFields(enriched);
 

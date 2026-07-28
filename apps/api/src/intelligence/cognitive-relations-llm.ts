@@ -4,8 +4,9 @@
 // 输出:CognitiveRelations —— 每对判为 contradict(语义对立)/ supersede(后者修正深化前者)/ none。
 // 域层 applyCognitiveRelations 再把它写回 state(双向 contradictsPointIds / supersededByPointId)。
 //
-// Fail-safe 铁律(绝不阻塞 finalize):无 chatClient / 无候选对 / 预算耗尽 / 解析失败 /
-// 任意抛错 → 返回空关系。判定走【批量单次】LLM 调用(候选对已在域层封顶,prompt 有界)。
+// 真实性铁律:预算耗尽/解析失败/任意抛错 → 向上抛,由 /end 统一 catch 原子中止并如实 5xx。
+// "返回空关系"只保留给「确实没有候选对」——失败与"无矛盾"不可混淆。
+// 判定走【批量单次】LLM 调用(候选对已在域层封顶,prompt 有界)。
 import type { PointAsset } from "../../../../src/domain/types";
 import type { CognitiveRelations } from "../../../../src/domain/reasoning";
 import type { BailianChatClient } from "../providers/bailian";
@@ -27,22 +28,21 @@ const SYSTEM_PROMPT = [
 /**
  * 让 LLM 对候选观点对做语义判定。
  * @param pairs   域层粗筛出的观点对(已 symmetric 去重、已封顶)。
- * @param chatClient  无则直接返回空(离线/无 key)。
- * @param budget  per-session 预算;tryConsume 失败(超预算)→ 返回空。
+ * @param chatClient  必选——调用方（/end）已保证存在。
+ * @param budget  per-session 预算;tryConsume 失败(超预算)→ 抛错。
  * @param sessionId  预算计数 key(沿用 finalize/memory-extraction 的 session.id)。
  */
 export async function judgeCognitiveRelations(
   pairs: Array<[PointAsset, PointAsset]>,
-  chatClient: BailianChatClient | undefined,
+  chatClient: BailianChatClient,
   budget: LlmBudget,
   sessionId: string
 ): Promise<CognitiveRelations> {
-  // 无候选对:连预算都不消费(纯省),直接空。
+  // 无候选对:连预算都不消费(纯省),直接空——这是唯一合法的"空关系"。
   if (pairs.length === 0) return EMPTY;
-  if (!chatClient) return EMPTY;
   if (!budget.tryConsume(sessionId)) {
     console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "cognitive_relations", sessionId }));
-    return EMPTY;
+    throw new Error("本会话 LLM 预算已用尽（矛盾/演化精判）");
   }
 
   // 合法对集合(归一键 a|b,按 id 字典序),用于丢弃 LLM 回的「没送过的对 / 幻觉 id」。
@@ -51,25 +51,16 @@ export async function judgeCognitiveRelations(
     validPairs.set(pairKey(a.id, b.id), a.id < b.id ? [a.id, b.id] : [b.id, a.id]);
   }
 
-  try {
-    const raw = await chatClient.complete({
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: buildPrompt(pairs) }
-      ],
-      responseFormat: "json",
-      temperature: 0.2,
-      maxTokens: 2000
-    });
-    return parseRelations(raw, validPairs);
-  } catch (error) {
-    console.warn(JSON.stringify({
-      event: "cognitive_relations_fallback",
-      sessionId,
-      error: error instanceof Error ? error.message : String(error)
-    }));
-    return EMPTY;
-  }
+  const raw = await chatClient.complete({
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: buildPrompt(pairs) }
+    ],
+    responseFormat: "json",
+    temperature: 0.2,
+    maxTokens: 2000
+  });
+  return parseRelations(raw, validPairs);
 }
 
 function buildPrompt(pairs: Array<[PointAsset, PointAsset]>): string {
@@ -92,7 +83,10 @@ function buildPrompt(pairs: Array<[PointAsset, PointAsset]>): string {
 
 function parseRelations(raw: string, validPairs: Map<string, [string, string]>): CognitiveRelations {
   const json = parseJsonObjectLoose(raw);
-  if (!json) return EMPTY;
+  if (!json) {
+    // 解析失败 ≠ 判定"无矛盾"——如实抛错,不能把失败伪装成空关系。
+    throw new Error("cognitive relations LLM returned unparseable JSON");
+  }
 
   const contradicts: Array<[string, string]> = [];
   const supersedes: Array<{ oldId: string; newId: string }> = [];

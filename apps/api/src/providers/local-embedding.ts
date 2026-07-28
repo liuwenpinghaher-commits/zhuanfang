@@ -47,6 +47,19 @@ export function createLocalEmbeddingClient(): BailianEmbeddingClient {
       // "broadcast 512 by 2002" 维度错误 = 超长输入没被截断、直接喂进模型。显式开 truncation
       // (tokenizer 截到 model_max_length);再用保守字符上限兜底,防个别 transformers.js 版本
       // truncation 不透传(中文≈1字符1token,480 字符 +[CLS][SEP] 稳落 512 内,仍保留主体语义)。
+      // 截断是模型能力硬边界(等价于 tokenizer truncation),但发生时必须可观测——
+      // 不再静默:记录被截断条数与最长原文长度,召回质量下降有迹可查。
+      const overLimit = texts.filter((t) => t.length > 480);
+      if (overLimit.length > 0) {
+        console.warn(JSON.stringify({
+          event: "local_embedding_truncated",
+          model: LOCAL_EMBEDDING_MODEL,
+          truncatedCount: overLimit.length,
+          totalCount: texts.length,
+          maxChars: 480,
+          longestInput: Math.max(...overLimit.map((t) => t.length))
+        }));
+      }
       const safe = texts.map((t) => (t.length > 480 ? t.slice(0, 480) : t));
       const out = await extractor(safe, { pooling: "mean", normalize: true, truncation: true });
       return out.tolist(); // [n, 1024]

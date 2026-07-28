@@ -21,11 +21,13 @@ function bearerMatches(actual: string, apiToken: string): boolean {
 
 /**
  * True when auth is inactive (local/dev) OR a presented credential matches the token.
- * Accepts the `Authorization` header (normal HTTP) AND a `?token=` query value, because
- * browser WebSocket clients cannot set request headers — without the query path the WS
- * upgrade would be unauthenticated, bypassing the HTTP guard entirely.
+ * Accepts Authorization bearer, `?token=` query (WS/media), and cookie session token
+ * (same-origin SPA bootstrap — avoids baking the secret into static JS as the only model).
  */
-export function isAuthorized(env: Env, presented: { authHeader?: string; tokenQuery?: string }): boolean {
+export function isAuthorized(
+  env: Env,
+  presented: { authHeader?: string; tokenQuery?: string; cookieToken?: string }
+): boolean {
   const apiToken = env.PRODUCT_API_TOKEN;
   if (!isAuthGuardActive(env) || !apiToken) {
     return true;
@@ -36,5 +38,21 @@ export function isAuthorized(env: Env, presented: { authHeader?: string; tokenQu
   if (presented.tokenQuery && bearerMatches(`Bearer ${presented.tokenQuery}`, apiToken)) {
     return true;
   }
+  if (presented.cookieToken && bearerMatches(`Bearer ${presented.cookieToken}`, apiToken)) {
+    return true;
+  }
   return false;
+}
+
+/** Parse a simple Cookie header for a named value (no dependency on @fastify/cookie). */
+export function readCookieToken(cookieHeader: string | undefined, name = "product_api_token"): string | undefined {
+  if (!cookieHeader) return undefined;
+  for (const part of cookieHeader.split(";")) {
+    const [k, ...rest] = part.trim().split("=");
+    if (k === name) {
+      const v = rest.join("=").trim();
+      return v ? decodeURIComponent(v) : undefined;
+    }
+  }
+  return undefined;
 }

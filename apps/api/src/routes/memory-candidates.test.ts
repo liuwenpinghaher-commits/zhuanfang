@@ -4,6 +4,8 @@ import { registerMemoryCandidateRoutes } from "./memory-candidates";
 import { createInMemoryProductStateRepository } from "../product-state-repository";
 import { createEmptyProductState } from "../../../../src/domain/engine";
 import type { MemoryCandidate, MemoryRecord, ProductState } from "../../../../src/domain/types";
+import { createLlmBudget } from "../llm-budget";
+import { createFakeChatClient } from "../test-helpers/fake-llm-clients";
 
 function confirmedRecord(partial: Partial<MemoryRecord> & { id: string; text: string }): MemoryRecord {
   return {
@@ -77,7 +79,7 @@ describe("memory-candidates approve (M3c embedding enrichment)", () => {
     await server.close();
   });
 
-  it("without embeddingClient: record is created with no embedding and does not crash", async () => {
+  it("without embeddingClient: record is created with embeddingReady:false signal", async () => {
     const repo = createInMemoryProductStateRepository(seedPendingCandidate());
     const server = Fastify({ logger: false });
     await registerMemoryCandidateRoutes(server, repo, {}); // no embeddingClient
@@ -87,11 +89,14 @@ describe("memory-candidates approve (M3c embedding enrichment)", () => {
       url: "/api/memory-candidates/mc-approve-001/approve"
     });
     expect(res.statusCode).toBe(200);
-    const record = res.json().record;
-    expect(record).toBeDefined();
-    expect(record.embedding).toBeUndefined();
+    const body = res.json();
+    expect(body.record).toBeDefined();
+    expect(body.record.embedding).toBeUndefined();
+    expect(body.embeddingReady).toBe(false);
+    expect(body.vectorRecallAvailable).toBe(false);
+    expect(typeof body.warning).toBe("string");
     // importance backfill from reviewScore still applies (pure, client-independent).
-    expect(typeof record.importance).toBe("number");
+    expect(typeof body.record.importance).toBe("number");
 
     await server.close();
   });
@@ -109,7 +114,7 @@ describe("memory-candidates approve (M3c embedding enrichment)", () => {
     await server.close();
   });
 
-  it("embedding failure degrades to no embedding (record still created)", async () => {
+  it("C-P1-06: embedding client present but fails → 502 fail-closed, candidate stays pending", async () => {
     const embed = vi.fn(async () => {
       throw new Error("embedding service down");
     });
@@ -121,10 +126,14 @@ describe("memory-candidates approve (M3c embedding enrichment)", () => {
       method: "POST",
       url: "/api/memory-candidates/mc-approve-001/approve"
     });
-    expect(res.statusCode).toBe(200);
-    const record = res.json().record;
-    expect(record).toBeDefined();
-    expect(record.embedding).toBeUndefined();
+    expect(res.statusCode).toBe(502);
+    const body = res.json();
+    expect(body.embeddingReady).toBe(false);
+    expect(body.vectorRecallAvailable).toBe(false);
+    expect(String(body.error)).toMatch(/语义向量不可用|嵌入/);
+    // Not confirmed into long-term store
+    expect(repo.getState().memoryRecords.find((r) => r.sourceCandidateId === "mc-approve-001")).toBeUndefined();
+    expect(repo.getState().memoryCandidates.find((c) => c.id === "mc-approve-001")?.status).toBe("pending");
 
     await server.close();
   });
@@ -132,8 +141,9 @@ describe("memory-candidates approve (M3c embedding enrichment)", () => {
 
 // M5: lightweight consolidation — POST /api/memory/consolidate de-dups
 // near-identical confirmed records (deprecate the weaker) and persists the
-// result. With a chat client it may additionally emit a pending summary
-// candidate for HITL; without one it just de-dups (offline-safe).
+// result, and summarizes each merged cluster into a pending HITL candidate.
+// 真实性重构:摘要是整合契约的一部分——有合并簇但 LLM 不可用/预算耗尽/失败时,
+// 整个 consolidate 原子失败(503/429/502,未持久化任何去重变更),不再静默降级为"仅去重"。
 function seedNearDuplicateRecords(): ProductState {
   return {
     ...createEmptyProductState(),
@@ -145,10 +155,11 @@ function seedNearDuplicateRecords(): ProductState {
 }
 
 describe("memory consolidate (M5 lightweight consolidation)", () => {
-  it("deprecates the weaker of a near-duplicate pair and reports the count", async () => {
+  it("deprecates the weaker of a near-duplicate pair and reports the count (成功路径注入假 LLM)", async () => {
     const repo = createInMemoryProductStateRepository(seedNearDuplicateRecords());
     const server = Fastify({ logger: false });
-    await registerMemoryCandidateRoutes(server, repo, {});
+    // 有合并簇时摘要 LLM 是必选能力——注入确定性假 client 走真实摘要路径。
+    await registerMemoryCandidateRoutes(server, repo, { bailianChatClient: createFakeChatClient() });
 
     const res = await server.inject({ method: "POST", url: "/api/memory/consolidate" });
     expect(res.statusCode).toBe(200);
@@ -161,6 +172,12 @@ describe("memory consolidate (M5 lightweight consolidation)", () => {
     expect(persisted.memoryRecords.find((r) => r.id === "rec-weak")?.status).toBe("deprecated");
     expect(persisted.memoryRecords.find((r) => r.id === "rec-keep")?.status).toBe("confirmed");
     expect(body.state.memoryRecords.find((r: MemoryRecord) => r.id === "rec-weak")?.status).toBe("deprecated");
+
+    // 成功时每个合并簇必有一条摘要候选（吞错跳簇已删除）。
+    const candidates = persisted.memoryCandidates;
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].status).toBe("pending");
+    expect(candidates[0].text).toBe("当系统失败时会如实暴露而不是伪装成功（整合后的记忆表述）。");
 
     await server.close();
   });
@@ -184,16 +201,20 @@ describe("memory consolidate (M5 lightweight consolidation)", () => {
     await server.close();
   });
 
-  it("without a chat client: de-dups but emits no summary candidate", async () => {
+  // 真实性重构:有合并簇但无 chatClient → 503,原子失败(不再静默降级为"仅去重")。
+  it("有合并簇但无 chatClient → 503,未持久化任何去重变更", async () => {
     const repo = createInMemoryProductStateRepository(seedNearDuplicateRecords());
     const server = Fastify({ logger: false });
     await registerMemoryCandidateRoutes(server, repo, {}); // no bailianChatClient
 
     const res = await server.inject({ method: "POST", url: "/api/memory/consolidate" });
-    expect(res.statusCode).toBe(200);
-    expect(res.json().summary.deprecated).toBe(1);
-    // No LLM → no new pending candidate is created.
-    expect(repo.getState().memoryCandidates.length).toBe(0);
+    expect(res.statusCode).toBe(503);
+    expect(res.json().error).toContain("未配置");
+    // 原子失败:去重未持久化,两条记录仍 confirmed,无摘要候选。
+    const persisted = repo.getState();
+    expect(persisted.memoryRecords.find((r) => r.id === "rec-weak")?.status).toBe("confirmed");
+    expect(persisted.memoryRecords.find((r) => r.id === "rec-keep")?.status).toBe("confirmed");
+    expect(persisted.memoryCandidates).toHaveLength(0);
 
     await server.close();
   });
@@ -218,7 +239,8 @@ describe("memory consolidate (M5 lightweight consolidation)", () => {
     await server.close();
   });
 
-  it("chat client failure degrades to dedup-only (no crash, no candidate)", async () => {
+  // 真实性重构:摘要 LLM 运行时失败 → 502,整个 consolidate 原子失败(去重也不落库)。
+  it("摘要 LLM 失败 → 502,原子失败未持久化任何去重变更", async () => {
     const complete = vi.fn(async () => {
       throw new Error("chat service down");
     });
@@ -227,11 +249,92 @@ describe("memory consolidate (M5 lightweight consolidation)", () => {
     await registerMemoryCandidateRoutes(server, repo, { bailianChatClient: { complete } });
 
     const res = await server.inject({ method: "POST", url: "/api/memory/consolidate" });
+    expect(res.statusCode).toBe(502);
+    expect(res.json().error).toContain("记忆整合失败");
+    // 原子失败:rec-weak 未被 deprecate,无摘要候选。
+    expect(repo.getState().memoryRecords.find((r) => r.id === "rec-weak")?.status).toBe("confirmed");
+    expect(repo.getState().memoryCandidates).toHaveLength(0);
+
+    await server.close();
+  });
+
+  // ME-P1-02: clusters beyond MAX_SUMMARY_CLUSTERS=4 restore losers (not permanent deprecate).
+  it("ME-P1-02: 超出摘要 cap 的簇 loser 恢复 confirmed，不永久 deprecate", async () => {
+    // 5 near-dup pairs → 5 clusters; only 4 get summaries; 5th loser must stay confirmed.
+    // Use legal 1024-d embeddings so clampPersistableEnums keeps vectors (short dims strip).
+    const axis = (i: number, noise = 0) =>
+      Array.from({ length: 1024 }, (_, d) => (d === i * 20 ? 1 + noise : 0.001 * ((d + i) % 7)));
+    const records: MemoryRecord[] = [];
+    for (let i = 0; i < 5; i++) {
+      const base = `主题簇${i}用户偏好先小范围验证再放权后扩大试点路径独立内容`;
+      records.push(
+        confirmedRecord({
+          id: `keep-${i}`,
+          text: base,
+          importance: 9,
+          embedding: axis(i, 0)
+        }),
+        confirmedRecord({
+          id: `weak-${i}`,
+          text: `${base}略作改写`,
+          importance: 2,
+          embedding: axis(i, 0.02)
+        })
+      );
+    }
+    const repo = createInMemoryProductStateRepository({
+      ...createEmptyProductState(),
+      memoryRecords: records
+    });
+    const complete = vi.fn(async () => "整合后的表述");
+    const server = Fastify({ logger: false });
+    await registerMemoryCandidateRoutes(server, repo, {
+      bailianChatClient: { complete },
+      llmBudget: createLlmBudget({ maxCallsPerSession: 20 })
+    });
+
+    const res = await server.inject({ method: "POST", url: "/api/memory/consolidate" });
     expect(res.statusCode).toBe(200);
-    expect(res.json().summary.deprecated).toBe(1);
-    expect(repo.getState().memoryRecords.find((r) => r.id === "rec-weak")?.status).toBe("deprecated");
-    // Summary failed → no candidate, but consolidation still persisted.
-    expect(repo.getState().memoryCandidates.length).toBe(0);
+    const body = res.json() as { summary: { deprecated: number } };
+    // At most 4 clusters summarized (one loser each under our pairing).
+    expect(body.summary.deprecated).toBeLessThanOrEqual(4);
+    expect(complete.mock.calls.length).toBeLessThanOrEqual(4);
+
+    const persisted = repo.getState().memoryRecords;
+    const weakStatuses = [0, 1, 2, 3, 4].map((i) => persisted.find((r) => r.id === `weak-${i}`)?.status);
+    const confirmedWeaks = weakStatuses.filter((s) => s === "confirmed").length;
+    const deprecatedWeaks = weakStatuses.filter((s) => s === "deprecated").length;
+    expect(deprecatedWeaks).toBeLessThanOrEqual(4);
+    if (deprecatedWeaks === 4) {
+      expect(confirmedWeaks).toBeGreaterThanOrEqual(1);
+    }
+
+    // Summary candidates point at keepers for merge-on-approve (ME-P1-03).
+    const summaries = repo.getState().memoryCandidates.filter((c) => c.status === "pending");
+    for (const c of summaries) {
+      expect(c.suggestedUpdate).toBe("update");
+      expect(c.similarToRecordId).toBeTruthy();
+    }
+
+    await server.close();
+  });
+
+  // 真实性重构:摘要预算耗尽 → 429,同样原子失败。
+  it("摘要预算耗尽 → 429,原子失败未持久化任何去重变更", async () => {
+    const repo = createInMemoryProductStateRepository(seedNearDuplicateRecords());
+    const exhaustedBudget = createLlmBudget({ maxCallsPerSession: 1 });
+    exhaustedBudget.tryConsume("memory_consolidate"); // 消耗唯一配额
+    const server = Fastify({ logger: false });
+    await registerMemoryCandidateRoutes(server, repo, {
+      bailianChatClient: createFakeChatClient(),
+      llmBudget: exhaustedBudget
+    });
+
+    const res = await server.inject({ method: "POST", url: "/api/memory/consolidate" });
+    expect(res.statusCode).toBe(429);
+    expect(res.json().error).toContain("预算已用尽");
+    expect(repo.getState().memoryRecords.find((r) => r.id === "rec-weak")?.status).toBe("confirmed");
+    expect(repo.getState().memoryCandidates).toHaveLength(0);
 
     await server.close();
   });

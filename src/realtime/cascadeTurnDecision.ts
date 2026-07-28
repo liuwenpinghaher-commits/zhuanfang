@@ -35,3 +35,9 @@ export function decideCascadeTurn(input: CascadeTurnInput): CascadeTurnDecision 
     case "ambiguous":  return { action: "uncertain", reason: "ambiguous → LLM endpoint" };
   }
 }
+
+
+/** False-barge-in suppression: ignore ultra-short VAD blips while AI is speaking. */
+export function shouldAcceptBargeIn(speechMs: number, minBargeInMs = 280): boolean {
+  return speechMs >= minBargeInMs;
+}

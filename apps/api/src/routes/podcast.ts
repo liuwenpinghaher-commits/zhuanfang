@@ -8,7 +8,8 @@ import {
 import type { PodcastEpisode } from "../../../../src/domain/types";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import type { BailianChatClient, BailianPodcastAudioClient } from "../providers/bailian";
-import type { ProductStateRepository } from "../product-state-repository";
+import type { ProductStateRepository } from "../product-state-repository"
+import { replaceStateDurable } from "../product-state-repository";
 import { generatePodcastScript } from "../intelligence/podcast-script-llm";
 
 interface PodcastEpisodeRequestPayload {
@@ -28,18 +29,13 @@ interface PodcastRouteOptions {
 /**
  * Renders TTS audio for a given episode using its current script.
  * Returns a patch object with the updated audio fields.
- * When no audioClient is provided, degrades gracefully to "fallback".
+ * TTS 失败如实标记为 "failed" 并携带真实错误信息（脚本已持久化不受影响），
+ * 绝不伪装成可稍后自动恢复的中间态。调用方（synthesize 端点）据此返回 5xx。
  */
 export async function renderEpisodeAudio(
   episode: PodcastEpisode,
-  audioClient?: BailianPodcastAudioClient
+  audioClient: BailianPodcastAudioClient
 ): Promise<Partial<PodcastEpisode>> {
-  if (!audioClient) {
-    return {
-      audioRenderStatus: "fallback",
-      audioRenderMessage: "未配置 TTS 服务，脚本已保留，可配置后重新合成。"
-    };
-  }
   try {
     const renderedAudio = await audioClient.synthesize({
       text: episode.script,
@@ -58,16 +54,17 @@ export async function renderEpisodeAudio(
         : {})
     };
   } catch (ttsError) {
+    const message = ttsError instanceof Error ? ttsError.message : String(ttsError);
     console.warn(
       JSON.stringify({
-        event: "llm_fallback",
+        event: "tts_failed",
         capability: "podcast_tts",
-        error: ttsError instanceof Error ? ttsError.message : String(ttsError)
+        error: message
       })
     );
     return {
-      audioRenderStatus: "fallback",
-      audioRenderMessage: "音频渲染失败，脚本已保留，可稍后重试。"
+      audioRenderStatus: "failed",
+      audioRenderMessage: `音频渲染失败：${message}。脚本已保留，可稍后重试。`
     };
   }
 }
@@ -116,57 +113,58 @@ export async function registerPodcastRoutes(
       if (!noteId) {
         return reply.code(422).send({ error: "No notes are available for podcast generation." });
       }
-      ({ episode, nextState } = generatePodcastEpisode(state, noteId, { format, voice }));
-
-      // For the note path, if a chat client is available, attempt LLM script generation.
-      // This happens BEFORE persist so the saved script is the LLM-generated one.
-      const allowLlm = !!options.bailianChatClient && budget.tryConsume("system");
-      if (!!options.bailianChatClient && !allowLlm) {
+      // Note 路径的脚本是 LLM 能力：不可用/失败就如实暴露，绝不用确定性模板脚本冒充。
+      if (!options.bailianChatClient) {
+        return reply.code(503).send({ error: "播客脚本 LLM 未配置（缺少 DASHSCOPE_API_KEY），无法从笔记生成播客。" });
+      }
+      if (!budget.tryConsume("system")) {
         console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "podcast_script" }));
+        return reply.code(429).send({ error: "本时段 LLM 预算已用尽，播客脚本生成暂不可用，请稍后重试。" });
       }
-      if (allowLlm) {
-        const note = state.notes.find((n) => n.id === noteId) ?? state.notes[0];
-        if (note) {
-          try {
-            const llmScript = await generatePodcastScript(
-              { note, format },
-              options.bailianChatClient!
-            );
-            episode = {
-              ...episode,
-              script: llmScript,
-              durationSec: Math.max(180, Math.round(llmScript.length * 0.8))
-            };
-            nextState = {
-              ...nextState,
-              podcastEpisodes: nextState.podcastEpisodes.map((item) =>
-                item.id === episode.id ? episode : item
-              )
-            };
-          } catch (llmError) {
-            console.warn(
-              JSON.stringify({
-                event: "llm_fallback",
-                capability: "podcast_script",
-                error: llmError instanceof Error ? llmError.message : String(llmError)
-              })
-            );
-            // Keep the deterministic script already in episode
-          }
-        }
+      const note = state.notes.find((n) => n.id === noteId);
+      if (!note) {
+        return reply.code(422).send({ error: "Note not found." });
       }
+      ({ episode, nextState } = generatePodcastEpisode(state, noteId, { format, voice }));
+      let llmScript: string;
+      try {
+        llmScript = await generatePodcastScript({ note, format }, options.bailianChatClient);
+      } catch (llmError) {
+        const message = llmError instanceof Error ? llmError.message : String(llmError);
+        console.warn(JSON.stringify({ event: "llm_failed", capability: "podcast_script", error: message }));
+        return reply.code(502).send({ error: `播客脚本生成失败：${message}` });
+      }
+      episode = {
+        ...episode,
+        script: llmScript,
+        durationSec: Math.max(180, Math.round(llmScript.length * 0.8))
+      };
+      nextState = {
+        ...nextState,
+        podcastEpisodes: nextState.podcastEpisodes.map((item) =>
+          item.id === episode.id ? episode : item
+        )
+      };
     }
 
-    // --- Step 1: Persist the episode FIRST (script is now saved, TTS failure won't lose it) ---
+// --- Step 1: Persist the episode FIRST (script is now saved, TTS failure won't lose it) ---
     // state 必须是 replaceState 返回的权威态(revision 已 bump),否则客户端下一次乐观 PUT 必 409。
-    const persistedDraft = repository.replaceState(nextState);
+    const persistedDraft = /*durable*/await replaceStateDurable(repository, nextState);
 
-    // --- Step 2: If no TTS client, return the persisted episode as-is ---
+    // --- Step 2: If no TTS client, return the persisted episode as-is (audioRenderStatus
+    // stays "pending" — 尚未渲染是诚实状态；配置 TTS 后可显式 synthesize) ---
     if (!options.bailianPodcastAudioClient) {
       return { episode, state: persistedDraft };
     }
 
-    // --- Step 3: Attempt TTS via shared renderEpisodeAudio; degrade gracefully on failure ---
+    // PO-P1-01: default is confirm-then-render. Only auto-TTS when explicitly enabled
+    // (PODCAST_AUTO_RENDER_ON_CREATE=true|1|yes|on). "auto" and unset = script only.
+    if (!shouldAutoRenderPodcastOnCreate(process.env.PODCAST_AUTO_RENDER_ON_CREATE)) {
+      return { episode, state: persistedDraft };
+    }
+
+    // --- Step 3: Attempt TTS; failure is persisted as "failed" with the real error,
+    // never dressed up as a recoverable in-between state ---
     const audioPatch = await renderEpisodeAudio(episode, options.bailianPodcastAudioClient);
     const finalEpisode: PodcastEpisode = { ...episode, ...audioPatch };
 
@@ -176,7 +174,7 @@ export async function registerPodcastRoutes(
         item.id === episode.id ? finalEpisode : item
       )
     };
-    const persistedFinal = repository.replaceState(finalState);
+    const persistedFinal = /*durable*/await replaceStateDurable(repository, finalState);
     return { episode: finalEpisode, state: persistedFinal };
   });
 
@@ -186,7 +184,7 @@ export async function registerPodcastRoutes(
   // the caller-supplied value BEFORE rendering, eliminating the frontend save-then-synthesize
   // race condition (the client can pass the current editing script directly).
   // When omitted, falls back to the stored episode.script.
-  // Degrades gracefully when no TTS client is configured (audioRenderStatus="fallback").
+  // TTS 不可用/失败如实返回 503/502（用户提供的脚本仍会持久化，不丢内容）。
   server.post("/api/podcast/episodes/:id/synthesize", async (request, reply) => {
     const { id } = request.params as { id: string };
     const state = repository.getState();
@@ -202,6 +200,17 @@ export async function registerPodcastRoutes(
       ? { ...existing, script: incomingScript, scriptReviewStatus: "用户确认" }
       : existing;
 
+    if (!options.bailianPodcastAudioClient) {
+      // 用户显式要求合成——没有 TTS 就是不能用，如实 503。先保住用户带来的脚本编辑。
+      if (incomingScript) {
+        /*durable*/await replaceStateDurable(repository, {
+          ...state,
+          podcastEpisodes: state.podcastEpisodes.map((ep) => (ep.id === id ? episodeToRender : ep))
+        });
+      }
+      return reply.code(503).send({ error: "未配置 TTS 服务（缺少 DASHSCOPE_API_KEY），无法合成音频。脚本已保留。" });
+    }
+
     const audioPatch = await renderEpisodeAudio(episodeToRender, options.bailianPodcastAudioClient);
     const updatedEpisode: PodcastEpisode = {
       ...episodeToRender,
@@ -216,7 +225,16 @@ export async function registerPodcastRoutes(
         ep.id === id ? updatedEpisode : ep
       )
     };
-    const persisted = repository.replaceState(updatedState);
+    const persisted = /*durable*/await replaceStateDurable(repository, updatedState);
+    if (updatedEpisode.audioRenderStatus === "failed") {
+      // 渲染失败：脚本与失败状态已持久化（不丢内容），HTTP 层如实 502 并附上权威 state
+      // 供客户端同步 revision。
+      return reply.code(502).send({
+        error: updatedEpisode.audioRenderMessage ?? "音频渲染失败。",
+        episode: updatedEpisode,
+        state: persisted
+      });
+    }
     return { episode: updatedEpisode, state: persisted };
   });
 }
@@ -233,6 +251,12 @@ function normalizeSourceType(value: unknown): PodcastEpisode["sourceType"] {
     return value;
   }
   return "note";
+}
+
+/** Explicit opt-in only — "auto" must not mean silent spend on create. */
+export function shouldAutoRenderPodcastOnCreate(raw: string | undefined): boolean {
+  const v = (raw ?? "").trim().toLowerCase();
+  return v === "true" || v === "1" || v === "yes" || v === "on";
 }
 
 function normalizeFormat(value: unknown): PodcastEpisode["format"] {

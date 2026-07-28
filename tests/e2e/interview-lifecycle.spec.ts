@@ -44,9 +44,9 @@ test("full interview lifecycle: start, submit 3 turns, end, assert diary note", 
     // Assert user's text appears in the transcript.
     await expect(page.getByText(turnText)).toBeVisible();
 
-    // Assert an assistant turn appears after each user turn.
-    // LLM API (百炼) may take several seconds per turn — allow 15s per turn.
-    await expect(page.locator("article.turn.assistant").last()).toBeVisible({ timeout: 15000 });
+    // Assert an assistant turn appears after each user turn (role bubble, not exact copy).
+    // LLM / fake provider may take several seconds — allow 20s per turn.
+    await expect(page.locator("article.turn.assistant").last()).toBeVisible({ timeout: 20000 });
   }
 
   // ── Step 4: end the interview ─────────────────────────────────────────────
@@ -59,15 +59,17 @@ test("full interview lifecycle: start, submit 3 turns, end, assert diary note", 
   // finishInterview calls the real API (POST /api/interview-sessions/:id/end) which
   // runs LLM-based session analysis — empirically ~16s. Allow 35s for headroom.
   await expect(page.getByText("专访档案已生成")).toBeVisible({ timeout: 35000 });
-  // App navigates to "notes" view after finishing.
-  await expect(page.getByText("从访谈沉淀认知资产")).toBeVisible();
+  // Pending memory candidates → memory view; otherwise notes.
+  await expect(page.getByText(/从访谈沉淀认知资产|待审候选记忆|记忆治理/).first()).toBeVisible({
+    timeout: 10000
+  });
 
-  // ── Step 6: assert a note card was produced (NotesView / 档案视图) ─────────
-  // App.finishInterview calls setView("notes") — NotesView renders each note as <article class="record-row">.
+  // ── Step 6: notes still exist — open 双轨笔记 and assert a record row ─────
+  await page.getByRole("button", { name: "双轨笔记" }).click();
+  await expect(page.getByText("从访谈沉淀认知资产")).toBeVisible();
   await expect(page.locator("article.record-row").first()).toBeVisible();
 
   // ── Step 7: cross-view consistency — notes count increased after interview ─
-  // We stayed on the notes view after finish, so article count is directly measurable.
   const notesArticlesAfter = await page.locator("article.record-row").count();
   expect(notesArticlesAfter).toBeGreaterThan(notesArticlesBefore);
 

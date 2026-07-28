@@ -16,6 +16,7 @@
  */
 
 import type { ProductStateRepository } from "./product-state-repository";
+import { replaceStateDurable } from "./product-state-repository";
 import type { SearchRouteOptions } from "./routes/search";
 import { generateBriefForTopic, refreshExistingBrief, researchRunGate } from "./routes/search";
 import type { SearchBrief } from "../../../src/domain/types";
@@ -103,7 +104,7 @@ export function startResearchScheduler(options: ResearchSchedulerOptions): Resea
 
       // 终写:重读 latest,仅把本 tick 产出按 id 叠加(用户期间的新建/删除/编辑全保留),
       // 并经全局写门与在途 HTTP 写互斥(审计修复 D4:此前完全绕开串行化)。
-      const commit = () => {
+      const commit = async () => {
         // N-05:终写前复查代际(同 HTTP auto-run)。已变=tick 期间发生过治理,整库已换,本轮产出全部
         // 基于陈旧状态 → 整体丢弃、记事件,不回写(否则 reset 后干净库冒出含旧主题名的简报)。
         const currentGeneration = options.repository.getGovernanceGeneration?.();
@@ -119,12 +120,12 @@ export function startResearchScheduler(options: ResearchSchedulerOptions): Resea
           if (isNew || byId.has(b.id)) byId.set(b.id, b);
         }
         const { briefs } = dedupeBriefSources([...byId.values()]);
-        options.repository.replaceState({ ...latest, searchBriefs: briefs });
+        await replaceStateDurable(options.repository, { ...latest, searchBriefs: briefs });
       };
       if (options.writeGate) {
         await options.writeGate.runExclusive("research-scheduler-tick", commit);
       } else {
-        commit();
+        await commit();
       }
 
       console.info(JSON.stringify({

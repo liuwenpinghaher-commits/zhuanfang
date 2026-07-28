@@ -10,7 +10,7 @@ import { createSurrealConnection, type SurrealConnectionOptions } from "./connec
 import { applySchema } from "./apply-schema";
 import { selectBm25QueryTokens, buildBm25Clause, reorderByRrfRank, RRF_RANK_CONSTANT } from "./constants";
 import { NODE_MAPPINGS, STREAM_MAPPINGS, toRecord, fromRecord, type StreamMapping } from "./node-mapper";
-import { collectEdges, turnRecordsOf, type EdgeSpec } from "./edge-mapper";
+import { collectEdges, turnRecordsOf, turnRecordsFromRawMaterials, type EdgeSpec } from "./edge-mapper";
 import { diffById, diffEdges } from "./diff";
 import {
   audioContentOf,
@@ -184,6 +184,24 @@ export interface PersistHealth {
   lastErrorAt?: string;
 }
 
+/** A-18 真实性熔断:上一笔落库失败(重试耗尽)后,拒绝接受新的整状态写——
+ *  否则每一笔"已确认 200"的写都可能在重启时静默蒸发。statusCode=503 由全局
+ *  错误处理器直接映射(同 GovernanceInFlightError.statusCode=409 先例)。
+ *  恢复:后台定时重试(scheduleRecoveryRetry)把当前内存态重新落库,成功即解除熔断。 */
+export class PersistUnavailableError extends Error {
+  statusCode = 503;
+  constructor(lastError?: string) {
+    super(
+      `权威库落库失败,已拒绝新写以防静默丢数据(上次错误:${lastError ?? "unknown"})。` +
+        "系统正在后台自动重试,恢复后写入将自动放行。"
+    );
+    this.name = "PersistUnavailableError";
+  }
+}
+
+/** persist 失败后的后台恢复重试间隔。 */
+const PERSIST_RECOVERY_RETRY_MS = 30_000;
+
 /**
  * N-03/N-05:治理并发共享上下文。治理事务(热态 + 三冷层)与冷层直读直写共用**同一个嵌入式连接**
  * (见 createSurrealStores 注释),因此必须共享同一"治理在途"标志与"治理代际",否则批次 A 的 M1
@@ -221,8 +239,10 @@ export interface GovernanceColdSpec {
 }
 
 export interface SurrealRepoHandle extends ProductStateRepository {
-  /** 等待所有挂起的异步落库完成(测试/优雅关闭用)。 */
+  /** 等待所有挂起的异步落库完成(测试/优雅关闭用)。注意:队列尾已吞错,flush 永远 resolve。 */
   flush(): Promise<void>;
+  /** A-18:等待最后一笔整状态写的真实落库结果,失败 reject。主写路由用它实现写确认。 */
+  confirmPersisted(): Promise<void>;
   /** R2b · 治理事务(reset/purge/import):热态整状态替换 + 冷层三库删/写在**单个 BEGIN...COMMIT**
    *  内原子完成。任一步失败 → 整体回滚(无部分提交):DB、内存热态 state、diff 基线 lastPersisted
    *  全部保持事务前原样,向调用方抛错(路由据此返回 500 + 回执标注整体回滚)。成功 → 同时推进
@@ -372,38 +392,59 @@ export async function buildSurrealProductStateRepositoryOnConnection(
   // N-05:治理成功递增 generation,后台长任务据此丢弃陈旧产出。缺省新建一份(standalone 无并发面)。
   const governanceCtx = cfg.governanceContext ?? createGovernanceContext();
 
-  function enqueuePersist(snapshot: ProductState) {
-    persistQueue = persistQueue
-      .then(async () => {
-        // 瞬态冲突有界重试(P4 真实业务 E2E 实测):原生召回读(HNSW/BM25/图遍历)与 persist
-        // 写事务在同一嵌入式连接上并发时,surrealkv 乐观事务偶发 "failed transaction"——
-        // P4 修通生产可达性之前原生读不存在,故此前从未暴露。读绝不串行化(教训 6fca26b4:
-        // 不把任何东西塞进写串行化),写侧立即有界重试即可(runWithTransientRetry,冷层复用同阶梯);
-        // 非瞬态错误(schema ASSERT 等)不重试直接 fail-loud。重试全败 → 基线不动,自愈兜底。
-        await runWithTransientRetry(
-          () => persist(db, lastPersisted, snapshot),
-          (attempt) => console.warn(JSON.stringify({ event: "surreal_persist_retried_ok", attempt }))
-        );
-        lastPersisted = snapshot;                 // 仅成功后推进基线
-        persistHealth = { consecutiveFailures: 0 };
-      })
-      .catch((err) => {
-        // fail-loud:基线不动,下次 persist 以旧基线 diff、补回本次漏写(自愈)。
-        // 连续失败计数随告警一起出——surreal 权威库持续写不进=静默丢数据,/api/health 须能感知。
-        persistHealth = {
-          consecutiveFailures: persistHealth.consecutiveFailures + 1,
-          lastError: String(err),
-          lastErrorAt: new Date().toISOString()
-        };
-        console.error(JSON.stringify({
-          event: "surreal_persist_failed",
-          consecutiveFailures: persistHealth.consecutiveFailures,
-          error: persistHealth.lastError,
-          // 诊断(E2E 实测:失败跨满整个重试阶梯=该笔 diff 形状确定性触发引擎约束,非时间性冲突;
-          // 下一笔累积 diff 即成功、自愈不丢数据)。打 diff 摘要,把"哪种形状会触发"变成可观测。
-          diff: summarizePersistDiff(lastPersisted, snapshot)
-        }));
-      });
+  // A-18:最后一笔 enqueue 的原始结果(失败会 reject)。confirmPersisted() 暴露给主写路由
+  // (PUT /api/state)await——把"200 但没落库"的谎言窗口在主数据通道上关死。
+  let lastEnqueueResult: Promise<void> = Promise.resolve();
+  let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+
+  // A-18 熔断恢复:persist 失败后定时把【当前】内存态重新落库(旧自愈只等"下一笔写",
+  // 但熔断拒写后不会再有下一笔——必须由后台重试主动恢复)。成功清零 → 熔断解除。
+  function scheduleRecoveryRetry() {
+    if (recoveryTimer) return;
+    recoveryTimer = setTimeout(() => {
+      recoveryTimer = undefined;
+      if (persistHealth.consecutiveFailures > 0) {
+        console.warn(JSON.stringify({ event: "surreal_persist_recovery_retry" }));
+        enqueuePersist(state);
+      }
+    }, PERSIST_RECOVERY_RETRY_MS);
+    recoveryTimer.unref?.();
+  }
+
+  function enqueuePersist(snapshot: ProductState): Promise<void> {
+    const run = persistQueue.then(async () => {
+      // 瞬态冲突有界重试(P4 真实业务 E2E 实测):原生召回读(HNSW/BM25/图遍历)与 persist
+      // 写事务在同一嵌入式连接上并发时,surrealkv 乐观事务偶发 "failed transaction"——
+      // P4 修通生产可达性之前原生读不存在,故此前从未暴露。读绝不串行化(教训 6fca26b4:
+      // 不把任何东西塞进写串行化),写侧立即有界重试即可(runWithTransientRetry,冷层复用同阶梯);
+      // 非瞬态错误(schema ASSERT 等)不重试直接 fail-loud。重试全败 → 基线不动。
+      await runWithTransientRetry(
+        () => persist(db, lastPersisted, snapshot),
+        (attempt) => console.warn(JSON.stringify({ event: "surreal_persist_retried_ok", attempt }))
+      );
+      lastPersisted = snapshot;                 // 仅成功后推进基线
+      persistHealth = { consecutiveFailures: 0 };
+    });
+    lastEnqueueResult = run;
+    persistQueue = run.catch((err) => {
+      // fail-loud:基线不动;熔断(replaceState/resetState 拒新写)+ 后台定时重试恢复。
+      // 连续失败计数随告警一起出——surreal 权威库持续写不进=静默丢数据,/api/health 须能感知。
+      persistHealth = {
+        consecutiveFailures: persistHealth.consecutiveFailures + 1,
+        lastError: String(err),
+        lastErrorAt: new Date().toISOString()
+      };
+      console.error(JSON.stringify({
+        event: "surreal_persist_failed",
+        consecutiveFailures: persistHealth.consecutiveFailures,
+        error: persistHealth.lastError,
+        // 诊断(E2E 实测:失败跨满整个重试阶梯=该笔 diff 形状确定性触发引擎约束,非时间性冲突)。
+        // 打 diff 摘要,把"哪种形状会触发"变成可观测。
+        diff: summarizePersistDiff(lastPersisted, snapshot)
+      }));
+      scheduleRecoveryRetry();
+    });
+    return run;
   }
 
   // 处女库首次落库:把捏造的初始态真正写进 DB(见 lastPersisted 基线注释)。经正常串行队列,
@@ -443,7 +484,13 @@ export async function buildSurrealProductStateRepositoryOnConnection(
     const nextHot = hot.kind === "reset" ? computeResetNextState() : computeReplaceNextState(hot.next, { ...(hot.expectedRevision !== undefined ? { expectedRevision: hot.expectedRevision } : {}) });
 
     // ① 热态 diff 语句(相对执行时刻的 lastPersisted 基线;含 keepOnlyLiveTurnProvenance 的 async 预查)。
-    const { surql: hotSurql, vars } = await buildPersistStatements(db, lastPersisted, nextHot);
+    // P0 import 溯源:冷层 raw_material 在同事务 replace 时,把降冷 turns 补进 turn 表,避免
+    // derived_from 因端点不存在被 keepOnlyLiveTurnProvenance 丢弃。
+    const coldTurnSources =
+      cold.rawMaterial?.action === "replace" ? cold.rawMaterial.materials : undefined;
+    const { surql: hotSurql, vars } = await buildPersistStatements(db, lastPersisted, nextHot, {
+      coldTurnSources,
+    });
 
     // ② 冷层语句(cold_ 前缀避免与热态 vars 撞名)。DELETE 全表 = wipe;replace = 全删 + 逐条 UPSERT。
     let coldSurql = "";
@@ -503,6 +550,8 @@ export async function buildSurrealProductStateRepositoryOnConnection(
     resetState() {
       // M1:治理事务在途 → 拒绝并发整状态写(否则读旧 state、排到治理之后、以新基线复活个人数据)。
       if (governanceCtx.inFlightCount > 0) throw new GovernanceInFlightError();
+      // A-18 熔断:上一笔落库失败 → 拒新写(503),防"已确认 200"的写重启蒸发。
+      if (persistHealth.consecutiveFailures > 0) throw new PersistUnavailableError(persistHealth.lastError);
       state = computeResetNextState();
       enqueuePersist(state);
       return structuredClone(state);
@@ -510,6 +559,8 @@ export async function buildSurrealProductStateRepositoryOnConnection(
     replaceState(next: ProductState, replaceOpts?: ReplaceStateOptions) {
       // M1:同上——治理在途拒绝并发整状态写。执行处 GovernanceInFlightError.statusCode=409 → HTTP 409。
       if (governanceCtx.inFlightCount > 0) throw new GovernanceInFlightError();
+      // A-18 熔断:同 resetState。
+      if (persistHealth.consecutiveFailures > 0) throw new PersistUnavailableError(persistHealth.lastError);
       state = computeReplaceNextState(next, replaceOpts);
       enqueuePersist(state);
       return structuredClone(state);
@@ -537,6 +588,9 @@ export async function buildSurrealProductStateRepositoryOnConnection(
       return state.sessions.find((s) => s.id === id) ?? null;
     },
     async flush() { await persistQueue; },
+    // A-18:等待最后一笔 enqueue 的真实结果——失败会 reject(flush 走的是已吞错的队列尾,
+    // 永远 resolve)。主写路由(PUT /api/state)await 它,把"200 但没落库"关死在主数据通道上。
+    async confirmPersisted() { await lastEnqueueResult; },
     // R2a:共享连接下(ownsConnection=false)不在此关连接——由 createSurrealStores 统一关一次,
     // 避免冷层仓库还在用连接时被产品仓库 close 提前关掉。standalone 仍自关(向后兼容)。
     async close() { await persistQueue; if (cfg.ownsConnection) await db.close(); },
@@ -620,8 +674,12 @@ export async function buildSurrealProductStateRepositoryOnConnection(
         // R4a 择优+钳制(统一口径,见 constants.ts selectBm25QueryTokens):去重→含多字 gram 则丢单字
         // 1-gram(纯单字查询保留)→ 上限 32。ngram(1,3) 下若灌 1-gram,多字查询候选/延迟暴涨(实测)。
         const tokens = selectBm25QueryTokens(analyzed);
-        // fail-safe:query 切不出 token → 无 BM25 可加,退化纯 HNSW。
-        if (tokens.length === 0) return hnswOnly();
+        // 语义性空:query 切不出 token(纯符号/空白)→ BM25 天然不适用,走纯 HNSW。
+        // 非失败,但必须可观测(此前无声)。
+        if (tokens.length === 0) {
+          console.warn(JSON.stringify({ event: "surreal_hybrid_bm25_skipped", reason: "no_tokens", queryChars: queryText.length }));
+          return hnswOnly();
+        }
 
         const { clause: bmClause, vars: tokenVars } = buildBm25Clause(tokens);
 
@@ -637,14 +695,19 @@ export async function buildSurrealProductStateRepositoryOnConnection(
         );
         // 多语句:前 3 个 LET 返回 null,取最后一条 SELECT 的结果集(不能取 results[0])。
         const fusedRows = results[results.length - 1];
-        // fail-safe:融合空(rrf 在该 query 下无产出)→ 退化纯 HNSW,绝不返空召回。
+        // 融合为空可能是 A4 门控合法滤空,也可能是 rrf 在该 query 下无产出——用纯 HNSW
+        // 复核一次(同门控的另一条真实检索路径,非伪造),并记日志使差异可查。
         const fused = (fusedRows ?? []) as Array<{ id: unknown; text: unknown }>;
-        if (fused.length === 0) return hnswOnly();
+        if (fused.length === 0) {
+          console.warn(JSON.stringify({ event: "surreal_hybrid_fusion_empty", path: "memory", queryChars: queryText.length }));
+          return hnswOnly();
+        }
         return fused.map((h) => ({ id: recordIdToDomainId(h.id), text: String(h.text ?? "") }));
       } catch (err) {
-        // fail-safe:search::rrf / BM25 在该环境不可用或报错 → 退化纯 HNSW(现状),记降级日志。
-        console.warn(JSON.stringify({ event: "surreal_hybrid_recall_degraded", error: err instanceof Error ? err.message : String(err) }));
-        return hnswOnly();
+        // 真实错误(search::rrf/BM25 在该环境不可用或报错)→ 如实上抛,由调用方暴露。
+        // 不再静默退化纯 HNSW 冒充混合召回结果。
+        console.warn(JSON.stringify({ event: "surreal_hybrid_recall_failed", error: err instanceof Error ? err.message : String(err) }));
+        throw err;
       }
     },
     async recallRagChunks(ragOpts: { embedding?: number[]; queryText?: string; k: number; usage?: "interview-context" | "memory-candidate" }) {
@@ -676,7 +739,11 @@ export async function buildSurrealProductStateRepositoryOnConnection(
         const analyzed = Array.isArray(tokensRes?.[0]) ? (tokensRes[0] as unknown[]).map(String).filter(Boolean) : [];
         // R4a 择优+钳制(统一口径,见 constants.ts selectBm25QueryTokens):与 memory 路逐字同款。
         const tokens = selectBm25QueryTokens(analyzed);
-        if (tokens.length === 0) return hnswOnly();
+        // 语义性空:切不出 token → BM25 天然不适用,走纯 HNSW(可观测,此前无声)。
+        if (tokens.length === 0) {
+          console.warn(JSON.stringify({ event: "surreal_rag_bm25_skipped", reason: "no_tokens", queryChars: queryText.length }));
+          return hnswOnly();
+        }
 
         const { clause: bmClause, vars: tokenVars } = buildBm25Clause(tokens);
 
@@ -701,14 +768,18 @@ export async function buildSurrealProductStateRepositoryOnConnection(
           { q: embedding, ...gateVars, ...tokenVars }
         );
         const rows = toHits(results[results.length - 2]);
-        // fail-safe:融合为空 / 全被 usage 门控滤掉 → 退化纯 HNSW,绝不返空召回。
-        if (rows.length === 0) return hnswOnly();
+        // 融合为空可能是 usage 门控合法滤空——用纯 HNSW 复核一次(同门控的另一条真实检索路径,
+        // 非伪造),并记日志使差异可查。
+        if (rows.length === 0) {
+          console.warn(JSON.stringify({ event: "surreal_hybrid_fusion_empty", path: "rag_chunk", queryChars: queryText.length }));
+          return hnswOnly();
+        }
         const order = ((results[results.length - 1] ?? []) as unknown[]).map((rid) => recordIdToDomainId(rid));
         return reorderByRrfRank(rows, order);
       } catch (err) {
-        // fail-safe:search::rrf / BM25 报错 → 退化纯 HNSW(有 embedding)或 [](无),记降级日志。
-        console.warn(JSON.stringify({ event: "surreal_rag_recall_degraded", error: err instanceof Error ? err.message : String(err) }));
-        return hnswOnly();
+        // 真实错误(search::rrf/BM25 报错)→ 如实上抛,由调用方暴露,不再退化掩盖。
+        console.warn(JSON.stringify({ event: "surreal_rag_recall_failed", error: err instanceof Error ? err.message : String(err) }));
+        throw err;
       }
     },
     async auditGraphConsistency() {
@@ -875,9 +946,12 @@ async function runGraphAudit(db: Surreal, baseline: ProductState): Promise<Graph
   }
 
   return {
+    // P0:dangling provenance 曾被移出 missing 后仍算 ok,导致备份恢复丢边时审计假绿。
+    // 有悬空溯源即 fail-closed(仍单列 danglingProvenanceCount 便于诊断)。
     ok:
       missingInDb.length === 0 && unexpectedInDb.length === 0 &&
-      nodeMissingInDb.length === 0 && nodeUnexpectedInDb.length === 0,
+      nodeMissingInDb.length === 0 && nodeUnexpectedInDb.length === 0 &&
+      danglingProvenanceCount === 0,
     auditedEdgeTables: [...AUDITED_EDGE_TABLES],
     expectedCount: expected.size,
     actualCount: actual.size,
@@ -962,8 +1036,14 @@ async function persist(db: Surreal, prev: ProductState, next: ProductState): Pro
 }
 
 /** R2b:生成 prev→next 的热态 diff 语句(不含 BEGIN/COMMIT),供 persist 与治理事务共用。
- *  返回的 surql 是若干以 `;\n` 结尾的语句;vars 为其绑定参数。调用方自行包裹事务边界。 */
-async function buildPersistStatements(db: Surreal, prev: ProductState, next: ProductState): Promise<{ surql: string; vars: Record<string, unknown> }> {
+ *  返回的 surql 是若干以 `;\n` 结尾的语句;vars 为其绑定参数。调用方自行包裹事务边界。
+ *  opts.coldTurnSources:import 同事务恢复的冷层 raw_material;其 turns 并入 turn UPSERT 与 nextTurnIds。 */
+async function buildPersistStatements(
+  db: Surreal,
+  prev: ProductState,
+  next: ProductState,
+  opts?: { coldTurnSources?: InterviewRawMaterial[] },
+): Promise<{ surql: string; vars: Record<string, unknown> }> {
   let surql = "";
   const vars: Record<string, unknown> = {};
   let i = 0;
@@ -1002,7 +1082,14 @@ async function buildPersistStatements(db: Surreal, prev: ProductState, next: Pro
   //    故 turn 永不删:只投影 upsert。`void removeIds` 显式弃用,避免 noUnusedLocals 报错。
   const nextTurnIds = new Set<string>();
   {
-    const nextTurns = turnRecordsOf(next) as Array<Record<string, unknown> & { id: string }>;
+    const hotTurns = turnRecordsOf(next) as Array<Record<string, unknown> & { id: string }>;
+    const coldTurns = opts?.coldTurnSources?.length
+      ? (turnRecordsFromRawMaterials(opts.coldTurnSources) as Array<Record<string, unknown> & { id: string }>)
+      : [];
+    const byId = new Map<string, Record<string, unknown> & { id: string }>();
+    for (const t of hotTurns) byId.set(String(t.id), t);
+    for (const t of coldTurns) byId.set(String(t.id), t); // cold wins on same id
+    const nextTurns = [...byId.values()];
     for (const t of nextTurns) nextTurnIds.add(String(t.id));
     const { upsert, removeIds } = diffById(
       turnRecordsOf(prev) as Array<Record<string, unknown> & { id: string }>,
