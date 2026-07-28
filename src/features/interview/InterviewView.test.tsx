@@ -116,4 +116,37 @@ describe("InterviewView", () => {
     expect(turnText).toContain("未提供结构化引用");
     expect(turnText).not.toContain("无法核验来源的旧引用");
   });
+
+  it("可编辑、确认或丢弃被回声保护隔离的转写", () => {
+    const session = createSessionDraft(createInitialProductState(), "organization");
+    const onVoiceReviewText = vi.fn();
+    const onConfirmVoiceReview = vi.fn();
+    const onDiscardVoiceReview = vi.fn();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    act(() => {
+      root?.render(<InterviewView
+        card={session.card} session={session} pendingMode="organization" input="" recording
+        realtimeState={null} audioLevel={0} voiceStatus="listening" liveUserTranscript="" voiceTransport="websocket"
+        voiceReviewItem={{ text: "你能讲一个具体例子吗？", reason: "与刚才 AI 语音高度相似" }}
+        onVoiceReviewText={onVoiceReviewText} onConfirmVoiceReview={onConfirmVoiceReview}
+        onDiscardVoiceReview={onDiscardVoiceReview}
+        onInput={vi.fn()} onStart={vi.fn()} onSubmit={vi.fn()} onFinish={vi.fn()} onControl={vi.fn()}
+        onToggleRecording={vi.fn()} onInterrupt={vi.fn()}
+      />);
+    });
+
+    const review = container.querySelector("[data-testid='voice-review']");
+    expect(review?.textContent).toContain("等待确认的转写");
+    expect((review?.querySelector("textarea") as HTMLTextAreaElement | null)?.value).toBe("你能讲一个具体例子吗？");
+
+    act(() => {
+      review?.querySelector<HTMLButtonElement>("button[data-action='confirm']")?.click();
+      review?.querySelector<HTMLButtonElement>("button[data-action='discard']")?.click();
+    });
+    expect(onConfirmVoiceReview).toHaveBeenCalledOnce();
+    expect(onDiscardVoiceReview).toHaveBeenCalledOnce();
+  });
 });

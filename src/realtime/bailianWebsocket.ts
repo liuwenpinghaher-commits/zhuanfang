@@ -10,6 +10,8 @@ import { createExpressionStateDetector, type ExpressionStateInput } from "./expr
 import { createSpeechFeatureTracker, spectralCentroid } from "./speechFeatures";
 import { evaluateIntent } from "./interactionIntentEngine";
 import type { InteractionPreSignals } from "../domain/types";
+import { getProductApiBaseUrl } from "../api/productApi";
+import { deriveRealtimeWsBaseUrl } from "./wsBaseUrl";
 
 export type { AssistantSpeechProgress, InterruptAssistantOptions, InterruptAssistantResult };
 
@@ -79,7 +81,7 @@ export async function connectBailianRealtimeWebsocket(
     throw new Error(`Unsupported realtime transport: ${session.transport}`);
   }
 
-  const baseUrl = options.productApiBaseUrl ?? "ws://127.0.0.1:3210";
+  const baseUrl = options.productApiBaseUrl ?? deriveRealtimeWsBaseUrl(getProductApiBaseUrl());
   const wsUrl = `${baseUrl}/api/realtime-voice/ws/${session.sessionId}`;
   const mediaDevices = options.mediaDevices ?? navigator.mediaDevices;
 

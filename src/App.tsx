@@ -41,7 +41,7 @@ import {
 import { addAnnotation, removeAnnotation } from "./domain/raw-material";
 import { deleteImportSource } from "./domain/material";
 import { createIdleCapabilityTask, failCapabilityTask, startCapabilityTask } from "./capabilities/task";
-import { productApiClient, isNetworkError, ApiError, type PersistHealthLite, type PurgeReceipt, type ResetReceipt, type ReviewsResponse } from "./api/productApi";
+import { productApiClient, getProductApiBaseUrl, isNetworkError, ApiError, type PersistHealthLite, type PurgeReceipt, type ResetReceipt, type ReviewsResponse } from "./api/productApi";
 import type { ColdLayerMode, RealtimeVoiceSessionResponse, StateImportResult, SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigUpdateRequest, VoiceInfo } from "./api/productApi";
 // WebRTC omni client is incomplete (no callbacks/turn recording); the connect path is
 // downlined to WebSocket in startVoiceSession. Type kept for the connection union only.
@@ -56,6 +56,7 @@ import { createBrowserAsrSource } from "./realtime/cascadedAsrSource";
 import { createBrowserTtsSink } from "./realtime/cascadedTtsSink";
 import { pcmS16leMonoToWav } from "./realtime/pcmWav";
 import { createSessionAudioRecorder, type SessionAudioRecorder } from "./realtime/sessionAudioRecorder";
+import { deriveRealtimeWsBaseUrl } from "./realtime/wsBaseUrl";
 import {
   dedupeGeneratedArtifacts,
   deleteCorpusInsightBundle,
@@ -131,16 +132,6 @@ const navIconByView: Record<View, typeof Compass> = {
   profile: Settings,
   track: Brain
 };
-
-// 实时语音 WS 基址：HTTPS 页面必须用 wss(否则浏览器以 mixed-content 拦截 ws://,生产语音不可用),
-// 且生产经 API 同源托管(fastifyStatic),WS 走同源 host;dev 下前端在 vite 端口、API 在 3210,需显式指向。
-function realtimeApiWsBaseUrl(): string {
-  if (typeof location !== "undefined" && location.protocol === "https:") {
-    return `wss://${location.host}`;
-  }
-  const hostname = typeof location !== "undefined" ? location.hostname : "127.0.0.1";
-  return `ws://${hostname}:3210`;
-}
 
 interface SyncConflictState {
   outbox: OfflineOutbox;
@@ -228,6 +219,7 @@ export default function App() {
   const [audioLevel, setAudioLevel] = useState(0);
   const [voiceStatus, setVoiceStatus] = useState<"idle" | "connecting" | "listening" | "speaking" | "interrupted">("idle");
   const [liveUserTranscript, setLiveUserTranscript] = useState("");
+  const [voiceReviewItem, setVoiceReviewItem] = useState<{ text: string; reason: string } | null>(null);
   const [guidanceState, setGuidanceState] = useState<{
     active: boolean;
     kind: string | null;
@@ -1216,6 +1208,7 @@ export default function App() {
     setRecording(false);
     setAudioLevel(0);
     setVoiceStatus("idle");
+    setVoiceReviewItem(null);
   }
 
   useEffect(() => {
@@ -2256,7 +2249,7 @@ export default function App() {
           // Cascade pipeline: real ASR (text-only omni WS) → LLM HTTP → CosyVoice TTS WS
           try {
             setVoiceStatus("connecting");
-            const baseWsUrl = realtimeApiWsBaseUrl();
+            const baseWsUrl = deriveRealtimeWsBaseUrl(getProductApiBaseUrl());
             const asrWsUrl = `${baseWsUrl}/api/realtime-voice/ws/${voiceSession.sessionId}`;
             const ttsWsUrl = `${baseWsUrl}/api/realtime-voice/ws/tts/${voiceSession.sessionId}`;
             const interviewId = session?.id ?? "";
@@ -2339,7 +2332,17 @@ export default function App() {
                 },
                 onError: (err) => {
                   setNotice(buildNotice("warning", "级联语音错误", err.message));
+                },
+                onTranscriptQuarantined: (item) => {
+                  setLiveUserTranscript("");
+                  setVoiceReviewItem(item);
+                  setNotice(buildNotice("info", "转写等待确认", "检测到内容可能来自刚才的 AI 播放，请确认、修改或丢弃后再写入专访。"));
                 }
+              },
+              decisionOpts: {
+                finalStabilityMs: 450,
+                echoWindowMs: 1_500,
+                echoSimilarityThreshold: 0.8
               },
               classifyEndpoint: interviewId
                 ? (text: string, signal: AbortSignal) => productApiClient.classifyTurnComplete(interviewId, text, signal)
@@ -2468,7 +2471,7 @@ export default function App() {
             setNotice(buildNotice("info", "已改用 WebSocket 实时语音", "WebRTC 通道尚未完整支持，已自动切换。"));
           }
           const connection = await connectBailianRealtimeWebsocket(sessionWithOpening, {
-                productApiBaseUrl: realtimeApiWsBaseUrl(),
+                productApiBaseUrl: deriveRealtimeWsBaseUrl(getProductApiBaseUrl()),
                 preSignals: session?.interactionPreSignals,
                 onAudioLevel: (level) => setAudioLevel(level),
                 onSpeechStart: () => setVoiceStatus("listening"),
@@ -2746,6 +2749,7 @@ export default function App() {
             audioLevel={audioLevel}
             voiceStatus={voiceStatus}
             liveUserTranscript={liveUserTranscript}
+            voiceReviewItem={voiceReviewItem}
             voiceTransport={
               livekitVoiceSession ? "livekit"
               : realtimeVoiceSession ? "websocket"
@@ -2763,6 +2767,16 @@ export default function App() {
             onControl={applyInterviewControl}
             onToggleRecording={toggleRealtimeRecording}
             onInterrupt={interruptAssistant}
+            onVoiceReviewText={(text) => setVoiceReviewItem((item) => item ? { ...item, text } : item)}
+            onConfirmVoiceReview={() => {
+              if (!voiceReviewItem?.text.trim()) return;
+              cascadePipelineRef.current?.confirmQuarantinedTranscript(voiceReviewItem.text.trim());
+              setVoiceReviewItem(null);
+            }}
+            onDiscardVoiceReview={() => {
+              cascadePipelineRef.current?.discardQuarantinedTranscript();
+              setVoiceReviewItem(null);
+            }}
             submitting={submittingTurn}
             retryAvailable={failedTurnContent !== null && failedTurnContent === interviewInput}
             starting={startingInterview}

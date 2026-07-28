@@ -17,6 +17,7 @@ interface InterviewViewProps {
   audioLevel: number;
   voiceStatus: "idle" | "connecting" | "listening" | "speaking" | "interrupted";
   liveUserTranscript: string;
+  voiceReviewItem?: { text: string; reason: string } | null;
   voiceTransport: "webrtc" | "websocket" | "livekit" | null;
   onInput: (value: string) => void;
   onStart: (mode?: InterviewMode, searchBriefId?: string) => void;
@@ -25,6 +26,9 @@ interface InterviewViewProps {
   onControl: (action: InterviewControlAction) => void;
   onToggleRecording: () => void | Promise<void>;
   onInterrupt: () => void;
+  onVoiceReviewText?: (text: string) => void;
+  onConfirmVoiceReview?: () => void;
+  onDiscardVoiceReview?: () => void;
   submitting?: boolean;
   retryAvailable?: boolean;
   starting?: boolean;
@@ -47,6 +51,7 @@ export function InterviewView({
   audioLevel,
   voiceStatus,
   liveUserTranscript,
+  voiceReviewItem,
   voiceTransport,
   onInput,
   onStart,
@@ -55,6 +60,9 @@ export function InterviewView({
   onControl,
   onToggleRecording,
   onInterrupt,
+  onVoiceReviewText,
+  onConfirmVoiceReview,
+  onDiscardVoiceReview,
   submitting,
   retryAvailable,
   starting,
@@ -185,6 +193,24 @@ export function InterviewView({
             <div className="live-transcript">
               <span className="live-transcript-label">实时转写</span>
               <p>{liveUserTranscript}</p>
+            </div>
+          )}
+          {voiceReviewItem && (
+            <div className="voice-review" data-testid="voice-review" role="alert">
+              <div className="voice-review-heading">
+                <strong>等待确认的转写</strong>
+                <span>可能混入刚才的 AI 语音，尚未写入专访</span>
+              </div>
+              <textarea
+                aria-label="等待确认的语音转写"
+                value={voiceReviewItem.text}
+                onChange={(event) => onVoiceReviewText?.(event.target.value)}
+              />
+              <small>{voiceReviewItem.reason}</small>
+              <div className="voice-review-actions">
+                <button type="button" data-action="discard" onClick={onDiscardVoiceReview}>丢弃</button>
+                <button type="button" data-action="confirm" onClick={onConfirmVoiceReview} disabled={!voiceReviewItem.text.trim()}>确认并提交</button>
+              </div>
             </div>
           )}
           {guidanceState?.active && guidanceState.text && (

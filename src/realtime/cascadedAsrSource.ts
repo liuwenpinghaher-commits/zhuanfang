@@ -114,6 +114,7 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
   let latestExpressionState: ExpressionState = "fluent";
   let latestPartialTranscript = "";
   let lowEnergyFrames = 0;
+  let lastHighEnergyAtMs = 0;
   let frameMs = 256; // will be updated once AudioContext is created
 
   let semanticFlags = {
@@ -237,6 +238,7 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
       const ENERGY_THRESHOLD = 0.08;
       if (level > ENERGY_THRESHOLD) {
         lowEnergyFrames = 0;
+        lastHighEnergyAtMs = Date.now();
       } else {
         lowEnergyFrames++;
       }
@@ -418,6 +420,10 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
 
     getExpressionState(): ExpressionState {
       return latestExpressionState;
+    },
+
+    hasRecentUserEnergyEvidence(): boolean {
+      return Date.now() - lastHighEnergyAtMs <= 1_500;
     }
   };
 }

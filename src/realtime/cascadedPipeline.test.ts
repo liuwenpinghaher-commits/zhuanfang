@@ -30,6 +30,7 @@ function makeFakeAsr(fixedState: ExpressionState = "concluding"): AsrSource & {
   pushSpeechStarted(): void;
   pushSpeechStopped(silenceMs: number): void;
   setExpressionState(s: ExpressionState): void;
+  setUserEnergyEvidence(value: boolean): void;
 } {
   let handlers: AsrEventHandlers = {
     onTranscriptDelta: () => {},
@@ -37,6 +38,7 @@ function makeFakeAsr(fixedState: ExpressionState = "concluding"): AsrSource & {
     onSpeechStopped: () => {},
   };
   let currentState: ExpressionState = fixedState;
+  let userEnergyEvidence = true;
   let started = false;
   return {
     _handlers: handlers as AsrEventHandlers,
@@ -56,6 +58,9 @@ function makeFakeAsr(fixedState: ExpressionState = "concluding"): AsrSource & {
     getExpressionState() {
       return currentState;
     },
+    hasRecentUserEnergyEvidence() {
+      return userEnergyEvidence;
+    },
 
     // test helpers
     pushDelta(text: string, isFinal = false) {
@@ -69,6 +74,9 @@ function makeFakeAsr(fixedState: ExpressionState = "concluding"): AsrSource & {
     },
     setExpressionState(s: ExpressionState) {
       currentState = s;
+    },
+    setUserEnergyEvidence(value: boolean) {
+      userEnergyEvidence = value;
     },
   };
 }
@@ -211,7 +219,7 @@ describe("connectCascadedPipeline", () => {
     const pipeline = connectCascadedPipeline(makeOpts());
     await pipeline.startListening();
 
-    asr.pushDelta("这件事情我想清楚了");
+    asr.pushDelta("这件事情我想清楚了", true);
     asr.pushSpeechStopped(1000); // concluding + 1000ms → respond
 
     // Flush all pending microtasks so the async doRespond chain completes:
@@ -281,7 +289,7 @@ describe("connectCascadedPipeline", () => {
     };
     const pipeline = connectCascadedPipeline(makeOpts({ tts: heldTts as never }));
     await pipeline.startListening();
-    asr.pushDelta("这件事情我想清楚了");
+    asr.pushDelta("这件事情我想清楚了", true);
     asr.pushSpeechStopped(1000);
     await new Promise((r) => setTimeout(r, 0)); // now speaking (held)
 
@@ -302,7 +310,7 @@ describe("connectCascadedPipeline", () => {
     const send = vi.fn(async () => ({ assistantText: "你认同这个顺序吗？（温和但明确地观察对方反应）能说说理由吗？" }));
     const pipeline = connectCascadedPipeline(makeOpts({ sendUserTurn: send }));
     await pipeline.startListening();
-    asr.pushDelta("嗯");
+    asr.pushDelta("嗯", true);
     asr.pushSpeechStopped(1000);
     await new Promise((r) => setTimeout(r, 0));
 
@@ -331,7 +339,7 @@ describe("connectCascadedPipeline", () => {
     const pipeline = connectCascadedPipeline(makeOpts({ sendUserTurn: lateSend }));
     await pipeline.startListening();
 
-    asr.pushDelta("我把一个完整的想法说完了");
+    asr.pushDelta("我把一个完整的想法说完了", true);
     asr.pushSpeechStopped(1000); // concluding → respond → lateSend called, awaiting (thinking)
     await Promise.resolve();
     expect(lateSend).toHaveBeenCalledOnce();
@@ -365,7 +373,7 @@ describe("connectCascadedPipeline", () => {
     const pipeline = connectCascadedPipeline(makeOpts({ tts: heldTts }));
     await pipeline.startListening();
 
-    asr.pushDelta("我把一个想法说完了");
+    asr.pushDelta("我把一个想法说完了", true);
     asr.pushSpeechStopped(1000); // concluding → respond → sendUserTurn → speaking + suppress + heldSpeak(pending)
     await Promise.resolve();
     await Promise.resolve();
@@ -387,6 +395,34 @@ describe("connectCascadedPipeline", () => {
     expect(sendUserTurn.fn.mock.calls.length).toBe(sendCallsBefore);
 
     resolveSpeak();
+    pipeline.close();
+  });
+
+  it("回声保护窗后的高相似低能量转写进入待确认区，确认后才提交", async () => {
+    vi.useFakeTimers();
+    asr.setExpressionState("concluding");
+    asr.setUserEnergyEvidence(false);
+    const quarantined: Array<{ text: string; reason: string }> = [];
+    const opts = makeOpts({
+      decisionOpts: { finalStabilityMs: 0, echoWindowMs: 1_500, echoSimilarityThreshold: 0.8 }
+    });
+    opts.callbacks.onTranscriptQuarantined = (item) => quarantined.push(item);
+    const pipeline = connectCascadedPipeline(opts);
+
+    await pipeline.startListening("你能讲一个具体例子吗？");
+    vi.advanceTimersByTime(601);
+    asr.pushDelta("你能讲一个具体例子吗？", true);
+    asr.pushSpeechStopped(1_000);
+    await Promise.resolve();
+
+    expect(quarantined).toHaveLength(1);
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+
+    pipeline.confirmQuarantinedTranscript("我可以讲一个具体例子。");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sendUserTurn.fn).toHaveBeenCalledOnce();
+    expect(sendUserTurn.fn.mock.calls[0][0]).toBe("我可以讲一个具体例子。");
     pipeline.close();
   });
 
@@ -413,7 +449,7 @@ describe("connectCascadedPipeline", () => {
     );
     await pipeline.startListening();
 
-    asr.pushDelta("我决定了");
+    asr.pushDelta("我决定了", true);
     asr.pushSpeechStopped(1000); // triggers respond → thinking
 
     // Wait until thinking state is entered (sendUserTurn called)
@@ -446,7 +482,7 @@ describe("connectCascadedPipeline", () => {
     );
     await pipeline.startListening();
 
-    asr.pushDelta("嗯……");
+    asr.pushDelta("嗯……", true);
     // First speech_stopped at 700ms — organizing → wait
     asr.pushSpeechStopped(700);
 
@@ -462,6 +498,46 @@ describe("connectCascadedPipeline", () => {
 
     pipeline.close();
     vi.useRealTimers();
+  });
+
+  it("空转写即使触发 max-wait 也绝不创建 phantom user turn", async () => {
+    vi.useFakeTimers();
+    asr.setExpressionState("organizing");
+    const pipeline = connectCascadedPipeline(
+      makeOpts({ decisionOpts: { maxWaitMs: 500, minPauseMs: 100 } })
+    );
+    await pipeline.startListening();
+
+    asr.pushSpeechStopped(200);
+    vi.advanceTimersByTime(800);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+    expect(userTranscripts.some((item) => item.isFinal)).toBe(false);
+    pipeline.close();
+  });
+
+  it("首个 final 后等待稳定窗口并合并迟到的第二个 final，再只提交一次", async () => {
+    vi.useFakeTimers();
+    asr.setExpressionState("concluding");
+    const pipeline = connectCascadedPipeline(makeOpts({
+      decisionOpts: { minPauseMs: 100, maxWaitMs: 3000, finalStabilityMs: 300 } as any
+    }));
+    await pipeline.startListening();
+
+    asr.pushDelta("个人提效很快，", true);
+    asr.pushSpeechStopped(500);
+    vi.advanceTimersByTime(150);
+    asr.pushDelta("但组织价值流没有缩短。", true);
+    vi.advanceTimersByTime(400);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sendUserTurn.fn).toHaveBeenCalledOnce();
+    expect(sendUserTurn.fn.mock.calls[0][0]).toBe("个人提效很快，但组织价值流没有缩短。");
+    pipeline.close();
   });
 
   // -------------------------------------------------------------------------
@@ -537,7 +613,7 @@ describe("connectCascadedPipeline", () => {
     asr.setExpressionState("fluent");
     const pipeline = connectCascadedPipeline(makeOpts({ assessCompleteness: () => "complete" }));
     await pipeline.startListening();
-    asr.pushDelta("我昨天去了公司");
+    asr.pushDelta("我昨天去了公司", true);
     asr.pushSpeechStopped(1000);
     await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
     expect(sendUserTurn.fn).toHaveBeenCalledOnce();
@@ -566,7 +642,7 @@ describe("connectCascadedPipeline", () => {
     const classifyEndpoint = vi.fn(async () => ({ done: true, reason: "ok" }));
     const pipeline = connectCascadedPipeline(makeOpts({ assessCompleteness: () => "ambiguous", classifyEndpoint }));
     await pipeline.startListening();
-    asr.pushDelta("这件事挺复杂");
+    asr.pushDelta("这件事挺复杂", true);
     asr.pushSpeechStopped(1000);
     await vi.waitFor(() => expect(classifyEndpoint).toHaveBeenCalled());
     await Promise.resolve(); await Promise.resolve();
@@ -582,7 +658,7 @@ describe("connectCascadedPipeline", () => {
     const classifyEndpoint = vi.fn(async () => ({ done: false, reason: "not done" }));
     const pipeline = connectCascadedPipeline(makeOpts({ assessCompleteness: () => "ambiguous", classifyEndpoint }));
     await pipeline.startListening();
-    asr.pushDelta("这件事挺复杂");
+    asr.pushDelta("这件事挺复杂", true);
     asr.pushSpeechStopped(1000);
     await vi.waitFor(() => expect(classifyEndpoint).toHaveBeenCalled());
     await Promise.resolve(); await Promise.resolve();
@@ -598,7 +674,7 @@ describe("connectCascadedPipeline", () => {
     const classifyEndpoint = vi.fn(async () => { throw new Error("net"); });
     const pipeline = connectCascadedPipeline(makeOpts({ assessCompleteness: () => "ambiguous", classifyEndpoint }));
     await pipeline.startListening();
-    asr.pushDelta("这件事挺复杂");
+    asr.pushDelta("这件事挺复杂", true);
     asr.pushSpeechStopped(1000);
     await vi.waitFor(() => expect(classifyEndpoint).toHaveBeenCalled());
     await Promise.resolve(); await Promise.resolve();
@@ -644,7 +720,7 @@ describe("connectCascadedPipeline", () => {
     const emptyTurn = vi.fn(async (): Promise<{ assistantText: string }> => ({ assistantText: "   " }));
     const pipeline = connectCascadedPipeline(makeOpts({ sendUserTurn: emptyTurn }));
     await pipeline.startListening();
-    asr.pushDelta("嗯");
+    asr.pushDelta("嗯", true);
     asr.pushSpeechStopped(1000);
     await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
 

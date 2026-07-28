@@ -1164,6 +1164,46 @@ select:focus-visible {
   min-height: 20px;
 }
 
+.voice-review {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent-amber) 55%, var(--border-default));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent-amber) 8%, var(--surface-raised));
+}
+
+.voice-review-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.voice-review-heading span,
+.voice-review small {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.voice-review textarea {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-base);
+  color: var(--text-primary);
+  padding: 9px 10px;
+  font: inherit;
+}
+
+.voice-review-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 
 /* 引导指示器 */
 .guidance-indicator {
