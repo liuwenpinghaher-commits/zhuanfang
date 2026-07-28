@@ -99,7 +99,9 @@ function buildAssistantTurn(session: InterviewSession, userText: string): Interv
     content,
     intent,
     timestamp: nowIso(),
-    referencedMemory: decision.referencedMemory ?? session.card.historyReferences[0],
+    // C-P1-03: offline deterministic path must not invent a history ref the strategy
+    // did not pick (same honesty contract as receiveUserTurnWithAssistant).
+    referencedMemory: decision.referencedMemory,
     strategy: decision.strategy,
     depth: decision.depth,
     strategyDecision: {
@@ -196,7 +198,13 @@ export function receiveUserTurnWithAssistant(
         content: assistant.content,
         intent: assistant.intent,
         timestamp,
-        referencedMemory: assistant.referencedMemory ?? session.card.historyReferences[0],
+        // C-P1-03 honesty: when strategyDecision is present, never invent a card
+        // fallback the strategy did not pick. Offline path (no strategy) still
+        // may surface the first open-time history ref as a best-effort label.
+        referencedMemory:
+          assistant.referencedMemory ??
+          assistant.strategyDecision?.referencedMemory ??
+          (assistant.strategyDecision ? undefined : session.card.historyReferences[0]),
         strategy: assistant.strategyDecision?.strategy,
         depth: assistant.strategyDecision?.depth
       }

@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { InterviewTurn, KnowledgeChunk, ProductState } from "../../../../src/domain/types";
 import type { ProductStateRepository } from "../product-state-repository";
+import { replaceStateDurable } from "../product-state-repository";
 import type { RawMaterialRepository } from "../raw-material-repository";
 import type { KnowledgeIndexRepository } from "../knowledge-index-repository";
 import type { BailianEmbeddingClient } from "../providers/bailian";
@@ -370,9 +371,9 @@ export async function registerKnowledgeRoutes(
           // 回归审查 R4-4:embed(慢 IO)已在锁外完成;仅把"重读 latest + replaceState"的同步合并包进写门,
           // 避免后台 replaceState 绕开全局写序列化与在途 HTTP 写互相 clobber(此前直接 replaceState,
           // 并发下本次重嵌或用户写会被对方整态覆盖丢弃)。
-          const applyReembed = () => {
+          const applyReembed = async () => {
             const latest = productRepo.getState();
-            return productRepo.replaceState({
+            return replaceStateDurable(productRepo, {
               ...latest,
               memoryRecords: latest.memoryRecords.map((r) => {
                 const vec = recById.get(r.id);
@@ -387,7 +388,7 @@ export async function registerKnowledgeRoutes(
           if (options.writeGate) {
             await options.writeGate.runExclusive("knowledge-reembed", applyReembed);
           } else {
-            applyReembed();
+            await applyReembed();
           }
           console.info(JSON.stringify({ event: "embedding_reembed_done", records: staleRecords.length, chunks: staleChunks.length, provider: current }));
         } catch (err) {

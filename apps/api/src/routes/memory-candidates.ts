@@ -8,7 +8,8 @@ import {
 import { withMemoryCandidateReview } from "../../../../src/domain/memoryReview";
 import { makeId, nowIso, withAuditEvent } from "../../../../src/domain/utils";
 import type { MemoryCandidate, MemoryRecord, ProductState } from "../../../../src/domain/types";
-import type { ProductStateRepository } from "../product-state-repository";
+import type { ProductStateRepository } from "../product-state-repository"
+import { replaceStateDurable } from "../product-state-repository";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import { MAX_EMBED_CHARS } from "./knowledge";
 import { runStateCommand } from "../state-command";
@@ -105,22 +106,58 @@ export async function registerMemoryCandidateRoutes(
     }
 
     // M3c: enrich the confirmed record with a semantic embedding so the long-term
-    // store is cosine-searchable from the interview line. The embedding is computed
-    // here (route layer has the client); the domain approve stays pure and offline-
-    // safe. On any embed failure / no client we pass nothing and the record is
-    // created without an embedding (keyword retrieval still works). importance is
-    // backfilled inside approveMemoryCandidate from the candidate's reviewScore.
-    const embedding = await embedCandidateText(candidate.text, options.embeddingClient);
+    // store is cosine-searchable. Domain approve stays pure; route owns the client.
+    // C-P1-06: when an embedding client is configured, embed failure is fail-closed (502)
+    // so "confirmed" never silently means "not HNSW-searchable". When no client is
+    // configured (keyword-only product config), approve succeeds with embeddingReady:false.
+    const embedOutcome = await embedCandidateText(candidate.text, options.embeddingClient);
+    if (options.embeddingClient && embedOutcome.status !== "ok") {
+      const embedError =
+        embedOutcome.status === "failed" ? embedOutcome.error : "嵌入服务不可用";
+      return reply.code(502).send({
+        error: `记忆确认失败（语义向量不可用）：${embedError}。本条未确认，请重试。`,
+        embeddingReady: false,
+        vectorRecallAvailable: false
+      });
+    }
+    const embedding = embedOutcome.status === "ok" ? embedOutcome.embedding : undefined;
+    // ME-P1-01: UI offers merge vs add; default merge preserves approved candidate text.
+    const body =
+      request.body && typeof request.body === "object"
+        ? (request.body as Record<string, unknown>)
+        : {};
+    const mode =
+      body.mode === "add" || body.mode === "merge" ? (body.mode as "add" | "merge") : "merge";
     const nextState = approveMemoryCandidate(state, candidate.id, {
       ...(embedding ? { embedding, embeddingProvider: options.embeddingClient?.providerId } : {}),
       // Consolidation summaries carry the keeper's importance; honor it over the reviewScore band.
-      ...(candidate.importance != null ? { importance: candidate.importance } : {})
+      ...(candidate.importance != null ? { importance: candidate.importance } : {}),
+      mode
     });
     const reviewedCandidate = findCandidate(nextState, candidate.id);
-    const record = nextState.memoryRecords.find((item) => item.sourceCandidateId === candidate.id);
-    const persisted = repository.replaceState(nextState);
+    // Merge path may update an existing record without sourceCandidateId=this candidate.
+    const record =
+      nextState.memoryRecords.find((item) => item.sourceCandidateId === candidate.id) ??
+      (candidate.similarToRecordId
+        ? nextState.memoryRecords.find((item) => item.id === candidate.similarToRecordId)
+        : undefined) ??
+      nextState.memoryRecords.find((item) => item.text === candidate.text);
+    const persisted = /*durable*/await replaceStateDurable(repository, nextState);
+    const embeddingReady = Boolean(embedding && embedding.length > 0);
 
-    return { candidate: reviewedCandidate, record, state: persisted };
+    return {
+      candidate: reviewedCandidate,
+      record,
+      state: persisted,
+      embeddingReady,
+      vectorRecallAvailable: embeddingReady,
+      ...(embeddingReady
+        ? {}
+        : {
+            warning:
+              "已确认记忆，但当前未配置嵌入模型：跨会话向量召回不可用，仅关键词/子串路径可命中。"
+          })
+    };
   });
 
   // R3 试点:候选拒绝(pending→rejected)是纯同步小 RMW,换轨 CAS;并发双 reject/与 approve
@@ -169,8 +206,24 @@ export async function registerMemoryCandidateRoutes(
     const state = repository.getState();
     const before = state.memoryRecords;
     const after = dedupeMemoryRecords(before);
+    const allClusters = collectMergedClusters(before, after);
+    // ME-P1-02: only permanently deprecate losers in clusters that receive a summary path.
+    // Unsummarized clusters (beyond MAX_SUMMARY_CLUSTERS) restore losers to confirmed.
+    const boundedClusters = allClusters.slice(0, MAX_SUMMARY_CLUSTERS);
+    const deferredLoserIds = new Set(
+      allClusters.slice(MAX_SUMMARY_CLUSTERS).flatMap((cluster) => cluster.losers.map((l) => l.id))
+    );
+    const beforeById = new Map(before.map((r) => [r.id, r] as const));
+    const afterRecovered =
+      deferredLoserIds.size > 0
+        ? after.map((record) => {
+            if (!deferredLoserIds.has(record.id)) return record;
+            const original = beforeById.get(record.id);
+            return original ? { ...original } : record;
+          })
+        : after;
 
-    const clusters = collectMergedClusters(before, after);
+    const clusters = boundedClusters;
     const deprecated = clusters.reduce((sum, cluster) => sum + cluster.losers.length, 0);
     if (deprecated > 0 && !options.bailianChatClient) {
       return reply.code(503).send({ error: "记忆整合摘要 LLM 未配置（缺少 DASHSCOPE_API_KEY），无法整合。" });
@@ -182,8 +235,8 @@ export async function registerMemoryCandidateRoutes(
     // dropped memoryEdges from deprecated records (keeps them out of about_theme aggregation).
     const loserIds = new Set(clusters.flatMap((cluster) => cluster.losers.map((loser) => loser.id)));
     const prunedRecords = loserIds.size > 0
-      ? after.map((record) => (loserIds.has(record.id) ? { ...record, relatedThemeIds: [] } : record))
-      : after;
+      ? afterRecovered.map((record) => (loserIds.has(record.id) ? { ...record, relatedThemeIds: [] } : record))
+      : afterRecovered;
 
     let nextState: ProductState = { ...state, memoryRecords: prunedRecords };
     if (deprecated > 0) {
@@ -199,9 +252,17 @@ export async function registerMemoryCandidateRoutes(
         const code = message.includes("预算已用尽") ? 429 : 502;
         return reply.code(code).send({ error: `记忆整合失败：${message}。未做任何变更，请稍后重试。` });
       }
+      // ME-P1-03: summary candidates point at keeper so approve merge can replace keeper text.
       nextState = {
         ...nextState,
-        memoryCandidates: [...summaryCandidates, ...nextState.memoryCandidates]
+        memoryCandidates: [
+          ...summaryCandidates.map((c, i) => ({
+            ...c,
+            similarToRecordId: clusters[i]?.keeper.id,
+            suggestedUpdate: "update" as const
+          })),
+          ...nextState.memoryCandidates
+        ]
       };
       // Per-loser audit, matching deprecateMemoryRecord's granularity & reason text
       // (the existing closed AuditEvent union already covers memory_record_deprecated).
@@ -220,7 +281,7 @@ export async function registerMemoryCandidateRoutes(
       }
     }
 
-    const persisted = repository.replaceState(nextState);
+    const persisted = /*durable*/await replaceStateDurable(repository, nextState);
     return { state: persisted, summary: { deprecated } };
   });
 }
@@ -327,25 +388,31 @@ async function buildClusterSummaryCandidates(
   return candidates;
 }
 
-// M3c: embed the candidate text for semantic recall. Fail-safe — returns undefined
-// when there's no client, the call throws, or the model returns an empty vector, so
-// approve always succeeds (it just degrades to keyword retrieval for that record).
+type EmbedCandidateOutcome =
+  | { status: "ok"; embedding: number[] }
+  | { status: "unavailable" }
+  | { status: "failed"; error: string };
+
+// M3c: embed candidate text for semantic recall. Distinguishes "no client configured"
+// from "client failed" so approve can fail-closed when vectors were expected.
 async function embedCandidateText(
   text: string,
   embeddingClient: BailianEmbeddingClient | undefined
-): Promise<number[] | undefined> {
+): Promise<EmbedCandidateOutcome> {
   if (!embeddingClient) {
-    return undefined;
+    return { status: "unavailable" };
   }
   try {
     const vectors = await embeddingClient.embed([text.slice(0, MAX_EMBED_CHARS)]);
     const vector = vectors[0];
-    return Array.isArray(vector) && vector.length > 0 ? vector : undefined;
+    if (Array.isArray(vector) && vector.length > 0) {
+      return { status: "ok", embedding: vector };
+    }
+    return { status: "failed", error: "嵌入模型返回空向量" };
   } catch (error) {
-    console.warn(
-      JSON.stringify({ event: "memory_approve_embed_failed", error: error instanceof Error ? error.message : String(error) })
-    );
-    return undefined;
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(JSON.stringify({ event: "memory_approve_embed_failed", error: message }));
+    return { status: "failed", error: message };
   }
 }
 

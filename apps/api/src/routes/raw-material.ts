@@ -3,6 +3,7 @@ import type { InterviewRawMaterial, ProductState } from "../../../../src/domain/
 import { backfillEvidenceAnchors } from "../../../../src/domain/raw-material";
 import type { RawMaterialRepository } from "../raw-material-repository";
 import type { ProductStateRepository } from "../product-state-repository";
+import { replaceStateDurable } from "../product-state-repository";
 
 /**
  * Offload a completed interview session's heavy evidence (turns + strategyTrace)
@@ -73,7 +74,7 @@ export async function registerRawMaterialRoutes(
         offloaded += 1;
       }
     }
-    productRepo.replaceState(hotState);
+    await replaceStateDurable(productRepo, hotState);
     return { offloaded };
   });
 }

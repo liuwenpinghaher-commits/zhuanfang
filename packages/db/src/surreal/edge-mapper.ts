@@ -1,4 +1,4 @@
-import type { ProductState, EvidenceAnchor } from "../../../../src/domain/types";
+import type { ProductState, EvidenceAnchor, InterviewRawMaterial, InterviewTurn } from "../../../../src/domain/types";
 
 export interface EdgeSpec {
   edge: "belongs_to_theme" | "derived_from" | "about_theme" | "part_of" | "contradicts" | "evolves_into";
@@ -11,6 +11,14 @@ export interface EdgeSpec {
   data?: { provenance: { origin: string; sessionId: string; turnId: string } };
 }
 
+function turnRecordOf(sessionId: string, t: InterviewTurn): Record<string, unknown> {
+  const rec: Record<string, unknown> = { id: t.id, sessionId, role: t.role, content: t.content };
+  // 审查加固(L5):intent 有值才写(对齐 timestamp),防将来 null 致 surreal option<string> coerce 失败、双写发散。
+  if (t.intent != null) rec.intent = t.intent;
+  if (t.timestamp) rec.timestamp = new Date(t.timestamp);
+  return rec;
+}
+
 /** turn 记录(写 turn 表用):从各 session.turns 摊平,带 sessionId 外键。
  *  3.x 校正:turn.timestamp DEFINE 为 datetime,有值才转 Date 写入;缺失则不写该字段,
  *  交给 schema 的 `DEFAULT time::now()`(persist 的 fillUpsertDefaults 在覆盖写时同样补 now),
@@ -19,14 +27,26 @@ export function turnRecordsOf(state: ProductState): Array<Record<string, unknown
   const out: Array<Record<string, unknown>> = [];
   for (const s of state.sessions) {
     for (const t of s.turns ?? []) {
-      const rec: Record<string, unknown> = { id: t.id, sessionId: s.id, role: t.role, content: t.content };
-      // 审查加固(L5):intent 有值才写(对齐 timestamp),防将来 null 致 surreal option<string> coerce 失败、双写发散。
-      if (t.intent != null) rec.intent = t.intent;
-      if (t.timestamp) rec.timestamp = new Date(t.timestamp);
-      out.push(rec);
+      out.push(turnRecordOf(s.id, t));
     }
   }
   return out;
+}
+
+/**
+ * P0 import 溯源:完整备份恢复时热态 session.turns 已降冷为空,但 cold raw_material 仍有完整 turns。
+ * 将冷层 turns 投影为 turn 表记录,使 derived_from 端点在空库 import 时真实存在。
+ * 同 id 后写覆盖前写(冷层为权威逐字稿)。
+ */
+export function turnRecordsFromRawMaterials(materials: InterviewRawMaterial[]): Array<Record<string, unknown>> {
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const m of materials) {
+    for (const t of m.turns ?? []) {
+      if (!t?.id) continue;
+      byId.set(String(t.id), turnRecordOf(m.sessionId, t));
+    }
+  }
+  return [...byId.values()];
 }
 
 /** 把四套旧编码 + turns 投影成统一 EdgeSpec[]。theme/memory 端按 known-id 集过滤悬挂边;

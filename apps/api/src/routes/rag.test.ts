@@ -67,7 +67,8 @@ describe("POST /api/rag/query", () => {
     const fakeEmbeddingClient = {
       embed: async (_texts: string[]) => [QUERY_VEC]
     };
-    const fakeAnswer = "AI在产品设计中扮演重要角色。";
+    // Model must mark used sources as [n] — same contract as /api/chat (C-P2-03).
+    const fakeAnswer = "AI在产品设计中扮演重要角色[1]。";
     const fakeChatClient = {
       complete: async () => fakeAnswer
     };
@@ -88,9 +89,10 @@ describe("POST /api/rag/query", () => {
     const body = res.json();
     expect(body.answer).toBe(fakeAnswer);
     expect(Array.isArray(body.citations)).toBe(true);
-    expect(body.citations.length).toBeGreaterThan(0);
+    expect(body.citations.length).toBe(1);
     expect(body.citations[0].id).toBe(chunkId);
     expect(body.citations[0].title).toBe("AI 产品分析");
+    expect(body.citations[0].citationIndex).toBe(1);
 
     await server.close();
   });
@@ -229,8 +231,8 @@ describe("POST /api/rag/query", () => {
   // （已剔除）"离线 fallback: citations 仅含答案实际引用的前 3 个 chunk"——buildFallbackAnswer
   // 拼接答案已随真实性重构删除，无 chatClient 即 503；citations 与召回集合的对齐由下方在线用例钉住。
 
-  it("在线路径: citations 与 LLM 实际用于生成答案的所有 chunk 对齐（含全部 top-k）", async () => {
-    // 3 个 chunks，embedding 完全匹配 → 全部进入 top-k
+  it("C-P2-03: citations only include chunks the model marked with [n] (not full top-k)", async () => {
+    // 3 个 chunks，embedding 完全匹配 → 全部进入 top-k 召回；但答案只标 [1][3]
     const sources = Array.from({ length: 3 }, (_, i) => {
       const id = `chunk-online-${i}`;
       const srcId = `src-online-${i}`;
@@ -258,7 +260,7 @@ describe("POST /api/rag/query", () => {
       embed: async (_texts: string[]) => [QUERY_VEC]
     };
     const fakeChatClient = {
-      complete: async () => "AI 内容综合回答"
+      complete: async () => "综合 [1] 与 [3] 的观点，第二份未直接使用。"
     };
 
     const server = buildApiServer({
@@ -275,13 +277,42 @@ describe("POST /api/rag/query", () => {
 
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    // 在线路径: LLM 使用全部召回 chunk，citations 应含 3 个
-    expect(body.citations).toHaveLength(3);
-    const citationIds = body.citations.map((c: { id: string }) => c.id);
-    sources.forEach(({ chunk }) => {
-      expect(citationIds).toContain(chunk.id);
-    });
+    expect(body.citations).toHaveLength(2);
+    expect(body.citations.map((c: { id: string }) => c.id)).toEqual([
+      sources[0]!.chunk.id,
+      sources[2]!.chunk.id
+    ]);
+    expect(body.citations.map((c: { citationIndex: number }) => c.citationIndex)).toEqual([1, 3]);
 
+    await server.close();
+  });
+
+  it("C-P2-03: answer without [n] markers → empty citations (no silent top-k dump)", async () => {
+    const chunk = makeChunk({
+      id: "chunk-no-cite",
+      sourceId: "src-no-cite",
+      title: "未标注资料",
+      text: "AI 内容",
+      keywords: ["ai"],
+      embedding: CHUNK_VEC
+    });
+    const repository = createInMemoryProductStateRepository({
+      ...createInitialProductState(),
+      ragChunks: [chunk],
+      importSources: [makeSource("src-no-cite")]
+    });
+    const server = buildApiServer({
+      productStateRepository: repository,
+      embeddingClient: { embed: async () => [QUERY_VEC] } as never,
+      bailianChatClient: { complete: async () => "没有任何编号的回答" } as never
+    });
+    const res = await server.inject({
+      method: "POST",
+      url: "/api/rag/query",
+      payload: { question: "AI" }
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().citations).toEqual([]);
     await server.close();
   });
 

@@ -10,7 +10,7 @@ import { createSurrealConnection, type SurrealConnectionOptions } from "./connec
 import { applySchema } from "./apply-schema";
 import { selectBm25QueryTokens, buildBm25Clause, reorderByRrfRank, RRF_RANK_CONSTANT } from "./constants";
 import { NODE_MAPPINGS, STREAM_MAPPINGS, toRecord, fromRecord, type StreamMapping } from "./node-mapper";
-import { collectEdges, turnRecordsOf, type EdgeSpec } from "./edge-mapper";
+import { collectEdges, turnRecordsOf, turnRecordsFromRawMaterials, type EdgeSpec } from "./edge-mapper";
 import { diffById, diffEdges } from "./diff";
 import {
   audioContentOf,
@@ -484,7 +484,13 @@ export async function buildSurrealProductStateRepositoryOnConnection(
     const nextHot = hot.kind === "reset" ? computeResetNextState() : computeReplaceNextState(hot.next, { ...(hot.expectedRevision !== undefined ? { expectedRevision: hot.expectedRevision } : {}) });
 
     // ① 热态 diff 语句(相对执行时刻的 lastPersisted 基线;含 keepOnlyLiveTurnProvenance 的 async 预查)。
-    const { surql: hotSurql, vars } = await buildPersistStatements(db, lastPersisted, nextHot);
+    // P0 import 溯源:冷层 raw_material 在同事务 replace 时,把降冷 turns 补进 turn 表,避免
+    // derived_from 因端点不存在被 keepOnlyLiveTurnProvenance 丢弃。
+    const coldTurnSources =
+      cold.rawMaterial?.action === "replace" ? cold.rawMaterial.materials : undefined;
+    const { surql: hotSurql, vars } = await buildPersistStatements(db, lastPersisted, nextHot, {
+      coldTurnSources,
+    });
 
     // ② 冷层语句(cold_ 前缀避免与热态 vars 撞名)。DELETE 全表 = wipe;replace = 全删 + 逐条 UPSERT。
     let coldSurql = "";
@@ -940,9 +946,12 @@ async function runGraphAudit(db: Surreal, baseline: ProductState): Promise<Graph
   }
 
   return {
+    // P0:dangling provenance 曾被移出 missing 后仍算 ok,导致备份恢复丢边时审计假绿。
+    // 有悬空溯源即 fail-closed(仍单列 danglingProvenanceCount 便于诊断)。
     ok:
       missingInDb.length === 0 && unexpectedInDb.length === 0 &&
-      nodeMissingInDb.length === 0 && nodeUnexpectedInDb.length === 0,
+      nodeMissingInDb.length === 0 && nodeUnexpectedInDb.length === 0 &&
+      danglingProvenanceCount === 0,
     auditedEdgeTables: [...AUDITED_EDGE_TABLES],
     expectedCount: expected.size,
     actualCount: actual.size,
@@ -1027,8 +1036,14 @@ async function persist(db: Surreal, prev: ProductState, next: ProductState): Pro
 }
 
 /** R2b:生成 prev→next 的热态 diff 语句(不含 BEGIN/COMMIT),供 persist 与治理事务共用。
- *  返回的 surql 是若干以 `;\n` 结尾的语句;vars 为其绑定参数。调用方自行包裹事务边界。 */
-async function buildPersistStatements(db: Surreal, prev: ProductState, next: ProductState): Promise<{ surql: string; vars: Record<string, unknown> }> {
+ *  返回的 surql 是若干以 `;\n` 结尾的语句;vars 为其绑定参数。调用方自行包裹事务边界。
+ *  opts.coldTurnSources:import 同事务恢复的冷层 raw_material;其 turns 并入 turn UPSERT 与 nextTurnIds。 */
+async function buildPersistStatements(
+  db: Surreal,
+  prev: ProductState,
+  next: ProductState,
+  opts?: { coldTurnSources?: InterviewRawMaterial[] },
+): Promise<{ surql: string; vars: Record<string, unknown> }> {
   let surql = "";
   const vars: Record<string, unknown> = {};
   let i = 0;
@@ -1067,7 +1082,14 @@ async function buildPersistStatements(db: Surreal, prev: ProductState, next: Pro
   //    故 turn 永不删:只投影 upsert。`void removeIds` 显式弃用,避免 noUnusedLocals 报错。
   const nextTurnIds = new Set<string>();
   {
-    const nextTurns = turnRecordsOf(next) as Array<Record<string, unknown> & { id: string }>;
+    const hotTurns = turnRecordsOf(next) as Array<Record<string, unknown> & { id: string }>;
+    const coldTurns = opts?.coldTurnSources?.length
+      ? (turnRecordsFromRawMaterials(opts.coldTurnSources) as Array<Record<string, unknown> & { id: string }>)
+      : [];
+    const byId = new Map<string, Record<string, unknown> & { id: string }>();
+    for (const t of hotTurns) byId.set(String(t.id), t);
+    for (const t of coldTurns) byId.set(String(t.id), t); // cold wins on same id
+    const nextTurns = [...byId.values()];
     for (const t of nextTurns) nextTurnIds.add(String(t.id));
     const { upsert, removeIds } = diffById(
       turnRecordsOf(prev) as Array<Record<string, unknown> & { id: string }>,

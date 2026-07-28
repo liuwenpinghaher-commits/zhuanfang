@@ -17,35 +17,46 @@ export async function prefetchRecall(
   state: ProductState,
   topicHint: string,
   queryEmbedding: number[] | undefined,
-  opts: { includeSensitive: boolean; topN: number }
+  opts: {
+    includeSensitive: boolean;
+    topN: number;
+    /**
+     * BM25 / hybrid lexical query. Mid-session paths pass the latest user utterance
+     * so lexical recall tracks the turn while theme matching uses topicHint separately.
+     * When omitted, falls back to topicHint.
+     */
+    queryText?: string;
+  }
 ): Promise<RecallResult> {
   // 审计修复(P3-43):与域内 resolveInterviewTopicHint 对齐——仅【名字匹配】的主题参与图召回。
   // 此前名字不匹配即回退"出现次数最高的旧主题",导致显式新话题会话被无关旧主题资产污染
   // (原生分支只排序不过滤)。新话题无匹配主题 → themeId undefined → 该路召回自然为空,正确。
-  const theme = state.themes.find((t) => t.name === topicHint);
+  const themeTopic = topicHint.trim();
+  const theme = themeTopic ? state.themes.find((t) => t.name === themeTopic) : undefined;
   const themeId = theme?.id;
 
   // 方案一:rag_chunk 原生混合召回是可选能力(仅 surreal 权威档位),typeof 探测 + bind 后使用。
   const recallRag = typeof port.recallRagChunks === "function" ? port.recallRagChunks.bind(port) : undefined;
-  const trimmedHint = topicHint.trim();
+  // R-P1-01: BM25/hybrid follows mid-session queryText when provided (not open-time freeze).
+  const lexicalQuery = (opts.queryText ?? topicHint).trim();
 
   const [themeAssets, memoryHits, ragHits] = await Promise.all([
     themeId ? port.recallThemeAssets(themeId) : Promise.resolve(undefined),
     queryEmbedding && queryEmbedding.length > 0
       ? // 大候选集(topN*4)逼近精确,A4 门控由 includeSensitive 传入;三因子精排在域层叠加。
-        // ③ 混合检索:topicHint 作为 queryText 叠加 BM25(补 HNSW 对专名/精确词的盲区)。
+        // ③ 混合检索:lexicalQuery 作为 queryText 叠加 BM25(补 HNSW 对专名/精确词的盲区)。
         port.recallMemoriesByVector(queryEmbedding, Math.max(opts.topN, 5) * 4, {
           includeSensitive: opts.includeSensitive,
-          ...(topicHint ? { queryText: topicHint } : {})
+          ...(lexicalQuery ? { queryText: lexicalQuery } : {})
         })
       : Promise.resolve(undefined),
-    // 方案一:rag_chunk 混合召回(HNSW+BM25+rrf)。有 embedding 走混合;只有 topicHint 走 BM25-only;
+    // 方案一:rag_chunk 混合召回(HNSW+BM25+rrf)。有 embedding 走混合;只有 lexical 走 BM25-only;
     // 皆缺/无能力 → undefined。过取一档(topN*2):域层 buildSemanticRagContextFromRecall 还要按
     // usage/来源 policy 重验门控后截断到 contextSourceLimit(= topN 同源的 maxSources)。
-    recallRag && ((queryEmbedding && queryEmbedding.length > 0) || trimmedHint.length > 0)
+    recallRag && ((queryEmbedding && queryEmbedding.length > 0) || lexicalQuery.length > 0)
       ? recallRag({
           ...(queryEmbedding && queryEmbedding.length > 0 ? { embedding: queryEmbedding } : {}),
-          ...(trimmedHint ? { queryText: trimmedHint } : {}),
+          ...(lexicalQuery ? { queryText: lexicalQuery } : {}),
           k: Math.max(opts.topN, 1) * 2,
           usage: "interview-context"
         })
@@ -72,7 +83,9 @@ export async function prefetchRecall(
 
   return {
     ...(themeAssets ? { themeAssets } : {}),
-    ...(memoryHits ? { memoryHits } : {}),
+    // C-P1-05: only inject non-empty memoryHits. Empty [] is truthy in JS and would
+    // collapse the domain memory pool instead of falling back to full confirmed set.
+    ...(memoryHits && memoryHits.length > 0 ? { memoryHits } : {}),
     ...(provenance ? { provenance } : {}),
     ...(ragHits && ragHits.length > 0 ? { ragHits } : {})
   };

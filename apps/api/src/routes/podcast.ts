@@ -8,7 +8,8 @@ import {
 import type { PodcastEpisode } from "../../../../src/domain/types";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import type { BailianChatClient, BailianPodcastAudioClient } from "../providers/bailian";
-import type { ProductStateRepository } from "../product-state-repository";
+import type { ProductStateRepository } from "../product-state-repository"
+import { replaceStateDurable } from "../product-state-repository";
 import { generatePodcastScript } from "../intelligence/podcast-script-llm";
 
 interface PodcastEpisodeRequestPayload {
@@ -146,13 +147,19 @@ export async function registerPodcastRoutes(
       };
     }
 
-    // --- Step 1: Persist the episode FIRST (script is now saved, TTS failure won't lose it) ---
+// --- Step 1: Persist the episode FIRST (script is now saved, TTS failure won't lose it) ---
     // state 必须是 replaceState 返回的权威态(revision 已 bump),否则客户端下一次乐观 PUT 必 409。
-    const persistedDraft = repository.replaceState(nextState);
+    const persistedDraft = /*durable*/await replaceStateDurable(repository, nextState);
 
     // --- Step 2: If no TTS client, return the persisted episode as-is (audioRenderStatus
     // stays "pending" — 尚未渲染是诚实状态；配置 TTS 后可显式 synthesize) ---
     if (!options.bailianPodcastAudioClient) {
+      return { episode, state: persistedDraft };
+    }
+
+    // PO-P1-01: default is confirm-then-render. Only auto-TTS when explicitly enabled
+    // (PODCAST_AUTO_RENDER_ON_CREATE=true|1|yes|on). "auto" and unset = script only.
+    if (!shouldAutoRenderPodcastOnCreate(process.env.PODCAST_AUTO_RENDER_ON_CREATE)) {
       return { episode, state: persistedDraft };
     }
 
@@ -167,7 +174,7 @@ export async function registerPodcastRoutes(
         item.id === episode.id ? finalEpisode : item
       )
     };
-    const persistedFinal = repository.replaceState(finalState);
+    const persistedFinal = /*durable*/await replaceStateDurable(repository, finalState);
     return { episode: finalEpisode, state: persistedFinal };
   });
 
@@ -196,7 +203,7 @@ export async function registerPodcastRoutes(
     if (!options.bailianPodcastAudioClient) {
       // 用户显式要求合成——没有 TTS 就是不能用，如实 503。先保住用户带来的脚本编辑。
       if (incomingScript) {
-        repository.replaceState({
+        /*durable*/await replaceStateDurable(repository, {
           ...state,
           podcastEpisodes: state.podcastEpisodes.map((ep) => (ep.id === id ? episodeToRender : ep))
         });
@@ -218,7 +225,7 @@ export async function registerPodcastRoutes(
         ep.id === id ? updatedEpisode : ep
       )
     };
-    const persisted = repository.replaceState(updatedState);
+    const persisted = /*durable*/await replaceStateDurable(repository, updatedState);
     if (updatedEpisode.audioRenderStatus === "failed") {
       // 渲染失败：脚本与失败状态已持久化（不丢内容），HTTP 层如实 502 并附上权威 state
       // 供客户端同步 revision。
@@ -244,6 +251,12 @@ function normalizeSourceType(value: unknown): PodcastEpisode["sourceType"] {
     return value;
   }
   return "note";
+}
+
+/** Explicit opt-in only — "auto" must not mean silent spend on create. */
+export function shouldAutoRenderPodcastOnCreate(raw: string | undefined): boolean {
+  const v = (raw ?? "").trim().toLowerCase();
+  return v === "true" || v === "1" || v === "yes" || v === "on";
 }
 
 function normalizeFormat(value: unknown): PodcastEpisode["format"] {

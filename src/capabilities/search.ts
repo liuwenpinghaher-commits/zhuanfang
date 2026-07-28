@@ -40,8 +40,9 @@ const localDemoSearchProvider: SearchProvider = {
   description: "本地确定性搜索 provider，用于无网络和无 API key 场景。",
   requiresApiKey: false,
   async search(input) {
+    // local-demo is fabricated placeholder research — always needs-review, never "ready".
     return {
-      input: buildSearchInput(input, false)
+      input: buildSearchInput(input, true)
     };
   }
 };
@@ -94,11 +95,13 @@ export async function executeSearchProvider(input: SearchProviderInput): Promise
 
 function buildSearchInput(input: SearchProviderInput, needsReview: boolean): SearchBriefInput {
   const topic = input.topic.trim() || "本周值得讨论的 AI 产品变化";
+  // Defense in depth: local-demo never presents as ready real research.
+  const effectiveNeedsReview = needsReview || input.providerId === "local-demo";
 
   return {
     topic,
     provider: input.providerId,
-    status: needsReview ? "needs-review" : "ready",
+    status: effectiveNeedsReview ? "needs-review" : "ready",
     summary: `${topic} 正在影响用户的产品判断、团队分工和长期主题，适合在专访里作为外部参照，而不是替代个人经验。`,
     facts: [
       `${topic} 已经从单点工具演示进入流程改造讨论，适合追问具体业务环节。`,

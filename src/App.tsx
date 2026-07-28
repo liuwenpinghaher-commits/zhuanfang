@@ -39,7 +39,7 @@ import {
 import { addAnnotation, removeAnnotation } from "./domain/raw-material";
 import { deleteImportSource } from "./domain/material";
 import { createIdleCapabilityTask, failCapabilityTask, startCapabilityTask } from "./capabilities/task";
-import { productApiClient, isNetworkError, ApiError, type PersistHealthLite, type PurgeReceipt, type ResetReceipt, type ReviewsResponse } from "./api/productApi";
+import { productApiClient, isNetworkError, ApiError, type PersistHealthLite, type PurgeReceipt, type ResetReceipt, type ReviewsResponse, deriveRealtimeApiWsBaseUrl, withAuthTokenQuery, resolveProductApiToken, getProductApiBaseUrl} from "./api/productApi";
 import type { ColdLayerMode, RealtimeVoiceSessionResponse, StateImportResult, SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigUpdateRequest, VoiceInfo } from "./api/productApi";
 // WebRTC omni client is incomplete (no callbacks/turn recording); the connect path is
 // downlined to WebSocket in startVoiceSession. Type kept for the connection union only.
@@ -74,6 +74,7 @@ import {
   type OfflineOutbox,
   type OfflineSyncConflict
 } from "./domain/offline-sync";
+import { shouldStageLocalBeforeAdopt } from "./domain/adopt-stage";
 import type {
   AssetStatus,
   ChatCitation,
@@ -133,11 +134,7 @@ const navIconByView: Record<View, typeof Compass> = {
 // 实时语音 WS 基址：HTTPS 页面必须用 wss(否则浏览器以 mixed-content 拦截 ws://,生产语音不可用),
 // 且生产经 API 同源托管(fastifyStatic),WS 走同源 host;dev 下前端在 vite 端口、API 在 3210,需显式指向。
 function realtimeApiWsBaseUrl(): string {
-  if (typeof location !== "undefined" && location.protocol === "https:") {
-    return `wss://${location.host}`;
-  }
-  const hostname = typeof location !== "undefined" ? location.hostname : "127.0.0.1";
-  return `ws://${hostname}:3210`;
+  return deriveRealtimeApiWsBaseUrl(getProductApiBaseUrl());
 }
 
 interface SyncConflictState {
@@ -700,7 +697,15 @@ export default function App() {
       return;
     }
     researchAutoOpenedRef.current = true;
-    autoRunResearch().catch(() => {});
+    autoRunResearch().catch((err) => {
+      setNotice(
+        buildNotice(
+          "warning",
+          "自动盯梢未完成",
+          err instanceof Error && err.message ? err.message : "打开调研页时自动盯梢失败，可稍后手动重试。"
+        )
+      );
+    });
   }, [view, apiPersistenceEnabled]);
 
   useEffect(() => {
@@ -815,10 +820,13 @@ export default function App() {
   const yearlyReview = serverReviews?.yearly ?? null;
   const radar = serverReviews?.radar ?? localRadar;
 
-  // Re-fetch LLM reviews only when the asset set actually changes (not on every
-  // turn), so an interview in progress doesn't trigger repeated review calls.
+// RV-P1-01: only fetch LLM reviews when user opens themes (GET must not tax system budget on home).
+  // Re-fetch when asset signature changes while themes is visible.
   const reviewSignatureRef = useRef<string>("");
   useEffect(() => {
+    if (view !== "themes") {
+      return;
+    }
     const signature = [
       productState.notes.length,
       productState.points.length,
@@ -827,7 +835,7 @@ export default function App() {
       productState.debts.length,
       productState.themes.length
     ].join(":");
-    if (signature === reviewSignatureRef.current) {
+    if (signature === reviewSignatureRef.current && serverReviews) {
       return;
     }
     reviewSignatureRef.current = signature;
@@ -849,7 +857,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [productState]);
+  }, [view, productState]);
 
   // Adopt an authoritative state returned by a fine-grained route. Records it as
   // "already saved" so the debounce effect doesn't echo the whole state back in a
@@ -860,7 +868,26 @@ export default function App() {
   // 它原样写回去,而这个 PUT 携带的 revision 会被下一轮 turn 在服务端抢先 bump → 持续 409(stale
   // revision)。语音访谈每轮高频出 turn 时尤其致命,也会让"结束并生成档案"与残留 PUT 互相 race。
   function adoptServerState(next: ProductState) {
-    const pending = offlineOutboxRef.current;
+    let pending = offlineOutboxRef.current;
+    // If local edits exist but have not yet been staged into the outbox (autosave
+    // debounce window), stage them first so adopt cannot silently clobber them.
+    if (!pending) {
+      const local = productStateRef.current;
+      const localSig = productStateContentSignature(local);
+      const remoteSig = productStateContentSignature(next);
+      if (
+        shouldStageLocalBeforeAdopt({
+          localSignature: localSig,
+          remoteSignature: remoteSig,
+          lastSavedSignature: lastSavedContentRef.current
+        })
+      ) {
+        const staged = upsertOfflineOutbox({ baseState: next, localState: local });
+        writePendingOutbox(staged);
+        offlineOutboxRef.current = staged;
+        pending = staged;
+      }
+    }
     if (!pending) {
       acceptAuthoritativeState(next);
       return;
@@ -1064,7 +1091,14 @@ export default function App() {
       .finally(() => setConfirmingDecisionId(undefined));
   }
 
-  const approveCandidate = (id: string) => withMemoryAction(() => productApiClient.approveMemoryCandidate(id));
+const approveCandidate = (id: string, mode: "merge" | "add" = "merge") =>
+    withMemoryAction(async () => {
+      const res = await productApiClient.approveMemoryCandidate(id, { mode });
+      if (res.warning) {
+        setNotice(buildNotice("warning", "记忆已确认", res.warning));
+      }
+      return res.state;
+    });
   const rejectCandidate = (id: string) => withMemoryAction(() => productApiClient.rejectMemoryCandidate(id));
   const editCandidate = (id: string, text: string) => withMemoryAction(() => productApiClient.updateMemoryCandidate(id, text));
   const deprecateRecord = (id: string) => {
@@ -1214,10 +1248,9 @@ export default function App() {
 
   async function interruptAssistant() {
     setGuidanceState(prev => ({ ...prev, countThisTurn: 0, active: false }));
-    // Hit whichever transport is live. cascade (pipeline.interrupt) and omni
-    // (connection.interruptAssistant) have real barge-in; livekit's interrupt is a
-    // best-effort no-op (SDK-limited) but harmless. Previously only livekit was wired,
-    // so the manual 打断 button did nothing in the default cascade / omni modes.
+    // Hit whichever transport is live. cascade / omni have full barge-in; livekit
+    // mutes local playback and publishes {type:"interrupt"} so agent session.interrupt()
+    // stops synthesis (see agent/main.py + parse_interrupt_data_payload).
     let interrupted = false;
     // Capture how much of the reply was actually spoken aloud so the server can truncate the
     // persisted assistant turn to what the guest really heard (P0-2). Without this the session
@@ -1280,14 +1313,22 @@ export default function App() {
   }
 
   /** 一键开始：直接传参给 startInterview，不依赖 setState 后的值。 */
-  async function launchInterview(mode: InterviewMode = "decision", searchBriefId = activeSearchBriefId) {
+  async function launchInterview(
+    mode: InterviewMode = "decision",
+    searchBriefId = activeSearchBriefId,
+    topicHint?: string
+  ) {
     setPendingMode(mode);
     setActiveSearchBriefId(searchBriefId);
     setSession(null);
-    await startInterview(mode, searchBriefId);
+    await startInterview(mode, searchBriefId, topicHint);
   }
 
-  async function startInterview(mode: InterviewMode = pendingMode, searchBriefId = activeSearchBriefId) {
+  async function startInterview(
+    mode: InterviewMode = pendingMode,
+    searchBriefId = activeSearchBriefId,
+    topicHint?: string
+  ) {
     if (startingRef.current) return; // 已在创建中 → 跳过,避免双触发产生多个空 session
     startingRef.current = true;
     setStartingInterview(true);
@@ -1295,7 +1336,8 @@ export default function App() {
       const apiRun = await productApiClient.createInterviewSession({
         mode,
         strength: productState.profile.preferredStrength,
-        ...(searchBriefId ? { searchBriefId } : {})
+        ...(searchBriefId ? { searchBriefId } : {}),
+        ...(topicHint?.trim() ? { topicHint: topicHint.trim() } : {})
       });
       setSession(apiRun.session);
       adoptServerState(apiRun.state);
@@ -1492,7 +1534,16 @@ export default function App() {
       const response = await productApiClient.autoRunResearch();
       adoptServerState(response.state);
       setApiPersistenceEnabled(true);
-      setNotice(buildNotice("success", "自动盯梢完成", `新增 ${response.summary.generated} 条，刷新 ${response.summary.refreshed} 条。`));
+      const failed = response.summary.failed ?? 0;
+      if (failed > 0) {
+        setNotice(buildNotice(
+          "warning",
+          "自动盯梢部分完成",
+          `新增 ${response.summary.generated} 条，刷新 ${response.summary.refreshed} 条，失败 ${failed} 条。`
+        ));
+      } else {
+        setNotice(buildNotice("success", "自动盯梢完成", `新增 ${response.summary.generated} 条，刷新 ${response.summary.refreshed} 条。`));
+      }
       return response.summary;
     } catch {
       setApiPersistenceEnabled(false);
@@ -1860,17 +1911,36 @@ export default function App() {
       }
       setSession(null);
       closeRealtimeVoiceSession();
-      setNotice(buildNotice("success", "专访档案已生成", "双轨笔记和认知资产已更新。"));
-      setView("notes");
+      if (session.doNotSave) {
+        setNotice(buildNotice("info", "专访已结束（未写入长期资产）", "按你的选择，本场不沉淀双轨笔记与认知资产。"));
+        setView("home");
+} else {
+        const pendingCount =
+          apiRun.pendingMemoryCandidateCount ??
+          apiRun.state.memoryCandidates.filter((c) => c.status === "pending").length;
+        const detail =
+          pendingCount > 0
+            ? `双轨笔记已更新。另有 ${pendingCount} 条记忆候选待审，确认后才进入跨会话向量召回。`
+            : "双轨笔记和认知资产已更新。";
+        setNotice(buildNotice("success", "专访档案已生成", detail));
+        // R-P1-04: pending HITL is the real next step for long-term recall — don't bury it on notes.
+        setView(pendingCount > 0 ? "memory" : "notes");
+      }
       return;
     } catch (err) {
       // 已结束(409)/会话不存在(404):这场专访其实已经收尾(常见于 /end 调 LLM 较慢时用户
       // 重复点"结束")。视为成功跳转,绝不误报"结束失败"再诱导继续点。
       if (err instanceof ApiError && (err.status === 409 || err.status === 404)) {
+        const wasDoNotSave = session.doNotSave === true;
         setSession(null);
         closeRealtimeVoiceSession();
-        setNotice(buildNotice("info", "专访已结束", "这场专访已经收尾，已为你跳转到笔记。"));
-        setView("notes");
+        if (wasDoNotSave) {
+          setNotice(buildNotice("info", "专访已结束（未写入长期资产）", "这场专访已收尾，且按选择未沉淀长期资产。"));
+          setView("home");
+        } else {
+          setNotice(buildNotice("info", "专访已结束", "这场专访已经收尾，已为你跳转到笔记。"));
+          setView("notes");
+        }
         return;
       }
       // 失败即如实暴露——会话保持打开可重试，离线本地确定性 finalize（模板轻量档案）已剔除。
@@ -2179,8 +2249,8 @@ export default function App() {
           try {
             setVoiceStatus("connecting");
             const baseWsUrl = realtimeApiWsBaseUrl();
-            const asrWsUrl = `${baseWsUrl}/api/realtime-voice/ws/${voiceSession.sessionId}`;
-            const ttsWsUrl = `${baseWsUrl}/api/realtime-voice/ws/tts/${voiceSession.sessionId}`;
+            const asrWsUrl = withAuthTokenQuery(`${baseWsUrl}/api/realtime-voice/ws/${voiceSession.sessionId}`);
+            const ttsWsUrl = withAuthTokenQuery(`${baseWsUrl}/api/realtime-voice/ws/tts/${voiceSession.sessionId}`);
             const interviewId = session?.id ?? "";
 
             const asr = createBrowserAsrSource({
@@ -2318,31 +2388,37 @@ export default function App() {
                     .recordInterviewTurn(interviewId, { role: "user", content: text })
                     .then((r) => setSession(r.session))
                     .catch((err) => recordTurnFailedFallback(text, err));
-                  // Phase 8: regenerate pre_signals for the next turn (voice path).
+                  // Phase 8: regenerate pre_signals — failures are observable (parity with omni).
                   if (interviewId) {
                     productApiClient
                       .generateInterviewPreSignals(interviewId)
                       .then((res) => {
+                        voiceRecallRefreshSucceeded();
                         setSession((prev) => (prev ? { ...prev, interactionPreSignals: res.preSignals } : prev));
                       })
-                      .catch(() => {
-                        // keep existing signals on failure
-                      });
+                      .catch((err) => voiceRecallRefreshFailed("pre_signals", err));
                   }
-                  // 🔴-1 (honest scope): NO per-turn instruction refresh here. The
-                  // LiveKit cascade's instructions live in the Python agent
-                  // (agent-context), not in a client-side session.update — so memory
-                  // recall freshness on this path depends on whether that Python agent
-                  // re-fetches /api/realtime-voice/agent-context each turn (that side's
-                  // concern). This task fixed ONLY the bailian omni (WS/WebRTC) path,
-                  // which DOES refresh via connection.updateInstructions above.
+                  // LiveKit agent re-fetches agent-context server-side each turn; client
+                  // still records user turns authoritatively via record-turn above.
                 },
                 onAssistantTranscript: (text, isFinal) => {
                   if (!isFinal || !text.trim()) return;
                   setVoiceStatus("speaking");
-                  setSession((prev) =>
-                    prev ? appendAssistantTranscriptFinal(prev, text, assistantTranscriptTurnRef) : prev
-                  );
+                  // Authoritative assistant trail on the server (not only local UI).
+                  if (interviewId) {
+                    productApiClient
+                      .recordInterviewTurn(interviewId, { role: "assistant", content: text })
+                      .then((r) => setSession(r.session))
+                      .catch(() => {
+                        setSession((prev) =>
+                          prev ? appendAssistantTranscriptFinal(prev, text, assistantTranscriptTurnRef) : prev
+                        );
+                      });
+                  } else {
+                    setSession((prev) =>
+                      prev ? appendAssistantTranscriptFinal(prev, text, assistantTranscriptTurnRef) : prev
+                    );
+                  }
                 },
                 onAudioLevel: (level) => setAudioLevel(level),
                 onError: (err) => {
@@ -2451,15 +2527,32 @@ export default function App() {
                       .then((res) => {
                         voiceRecallRefreshSucceeded();
                         if ("updateInstructions" in connection) connection.updateInstructions(res.instructions);
+                        // C-P1-04: server now persists refreshed guide; adopt so UI/state
+                        // match the model context (no silent fork after voice turns).
+                        if (res.state) adoptServerState(res.state);
+                        if (res.session) setSession(res.session);
                       })
                       .catch((err) => voiceRecallRefreshFailed("voice_instructions", err));
                   }
                 },
                 onAssistantTranscript: (text, isFinal) => {
                   if (!isFinal || !text.trim()) return;
-                  setSession((prev) =>
-                    prev ? appendAssistantTranscriptFinal(prev, text, assistantTranscriptTurnRef) : prev
-                  );
+                  // Omni: persist assistant turn server-side so session trail is not empty.
+                  const assistantSid = session?.id ?? "";
+                  if (assistantSid) {
+                    productApiClient
+                      .recordInterviewTurn(assistantSid, { role: "assistant", content: text })
+                      .then((r) => setSession(r.session))
+                      .catch(() => {
+                        setSession((prev) =>
+                          prev ? appendAssistantTranscriptFinal(prev, text, assistantTranscriptTurnRef) : prev
+                        );
+                      });
+                  } else {
+                    setSession((prev) =>
+                      prev ? appendAssistantTranscriptFinal(prev, text, assistantTranscriptTurnRef) : prev
+                    );
+                  }
                 },
                 // 重连过程对用户可见（此前 3 次重连期间 UI 仍显示"聆听中"，用户不知连接已断）。
                 onReconnecting: (attempt, maxAttempts) => {
@@ -2824,7 +2917,10 @@ export default function App() {
           <TrackWorkspaceView
             workspace={buildTrackWorkspace(productState, selectedTrackId ?? "")}
             onBack={() => setView("home")}
-            onContinue={() => launchInterview("long-term")}
+            onContinue={() => {
+              const themeName = buildTrackWorkspace(productState, selectedTrackId ?? "").theme?.name;
+              void launchInterview("long-term", undefined, themeName);
+            }}
             state={productState}
             onAddAnnotation={addInterviewAnnotation}
             onRemoveAnnotation={removeInterviewAnnotation}
@@ -2884,6 +2980,19 @@ export default function App() {
             onPrivacyReport={showPrivacyReport}
             onPurge={purgeData}
             onSetProductState={setProductState}
+            onSaveProfilePersist={async (next) => {
+              setProductState(next);
+              const { state: server, conflicted } = await productApiClient.saveState(next);
+              if (conflicted) {
+                await synchronizeOfflineOutbox(
+                  upsertOfflineOutbox({ baseState: server, localState: next }),
+                  server
+                );
+              } else {
+                acceptAuthoritativeState(server);
+              }
+              setApiPersistenceEnabled(true);
+            }}
           />
         )}
       </main>

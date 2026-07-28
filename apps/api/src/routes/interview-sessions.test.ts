@@ -601,6 +601,84 @@ describe("interview-sessions routes", () => {
     await server.close();
   });
 
+  // IV-P1-04: doNotSave short-circuits — no finalize LLM, no long-term assets.
+  it("/end doNotSave: 不调归档 LLM，不写笔记/记忆，审计诚实", async () => {
+    const complete = vi.fn(async () => JSON.stringify({ title: "should-not-run" }));
+    const repo = createInMemoryProductStateRepository();
+    const server = Fastify({ logger: false });
+    await registerInterviewSessionRoutes(server, repo, {
+      bailianChatClient: { complete } as any,
+      bailianInterviewClient: { complete: async () => "追问？" } as any
+    });
+
+    const create = await server.inject({
+      method: "POST",
+      url: "/api/interview-sessions",
+      payload: { mode: "daily" }
+    });
+    const id = (create.json() as { session: { id: string } }).session.id;
+    // mark doNotSave via control or direct state
+    const state = repo.getState();
+    const session = state.sessions.find((s) => s.id === id)!;
+    repo.replaceState({
+      ...state,
+      sessions: state.sessions.map((s) =>
+        s.id === id
+          ? {
+              ...s,
+              doNotSave: true,
+              turns: [
+                {
+                  id: "u1",
+                  sessionId: id,
+                  role: "user",
+                  content: "隐私对话内容不应进长期资产",
+                  intent: "user_reply",
+                  timestamp: "2026-07-23T00:00:00.000Z"
+                },
+                {
+                  id: "a1",
+                  sessionId: id,
+                  role: "assistant",
+                  content: "好的",
+                  intent: "follow_up",
+                  timestamp: "2026-07-23T00:00:01.000Z"
+                }
+              ] as typeof session.turns
+            }
+          : s
+      )
+    });
+
+    const notesBefore = repo.getState().notes.length;
+    const res = await server.inject({ method: "POST", url: `/api/interview-sessions/${id}/end` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as {
+      longTermAssetsPersisted?: boolean;
+      note: { title: string };
+      state: { notes: unknown[]; sessions: { id: string }[]; auditEvents?: { label: string }[] };
+    };
+    expect(body.longTermAssetsPersisted).toBe(false);
+    expect(body.note.title).toContain("未保存");
+    expect(complete).not.toHaveBeenCalled();
+    expect(body.state.notes.length).toBe(notesBefore);
+    expect(body.state.sessions.some((s) => s.id === id)).toBe(false);
+    const audit =
+      (body.state as { auditEvents?: { label?: string; detail?: string }[] }).auditEvents ??
+      (body.state as { recentAuditEvents?: { label?: string; detail?: string }[] }).recentAuditEvents ??
+      [];
+    expect(
+      audit.some(
+        (e) =>
+          (e.label ?? "").includes("未写入长期资产") ||
+          (e.detail ?? "").includes("不保存") ||
+          (e.detail ?? "").includes("未调用归档")
+      )
+    ).toBe(true);
+
+    await server.close();
+  });
+
   // 真实性重构：确定性 finalizeSession/启发式模板候选已删除——无 chatClient 时 /end 如实 503，
   // 会话保持 active 可重试，state 不落任何 finalize 产物。
   it("/end (no chatClient): 503 如实暴露，会话保持 active，不产任何笔记/候选", async () => {
@@ -778,10 +856,10 @@ describe("interview-sessions routes", () => {
     const relevant: string[] = created.session.guide.relevantMemories;
     const nearIdx = relevant.indexOf(seeded.NEAR_TEXT);
     const farIdx = relevant.indexOf(seeded.FAR_TEXT);
+    // Cosine decides: near (parallel to query) must rank. Far is orthogonal (cosine=0)
+    // and is dropped by the relevance floor (parity with chat score>0 — no zero padding).
     expect(nearIdx).toBeGreaterThanOrEqual(0);
-    expect(farIdx).toBeGreaterThanOrEqual(0);
-    // Cosine decides: near (parallel to query) must come before far (orthogonal).
-    expect(nearIdx).toBeLessThan(farIdx);
+    expect(farIdx).toBe(-1);
 
     await server.close();
   });
@@ -885,6 +963,143 @@ describe("interview-sessions routes", () => {
       payload: { latestUserText: "x" }
     });
     expect(res.statusCode).toBe(404);
+    await server.close();
+  });
+
+  // IV-P0-01: shipped mutators — record-turn during voice-instructions embed must not be clobbered.
+  it("IV-P0-01: record-turn interleaved with voice-instructions keeps the new turn (writeGate)", async () => {
+    let releaseEmbed!: (v: number[][]) => void;
+    const hangEmbed = new Promise<number[][]>((resolve) => {
+      releaseEmbed = resolve;
+    });
+    let hangOnNextEmbed = false;
+    let hangingEmbedCalls = 0;
+    const embeddingClient = {
+      embed: async () => {
+        if (hangOnNextEmbed) {
+          hangingEmbedCalls += 1;
+          return hangEmbed;
+        }
+        return [[0, 0, 1]];
+      }
+    };
+    // Simple mutex matching production writeGate contract
+    let chain: Promise<unknown> = Promise.resolve();
+    const writeGate = {
+      async runExclusive<T>(_label: string, fn: () => Promise<T> | T): Promise<T> {
+        const run = chain.then(() => fn());
+        chain = run.then(
+          () => undefined,
+          () => undefined
+        );
+        return run;
+      }
+    };
+
+    const repo = createInMemoryProductStateRepository(createInitialProductState());
+    const server = Fastify({ logger: false });
+    await registerInterviewSessionRoutes(server, repo, {
+      embeddingClient: embeddingClient as any,
+      writeGate
+    });
+
+    const created = (
+      await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "daily" } })
+    ).json() as { session: { id: string; turns: unknown[] } };
+    const id = created.session.id;
+
+    // Seed one user turn before the race
+    await server.inject({
+      method: "POST",
+      url: `/api/interview-sessions/${id}/record-turn`,
+      payload: { role: "user", content: "开场已记录轮" }
+    });
+
+    // Only the voice-instructions refresh should hang on embed (create already finished).
+    hangOnNextEmbed = true;
+    // Start voice-instructions (holds on embed — outside write gate)
+    const voiceRefreshPromise = server.inject({
+      method: "POST",
+      url: `/api/interview-sessions/${id}/voice-instructions`,
+      payload: { latestUserText: "中场刷新召回" }
+    });
+    // Wait until hanging embed was called (refresh mid-flight)
+    for (let i = 0; i < 50 && hangingEmbedCalls === 0; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(hangingEmbedCalls).toBeGreaterThan(0);
+
+    // Concurrent record-turn while refresh still embedding
+    const raceContent = "竞态中新记录的用户轮-不可丢";
+    const rt = await server.inject({
+      method: "POST",
+      url: `/api/interview-sessions/${id}/record-turn`,
+      payload: { role: "user", content: raceContent }
+    });
+    expect(rt.statusCode).toBe(200);
+
+    // Release embed → refresh re-enters writeGate, re-reads, merges guide without clobbering turns
+    releaseEmbed([[1, 0, 0]]);
+    const voiceRefreshRes = await voiceRefreshPromise;
+    expect(voiceRefreshRes.statusCode).toBe(200);
+
+    const final = repo.getState().sessions.find((s) => s.id === id)!;
+    expect(final.turns.some((t) => t.content === "开场已记录轮")).toBe(true);
+    expect(final.turns.some((t) => t.content === raceContent)).toBe(true);
+    // guide/card refresh still applied
+    expect(voiceRefreshRes.json().guidePersisted).toBe(true);
+    expect(
+      voiceRefreshRes.json().session.turns.some((t: { content: string }) => t.content === raceContent)
+    ).toBe(true);
+
+    await server.close();
+  });
+
+  // IV-P1-01 / criterion 5: client abort → 499, no ghost turn persisted
+  it("/turns: client abort after LLM → 499 and no turn persisted", async () => {
+    let capturedRaw: { aborted?: boolean; destroyed?: boolean } | null = null;
+    const createAssistantTurn = async () => {
+      if (capturedRaw) {
+        capturedRaw.aborted = true;
+        capturedRaw.destroyed = true;
+      }
+      return {
+        providerId: "bailian-character" as const,
+        model: "test",
+        content: "幽灵追问不应落库",
+        intent: "百炼角色扮演追问" as const
+      };
+    };
+    const repo = createInMemoryProductStateRepository(createInitialProductState());
+    const server = Fastify({ logger: false });
+    // Capture inject request.raw so the LLM mock can mark client abort mid-handler.
+    server.addHook("onRequest", async (request) => {
+      capturedRaw = request.raw as { aborted?: boolean; destroyed?: boolean };
+    });
+    await registerInterviewSessionRoutes(server, repo, {
+      bailianInterviewClient: { createAssistantTurn } as any
+    });
+
+    const created = (
+      await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "daily" } })
+    ).json() as { session: { id: string; turns: unknown[] } };
+    const id = created.session.id;
+    const turnsBefore = repo.getState().sessions.find((s) => s.id === id)!.turns.length;
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/interview-sessions/${id}/turns`,
+      payload: { content: "用户本轮输入" }
+    });
+
+    expect(res.statusCode).toBe(499);
+    expect((res.json() as { error: string }).error).toMatch(/取消|未写入/);
+    const turnsAfter = repo.getState().sessions.find((s) => s.id === id)!.turns.length;
+    expect(turnsAfter).toBe(turnsBefore);
+    expect(
+      repo.getState().sessions.find((s) => s.id === id)!.turns.some((t) => t.content.includes("幽灵追问"))
+    ).toBe(false);
+
     await server.close();
   });
 });

@@ -9,7 +9,7 @@ interface MemoryGovernanceViewProps {
   state: ProductState;
   importing: boolean;
   onImport: (title: string, content: string) => void;
-  onApprove: (candidateId: string) => void;
+onApprove: (candidateId: string, mode?: "merge" | "add") => void;
   onReject: (candidateId: string) => void;
   onEditCandidate: (candidateId: string, text: string) => void;
   onDeprecate: (recordId: string) => void;
@@ -218,10 +218,10 @@ export function MemoryGovernanceView({
     }
   }
 
-  async function handleApprove(candidateId: string) {
+async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge") {
     setOp(candidateId, { approve: "loading" });
     try {
-      await Promise.resolve(onApprove(candidateId));
+      await Promise.resolve(onApprove(candidateId, mode));
       setOp(candidateId, { approve: "done" });
     } catch {
       setOp(candidateId, { approve: "error" });
@@ -417,18 +417,30 @@ export function MemoryGovernanceView({
                   )}
                 </div>
 
-                {!isEditing && (
+{!isEditing && (
                   <div className="note-actions">
                     <button
                       className={`primary-action${isApproving ? " btn-loading" : ""}`}
                       type="button"
                       disabled={anyLoading}
-                      onClick={() => handleApprove(candidate.id)}
+                      onClick={() => handleApprove(candidate.id, hint ? "merge" : "add")}
                       aria-busy={isApproving}
+                      title={hint ? "合并到近重复的既有记忆（保留本条文案）" : "新增一条已确认记忆"}
                     >
                       {isApproving && <span className="spinner" aria-hidden="true" />}
-                      <Check size={16} />确认记住
+                      <Check size={16} />{hint ? "合并记住" : "确认记住"}
                     </button>
+                    {hint && (
+                      <button
+                        className="secondary-action"
+                        type="button"
+                        disabled={anyLoading}
+                        onClick={() => handleApprove(candidate.id, "add")}
+                        title="不合并，作为新的独立记忆写入"
+                      >
+                        <GitMerge size={16} />仍新增
+                      </button>
+                    )}
                     <button
                       className="secondary-action"
                       type="button"

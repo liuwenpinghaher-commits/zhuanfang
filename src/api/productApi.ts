@@ -68,7 +68,15 @@ export interface ProductApiClient {
   applyPlaybookPatch(id: string, overrideRules?: string[]): Promise<ProductState>;
   /** Revert an applied PlaybookPatch. Throws 404/422 (only applied records can be reverted). */
   revertPlaybookPatch(id: string): Promise<ProductState>;
-  approveMemoryCandidate(id: string): Promise<ProductState>;
+  approveMemoryCandidate(
+    id: string,
+    opts?: { mode?: "merge" | "add" }
+  ): Promise<{
+    state: ProductState;
+    embeddingReady?: boolean;
+    vectorRecallAvailable?: boolean;
+    warning?: string;
+  }>;
   rejectMemoryCandidate(id: string, reviewNote?: string): Promise<ProductState>;
   consolidateMemory(): Promise<{ state: ProductState; deprecated: number }>;
   updateMemoryCandidate(id: string, text: string): Promise<ProductState>;
@@ -86,7 +94,17 @@ export interface ProductApiClient {
   autoRunResearch(): Promise<AutoRunResearchResponse>;
   createInterviewSession(input: CreateInterviewSessionRequest): Promise<InterviewSessionResponse>;
   sendInterviewTurn(sessionId: string, input: SendInterviewTurnRequest, signal?: AbortSignal): Promise<InterviewSessionResponse>;
-  recordInterviewTurn(sessionId: string, input: { role: "user" | "assistant"; content: string }): Promise<InterviewSessionResponse>;
+  recordInterviewTurn(
+    sessionId: string,
+    input: {
+      role: "user" | "assistant";
+      content: string;
+      intent?: string;
+      referencedMemory?: string;
+      strategy?: string;
+      strategyDecision?: InterviewSession["strategyTrace"] extends (infer T)[] | undefined ? T : never;
+    }
+  ): Promise<InterviewSessionResponse>;
   classifyTurnComplete(sessionId: string, transcript: string, signal?: AbortSignal): Promise<{ done: boolean; reason: string }>;
   logCascadeDecision(sessionId: string, trace: { layer: number; action: string; reason: string; silenceMs: number; expressionState: string; transcript: string }): Promise<void>;
   applyInterviewControl(sessionId: string, input: ApplyInterviewControlRequest): Promise<InterviewSessionResponse>;
@@ -103,7 +121,15 @@ export interface ProductApiClient {
    * freshest user utterance so its memory recall tracks the conversation. The client
    * pushes the returned string into the live connection via updateInstructions.
    */
-  refreshVoiceInstructions(interviewSessionId: string, latestUserText?: string): Promise<{ instructions: string }>;
+  refreshVoiceInstructions(
+    interviewSessionId: string,
+    latestUserText?: string
+  ): Promise<{
+    instructions: string;
+    session?: InterviewSession;
+    state?: ProductState;
+    guidePersisted?: boolean;
+  }>;
   createRealtimeVoiceSession(input: CreateRealtimeVoiceSessionRequest): Promise<RealtimeVoiceSessionResponse>;
   /**
    * LiveKit 接入 token。走 authedFetch（production bearer 鉴权下裸 fetch 恒 401）。
@@ -137,7 +163,7 @@ export interface ProductApiClient {
   /** Metadata for a session's stored audio (exists:false when none). role defaults to interviewee. */
   getSessionAudioMeta(sessionId: string, role?: SessionAudioRole): Promise<SessionAudioMeta>;
   /** Absolute URL to stream the stored audio, for an <audio src>. */
-  sessionAudioUrl(sessionId: string): string;
+  sessionAudioUrl(sessionId: string, role?: SessionAudioRole): string;
   /**
    * Fetch the stored audio as a Blob via fetch (so any client-configured auth
    * header rides along) rather than handing the URL to a native <audio src>,
@@ -265,6 +291,9 @@ export interface AutoRunResearchResponse {
     generated: number;
     refreshed: number;
     dedupedSources: number;
+    /** Count of agenda items that failed (provider error). Omitted by older servers. */
+    failed?: number;
+    failures?: Array<{ topic?: string; error?: string } | string>;
   };
 }
 
@@ -285,12 +314,19 @@ export interface ImportDocumentResponse {
   sourceId: string;
   candidateCount: number;
   state: ProductState;
+  chunkCount?: number;
+  embeddedChunkCount?: number;
+  embeddingReady?: boolean;
+  vectorRecallAvailable?: boolean;
+  warning?: string;
 }
 
 export interface CreateInterviewSessionRequest {
   mode: InterviewMode;
   strength: InterviewStrength;
   searchBriefId?: string;
+  /** Theme/track revisit: create-time topic for prefetch & guide (AS-P0-01). */
+  topicHint?: string;
 }
 
 export interface SendInterviewTurnRequest {
@@ -309,6 +345,9 @@ export interface InterviewSessionResponse {
 
 export interface EndInterviewSessionResponse extends InterviewSessionResponse {
   note: DualTrackNote;
+  /** Pending HITL candidates not yet in long-term/vector recall. */
+  pendingMemoryCandidateCount?: number;
+  longTermRecallRequiresApproval?: boolean;
 }
 
 export interface GeneratePreSignalsResponse {
@@ -427,6 +466,60 @@ export interface CreateVoiceRequest {
 
 export function getProductApiBaseUrl() {
   return import.meta.env.VITE_PRODUCT_API_BASE_URL ?? "http://127.0.0.1:3210";
+}
+
+/**
+ * Derive the realtime voice WebSocket origin from the configured product API base.
+ * Never hardcode :3210 when a non-default HTTP API port is configured.
+ */
+export function deriveRealtimeApiWsBaseUrl(productApiBaseUrl = getProductApiBaseUrl()): string {
+  const raw = (productApiBaseUrl || "").trim();
+  if (typeof location !== "undefined" && location.protocol === "https:") {
+    return `wss://${location.host}`;
+  }
+  if (raw) {
+    try {
+      const u = new URL(raw);
+      const wsProto = u.protocol === "https:" ? "wss:" : "ws:";
+      return `${wsProto}//${u.host}`;
+    } catch {
+      /* fall through */
+    }
+  }
+  if (typeof location !== "undefined" && location.hostname) {
+    return `ws://${location.hostname}:3210`;
+  }
+  return "ws://127.0.0.1:3210";
+}
+
+/** Runtime auth token: Vite bake-in OR window bootstrap from /api/runtime-bootstrap (not only static bundle). */
+export function resolveProductApiToken(): string {
+  const fromEnv = (import.meta.env.VITE_PRODUCT_API_TOKEN ?? "").trim();
+  if (fromEnv) return fromEnv;
+  if (typeof window !== "undefined") {
+    const w = window as unknown as { __PRODUCT_API_TOKEN__?: string };
+    if (typeof w.__PRODUCT_API_TOKEN__ === "string" && w.__PRODUCT_API_TOKEN__.trim()) {
+      return w.__PRODUCT_API_TOKEN__.trim();
+    }
+    try {
+      const fromSession = sessionStorage.getItem("product_api_token");
+      if (fromSession && fromSession.trim()) return fromSession.trim();
+    } catch { /* private mode */ }
+  }
+  return "";
+}
+
+/** Attach token to a realtime WS URL as ?token= (browser WS cannot set Authorization headers). */
+export function withAuthTokenQuery(wsUrl: string, token = resolveProductApiToken()): string {
+  if (!token) return wsUrl;
+  try {
+    const u = new URL(wsUrl);
+    if (!u.searchParams.get("token")) u.searchParams.set("token", token);
+    return u.toString();
+  } catch {
+    const sep = wsUrl.includes("?") ? "&" : "?";
+    return `${wsUrl}${sep}token=${encodeURIComponent(token)}`;
+  }
 }
 
 /**
@@ -562,10 +655,28 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
   // H 生产 bearer 鉴权:前端从 Vite env(VITE_PRODUCT_API_TOKEN)注入 token,所有请求自动附 Authorization。
   // 无 token(dev / 未配)→ 不附头,dev fail-open 行为不变;配了 token 的生产 profile 不再整站 401。
   const rawFetch = fetchImpl;
-  const authedToken = (import.meta.env.VITE_PRODUCT_API_TOKEN ?? "").trim();
-  const authedFetch: FetchLike = authedToken
-    ? (url, init) => rawFetch(url, { ...init, headers: { ...((init?.headers as Record<string, string> | undefined) ?? {}), authorization: `Bearer ${authedToken}` } })
-    : rawFetch;
+  // Prefer runtime-resolved token (bootstrap / session) over bake-only Vite env.
+  // When no token is configured, pass init through unchanged so unit tests and
+  // local fail-open traffic keep byte-identical request shapes.
+  const authedFetch: FetchLike = (url, init) => {
+    const authedToken = resolveProductApiToken();
+    // Production SPA relies on HttpOnly cookie from runtime-bootstrap → credentials:include.
+    // Unit tests (VITEST) keep init byte-identical unless a token is configured.
+    const underTest = typeof process !== "undefined" && Boolean(process.env.VITEST);
+    if (!authedToken) {
+      if (underTest) return rawFetch(url, init);
+      return rawFetch(url, { ...init, credentials: init?.credentials ?? "include" });
+    }
+    const headers = { ...((init?.headers as Record<string, string> | undefined) ?? {}) };
+    if (!headers.authorization && !headers.Authorization) {
+      headers.authorization = `Bearer ${authedToken}`;
+    }
+    return rawFetch(url, {
+      ...init,
+      headers,
+      credentials: init?.credentials ?? "include"
+    });
+  };
 
   async function requestJson(path: string, init: RequestInit): Promise<unknown> {
     const response = await authedFetch(`${normalizedBaseUrl}${path}`, init);
@@ -737,9 +848,25 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
       const response = (await requestJson(`/api/playbook-patches/${id}/revert`, { method: "POST" })) as { state: ProductState };
       return normalizeProductState(response.state);
     },
-    async approveMemoryCandidate(id) {
-      const response = (await requestJson(`/api/memory-candidates/${id}/approve`, { method: "POST" })) as { state: ProductState };
-      return normalizeProductState(response.state);
+    async approveMemoryCandidate(id, opts) {
+      const response = (await requestJson(`/api/memory-candidates/${id}/approve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode: opts?.mode ?? "merge" })
+      })) as {
+        state: ProductState;
+        embeddingReady?: boolean;
+        vectorRecallAvailable?: boolean;
+        warning?: string;
+      };
+      return {
+        state: normalizeProductState(response.state),
+        ...(response.embeddingReady !== undefined ? { embeddingReady: response.embeddingReady } : {}),
+        ...(response.vectorRecallAvailable !== undefined
+          ? { vectorRecallAvailable: response.vectorRecallAvailable }
+          : {}),
+        ...(response.warning ? { warning: response.warning } : {})
+      };
     },
     async rejectMemoryCandidate(id, reviewNote) {
       const response = (await requestJson(`/api/memory-candidates/${id}/reject`, {
@@ -995,7 +1122,12 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(latestUserText != null ? { latestUserText } : {})
-      })) as { instructions: string };
+      })) as {
+        instructions: string;
+        session?: InterviewSession;
+        state?: ProductState;
+        guidePersisted?: boolean;
+      };
     },
     async createRealtimeVoiceSession(input) {
       return (await requestJson("/api/realtime-voice/sessions", {
@@ -1127,11 +1259,12 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
       }
       return response.blob();
     },
-    sessionAudioUrl(sessionId) {
-      // 用于 <audio src>。注意：原生 audio 元素无法附带 Authorization 头，因此若启用
-      // production bearer 鉴权（DEPLOYMENT_PROFILE=production），此回放会 401。本地/dev
-      // (fail-open) 正常。启用生产前需改为 ?token= 查询鉴权，或前端用 fetch+blob URL 回放。
-      return `${normalizedBaseUrl}/api/sessions/${sessionId}/audio`;
+    sessionAudioUrl(sessionId, role) {
+      // Native <audio src> cannot send Authorization. Prefer fetchSessionAudioBlob.
+      // When a deploy-time/runtime token is available, attach ?token= for bare URL playback.
+      const base = `${normalizedBaseUrl}/api/sessions/${sessionId}/audio${roleQuery(role)}`;
+      const token = resolveProductApiToken();
+      return token ? withAuthTokenQuery(base, token) : base;
     }
   };
 }

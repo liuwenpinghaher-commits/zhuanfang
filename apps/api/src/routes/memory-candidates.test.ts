@@ -79,7 +79,7 @@ describe("memory-candidates approve (M3c embedding enrichment)", () => {
     await server.close();
   });
 
-  it("without embeddingClient: record is created with no embedding and does not crash", async () => {
+  it("without embeddingClient: record is created with embeddingReady:false signal", async () => {
     const repo = createInMemoryProductStateRepository(seedPendingCandidate());
     const server = Fastify({ logger: false });
     await registerMemoryCandidateRoutes(server, repo, {}); // no embeddingClient
@@ -89,11 +89,14 @@ describe("memory-candidates approve (M3c embedding enrichment)", () => {
       url: "/api/memory-candidates/mc-approve-001/approve"
     });
     expect(res.statusCode).toBe(200);
-    const record = res.json().record;
-    expect(record).toBeDefined();
-    expect(record.embedding).toBeUndefined();
+    const body = res.json();
+    expect(body.record).toBeDefined();
+    expect(body.record.embedding).toBeUndefined();
+    expect(body.embeddingReady).toBe(false);
+    expect(body.vectorRecallAvailable).toBe(false);
+    expect(typeof body.warning).toBe("string");
     // importance backfill from reviewScore still applies (pure, client-independent).
-    expect(typeof record.importance).toBe("number");
+    expect(typeof body.record.importance).toBe("number");
 
     await server.close();
   });
@@ -111,7 +114,7 @@ describe("memory-candidates approve (M3c embedding enrichment)", () => {
     await server.close();
   });
 
-  it("embedding failure degrades to no embedding (record still created)", async () => {
+  it("C-P1-06: embedding client present but fails → 502 fail-closed, candidate stays pending", async () => {
     const embed = vi.fn(async () => {
       throw new Error("embedding service down");
     });
@@ -123,10 +126,14 @@ describe("memory-candidates approve (M3c embedding enrichment)", () => {
       method: "POST",
       url: "/api/memory-candidates/mc-approve-001/approve"
     });
-    expect(res.statusCode).toBe(200);
-    const record = res.json().record;
-    expect(record).toBeDefined();
-    expect(record.embedding).toBeUndefined();
+    expect(res.statusCode).toBe(502);
+    const body = res.json();
+    expect(body.embeddingReady).toBe(false);
+    expect(body.vectorRecallAvailable).toBe(false);
+    expect(String(body.error)).toMatch(/语义向量不可用|嵌入/);
+    // Not confirmed into long-term store
+    expect(repo.getState().memoryRecords.find((r) => r.sourceCandidateId === "mc-approve-001")).toBeUndefined();
+    expect(repo.getState().memoryCandidates.find((c) => c.id === "mc-approve-001")?.status).toBe("pending");
 
     await server.close();
   });
@@ -247,6 +254,67 @@ describe("memory consolidate (M5 lightweight consolidation)", () => {
     // 原子失败:rec-weak 未被 deprecate,无摘要候选。
     expect(repo.getState().memoryRecords.find((r) => r.id === "rec-weak")?.status).toBe("confirmed");
     expect(repo.getState().memoryCandidates).toHaveLength(0);
+
+    await server.close();
+  });
+
+  // ME-P1-02: clusters beyond MAX_SUMMARY_CLUSTERS=4 restore losers (not permanent deprecate).
+  it("ME-P1-02: 超出摘要 cap 的簇 loser 恢复 confirmed，不永久 deprecate", async () => {
+    // 5 near-dup pairs → 5 clusters; only 4 get summaries; 5th loser must stay confirmed.
+    // Use legal 1024-d embeddings so clampPersistableEnums keeps vectors (short dims strip).
+    const axis = (i: number, noise = 0) =>
+      Array.from({ length: 1024 }, (_, d) => (d === i * 20 ? 1 + noise : 0.001 * ((d + i) % 7)));
+    const records: MemoryRecord[] = [];
+    for (let i = 0; i < 5; i++) {
+      const base = `主题簇${i}用户偏好先小范围验证再放权后扩大试点路径独立内容`;
+      records.push(
+        confirmedRecord({
+          id: `keep-${i}`,
+          text: base,
+          importance: 9,
+          embedding: axis(i, 0)
+        }),
+        confirmedRecord({
+          id: `weak-${i}`,
+          text: `${base}略作改写`,
+          importance: 2,
+          embedding: axis(i, 0.02)
+        })
+      );
+    }
+    const repo = createInMemoryProductStateRepository({
+      ...createEmptyProductState(),
+      memoryRecords: records
+    });
+    const complete = vi.fn(async () => "整合后的表述");
+    const server = Fastify({ logger: false });
+    await registerMemoryCandidateRoutes(server, repo, {
+      bailianChatClient: { complete },
+      llmBudget: createLlmBudget({ maxCallsPerSession: 20 })
+    });
+
+    const res = await server.inject({ method: "POST", url: "/api/memory/consolidate" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { summary: { deprecated: number } };
+    // At most 4 clusters summarized (one loser each under our pairing).
+    expect(body.summary.deprecated).toBeLessThanOrEqual(4);
+    expect(complete.mock.calls.length).toBeLessThanOrEqual(4);
+
+    const persisted = repo.getState().memoryRecords;
+    const weakStatuses = [0, 1, 2, 3, 4].map((i) => persisted.find((r) => r.id === `weak-${i}`)?.status);
+    const confirmedWeaks = weakStatuses.filter((s) => s === "confirmed").length;
+    const deprecatedWeaks = weakStatuses.filter((s) => s === "deprecated").length;
+    expect(deprecatedWeaks).toBeLessThanOrEqual(4);
+    if (deprecatedWeaks === 4) {
+      expect(confirmedWeaks).toBeGreaterThanOrEqual(1);
+    }
+
+    // Summary candidates point at keepers for merge-on-approve (ME-P1-03).
+    const summaries = repo.getState().memoryCandidates.filter((c) => c.status === "pending");
+    for (const c of summaries) {
+      expect(c.suggestedUpdate).toBe("update");
+      expect(c.similarToRecordId).toBeTruthy();
+    }
 
     await server.close();
   });

@@ -80,7 +80,7 @@ describe("Product API", () => {
     const response = await server.inject({ method: "GET", url: "/api/health" });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ ok: true, service: "interview-product-api" });
+expect(response.json()).toEqual({ ok: true, ready: true, service: "interview-product-api" });
   });
 
   it("allows browser clients on the Vite dev origin to call the Product API", async () => {
@@ -915,9 +915,12 @@ describe("Product API", () => {
   // 持久化(surreal 跨进程 reload)由 packages/db/src/surreal/surreal-product-state-repository.test.ts
   // 的重连往返用例覆盖(surrealkv 落盘 + 新连接读回)。
 
-  it("renders podcast audio through Bailian CosyVoice when the audio client is configured", async () => {
+it("renders podcast audio through Bailian CosyVoice when the audio client is configured", async () => {
+    // PO-P1-01: create defaults to script-only; TTS is explicit synthesize (or env opt-in).
     // 真实性重构:note 路径脚本由 LLM 生成（假 chat client 的 canned 播客脚本），TTS 收到的
     // 是 LLM 脚本而非确定性模板（"开场：今天我们回到"模板已剔除）。
+    const previousAuto = process.env.PODCAST_AUTO_RENDER_ON_CREATE;
+    delete process.env.PODCAST_AUTO_RENDER_ON_CREATE;
     const server = buildApiServer({
       bailianChatClient: createFakeChatClient(),
       bailianPodcastAudioClient: {
@@ -934,34 +937,50 @@ describe("Product API", () => {
         }
       }
     });
-    const stateResponse = await server.inject({ method: "GET", url: "/api/state" });
-    const noteId = stateResponse.json().notes[0].id;
+    try {
+      const stateResponse = await server.inject({ method: "GET", url: "/api/state" });
+      const noteId = stateResponse.json().notes[0].id;
 
-    const response = await server.inject({
-      method: "POST",
-      url: "/api/podcast/episodes",
-      payload: {
-        noteId,
-        format: "solo",
-        voice: "calm-host"
-      }
-    });
+      const createResponse = await server.inject({
+        method: "POST",
+        url: "/api/podcast/episodes",
+        payload: {
+          noteId,
+          format: "solo",
+          voice: "calm-host"
+        }
+      });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
-      episode: {
+      expect(createResponse.statusCode).toBe(200);
+      const created = createResponse.json();
+      expect(created.episode.noteId).toBe(noteId);
+      expect(created.episode.script).toContain("播客脚本正文");
+      // Default: no auto TTS on create
+      expect(created.episode.audioUrl).not.toBe("https://dashscope-result.example.com/podcast.mp3");
+
+      const synthResponse = await server.inject({
+        method: "POST",
+        url: `/api/podcast/episodes/${created.episode.id}/synthesize`
+      });
+      expect(synthResponse.statusCode).toBe(200);
+      expect(synthResponse.json()).toMatchObject({
+        episode: {
+          noteId,
+          voice: "longyuan_v3",
+          audioUrl: "https://dashscope-result.example.com/podcast.mp3"
+        }
+      });
+
+      const persistedStateResponse = await server.inject({ method: "GET", url: "/api/state" });
+      expect(persistedStateResponse.json().podcastEpisodes[0]).toMatchObject({
         noteId,
         voice: "longyuan_v3",
         audioUrl: "https://dashscope-result.example.com/podcast.mp3"
-      }
-    });
-
-    const persistedStateResponse = await server.inject({ method: "GET", url: "/api/state" });
-    expect(persistedStateResponse.json().podcastEpisodes[0]).toMatchObject({
-      noteId,
-      voice: "longyuan_v3",
-      audioUrl: "https://dashscope-result.example.com/podcast.mp3"
-    });
+      });
+    } finally {
+      if (previousAuto === undefined) delete process.env.PODCAST_AUTO_RENDER_ON_CREATE;
+      else process.env.PODCAST_AUTO_RENDER_ON_CREATE = previousAuto;
+    }
   });
 
   it("returns safe realtime voice configuration without exposing API keys", async () => {
@@ -1109,6 +1128,96 @@ describe("Product API", () => {
       const response = await server.inject({ method: "GET", url: "/api/health" });
 
       expect(response.statusCode).toBe(200);
+    });
+
+    it("runtime-bootstrap is auth-exempt, sets HttpOnly cookie without body secret; cookie authorizes /api/state", async () => {
+      const server = buildApiServer({
+        env: { DEPLOYMENT_PROFILE: "production", PRODUCT_API_TOKEN: "secret-bootstrap" }
+      });
+
+      // Unauthenticated bootstrap must succeed (SPA has no VITE bake-in yet).
+      // inject() is HTTP — production must NOT set Secure or browsers drop the cookie.
+      const boot = await server.inject({ method: "GET", url: "/api/runtime-bootstrap" });
+      expect(boot.statusCode).toBe(200);
+      const body = boot.json() as {
+        authRequired: boolean;
+        cookieSet: boolean;
+        secureCookie?: boolean;
+        token?: unknown;
+      };
+      expect(body.authRequired).toBe(true);
+      expect(body.cookieSet).toBe(true);
+      expect(body.secureCookie).toBe(false);
+      // Long-lived secret must NOT appear in free JSON body.
+      expect(body.token).toBeUndefined();
+      expect(JSON.stringify(body)).not.toContain("secret-bootstrap");
+      const setCookie = boot.headers["set-cookie"];
+      const cookieHeader = Array.isArray(setCookie) ? setCookie.join(";") : String(setCookie ?? "");
+      expect(cookieHeader).toMatch(/product_api_token=/);
+      expect(cookieHeader.toLowerCase()).toContain("httponly");
+      expect(cookieHeader.toLowerCase()).not.toMatch(/(?:^|;\s*)secure(?:;|$)/);
+
+      // Cookie alone authorizes subsequent API calls (HTTP production docker path).
+      const viaCookie = await server.inject({
+        method: "GET",
+        url: "/api/state",
+        headers: { cookie: "product_api_token=secret-bootstrap" }
+      });
+      expect(viaCookie.statusCode).toBe(200);
+
+      // Query token path still works for WS/media when explicitly provisioned (not via bootstrap body).
+      const viaQuery = await server.inject({
+        method: "GET",
+        url: "/api/state?token=secret-bootstrap"
+      });
+      expect(viaQuery.statusCode).toBe(200);
+    });
+
+    it("runtime-bootstrap sets Secure cookie only when request.protocol is https", async () => {
+      const server = buildApiServer({
+        env: { DEPLOYMENT_PROFILE: "production", PRODUCT_API_TOKEN: "secret-https" }
+      });
+      // Simulate TLS terminator: trustProxy + X-Forwarded-Proto → request.protocol === https
+      const boot = await server.inject({
+        method: "GET",
+        url: "/api/runtime-bootstrap",
+        headers: { "x-forwarded-proto": "https", host: "app.example.com" }
+      });
+      expect(boot.statusCode).toBe(200);
+      const body = boot.json() as { secureCookie?: boolean };
+      expect(body.secureCookie).toBe(true);
+      const setCookie = boot.headers["set-cookie"];
+      const cookieHeader = Array.isArray(setCookie) ? setCookie.join(";") : String(setCookie ?? "");
+      expect(cookieHeader.toLowerCase()).toMatch(/(?:^|;\s*)secure(?:;|$)/);
+      expect(JSON.stringify(boot.json())).not.toContain("secret-https");
+    });
+
+    it("CORS allows credentials for allowlisted Origin (cookie SPA model)", async () => {
+      const server = buildApiServer({
+        env: {
+          DEPLOYMENT_PROFILE: "production",
+          PRODUCT_API_TOKEN: "secret-cors",
+          PRODUCT_WEB_ORIGINS: "http://127.0.0.1:3220"
+        }
+      });
+      const res = await server.inject({
+        method: "OPTIONS",
+        url: "/api/state",
+        headers: {
+          origin: "http://127.0.0.1:3220",
+          "access-control-request-method": "GET"
+        }
+      });
+      expect(res.statusCode).toBe(204);
+      expect(res.headers["access-control-allow-origin"]).toBe("http://127.0.0.1:3220");
+      expect(res.headers["access-control-allow-credentials"]).toBe("true");
+    });
+
+    it("runtime-bootstrap reports authRequired=false when auth guard inactive (local)", async () => {
+      const server = buildApiServer({ env: {} });
+      const boot = await server.inject({ method: "GET", url: "/api/runtime-bootstrap" });
+      expect(boot.statusCode).toBe(200);
+      expect(boot.json()).toEqual({ authRequired: false, cookieSet: false });
     });
 
     it("does not enforce auth when DEPLOYMENT_PROFILE is not set (local zero-friction)", async () => {
@@ -1296,7 +1405,7 @@ describe("Product API", () => {
       const response = await server.inject({ method: "GET", url: "/api/health" });
 
       expect(response.statusCode).toBe(200);
-      expect(response.json()).toEqual({ ok: true, service: "interview-product-api" });
+expect(response.json()).toEqual({ ok: true, ready: true, service: "interview-product-api" });
     });
   });
 });

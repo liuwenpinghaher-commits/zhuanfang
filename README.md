@@ -64,9 +64,13 @@ docker compose --env-file .env.production.local up --build
 ```bash
 npm test -- --run
 npm run test:e2e
+# 真实供应商 / surreal 隔离库（需要 key；不污染仓库 .data/）
+npm run test:e2e:real
 ```
 
-`npm run test:e2e` 会自动启动 `Product API` 和前端 dev server；测试中的 API 使用 `PRODUCT_STORE=memory` + `PRODUCT_STATE_DB_PATH=memory`（globalSetup 会核验实际档位是 memory，否则熔断），不会写入默认的 `.data/surreal` 数据目录。
+`npm run test:e2e` 会自动启动 `Product API` 和前端 dev server；测试中的 API 使用 `PRODUCT_STORE=memory` + `PRODUCT_STATE_DB_PATH=memory`（globalSetup 会核验实际档位是 memory，否则熔断），不会写入默认的 `.data/surreal` 数据目录。默认族 **不会** 跑 `real-*.spec.ts` / `voice-cascade`。
+
+`npm run test:e2e:real`（或 `E2E_REAL=1 playwright test`）使用临时 surreal 数据目录 + 真实 key 跑 real 族与语音 cascade；无 key 时相关用例 skip。语音门控是 `E2E_REAL=1` + DashScope/Bailian key，**没有** `E2E_REAL_VOICE` 环境变量。
 
 `*.real.test.ts` 是外部 provider smoke（从 `.env.local` 读真实 key，会真调 DashScope / AnySearch）。在持有真实 key 的机器上跑全量 vitest 而不想触发外部调用时，设 `REAL_PROVIDER_SMOKE=off`（也接受 `0`/`false`，大小写不敏感）即可让这些用例全部按"未配置 key"跳过。
 
@@ -142,7 +146,7 @@ PRODUCT_WEB_ORIGINS=http://127.0.0.1:3220,http://localhost:3220
 CORPUS_UPLOAD_DIR=.data/corpus-audio
 CORPUS_AUDIO_PUBLIC_BASE_URL=
 CORPUS_AUDIO_MAX_BYTES=52428800
-PODCAST_AUTO_RENDER_ON_CREATE=auto
+PODCAST_AUTO_RENDER_ON_CREATE=false
 ```
 
 `BAILIAN_BASE_URL` 用于百炼兼容模式的联网搜索和角色扮演专访；`BAILIAN_AUDIO_BASE_URL` 用于 CosyVoice TTS 与 SenseVoice ASR。两类 API 默认域名不同，部署到代理或企业网关时应分别配置。
@@ -207,27 +211,35 @@ R7 起 SurrealDB（`.data/surreal`）是**唯一**持久仓库，`GET /api/state
 
 ```text
 React UI
-  -> Product API
-     -> ProductStateRepository
-     -> Search providers
-     -> Bailian Character interview provider
-     -> Bailian Realtime WebRTC SDP proxy
+  -> Product API (Fastify)
+     -> ProductStateRepository (Surreal 默认 / memory 测试)
+     -> Search providers (AnySearch / Tavily / Exa / Brave)
+     -> Bailian Character interview (文本追问，fail-loud)
+     -> Bailian Realtime / LiveKit / cascade 语音栈
      -> Bailian TTS / ASR providers
-  -> local fallback engine
 ```
 
-文本专访和实时语音转写现在共用 `interview-turn-runner`：优先走百炼角色扮演 provider，失败或未配置时降级到本地规则引擎，并统一记录 AI 运行事件。实时语音的留白、打断和语音追问信号会写入会话 `realtimeSignals`，进入"实时轮替"质量门，并在系统配置的透明追踪里展示。
-实时打断现在支持回填：浏览器语音侧累积已合成的字符与音频时长，触发打断时调用 `POST /api/realtime-voice/sessions/:id/interrupt`，服务端通过 `truncateAssistantTurn` 把对应 assistant turn 的 `content` 截断为 `spokenTextSoFar`，并写入 `realtimeSignals`（`eventType=agent_speech_interrupted`）和 `aiRunEvents.metrics`，避免后续轮次基于"模型完整输出"做出错乱的追问。详见 [docs/realtime-improvement-plan.md](docs/realtime-improvement-plan.md)。
-系统配置里的“默认访谈声音”会在创建 Realtime session 时传给 Product API；`BAILIAN_REALTIME_VOICE` 作为服务端默认/回退音色保留。
+**真实性立场**：专访追问与归档是 LLM 能力——未配置或调用失败返回 5xx/429，**不会**静默用确定性模板冒充 AI 追问。演示用的 `local-demo` 搜索等须显式标记 degraded / needs-review。
+
+实时语音的留白、打断和语音追问信号会写入会话 `realtimeSignals`。实时打断支持回填：调用 `POST /api/realtime-voice/sessions/:id/interrupt`，服务端 `truncateAssistantTurn` 截断已说出口的内容。详见 [docs/realtime-improvement-plan.md](docs/realtime-improvement-plan.md)。
+
+播客：创建剧集默认只落脚本；仅当 `PODCAST_AUTO_RENDER_ON_CREATE=true|1|yes|on` 时创建即 TTS。否则请在工作台确认脚本后调用 synthesize。
+
+生产鉴权：`GET /api/runtime-bootstrap` 仅设置 HttpOnly cookie，**不**在 JSON body 回传长期 `PRODUCT_API_TOKEN`。同源 SPA 用 `credentials: include`；分域部署可另设 `VITE_PRODUCT_API_TOKEN`。
+
+`zhuanfang/` 为历史副本，**不是**当前产品入口；请以仓库根目录为准。
+
+开放项真源：`docs/superpowers/CURRENT-开放清单.md`。
 
 ## 验证状态
 
-最近一次（2026-06-21）：
+优先命令：
 
-- `npm run typecheck`（`tsc -b` + API 工程，零错误）
-- `npx vitest run`（84 文件 / 797 用例通过，1 个需真实 API key 的 `*.real.test.ts` 跳过）
+```bash
+npm run typecheck
+REAL_PROVIDER_SMOKE=off npm test -- --run
+```
 
-未在本次验证中运行（按需自查）：
+按需：`npm run test:e2e`、`npm run test:e2e:real`、`npm run build`。
 
-- `npx playwright test`（端到端）
-- `npm run build`（dist 产物）
+（具体通过数字以本机最近一次命令输出为准；审查报告见 `docs/superpowers/`。）

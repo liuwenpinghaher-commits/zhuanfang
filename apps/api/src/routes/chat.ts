@@ -9,7 +9,8 @@ import {
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import type { BailianChatClient, BailianEmbeddingClient } from "../providers/bailian";
 import type { KnowledgeIndexRepository } from "../knowledge-index-repository";
-import type { ProductStateRepository } from "../product-state-repository";
+import type { ProductStateRepository } from "../product-state-repository"
+import { replaceStateDurable } from "../product-state-repository";
 
 /** 召回条数上限。 */
 const TOP_K = 8;
@@ -24,6 +25,8 @@ interface ChatRouteOptions {
   embeddingClient?: BailianEmbeddingClient;
   bailianChatClient?: BailianChatClient;
   llmBudget?: LlmBudget;
+  /** IM-P1-03: final message append serializes through the global write gate. */
+  writeGate?: { runExclusive<T>(label: string, fn: () => Promise<T> | T): Promise<T> };
 }
 
 interface ChatResponse {
@@ -62,19 +65,20 @@ export async function registerChatRoutes(
         ? payload.sessionId.trim()
         : undefined;
 
-    // ── 确定会话 ──
+    // ── 确定会话 id（消息在 LLM 成功后于写门内一并 append，失败不落库）──
     let state = productRepo.getState();
     let sessionId: string;
     if (requestedSessionId && state.chatSessions.some((s) => s.id === requestedSessionId)) {
       sessionId = requestedSessionId;
     } else {
+      // Provisional id for prompt history only; durable create happens under writeGate.
       const created = createChatSession(state);
       state = created.state;
       sessionId = created.sessionId;
     }
 
-    // ── 追加 user 消息 ──
-    state = appendChatMessage(state, sessionId, "user", message);
+    // Working copy for prompt history (includes provisional user turn). Not persisted yet.
+    const promptState = appendChatMessage(state, sessionId, "user", message);
 
     // ── 前置能力闸门:LLM 是对话的必需能力,不可用就如实暴露,不做召回白工 ──
     if (!options.bailianChatClient) {
@@ -125,11 +129,11 @@ export async function registerChatRoutes(
       retrieved = rankKnowledgeChunks(await knowledgeRepo.listAll(), message, queryEmbedding, TOP_K);
     }
 
-    // ── 答案生成 ──
+    // ── 答案生成（慢 IO 在写锁外）──
     let answer: string;
     let citations: ChatCitation[];
     {
-      const session = state.chatSessions.find((s) => s.id === sessionId) as ChatSession;
+      const session = promptState.chatSessions.find((s) => s.id === sessionId) as ChatSession;
       // history 不含刚 append 的当前 user 消息(session.messages 末尾即它)，
       // 否则它会同时出现在 buildChatPrompt 的"对话历史"与"当前问题"里，造成最新问题重复。
       const { system, user } = buildChatPrompt(retrieved, session.messages.slice(0, -1), message);
@@ -146,26 +150,54 @@ export async function registerChatRoutes(
         // 原子失败:本轮 user/assistant 消息都不入库,如实报错让用户重试。
         return reply.code(502).send({ error: `对话生成失败：${msg}。本轮未记录，请重试。` });
       }
-      // 只把模型实际引用的 [n] 对应块作为 citation,避免展示模型根本没用到的资料。
-      // 解析不到任何有效编号时,回退为全部检索块(保留可溯源性)。
-      const citedIdx = new Set<number>();
+      // 只把模型实际引用的 [n] 对应块作为 citation,并保留原始编号 citationIndex,
+      // 避免 UI 按数组序重编号后与正文 [n] 对不上。无有效编号时返回空引用(不回退全量)。
+      const citedByIndex = new Map<number, (typeof retrieved)[number]>();
       for (const m of answer.matchAll(/\[(\d+)\]/g)) {
-        const i = Number(m[1]) - 1;
-        if (i >= 0 && i < retrieved.length) citedIdx.add(i);
+        const n = Number(m[1]);
+        const i = n - 1;
+        if (i >= 0 && i < retrieved.length && !citedByIndex.has(n)) {
+          citedByIndex.set(n, retrieved[i]!);
+        }
       }
-      const citedChunks = citedIdx.size > 0 ? retrieved.filter((_, i) => citedIdx.has(i)) : retrieved;
-      citations = citedChunks.map((c) => ({
-        sourceType: c.sourceType,
-        sourceId: c.sourceId,
-        title: c.title,
-        snippet: c.text.length > SNIPPET_LIMIT ? `${c.text.slice(0, SNIPPET_LIMIT)}…` : c.text
-      }));
+      citations = [...citedByIndex.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([n, c]) => ({
+          sourceType: c.sourceType,
+          sourceId: c.sourceId,
+          title: c.title,
+          snippet: c.text.length > SNIPPET_LIMIT ? `${c.text.slice(0, SNIPPET_LIMIT)}…` : c.text,
+          citationIndex: n,
+        }));
     }
 
-    // ── 追加 assistant 消息 + 持久化 ──
-    state = appendChatMessage(state, sessionId, "assistant", answer, citations);
-    const nextState = productRepo.replaceState(state);
+    // ── 追加 user+assistant 并持久化（重读 latest，经写门）──
+    const commitChat = async () => {
+      let latest = productRepo.getState();
+      let durableSessionId = sessionId;
+      if (!latest.chatSessions.some((s) => s.id === durableSessionId)) {
+        if (requestedSessionId && latest.chatSessions.some((s) => s.id === requestedSessionId)) {
+          durableSessionId = requestedSessionId;
+        } else {
+          const created = createChatSession(latest);
+          latest = created.state;
+          durableSessionId = created.sessionId;
+        }
+      }
+      latest = appendChatMessage(latest, durableSessionId, "user", message);
+      latest = appendChatMessage(latest, durableSessionId, "assistant", answer, citations);
+      const nextState = /*durable*/await replaceStateDurable(productRepo, latest);
+      return { state: nextState, sessionId: durableSessionId };
+    };
+    const committed = options.writeGate
+      ? await options.writeGate.runExclusive("chat-append", commitChat)
+      : await commitChat();
 
-    return reply.send({ state: nextState, sessionId, answer, citations } satisfies ChatResponse);
+    return reply.send({
+      state: committed.state,
+      sessionId: committed.sessionId,
+      answer,
+      citations
+    } satisfies ChatResponse);
   });
 }

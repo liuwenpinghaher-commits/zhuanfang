@@ -283,7 +283,12 @@ function strongerRecord(a: MemoryRecord, b: MemoryRecord): MemoryRecord {
 export function approveMemoryCandidate(
   state: ProductState,
   candidateId: string,
-  opts: { embedding?: number[]; importance?: number } = {}
+  opts: {
+    embedding?: number[];
+    importance?: number;
+    /** merge (default): update near-duplicate keeper with candidate content; add: always create new record */
+    mode?: "merge" | "add";
+  } = {}
 ): ProductState {
   const candidate = state.memoryCandidates.find((item) => item.id === candidateId);
   if (!candidate || candidate.status !== "pending") {
@@ -291,16 +296,16 @@ export function approveMemoryCandidate(
   }
 
   const reviewedAt = nowIso();
+  const mode = opts.mode ?? "merge";
 
   // #3 dedup-on-approve: if this candidate is a near-duplicate of an existing confirmed record,
-  // merge into that record (refresh recency + keep the stronger importance) instead of creating a
-  // second long-term memory that says the same thing. Stops the库 from accumulating redundant
-  // entries the user would otherwise have to consolidate by hand.
+  // merge into that record — but PRESERVE the candidate's confirmed text/evidence/embedding
+  // (user just approved this phrasing). mode=add forces a new record.
   const dedupPlan = planMemoryUpdate(
     { text: candidate.text, ...(opts.embedding && opts.embedding.length > 0 ? { embedding: opts.embedding } : {}) },
     state.memoryRecords ?? []
   );
-  if (dedupPlan.op === "update" && dedupPlan.similarToRecordId) {
+  if (mode === "merge" && dedupPlan.op === "update" && dedupPlan.similarToRecordId) {
     const targetId = dedupPlan.similarToRecordId;
     const cloned = cloneState(state);
     const mergedState: ProductState = {
@@ -309,9 +314,19 @@ export function approveMemoryCandidate(
         item.id === targetId
           ? {
               ...item,
+              // ME-P1-01: keep the text the user approved, not only timestamps.
+              text: candidate.text,
+              evidenceQuote: candidate.evidenceQuote || item.evidenceQuote,
+              sensitivity: candidate.sensitivity ?? item.sensitivity,
               updatedAt: reviewedAt,
               lastAccessedAt: reviewedAt,
-              importance: Math.max(item.importance ?? 5, reviewScoreToImportance(candidate.reviewScore))
+              importance: Math.max(
+                item.importance ?? 5,
+                opts.importance ?? reviewScoreToImportance(candidate.reviewScore)
+              ),
+              ...(opts.embedding && opts.embedding.length > 0
+                ? { embedding: opts.embedding }
+                : {})
             }
           : item
       ),

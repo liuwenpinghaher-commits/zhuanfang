@@ -27,14 +27,21 @@ import { judgeCognitiveRelations } from "../intelligence/cognitive-relations-llm
 import { collectCandidatePointPairs, applyCognitiveRelations } from "../../../../src/domain/reasoning";
 import { generatePreSignals } from "../intelligence/pre-signals-llm";
 import { classifyTurnComplete } from "../intelligence/turn-endpoint-llm";
-import type { ProductStateRepository } from "../product-state-repository";
+import type { ProductStateRepository } from "../product-state-repository"
+import { replaceStateDurable } from "../product-state-repository";
 import type { RawMaterialRepository } from "../raw-material-repository";
 import type { KnowledgeIndexRepository } from "../knowledge-index-repository";
 import type { BailianChatClient, BailianCharacterInterviewClient, BailianEmbeddingClient } from "../providers/bailian";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import { offloadCompletedSession } from "./raw-material";
 import { reindexTranscript } from "./knowledge";
-import { resolveInterviewTopicHint } from "../../../../src/domain/context-pack";
+import {
+  applyMidSessionCardRefresh,
+  buildInterviewContextPack,
+  resolveInterviewTopicHint,
+  resolveMidSessionRecallTopic
+} from "../../../../src/domain/context-pack";
+import { mergeInterviewSessionRefresh } from "../../../../src/domain/session-merge";
 import { asNativeRecall } from "../recall/native-recall-capability";
 import { prefetchRecall } from "../recall/prefetch-recall";
 
@@ -60,6 +67,12 @@ interface InterviewSessionRouteOptions {
   rawMaterialRepository?: RawMaterialRepository;
   knowledgeIndexRepository?: KnowledgeIndexRepository;
   llmBudget?: LlmBudget;
+  /**
+   * IV-P0-01: voice-instructions is write-gate exempt for slow embed/prefetch, but
+   * final session merge MUST re-enter write serialization so record-turn cannot land
+   * between re-read and replaceStateDurable.
+   */
+  writeGate?: { runExclusive<T>(label: string, fn: () => Promise<T> | T): Promise<T> };
 }
 
 const interviewModes: InterviewMode[] = ["daily", "decision", "point", "learning", "organization", "long-term"];
@@ -147,7 +160,7 @@ export async function registerInterviewSessionRoutes(
 
     // state 必须是 replaceState 返回的权威态(revision 已 bump):回传入参会让前端 adoptServerState
     // 记下过期 revision,finalize/创建后的第一次编辑 PUT 必 409、被"改动已被其他更新覆盖"丢弃(真实业务 E2E 实测)。
-    const persisted = repository.replaceState(nextState);
+    const persisted = /*durable*/await replaceStateDurable(repository, nextState);
     return { session, state: persisted };
   });
 
@@ -205,14 +218,68 @@ export async function registerInterviewSessionRoutes(
       const message = error instanceof Error ? error.message : String(error);
       return reply.code(502).send({ error: `本轮记忆召回嵌入失败：${message}。本轮未记录，请重试。` });
     }
-    const refreshedGuide = turnEmbedding
-      ? buildInterviewGuide(state, {
-          topicHint: session.guide.topicHint || undefined,
-          ...(session.card.searchBriefId ? { searchBriefId: session.card.searchBriefId } : {}),
-          queryEmbedding: turnEmbedding
-        })
-      : session.guide;
-    const freshSession: InterviewSession = { ...session, enginePolicy, guide: refreshedGuide };
+    // C-P1-02 + R-P1-01: mid-session native prefetch; BM25/queryText follows latest user
+    // text; theme graph only when a theme name appears in the utterance (no open-time freeze).
+    const midTopic = resolveMidSessionRecallTopic(
+      state,
+      session.guide.topicHint || resolveInterviewTopicHint(state, {}),
+      content
+    );
+    let turnRecall: Awaited<ReturnType<typeof prefetchRecall>> | undefined;
+    const nativeRecall = asNativeRecall(repository);
+    if (nativeRecall) {
+      try {
+        turnRecall = await prefetchRecall(
+          nativeRecall,
+          state,
+          midTopic.themeTopic,
+          turnEmbedding,
+          {
+            includeSensitive: state.systemConfig.memory.includeSensitiveMemoriesInContext,
+            topN: state.systemConfig.search.maxSources,
+            queryText: midTopic.queryText
+          }
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(JSON.stringify({ event: "session_turn_recall_failed", error: message }));
+        return reply.code(502).send({ error: `本轮记忆召回失败：${message}。本轮未记录，请重试。` });
+      }
+    }
+    // Refresh guide from mid-session query semantics. Card materials refresh from the
+    // same pack (sourceHighlights) and history refs are live-only (no dual freeze merge).
+    const guideTopicHint = midTopic.queryText || session.guide.topicHint || undefined;
+    const refreshedGuide =
+      turnEmbedding || turnRecall
+        ? buildInterviewGuide(
+            state,
+            {
+              ...(guideTopicHint ? { topicHint: guideTopicHint } : {}),
+              ...(session.card.searchBriefId ? { searchBriefId: session.card.searchBriefId } : {}),
+              ...(turnEmbedding ? { queryEmbedding: turnEmbedding } : {})
+            },
+            turnRecall
+          )
+        : session.guide;
+    const livePack =
+      turnEmbedding || turnRecall
+        ? buildInterviewContextPack(
+            state,
+            {
+              ...(guideTopicHint ? { topicHint: guideTopicHint } : {}),
+              ...(session.card.searchBriefId ? { searchBriefId: session.card.searchBriefId } : {}),
+              ...(turnEmbedding ? { queryEmbedding: turnEmbedding } : {})
+            },
+            turnRecall
+          )
+        : undefined;
+    const refreshedCard = applyMidSessionCardRefresh(session.card, refreshedGuide, livePack);
+    const freshSession: InterviewSession = {
+      ...session,
+      enginePolicy,
+      guide: refreshedGuide,
+      card: refreshedCard
+    };
 
     // 追问是 LLM 能力：不可用/失败就如实暴露（503/429/502），不再回退确定性策略引擎生成假追问。
     // 失败时不落任何轮次——请求原子失败，用户可原样重试。
@@ -236,6 +303,16 @@ export async function registerInterviewSessionRoutes(
       const message = error instanceof Error ? error.message : String(error);
       console.warn(JSON.stringify({ event: "llm_failed", capability: "interview_turn", sessionId: freshSession.id, error: message }));
       return reply.code(502).send({ error: `追问生成失败：${message}。本轮未记录，请重试。` });
+    }
+    // IV-P1-01: cascade barge-in aborts the client fetch; do not persist a ghost full turn.
+    // Check after the long LLM await so supersession does not pollute archive/memory.
+    if (request.raw.aborted || request.raw.destroyed) {
+      console.info(JSON.stringify({
+        event: "interview_turn_aborted_no_persist",
+        sessionId: freshSession.id,
+        reason: "client_disconnect_or_abort"
+      }));
+      return reply.code(499).send({ error: "客户端已取消本轮，未写入轮次。" });
     }
     const { nextSession: rawNextSession, preSignals } = updatedSession;
     // The character model conveys manner via （…）stage-direction asides (e.g. 「（身体微倾，
@@ -261,7 +338,7 @@ export async function registerInterviewSessionRoutes(
         }
       : baseNextState;
 
-    const persisted = repository.replaceState(nextState);
+    const persisted = /*durable*/await replaceStateDurable(repository, nextState);
     return { session: nextSession, state: persisted, ...(preSignals ? { preSignals } : {}) };
     })
   );
@@ -287,7 +364,7 @@ export async function registerInterviewSessionRoutes(
     const updatedSession = updateInterviewControl(session, action);
     const nextState = upsertSession(state, updatedSession);
 
-    const persisted = repository.replaceState(nextState);
+    const persisted = /*durable*/await replaceStateDurable(repository, nextState);
     return { session: updatedSession, state: persisted };
   });
 
@@ -307,6 +384,52 @@ export async function registerInterviewSessionRoutes(
       return reply.code(422).send({ error: "Interview session cannot be ended before the first user turn." });
     }
 
+    // IV-P1-04 / criterion 5: doNotSave short-circuits — no finalize LLM, no note/assets
+    // persistence implication. Mark completed + audit only (privacy + cost honesty).
+    if (session.doNotSave) {
+      const completedAt = nowIso();
+      const completedSession: InterviewSession = {
+        ...session,
+        status: "completed",
+        completedAt
+      };
+      // Domain doNotSave does not keep the session in hot sessions[] (avoids empty shells).
+      let nextState: ProductState = {
+        ...state,
+        sessions: state.sessions.filter((item) => item.id !== session.id)
+      };
+      nextState = withAuditEvent(nextState, {
+        type: "interview_session_finalized",
+        label: "专访已结束（未写入长期资产）",
+        detail: "用户选择本场不保存：未调用归档 LLM，未写入双轨笔记/认知资产/记忆候选。",
+        severity: "info",
+        entityType: "interview_session",
+        entityId: session.id,
+        createdAt: completedAt
+      });
+      const persisted = await replaceStateDurable(repository, nextState);
+      budget.reset(session.id);
+      const emptyNote = {
+        id: makeId("note"),
+        sessionId: session.id,
+        title: "未保存的专访",
+        summary: "按你的选择，本场不写入长期资产。",
+        keyQuote: "",
+        saidTrack: [] as string[],
+        learnedTrack: [] as string[],
+        nextQuestions: [] as string[],
+        createdAt: completedAt
+      };
+      return {
+        session: completedSession,
+        note: emptyNote,
+        state: persisted,
+        pendingMemoryCandidateCount: 0,
+        longTermRecallRequiresApproval: false,
+        longTermAssetsPersisted: false
+      };
+    }
+
     // 归档（双轨笔记+资产+记忆抽取+矛盾精判）是 LLM 能力：不可用/失败就如实暴露，
     // 会话保持 active 可重试，绝不用确定性 finalize 生成模板笔记冒充。
     if (!options.bailianChatClient) {
@@ -321,11 +444,12 @@ export async function registerInterviewSessionRoutes(
     let reasonedState: ProductState;
     try {
       // M1b: extract real long-term memory candidates from the conversation and hand
-      // them to finalize. doNotSave skips extraction entirely — mergeFinalizedState
-      // would discard the candidates anyway, so spending LLM budget on them is pure waste.
-      const providedCandidates = session.doNotSave
-        ? undefined
-        : await extractSessionMemoryCandidates(session, options.bailianChatClient, budget);
+      // them to finalize.
+      const providedCandidates = await extractSessionMemoryCandidates(
+        session,
+        options.bailianChatClient,
+        budget
+      );
       result = await finalizeSessionWithLlm(baseState, session, options.bailianChatClient, providedCandidates, options.embeddingClient);
       // 轻量推理(欠账②):finalize 之后,对全量观点做矛盾/演化检出。规则粗筛 → LLM 精判 →
       // 应用关系(双向 contradicts + supersedes)。失败与 finalize 一体原子中止(此时尚未持久化)。
@@ -368,7 +492,7 @@ export async function registerInterviewSessionRoutes(
     // state 必须是 replaceState 返回的权威态(revision 已 bump):此前回传 stateToPersist(过期
     // revision),前端 /end 后 adoptServerState 记下旧 revision → finalize 后第一次编辑(如"标记
     // 重要")的去抖 PUT 必 409 → 本地编辑被"改动已被其他更新覆盖"丢弃(真实业务 E2E 用例2 实测)。
-    const persisted = repository.replaceState(stateToPersist);
+    const persisted = /*durable*/await replaceStateDurable(repository, stateToPersist);
     // 知识索引补点：该会话降冷后的 transcript 块（逐字稿冷层，不在持久化边界 diff 内）。
     // note 块已由包装后的 replaceState 自动增量（note 在 diffIndexableSources 内）。
     // fire-and-forget——不 await、不阻塞响应、不抛回写路径。
@@ -383,7 +507,17 @@ export async function registerInterviewSessionRoutes(
       );
     }
     budget.reset(session.id);
-    return { session: persistedSession, note: result.note, state: persisted };
+    // R-P1-04: surface pending HITL count so clients cannot imply "already remembered".
+    const pendingMemoryCandidateCount = persisted.memoryCandidates.filter(
+      (candidate) => candidate.status === "pending"
+    ).length;
+    return {
+      session: persistedSession,
+      note: result.note,
+      state: persisted,
+      pendingMemoryCandidateCount,
+      longTermRecallRequiresApproval: pendingMemoryCandidateCount > 0
+    };
   });
 
   // Voice path: generate interaction pre_signals for the next turn on demand
@@ -407,7 +541,7 @@ export async function registerInterviewSessionRoutes(
     try {
       const preSignals = await generatePreSignals(session, options.bailianChatClient);
       const updatedSession: InterviewSession = { ...session, interactionPreSignals: preSignals };
-      repository.replaceState(upsertSession(state, updatedSession));
+      /*durable*/await replaceStateDurable(repository, upsertSession(state, updatedSession));
       return { preSignals, session: updatedSession };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -495,7 +629,7 @@ export async function registerInterviewSessionRoutes(
       entityId: sessionId ?? "",
       createdAt
     });
-    repository.replaceState(nextState);
+    /*durable*/await replaceStateDurable(repository, nextState);
 
     return { ok: true };
   });
@@ -513,23 +647,50 @@ export async function registerInterviewSessionRoutes(
     if (session.status === "completed" || session.rawMaterialOffloaded === true) {
       return reply.code(409).send({ error: "会话已结束并归档，无法追加轮次。" });
     }
-    const body = normalizeObject<{ role?: unknown; content?: unknown }>(request.body);
+    const body = normalizeObject<{
+      role?: unknown;
+      content?: unknown;
+      intent?: unknown;
+      referencedMemory?: unknown;
+      strategy?: unknown;
+      strategyDecision?: unknown;
+    }>(request.body);
     const content = normalizeOptionalString(body.content);
     if (!content) {
       return reply.code(422).send({ error: "content is required." });
     }
     const role: "user" | "assistant" = body.role === "assistant" ? "assistant" : "user";
+    const intent =
+      normalizeOptionalString(body.intent) ??
+      (role === "user" ? "语音用户输入" : "语音助手回应");
+    const referencedMemory = normalizeOptionalString(body.referencedMemory);
+    const strategyRaw = normalizeOptionalString(body.strategy);
+    // Optional structured strategy decision for quality/UI honesty on voice paths.
+    const strategyDecision =
+      body.strategyDecision && typeof body.strategyDecision === "object"
+        ? (body.strategyDecision as NonNullable<InterviewSession["strategyTrace"]>[number])
+        : undefined;
     const turn: InterviewTurn = {
       id: makeId("turn"),
       sessionId: session.id,
       role,
       content,
-      intent: role === "user" ? "语音用户输入" : "语音助手回应",
-      timestamp: nowIso()
+      intent,
+      timestamp: nowIso(),
+      ...(referencedMemory ? { referencedMemory } : {}),
+      ...(strategyRaw ? { strategy: strategyRaw as InterviewTurn["strategy"] } : {}),
+      ...(strategyDecision?.strategy ? { strategy: strategyDecision.strategy } : {}),
+      ...(strategyDecision?.depth ? { depth: strategyDecision.depth } : {})
     };
-    const nextSession = { ...session, turns: [...session.turns, turn] };
+    const nextSession: InterviewSession = {
+      ...session,
+      turns: [...session.turns, turn],
+      ...(strategyDecision
+        ? { strategyTrace: [...(session.strategyTrace ?? []), strategyDecision] }
+        : {})
+    };
     const nextState = upsertSession(state, nextSession);
-    const persisted = repository.replaceState(nextState);
+    const persisted = /*durable*/await replaceStateDurable(repository, nextState);
     return { session: nextSession, state: persisted };
   });
 
@@ -539,11 +700,9 @@ export async function registerInterviewSessionRoutes(
   // recall itself, so as the topic drifts its memory recall goes stale. The client
   // calls this after each final user transcript with the freshest utterance; we
   // re-embed it, rebuild the guide's memory recall (same path as /turns — cosine over
-  // confirmed memories), and re-render the voice instruction string. The client then
-  // pushes it via connection.updateInstructions → session.update.
-  //
-  // Read-only: this never mutates the session/state — it only computes and returns a
-  // string. 配置边界:无 embeddingClient / 空文本 → 沿用现有 session.guide。
+  // confirmed memories + native prefetch), re-render voice instructions, and
+  // persist the refreshed guide/card so UI/archive match the model (C-P1-04).
+  // 配置边界:无 embeddingClient / 空文本 → 沿用现有 session.guide。
   // 运行时嵌入失败 → 如实 502,由语音客户端决定是否沿用旧指令（显式决策,不再服务端静默）。
   server.post("/api/interview-sessions/:id/voice-instructions", async (request, reply) => {
     const state = repository.getState();
@@ -562,28 +721,102 @@ export async function registerInterviewSessionRoutes(
       const message = error instanceof Error ? error.message : String(error);
       return reply.code(502).send({ error: `语音指令刷新失败（召回嵌入不可用）：${message}` });
     }
-    const refreshedGuide = queryEmbedding
-      ? buildInterviewGuide(state, {
-          topicHint: session.guide.topicHint || undefined,
-          ...(session.card.searchBriefId ? { searchBriefId: session.card.searchBriefId } : {}),
-          queryEmbedding
-        })
-      : session.guide;
-    // Re-stamp enginePolicy from the latest state (mirrors /turns:136) so a PlaybookPatch
-    // approved mid-session actually reaches the omni voice instructions, not just guide.
-    const refreshedSession: InterviewSession = {
-      ...session,
-      enginePolicy: buildInterviewEnginePolicy(state),
-      guide: refreshedGuide
-    };
-
-    const instructions = buildRealtimeVoiceInstructions(
-      refreshedSession,
-      session.card,
-      state.memoryCorrections,
-      state.profile.explicitBoundaries
+    // C-P1-02/04 + R-P1-01: omni voice-instruction refresh uses native prefetch with
+    // mid-session query semantics and persists guide/card.
+    const midTopic = resolveMidSessionRecallTopic(
+      state,
+      session.guide.topicHint || resolveInterviewTopicHint(state, {}),
+      latestUserText
     );
-    return { instructions };
+    let voiceRecall: Awaited<ReturnType<typeof prefetchRecall>> | undefined;
+    const nativeRecall = asNativeRecall(repository);
+    if (nativeRecall) {
+      try {
+        voiceRecall = await prefetchRecall(
+          nativeRecall,
+          state,
+          midTopic.themeTopic,
+          queryEmbedding,
+          {
+            includeSensitive: state.systemConfig.memory.includeSensitiveMemoriesInContext,
+            topN: state.systemConfig.search.maxSources,
+            queryText: midTopic.queryText
+          }
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return reply.code(502).send({ error: `语音指令刷新失败（记忆召回不可用）：${message}` });
+      }
+    }
+    const guideTopicHint = midTopic.queryText || session.guide.topicHint || undefined;
+    const refreshedGuide =
+      queryEmbedding || voiceRecall
+        ? buildInterviewGuide(
+            state,
+            {
+              ...(guideTopicHint ? { topicHint: guideTopicHint } : {}),
+              ...(session.card.searchBriefId ? { searchBriefId: session.card.searchBriefId } : {}),
+              ...(queryEmbedding ? { queryEmbedding } : {})
+            },
+            voiceRecall
+          )
+        : session.guide;
+    const livePack =
+      queryEmbedding || voiceRecall
+        ? buildInterviewContextPack(
+            state,
+            {
+              ...(guideTopicHint ? { topicHint: guideTopicHint } : {}),
+              ...(session.card.searchBriefId ? { searchBriefId: session.card.searchBriefId } : {}),
+              ...(queryEmbedding ? { queryEmbedding } : {})
+            },
+            voiceRecall
+          )
+        : undefined;
+    const refreshedCard = applyMidSessionCardRefresh(session.card, refreshedGuide, livePack);
+
+    // IV-P0-01: slow embed/prefetch ran outside the global write slot (route exempt).
+    // Final merge re-enters writeGate and re-reads LATEST inside the exclusive section so
+    // record-turn cannot land between re-read and durable write (lost-turn race).
+    const commitVoiceInstructions = async () => {
+      const latestState = repository.getState();
+      const latestSession = findSession(latestState, session.id);
+      if (!latestSession) {
+        return { missing: true as const };
+      }
+      const refreshedSession = mergeInterviewSessionRefresh(latestSession, {
+        guide: refreshedGuide,
+        card: refreshedCard,
+        enginePolicy: buildInterviewEnginePolicy(latestState)
+      });
+      const instructions = buildRealtimeVoiceInstructions(
+        refreshedSession,
+        refreshedSession.card,
+        latestState.memoryCorrections,
+        latestState.profile.explicitBoundaries
+      );
+      const nextState = upsertSession(latestState, refreshedSession);
+      const persisted = await replaceStateDurable(repository, nextState);
+      return {
+        missing: false as const,
+        instructions,
+        session: refreshedSession,
+        state: persisted,
+        guidePersisted: true as const
+      };
+    };
+    const committed = options.writeGate
+      ? await options.writeGate.runExclusive("voice-instructions-merge", commitVoiceInstructions)
+      : await commitVoiceInstructions();
+    if (committed.missing) {
+      return reply.code(404).send({ error: "Interview session not found." });
+    }
+    return {
+      instructions: committed.instructions,
+      session: committed.session,
+      state: committed.state,
+      guidePersisted: committed.guidePersisted
+    };
   });
 }
 
@@ -754,10 +987,14 @@ async function receiveTurn(
   // badge / quality-report all have real data on the live path.
   const strategyDecision = decideInterviewStrategy(session, content);
   const assistant = await bailianInterviewClient.createAssistantTurn({ session, userText: content, corrections, boundaries, strategyDecision });
+  // C-P1-03: surface the strategy's real referencedMemory on the turn (not card.historyReferences[0]).
   const nextSession = receiveUserTurnWithAssistant(session, content, {
     content: assistant.content,
     intent: assistant.intent,
-    strategyDecision
+    strategyDecision,
+    ...(strategyDecision.referencedMemory
+      ? { referencedMemory: strategyDecision.referencedMemory }
+      : {})
   });
   return { nextSession: { ...nextSession, interactionPreSignals: assistant.preSignals }, preSignals: assistant.preSignals };
 }

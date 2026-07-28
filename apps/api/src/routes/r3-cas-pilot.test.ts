@@ -187,6 +187,11 @@ describe("R3 试点路由 CAS 换轨(全栈)", () => {
     expect(isWriteGateExempt("POST", "/api/realtime-voice/voices")).toBe(true);
     expect(isWriteGateExempt("DELETE", "/api/realtime-voice/voices/v1")).toBe(true);
     expect(isWriteGateExempt("POST", "/api/interview-sessions/s1/voice-instructions")).toBe(true);
+    // SR/IM-P1-03: long-IO routes exempt; final write via writeGate.runExclusive
+    expect(isWriteGateExempt("POST", "/api/search/briefs")).toBe(true);
+    expect(isWriteGateExempt("POST", "/api/search/briefs/b1/refresh")).toBe(true);
+    expect(isWriteGateExempt("POST", "/api/import/documents")).toBe(true);
+    expect(isWriteGateExempt("POST", "/api/chat")).toBe(true);
     // 但 voices 的 GET(非 mutating,天然不过写门)与同前缀 sessions 子动作(/end/turns)仍不豁免。
     expect(isWriteGateExempt("POST", "/api/interview-sessions/s1/end")).toBe(false);
   });

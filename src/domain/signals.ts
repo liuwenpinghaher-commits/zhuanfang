@@ -247,12 +247,24 @@ export function truncateAssistantTurn(
     return { session, truncatedTurn: target, changed: false };
   }
 
-  const nextContent = spokenChars > 0 ? spoken.slice(0, spokenChars) : "";
+  // Cascade batch TTS cannot report mid-playback progress (spoken often "").
+  // Never wipe the assistant turn on interrupt with zero progress — keep original
+  // content and mark truncated so archive/memory retain the planned follow-up.
+  let nextContent: string;
+  let recordedSpoken = spokenChars;
+  if (spokenChars > 0) {
+    nextContent = spoken.slice(0, spokenChars);
+  } else if (reason === "user_interrupt" && originalChars > 0) {
+    nextContent = target.content;
+    recordedSpoken = 0; // unknown progress; content retained intentionally
+  } else {
+    nextContent = "";
+  }
   const nextTurn: InterviewTurn = {
     ...target,
     content: nextContent,
     truncated: {
-      spokenChars,
+      spokenChars: recordedSpoken,
       originalChars,
       reason,
       truncatedAt

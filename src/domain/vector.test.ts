@@ -59,4 +59,15 @@ describe("topKByCosine", () => {
     expect(result.map((x) => x.id)).toEqual(["good"]);
     expect(result.map((x) => x.id)).not.toContain("empty");
   });
+
+  it("C-P2-06 parity: zero/orthogonal cosine scores are not padded into top-k", () => {
+    const query = [1, 0];
+    const items = [
+      { id: "near", embedding: [1, 0] },
+      { id: "ortho", embedding: [0, 1] }, // cosine = 0 → drop
+      { id: "opp", embedding: [-1, 0] }, // cosine = -1 → drop
+    ];
+    const result = topKByCosine(query, items, 5);
+    expect(result.map((x) => x.id)).toEqual(["near"]);
+  });
 });

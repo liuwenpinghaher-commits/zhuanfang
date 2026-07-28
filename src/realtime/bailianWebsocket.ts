@@ -1,4 +1,5 @@
 import type { RealtimeVoiceSessionResponse } from "../api/productApi";
+import { withAuthTokenQuery } from "../api/productApi";
 import type {
   AssistantSpeechProgress,
   InterruptAssistantOptions,
@@ -80,7 +81,8 @@ export async function connectBailianRealtimeWebsocket(
   }
 
   const baseUrl = options.productApiBaseUrl ?? "ws://127.0.0.1:3210";
-  const wsUrl = `${baseUrl}/api/realtime-voice/ws/${session.sessionId}`;
+  // Production bearer cannot be set on WebSocket headers — attach ?token= when present.
+  const wsUrl = withAuthTokenQuery(`${baseUrl}/api/realtime-voice/ws/${session.sessionId}`);
   const mediaDevices = options.mediaDevices ?? navigator.mediaDevices;
 
   const stream = await mediaDevices.getUserMedia({

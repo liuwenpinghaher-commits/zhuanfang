@@ -97,11 +97,27 @@ export function buildKnowledgeChunks(
     chunks.push(makeChunk("note", note.id, title, text, createdAt));
   }
 
-  // material → 每个 importSource 一块，正文截断（敏感素材同样按 policy 排除）
+  // material → multi-chunk parity with interview ragChunks (IM-P1-02 / criterion 4).
+  // Prefer ragChunks for each import source so chat is not blinded to a single 2k head.
+  // All chunks share sourceId=importSource.id so replaceSource/deleteBySource still work.
+  // Fall back to truncated source.content when a source has no chunks yet.
   for (const source of state.importSources) {
     if (!includeSensitive && source.sensitivity === "sensitive") continue;
-    const text = truncate(source.content, MATERIAL_TEXT_LIMIT);
-    chunks.push(makeChunk("material", source.id, source.title, text, createdAt));
+    const sourceChunks = state.ragChunks.filter(
+      (chunk) => chunk.sourceId === source.id && chunk.usage === "interview-context"
+    );
+    if (sourceChunks.length > 0) {
+      for (const chunk of sourceChunks) {
+        const text = truncate(chunk.text, MATERIAL_TEXT_LIMIT);
+        if (!text.trim()) continue;
+        chunks.push(
+          makeChunk("material", source.id, chunk.title || source.title, text, chunk.createdAt || createdAt)
+        );
+      }
+    } else {
+      const text = truncate(source.content, MATERIAL_TEXT_LIMIT);
+      chunks.push(makeChunk("material", source.id, source.title, text, createdAt));
+    }
   }
 
   // transcript → 逐字稿冷层，按 user 轮一块

@@ -920,20 +920,29 @@ export function buildCharacterSystemPrompt(
     }
   };
 
-  // 启动卡里的历史原话与联网素材 —— 文本路此前不注入（只有 guide 的 relevantMemories /
-  // knowledgeFragments），导致素材引用能力打折。补进来，仍「仅自然相关时引用」。
-  const historyReferences = sanitizeExternalMaterialList(session.card.historyReferences.slice(0, 3), "");
-  if (historyReferences.length) {
-    ensureReferenceGuard();
-    lines.push(`【可引用的历史原话】（自然相关时引用，可指出前后变化）：${historyReferences.join("；")}`);
+  // R-P1-02 dual-channel convergence: when guide has live relevantMemories, do NOT also
+  // inject card.historyReferences (same texts often double-fed after mid-session refresh).
+  // Open-time card history is only used as a fallback when guide recall is empty.
+  const liveMemories = guide?.relevantMemories ?? [];
+  if (liveMemories.length === 0) {
+    const historyReferences = sanitizeExternalMaterialList(session.card.historyReferences.slice(0, 3), "");
+    if (historyReferences.length) {
+      ensureReferenceGuard();
+      lines.push(`【可引用的历史原话】（自然相关时引用，可指出前后变化）：${historyReferences.join("；")}`);
+    }
   }
-  const sourceHighlights = sanitizeExternalMaterialList(
-    (session.card.sourceHighlights ?? []).slice(0, 2).map((s) => `${s.title}｜${s.snippet}`),
-    ""
-  );
-  if (sourceHighlights.length) {
-    ensureReferenceGuard();
-    lines.push(`【联网素材】（仅当与用户所谈自然相关时引用，务必回到用户自己的具体经历）：${sourceHighlights.join("；")}`);
+  // Materials: prefer guide.knowledgeFragments (refreshed mid-session). Card sourceHighlights
+  // only when guide has no knowledge fragments (avoids unchanging open-time freeze).
+  const guideHasKnowledge = (guide?.knowledgeFragments ?? []).some((f) => f.trim());
+  if (!guideHasKnowledge) {
+    const sourceHighlights = sanitizeExternalMaterialList(
+      (session.card.sourceHighlights ?? []).slice(0, 2).map((s) => `${s.title}｜${s.snippet}`),
+      ""
+    );
+    if (sourceHighlights.length) {
+      ensureReferenceGuard();
+      lines.push(`【联网素材】（仅当与用户所谈自然相关时引用，务必回到用户自己的具体经历）：${sourceHighlights.join("；")}`);
+    }
   }
 
   // 用户刚下达的控制动作 —— 作为明确指令注入（替代脆弱的话术子串匹配）。

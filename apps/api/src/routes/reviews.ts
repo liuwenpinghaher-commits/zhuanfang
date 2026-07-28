@@ -22,9 +22,11 @@ export async function registerReviewRoutes(
     if (!options.bailianChatClient) {
       return reply.code(503).send({ error: "复盘 LLM 未配置（缺少 DASHSCOPE_API_KEY），复盘功能不可用。" });
     }
-    if (!budget.tryConsume("system")) {
+    // RV-P1-01: isolate reviews budget from system (corpus/import/podcast) so opening
+    // 复盘 cannot starve unrelated capabilities and vice versa.
+    if (!budget.tryConsume("reviews")) {
       console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "reviews" }));
-      return reply.code(429).send({ error: "本时段 LLM 预算已用尽，复盘暂不可用，请稍后重试。" });
+      return reply.code(429).send({ error: "本时段复盘 LLM 预算已用尽，请稍后重试。" });
     }
     try {
       return await buildReviewsWithLlm(state, options.bailianChatClient);

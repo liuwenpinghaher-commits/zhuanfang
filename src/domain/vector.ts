@@ -36,15 +36,19 @@ export function cosineSimilarity(a: number[], b: number[]): number {
  * via cosine similarity, and returns the top-k sorted by similarity descending.
  *
  * Items without an `embedding` field are silently excluded.
+ * Items with score ≤ minScore are dropped (default 0 → parity with chat
+ * `rankKnowledgeChunks` score>0 gate; no zero/negative padding).
  *
  * @param query  - The query embedding vector.
  * @param items  - Candidate items; only those with `.embedding` are ranked.
  * @param k      - Maximum number of results to return.
+ * @param minScore - Exclusive lower bound for cosine score (default 0).
  */
 export function topKByCosine<T extends { embedding?: number[] }>(
   query: number[],
   items: T[],
-  k: number
+  k: number,
+  minScore = 0
 ): T[] {
   return items
     .filter((item): item is T & { embedding: number[] } =>
@@ -54,6 +58,7 @@ export function topKByCosine<T extends { embedding?: number[] }>(
       item,
       score: cosineSimilarity(query, item.embedding),
     }))
+    .filter((entry) => entry.score > minScore)
     .sort((a, b) => b.score - a.score)
     .slice(0, k)
     .map(({ item }) => item);

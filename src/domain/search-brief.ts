@@ -49,45 +49,52 @@ export function buildProactiveSearchAgenda(state: ProductState): SearchAgendaIte
   if (!theme && !debt && !decision && !confirmedMemory) {
     return [];
   }
-  const themeQuery = theme?.name ?? state.profile.currentFocus;
-  const debtQuery = debt?.concept ?? "短期失控的可承受边界";
-  const decisionQuery = decision?.title ?? "下一步产品判断";
-  const memorySignal = confirmedMemory?.text.match(/授权|救火|控制感|组织惯性/)?.[0] ?? themeQuery;
-
-  const agenda: SearchAgendaItem[] = [
-    {
-      id: `search-agenda-hotspot-${slugifyAgendaQuery(themeQuery)}`,
-      query: `${themeQuery} × AI 产品商业化热点`,
+  // SR-P1-02: only emit agenda items backed by real seed assets — no hardcoded
+  // non-user placeholder queries ("短期失控的可承受边界" / "下一步产品判断").
+  const agenda: SearchAgendaItem[] = [];
+  if (theme?.name) {
+    agenda.push({
+      id: `search-agenda-hotspot-${slugifyAgendaQuery(theme.name)}`,
+      query: `${theme.name} × AI 产品商业化热点`,
       source: "长期主题 + 热点",
       reason: "把当前反复主题放进外部趋势里，但仍回到用户自己的具体事件。",
       intent: "hotspot",
-      seedAssetIds: theme ? [theme.id] : ["profile"]
-    },
-    {
-      id: `search-agenda-debt-${slugifyAgendaQuery(debtQuery)}`,
-      query: `${debtQuery} 的最新讨论`,
+      seedAssetIds: [theme.id]
+    });
+  }
+  if (debt?.concept) {
+    agenda.push({
+      id: `search-agenda-debt-${slugifyAgendaQuery(debt.concept)}`,
+      query: `${debt.concept} 的最新讨论`,
       source: "知识债",
       reason: "把未完成概念转成可带入专访的问题素材。",
       intent: "knowledge-refresh",
-      seedAssetIds: debt ? [debt.id] : []
-    },
-    {
-      id: `search-agenda-counterpoint-${slugifyAgendaQuery(decisionQuery)}`,
-      query: `${decisionQuery} 的反方观点`,
+      seedAssetIds: [debt.id]
+    });
+  }
+  if (decision?.title) {
+    agenda.push({
+      id: `search-agenda-counterpoint-${slugifyAgendaQuery(decision.title)}`,
+      query: `${decision.title} 的反方观点`,
       source: "决策校验",
       reason: "主动收集反方材料，避免下一场专访只强化既有判断。",
       intent: "counterpoint",
-      seedAssetIds: decision ? [decision.id] : []
-    },
-    {
+      seedAssetIds: [decision.id]
+    });
+  }
+  if (confirmedMemory?.text) {
+    const memorySignal =
+      confirmedMemory.text.match(/授权|救火|控制感|组织惯性|放权/)?.[0] ??
+      confirmedMemory.text.slice(0, 24);
+    agenda.push({
       id: `search-agenda-memory-${slugifyAgendaQuery(memorySignal)}`,
       query: `${memorySignal} 的外部案例与可验证边界`,
       source: "长期记忆交叉验证",
       reason: "用外部案例校验已确认记忆，避免长期叙事只在内部循环。",
       intent: "memory-cross-check",
-      seedAssetIds: confirmedMemory ? [confirmedMemory.id] : []
-    }
-  ];
+      seedAssetIds: [confirmedMemory.id]
+    });
+  }
 
   return dedupeSearchAgenda(agenda).slice(0, 4);
 }

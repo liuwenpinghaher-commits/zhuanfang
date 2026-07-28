@@ -146,7 +146,15 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
         resolve(socket);
       };
       socket.onerror = () => reject(new Error("TTS WebSocket failed to open"));
-      socket.onclose = () => { if (ws === socket) ws = null; };
+      socket.onclose = () => {
+        if (ws === socket) ws = null;
+        // Mid-utterance disconnect: settle in-flight speak so pipeline does not hang forever.
+        if (settleActiveSpeak) {
+          const settle = settleActiveSpeak;
+          settleActiveSpeak = null;
+          settle();
+        }
+      };
     });
   }
 

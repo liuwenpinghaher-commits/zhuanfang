@@ -2,6 +2,7 @@ import os
 import json as _json
 import httpx
 from dotenv import load_dotenv
+from interrupt_payload import parse_interrupt_data_payload
 from livekit.agents import (
     Agent,
     AgentSession,
@@ -15,6 +16,15 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 load_dotenv()
 
 BACKEND_URL = os.getenv("INTERVIEW_BACKEND_URL", "http://127.0.0.1:3210")
+# IV-P1-02: production API guard requires Bearer PRODUCT_API_TOKEN; without it
+# agent-context returns 401 and LiveKit interviews fail closed (honest shutdown).
+PRODUCT_API_TOKEN = (os.getenv("PRODUCT_API_TOKEN") or "").strip()
+
+
+def _api_headers() -> dict:
+    if not PRODUCT_API_TOKEN:
+        return {}
+    return {"Authorization": f"Bearer {PRODUCT_API_TOKEN}"}
 
 
 def _log(event: str, **fields) -> None:
@@ -42,6 +52,7 @@ async def _fetch_agent_context(
         resp = await client.get(
             f"{BACKEND_URL}/api/realtime-voice/agent-context/{interview_session_id}",
             params=params,
+            headers=_api_headers(),
         )
         if resp.status_code != 200:
             raise RuntimeError(
@@ -209,6 +220,31 @@ async def entrypoint(ctx: JobContext):
 
     await ctx.connect()
     await session.start(agent=agent, room=ctx.room)
+
+    # Client barge-in: livekitVoice publishes {"type":"interrupt"} on the data channel.
+    # Honor it by interrupting the current agent speech so synthesis/playback stops.
+    def _on_data_received(data_packet) -> None:
+        try:
+            payload = data_packet.data if hasattr(data_packet, "data") else data_packet
+            if not parse_interrupt_data_payload(payload):
+                return
+            _log("interrupt_signal_received", room=room_name)
+            # LiveKit agents API: AgentSession.interrupt() cancels in-flight speech synthesis.
+            interrupt_fn = getattr(session, "interrupt", None)
+            if callable(interrupt_fn):
+                result = interrupt_fn()
+                if hasattr(result, "__await__"):
+                    import asyncio
+                    asyncio.create_task(result)  # type: ignore[arg-type]
+            else:
+                _log("interrupt_api_missing", detail="AgentSession.interrupt not available")
+        except Exception as exc:
+            _log("interrupt_signal_failed", error=str(exc))
+
+    try:
+        ctx.room.on("data_received", _on_data_received)
+    except Exception as exc:
+        _log("interrupt_handler_register_failed", error=str(exc))
 
     # Open from the prepared tracking-point question — never greet or small-talk.
     # The unified instructions (fetched above) already embed the opening discipline

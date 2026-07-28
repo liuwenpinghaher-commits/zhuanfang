@@ -37,6 +37,39 @@ describe("approveMemoryCandidate dedup-merge (#3)", () => {
     expect(next.memoryRecords.find((r) => r.id === "m1")!.updatedAt).not.toBe("2026-06-01T00:00:00.000Z"); // refreshed
   });
 
+  it("ME-P1-01: merge keeps the approved candidate text (not only timestamps)", () => {
+    const existing = confirmedRecord({
+      id: "m1",
+      text: "用户偏好先小范围验证再放权后扩大试点",
+      evidenceQuote: "旧证据",
+      updatedAt: "2026-06-01T00:00:00.000Z"
+    });
+    const approvedText = "用户偏好先小范围验证再放权后扩大";
+    const state = {
+      ...createInitialProductState(),
+      memoryRecords: [existing],
+      memoryCandidates: [pendingCandidate("c1", approvedText)]
+    };
+    const next = approveMemoryCandidate(state, "c1", { mode: "merge", embedding: [0.1, 0.2, 0.3] });
+    const merged = next.memoryRecords.find((r) => r.id === "m1")!;
+    expect(merged.text).toBe(approvedText);
+    expect(merged.embedding).toEqual([0.1, 0.2, 0.3]);
+    expect(next.memoryRecords.length).toBe(1);
+  });
+
+  it("ME-P1-01: mode=add always creates a new record even when near-duplicate", () => {
+    const existing = confirmedRecord({ id: "m1", text: "用户偏好先小范围验证再放权后扩大试点" });
+    const state = {
+      ...createInitialProductState(),
+      memoryRecords: [existing],
+      memoryCandidates: [pendingCandidate("c1", "用户偏好先小范围验证再放权后扩大")]
+    };
+    const next = approveMemoryCandidate(state, "c1", { mode: "add" });
+    expect(next.memoryRecords.length).toBe(2);
+    expect(next.memoryRecords.some((r) => r.text === "用户偏好先小范围验证再放权后扩大")).toBe(true);
+    expect(next.memoryRecords.find((r) => r.id === "m1")!.text).toBe("用户偏好先小范围验证再放权后扩大试点");
+  });
+
   it("adds a new record when the candidate is not a near-duplicate", () => {
     const existing = confirmedRecord({ id: "m1", text: "用户偏好先小范围验证再放权" });
     const state = { ...createInitialProductState(), memoryRecords: [existing], memoryCandidates: [pendingCandidate("c1", "芯片推理瓶颈往往在卡间通信而非单卡算力")] };

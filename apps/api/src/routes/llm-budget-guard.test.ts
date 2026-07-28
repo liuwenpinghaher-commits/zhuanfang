@@ -116,14 +116,16 @@ describe("llm-budget guard: POST /api/corpus/insights", () => {
 // ---------------------------------------------------------------------------
 
 describe("llm-budget guard: GET /api/reviews", () => {
-  it("budget exhausted → LLM is NOT called, 429 预算已用尽（不再回落确定性复盘）", async () => {
+  it("reviews budget exhausted → LLM is NOT called, 429（独立于 system 桶）", async () => {
     const { client, complete } = makeMockChatClient(
       JSON.stringify({ monthly: { topTheme: "x" }, yearly: {} })
     );
 
     const repo = createInMemoryProductStateRepository();
     const server = Fastify({ logger: false });
-    const budget = makeExhaustedBudget();
+    // RV-P1-01: reviews uses its own capability key, not "system".
+    const budget = createLlmBudget({ maxCallsPerSession: 1 });
+    budget.tryConsume("reviews");
 
     await registerReviewRoutes(server, repo, {
       bailianChatClient: client as any,
@@ -136,6 +138,49 @@ describe("llm-budget guard: GET /api/reviews", () => {
     expect(resp.statusCode).toBe(429);
     expect((resp.json() as { error: string }).error).toContain("预算已用尽");
     expect(complete).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+
+  it("system 桶耗尽不影响 reviews（预算隔离）", async () => {
+    const { client, complete } = makeMockChatClient(
+      JSON.stringify({
+        monthly: {
+          periodLabel: "本月",
+          topTheme: "x",
+          progress: "p",
+          stillOpen: "o",
+          nextAction: "n",
+          keyQuote: "q"
+        },
+        yearly: {
+          periodLabel: "本年",
+          topTheme: "y",
+          progress: "p",
+          stillOpen: "o",
+          nextAction: "n",
+          keyQuote: "q"
+        },
+        radar: { dimensions: [] }
+      })
+    );
+
+    const repo = createInMemoryProductStateRepository();
+    const server = Fastify({ logger: false });
+    const budget = makeExhaustedBudget(); // exhausts "system" only
+
+    await registerReviewRoutes(server, repo, {
+      bailianChatClient: client as any,
+      llmBudget: budget
+    });
+    await server.ready();
+
+    const resp = await server.inject({ method: "GET", url: "/api/reviews" });
+    // Isolation: reviews must still be allowed when only system is exhausted.
+    expect(resp.statusCode).not.toBe(429);
+    if (resp.statusCode === 200) {
+      expect(complete).toHaveBeenCalled();
+    }
 
     await server.close();
   });
@@ -195,9 +240,38 @@ describe("llm-budget guard: POST /api/search/briefs", () => {
     const server = Fastify({ logger: false });
     const budget = makeExhaustedBudget();
 
-    // No bailianSearchClient → falls through to executeSearchProvider (local-demo)
+    // Use AnySearch mock that returns status:ready with sources so enrich path runs.
+    // (local-demo is intentionally needs-review and skips LLM enrichment after honesty fix.)
+    const anySearchClient = {
+      createSearchBrief: async () => ({
+        topic: "AI 产品",
+        provider: "anysearch" as const,
+        status: "ready" as const,
+        summary: "raw",
+        facts: ["f1"],
+        controversies: [],
+        opposingViews: [],
+        interviewAngles: [],
+        discussionTopics: [],
+        sourceAngles: [],
+        sources: [
+          {
+            id: "s1",
+            title: "t",
+            url: "https://example.com/1",
+            publisher: "p",
+            publishedAt: "2026-06-01T00:00:00.000Z",
+            snippet: "snip",
+            relevanceScore: 0.9,
+            usage: "interview-context" as const
+          }
+        ]
+      })
+    };
+
     await registerSearchRoutes(server, repo, {
       bailianChatClient: client as any,
+      anySearchClient: anySearchClient as any,
       llmBudget: budget
     });
     await server.ready();
@@ -205,7 +279,7 @@ describe("llm-budget guard: POST /api/search/briefs", () => {
     const resp = await server.inject({
       method: "POST",
       url: "/api/search/briefs",
-      payload: { topic: "AI 产品", providerId: "local-demo" }
+      payload: { topic: "AI 产品", providerId: "anysearch" }
     });
 
     expect(resp.statusCode).toBe(429);

@@ -31,8 +31,8 @@ describe("ingestImportSource", () => {
 
     expect(candidateCount).toBe(2);
     expect(nextState.importSources[0].id).toBe(sourceId);
-    // sensitivity rolls up to sensitive when any candidate is sensitive
-    expect(nextState.importSources[0].sensitivity).toBe("sensitive");
+    // IM-P1-01: source stays normal so RAG/chat still see the document; only candidates keep sensitivity.
+    expect(nextState.importSources[0].sensitivity).toBe("normal");
     expect(nextState.ragChunks.length).toBeGreaterThan(0);
 
     const newCandidates = nextState.memoryCandidates.filter((candidate) => candidate.sourceId === sourceId);
@@ -40,6 +40,8 @@ describe("ingestImportSource", () => {
     expect(newCandidates.every((candidate) => candidate.status === "pending")).toBe(true);
     expect(newCandidates.every((candidate) => typeof candidate.reviewScore === "number")).toBe(true);
     expect(newCandidates.every((candidate) => candidate.sourceType === "import_source")).toBe(true);
+    expect(newCandidates.find((c) => c.text === "secret B")?.sensitivity).toBe("sensitive");
+    expect(newCandidates.find((c) => c.text === "fact A")?.sensitivity).toBe("normal");
   });
 
   it("does not mutate the input state", async () => {

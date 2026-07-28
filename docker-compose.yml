@@ -15,7 +15,8 @@ services:
       # Required in production: the server fails closed (refuses to boot) without it.
       PRODUCT_API_TOKEN: ${PRODUCT_API_TOKEN:?生产部署必须设置 PRODUCT_API_TOKEN，否则鉴权守卫不生效、所有 /api/* 路由无凭据可访问}
       PRODUCT_STATIC_DIR: /app/dist
-      PRODUCT_STATE_DB_PATH: /app/.data/product-state.sqlite
+      PRODUCT_STORE: surreal
+      PRODUCT_STATE_DB_PATH: /app/.data/product-state.db
       PRODUCT_WEB_ORIGINS: ${PRODUCT_WEB_ORIGINS:-http://127.0.0.1:3210,http://localhost:3210}
       PRODUCT_API_HEALTH_URL: ${PRODUCT_API_HEALTH_URL:-http://127.0.0.1:3210/api/health}
       CORPUS_UPLOAD_DIR: /app/.data/corpus-audio

@@ -225,7 +225,7 @@ export function AssetChatView({
                             >
                               <Quote size={14} />
                               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                [{index + 1}] ({SOURCE_TYPE_LABEL[citation.sourceType] ?? citation.sourceType}) {citation.title}
+                                [{citation.citationIndex ?? index + 1}] ({SOURCE_TYPE_LABEL[citation.sourceType] ?? citation.sourceType}) {citation.title}
                               </span>
                             </button>
                           </li>

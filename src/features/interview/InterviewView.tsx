@@ -102,7 +102,17 @@ export function InterviewView({
     standard: "标准",
     sharp: "直接"
   }[session.strength];
-  const historyReferences = session.card.historyReferences.length > 0 ? session.card.historyReferences : ["暂无明确历史引用"];
+  // C-P1-03: show the LIVE guide recall (refreshed each turn / voice-instructions),
+  // not only the create-time frozen card.historyReferences — so the sidebar matches
+  // what the model is actually allowed to cite this turn.
+  const liveRelevantMemories = (session.guide.relevantMemories ?? []).filter((m) => m.trim());
+  const openingHistoryReferences = session.card.historyReferences.filter((m) => m.trim());
+  const memoryListForSidebar =
+    liveRelevantMemories.length > 0
+      ? liveRelevantMemories
+      : openingHistoryReferences.length > 0
+        ? openingHistoryReferences
+        : ["暂无明确可引用记忆"];
   // Corpus-learning techniques actually in scope for THIS session. These are the
   // applied PlaybookPatch rules that the server re-stamps onto session.enginePolicy
   // every turn and feeds into the interview prompt — so showing them here is honest,
@@ -302,12 +312,22 @@ export function InterviewView({
             </div>
           )}
           <div className="context-block">
-            <span>历史引用</span>
+            <span>{liveRelevantMemories.length > 0 ? "本轮可引用记忆" : "历史引用"}</span>
             <ul>
-              {historyReferences.slice(0, 2).map((reference, refIdx) => (
+              {memoryListForSidebar.slice(0, 3).map((reference, refIdx) => (
                 <li key={`ref-${refIdx}`}>{reference}</li>
               ))}
             </ul>
+            {liveRelevantMemories.length > 0 && openingHistoryReferences.length > 0 && (
+              <>
+                <span className="context-sublabel">开场历史原话</span>
+                <ul>
+                  {openingHistoryReferences.slice(0, 2).map((reference, refIdx) => (
+                    <li key={`open-ref-${refIdx}`}>{reference}</li>
+                  ))}
+                </ul>
+              </>
+            )}
           </div>
           {card.opinionEvolution && card.opinionEvolution.length > 0 && (
             <div className="context-block opinion-evolution">

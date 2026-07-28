@@ -1,3 +1,4 @@
+import { replaceStateDurable } from "../product-state-repository";
 import type { FastifyInstance } from "fastify";
 import { assessStateExportCompleteness, buildBackupRestoreRehearsalReport } from "../../../../src/domain/backup";
 import { fnv1aDigest } from "../../../../src/domain/stateDigest";
@@ -110,9 +111,13 @@ export async function registerStateRoutes(
     try {
       await repository.confirmPersisted?.();
     } catch (err) {
+      // P1-12: do not splice raw Surreal field values into the client-facing error.
       const message = err instanceof Error ? err.message : String(err);
+      console.error(JSON.stringify({ event: "state_put_confirm_failed", error: message }));
+      const isProduction = (process.env.DEPLOYMENT_PROFILE ?? "").trim().toLowerCase() === "production";
       return reply.code(503).send({
-        error: `写入已被接受但未能落库：${message}。服务端已暂停接受新写并在后台自动重试；在恢复前的改动重启会丢失。`,
+        error: "写入已被接受但未能落库。服务端已暂停接受新写并在后台自动重试；在恢复前的改动重启会丢失。",
+        ...(isProduction ? {} : { detail: message }),
         state: next
       });
     }
@@ -587,10 +592,10 @@ export async function registerStateRoutes(
     steps.push({
       store: "hot-state",
       status: "pending",
-      run: () => {
+      run: async () => {
         // 回归审查 R4-3(保留):跳过包装层增量重索引——下方显式 rebuildKnowledgeIndex 全量
         // 重建(含冷层逐字稿),增量与全量并跑是重复嵌入(浪费预算)。
-        replaced = repository.replaceState(imported, { skipReindex: true });
+        replaced = await replaceStateDurable(repository, imported, { skipReindex: true });
       }
     });
 
@@ -826,7 +831,7 @@ export async function registerStateRoutes(
       // 哪里还残留、该重试什么",而不是假装什么都没发生。
       // 回归审查 R4-3(保留):跳过增量重索引——上方已直接清空整个知识索引。
       const stores = await clearColdStoresBestEffort();   // R2a:已异步化
-      const nextState = repository.replaceState(purged, { skipReindex: true });
+      const nextState = await replaceStateDurable(repository, purged, { skipReindex: true });
       const failedStores = listFailedStores(stores);
       const purgeReceipt = { partialFailure: failedStores.length > 0, hotStateCommitted: true, stores };
       if (purgeReceipt.partialFailure) {
@@ -868,7 +873,7 @@ export async function registerStateRoutes(
     }
 
     const { nextState: scopedState, deletedScope, deletedCount } = createScopedPurge(state, scope);
-    const nextState = repository.replaceState(scopedState);
+    const nextState = await replaceStateDurable(repository, scopedState);
     // 审计修复(P3-38):assets 档的知识索引清理此前只靠异步增量 diff(失败/进程退出即永久残留
     // 已清资产的可召回块)。与 all/interviews 对齐:同步全量重建(存活的会话/素材块随重建回来)。
     if (scope === "assets") {

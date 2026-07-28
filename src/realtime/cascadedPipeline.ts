@@ -183,6 +183,7 @@ export function connectCascadedPipeline(
   // only). interrupt() returns it so the server can truncate the persisted assistant turn to
   // what the guest really heard, instead of the full reply the AI never finished saying.
   let spokenText = "";
+  let lastPlannedSpokenText = "";
   // Max-wait safety-net timer handle
   let maxWaitTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -429,7 +430,8 @@ export function connectCascadedPipeline(
 
     setState("speaking");
     suppressMic();
-    spokenText = ""; // set to the full spoken text ONLY if the utterance finishes uninterrupted
+    spokenText = ""; // set to full text on clean finish; interrupt falls back to lastPlannedSpokenText
+    lastPlannedSpokenText = spokenSource;
     try {
       // ONE batch call: the TTS sink streams every sentence gaplessly off a single scheduling
       // clock. Calling speak() per-sentence resets that clock and waits for each sentence to
@@ -517,7 +519,9 @@ export function connectCascadedPipeline(
       tts.stop();
       clearMaxWaitTimer();
       setState("interrupted");
-      return { spokenTextSoFar: spokenText };
+      // Prefer confirmed progress; if still empty mid-batch-TTS, keep planned text non-empty
+      // so truncateAssistantTurn does not wipe the assistant turn.
+      return { spokenTextSoFar: spokenText || lastPlannedSpokenText };
     },
 
     close() {

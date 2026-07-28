@@ -5,6 +5,7 @@ import { analyzeCorpusWithLlm } from "../intelligence/corpus-llm";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import type { BailianAudioTranscriptionClient, BailianChatClient } from "../providers/bailian";
 import type { ProductStateRepository } from "../product-state-repository";
+import { replaceStateDurable } from "../product-state-repository";
 
 interface CorpusInsightRequestPayload {
   title?: unknown;
@@ -125,7 +126,7 @@ export async function registerCorpusRoutes(
       return reply.code(502).send({ error: `语料分析失败：${message}` });
     }
     // state 必须是 replaceState 返回的权威态(revision 已 bump),否则客户端下一次乐观 PUT 必 409。
-    const persisted = repository.replaceState(analyzed.nextState);
+    const persisted = await replaceStateDurable(repository, analyzed.nextState);
     return { insight: analyzed.insight, state: persisted };
   });
 }

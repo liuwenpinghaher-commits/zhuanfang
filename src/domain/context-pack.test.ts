@@ -317,8 +317,9 @@ describe("tracked SearchBrief → buildInterviewContextPack", () => {
     };
 
     state.searchBriefs = [untrackedBrief];
+    // C-P2-02: auto-inject requires topic overlap with profile/theme signal
+    state.profile = { ...state.profile, currentFocus: untrackedBrief.topic };
 
-    // Without explicit searchBriefId, falls back to briefs[0] — still resolves
     const contextPack = buildInterviewContextPack(state, {});
     expect(contextPack.searchBriefs.length).toBeGreaterThan(0);
     expect(contextPack.searchBriefs[0].id).toBe(untrackedBrief.id);
@@ -405,12 +406,13 @@ describe("tracked brief 自动选择（无显式 searchBriefId）", () => {
       ...state.systemConfig,
       search: { ...state.systemConfig.search, allowWebInInterview: true }
     };
-    // briefs[0] 未追踪，briefs[1] 追踪
+    // briefs[0] 未追踪，briefs[1] 追踪；topicSignal 对齐 tracked 主题
     const untrackedFirst = makeTrackedBrief("brief-untracked-first", false);
     const trackedSecond = makeTrackedBrief("brief-tracked-second", true);
     state.searchBriefs = [untrackedFirst, trackedSecond];
+    state.profile = { ...state.profile, currentFocus: trackedSecond.topic };
 
-    // 关键：不传 searchBriefId，断言选中 tracked 的 brief
+    // 关键：不传 searchBriefId，断言选中 tracked 的 brief（且与 currentFocus 有主题重叠）
     const contextPack = buildInterviewContextPack(state, {});
 
     expect(contextPack.searchBriefs.length).toBeGreaterThan(0);
@@ -422,7 +424,7 @@ describe("tracked brief 自动选择（无显式 searchBriefId）", () => {
     expect(wrongBrief).toBeUndefined();
   });
 
-  it("全无 tracked brief 时回退到 briefs[0]（原有行为保持）", () => {
+  it("全无 tracked brief 时：与 currentFocus 重叠的 [0] 仍可自动注入", () => {
     const state = createInitialProductState();
     state.systemConfig = {
       ...state.systemConfig,
@@ -431,11 +433,27 @@ describe("tracked brief 自动选择（无显式 searchBriefId）", () => {
     const brief0 = makeTrackedBrief("brief-fallback-0", false);
     const brief1 = makeTrackedBrief("brief-fallback-1", false);
     state.searchBriefs = [brief0, brief1];
+    state.profile = { ...state.profile, currentFocus: brief0.topic };
 
     const contextPack = buildInterviewContextPack(state, {});
 
     expect(contextPack.searchBriefs.length).toBeGreaterThan(0);
     expect(contextPack.searchBriefs[0].id).toBe("brief-fallback-0");
+  });
+
+  it("C-P2-02: tracked brief without topic overlap is not auto-injected", () => {
+    const state = createInitialProductState();
+    state.systemConfig = {
+      ...state.systemConfig,
+      search: { ...state.systemConfig.search, allowWebInInterview: true }
+    };
+    const tracked = makeTrackedBrief("brief-no-overlap", true);
+    state.searchBriefs = [tracked];
+    state.themes = [];
+    state.profile = { ...state.profile, currentFocus: "完全无关的个人焦点词" };
+
+    const contextPack = buildInterviewContextPack(state, {});
+    expect(contextPack.searchBriefs.find((b) => b.id === "brief-no-overlap")).toBeUndefined();
   });
 
   it("显式传 searchBriefId 时按 id 找，不被 tracked 逻辑干扰", () => {

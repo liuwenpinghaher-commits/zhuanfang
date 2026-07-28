@@ -11,6 +11,7 @@ import {
 import { buildSearchBrief, createSearchBriefFromInput } from "../../../../src/domain/engine";
 import { sanitizeSearchBriefInputFields } from "../../../../src/domain/search-brief";
 import type { ProductState, SearchBrief, SearchBriefInput, SearchProviderId } from "../../../../src/domain/types";
+import { nowIso } from "../../../../src/domain/utils";
 import {
   dedupeBriefSources,
   planResearchAgendaRun
@@ -19,7 +20,8 @@ import { enrichBriefInput } from "../intelligence/search-synthesis-llm";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import { formatProviderErrorMessage } from "../provider-error";
 import type { BailianChatClient } from "../providers/bailian";
-import type { ProductStateRepository } from "../product-state-repository";
+import type { ProductStateRepository } from "../product-state-repository"
+import { replaceStateDurable } from "../product-state-repository";
 
 const searchProviderIds: SearchProviderId[] = ["local-demo", "bailian", "anysearch"];
 
@@ -103,9 +105,17 @@ export async function registerSearchRoutes(
       console.warn(JSON.stringify({ event: "llm_failed", capability: "search_briefs", error: message }));
       return reply.code(502).send({ error: `简报洞察生成失败：${message}。请重试。` });
     }
-    const { brief, nextState } = createSearchBriefFromInput(state, enriched);
-    const persisted = repository.replaceState(nextState);
-    return { brief, state: persisted, task: run.task };
+    // SR-P1-03: provider/enrich ran outside write slot (route is write-gate exempt);
+    // commit re-reads latest so concurrent writes during long IO are not clobbered.
+    const commitCreate = async () => {
+      const latest = repository.getState();
+      const { brief, nextState } = createSearchBriefFromInput(latest, enriched);
+      const persisted = /*durable*/await replaceStateDurable(repository, nextState);
+      return { brief, state: persisted, task: run.task };
+    };
+    return options.writeGate
+      ? await options.writeGate.runExclusive("search-brief-create", commitCreate)
+      : await commitCreate();
   });
 
   // ---------------------------------------------------------------------------
@@ -170,36 +180,49 @@ export async function registerSearchRoutes(
     // 审计修复(F1):refresh 路径的 provider 文本与 create 同口径清洗(此前直接 spread 落库)。
     const refreshedBriefInput: SearchBriefInput = sanitizeSearchBriefInputFields(enriched);
 
-    // Merge: preserve id, tracked, appliedToSessionIds, createdAt
-    const updatedBrief = {
-      ...existing,
-      topic: refreshedBriefInput.topic,
-      provider: refreshedBriefInput.provider,
-      status: refreshedBriefInput.status,
-      summary: refreshedBriefInput.summary,
-      facts: refreshedBriefInput.facts,
-      controversies: refreshedBriefInput.controversies,
-      opposingViews: refreshedBriefInput.opposingViews,
-      interviewAngles: refreshedBriefInput.interviewAngles,
-      discussionTopics: refreshedBriefInput.discussionTopics,
-      sourceAngles: refreshedBriefInput.sourceAngles,
-      sources: refreshedBriefInput.sources,
-      sourceTrace: refreshedBriefInput.sourceTrace ?? existing.sourceTrace,
-      agendaTrace: refreshedBriefInput.agendaTrace,
-      // preserve these identity fields:
-      id: existing.id,
-      tracked: existing.tracked,
-      appliedToSessionIds: existing.appliedToSessionIds,
-      createdAt: existing.createdAt
+    // SR-P1-01/03: stamp lastRefreshedAt; re-read latest under write gate after long IO.
+    const commitRefresh = async () => {
+      const latest = repository.getState();
+      const current = latest.searchBriefs.find((b) => b.id === id);
+      if (!current) {
+        // Deleted during long refresh window — do not resurrect.
+        return null;
+      }
+      const updatedBrief = {
+        ...current,
+        topic: refreshedBriefInput.topic,
+        provider: refreshedBriefInput.provider,
+        status: refreshedBriefInput.status,
+        summary: refreshedBriefInput.summary,
+        facts: refreshedBriefInput.facts,
+        controversies: refreshedBriefInput.controversies,
+        opposingViews: refreshedBriefInput.opposingViews,
+        interviewAngles: refreshedBriefInput.interviewAngles,
+        discussionTopics: refreshedBriefInput.discussionTopics,
+        sourceAngles: refreshedBriefInput.sourceAngles,
+        sources: refreshedBriefInput.sources,
+        sourceTrace: refreshedBriefInput.sourceTrace ?? current.sourceTrace,
+        agendaTrace: refreshedBriefInput.agendaTrace,
+        id: current.id,
+        tracked: current.tracked,
+        appliedToSessionIds: current.appliedToSessionIds,
+        createdAt: current.createdAt,
+        lastRefreshedAt: nowIso()
+      };
+      const nextState = {
+        ...latest,
+        searchBriefs: latest.searchBriefs.map((b) => (b.id === id ? updatedBrief : b))
+      };
+      const persisted = /*durable*/await replaceStateDurable(repository, nextState);
+      return { brief: updatedBrief, state: persisted };
     };
-
-    const nextState = {
-      ...state,
-      searchBriefs: state.searchBriefs.map((b) => (b.id === id ? updatedBrief : b))
-    };
-    const persisted = repository.replaceState(nextState);
-
-    return { brief: updatedBrief, state: persisted };
+    const committed = options.writeGate
+      ? await options.writeGate.runExclusive("search-brief-refresh", commitRefresh)
+      : await commitRefresh();
+    if (!committed) {
+      return reply.code(404).send({ error: "Brief not found" });
+    }
+    return committed;
   });
 
   // ---------------------------------------------------------------------------
@@ -222,7 +245,7 @@ export async function registerSearchRoutes(
       ...state,
       searchBriefs: state.searchBriefs.map((b) => (b.id === id ? updatedBrief : b))
     };
-    const persisted = repository.replaceState(nextState);
+    const persisted = /*durable*/await replaceStateDurable(repository, nextState);
 
     return { brief: updatedBrief, state: persisted };
   });
@@ -316,7 +339,7 @@ export async function registerSearchRoutes(
     // 因此既不阻塞其它写、又不会 clobber 期间的用户写(lost-update)。
     // 审计修复(D3):终写经全局写门排队——豁免只豁免"联网期间不持锁",最终读-合并-写必须与
     // 串行写互斥,否则会落在某个长持锁写(如 /end)的读写窗口内被整态回滚(反向 clobber)。
-    const commitFinal = () => {
+    const commitFinal = async () => {
       // N-05:终写前(已在 writeGate 独占块内,与治理成功递增代际的时刻可比对)复查代际。已变=联网期间
       // 发生过 reset/purge/import,整库已换,本轮 generated/refreshed 全部基于陈旧状态 → 整体丢弃、记事件,
       // 不回写。(若治理恰在此刻在途,下方 replaceState 还会被 M1 守卫拒 → 409,由端点冒泡,亦不复活。)
@@ -338,11 +361,11 @@ export async function registerSearchRoutes(
       for (const b of generated) briefById.set(b.id, b);
       const { briefs: dedupedBriefs, duplicateCount } = dedupeBriefSources([...briefById.values()]);
       const finalState: ProductState = { ...latest, searchBriefs: dedupedBriefs };
-      return { persisted: repository.replaceState(finalState), duplicateCount };
+      return { persisted: await replaceStateDurable(repository, finalState), duplicateCount };
     };
     const { persisted, duplicateCount } = options.writeGate
       ? await options.writeGate.runExclusive("auto-run-final-write", commitFinal)
-      : commitFinal();
+      : await commitFinal();
 
     return {
       state: persisted,
@@ -390,7 +413,7 @@ export async function registerSearchRoutes(
     // 仅显式 local-demo 配置走确定性演示简报。不再静默降级。
     try {
       const { brief, nextState } = await generateBriefForTopic(state, topic, options, allowLlm);
-      const persisted = repository.replaceState(nextState);
+      const persisted = /*durable*/await replaceStateDurable(repository, nextState);
       return { brief, state: persisted };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

@@ -107,3 +107,14 @@ export function createInMemoryProductStateRepository(initialState: ProductState 
     }
   };
 }
+
+/** Await durable confirm after replaceState so fine-grained routes do not 200 before persist. */
+export async function replaceStateDurable(
+  repo: ProductStateRepository,
+  next: ProductState,
+  opts?: ReplaceStateOptions
+): Promise<ProductState> {
+  const state = repo.replaceState(next, opts);
+  await repo.confirmPersisted?.();
+  return state;
+}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { collectEdges, turnRecordsOf } from "./edge-mapper";
+import { collectEdges, turnRecordsOf, turnRecordsFromRawMaterials } from "./edge-mapper";
 import { createInitialProductState } from "../../../../src/domain/engine";
 import type { ProductState } from "../../../../src/domain/types";
 
@@ -162,5 +162,20 @@ describe("edge-mapper", () => {
       { id: "pt_self", title: "t", content: "c", status: "临时想法" as const, confidence: "AI 推断" as const, evidence: [], relatedThemeIds: ["th_1"], important: false, updatedAt: "2026-06-27T00:00:00.000Z", supersededByPointId: "pt_self" }
     ];
     expect(collectEdges(st).filter((e) => e.edge === "evolves_into")).toHaveLength(0);
+  });
+});
+
+describe("turnRecordsFromRawMaterials (P0 import)", () => {
+  it("projects cold raw turns for empty-hot-session restore", () => {
+    const rows = turnRecordsFromRawMaterials([
+      {
+        sessionId: "se_1",
+        turns: [{ id: "tu_1", role: "user", content: "原话", intent: "", timestamp: "2026-06-27T00:00:00.000Z" }],
+        strategyTrace: [],
+        createdAt: "2026-06-27T00:00:00.000Z",
+      },
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: "tu_1", sessionId: "se_1", content: "原话" });
   });
 });

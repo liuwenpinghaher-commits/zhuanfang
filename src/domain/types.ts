@@ -157,7 +157,14 @@ export interface KnowledgeChunk {
   createdAt: string;
 }
 
-export interface ChatCitation { sourceType: KnowledgeSourceType; sourceId: string; title: string; snippet: string; }
+export interface ChatCitation {
+  sourceType: KnowledgeSourceType;
+  sourceId: string;
+  title: string;
+  snippet: string;
+  /** 1-based index matching `[n]` in the answer body (not the display list order). */
+  citationIndex?: number;
+}
 export interface ChatMessage { id: string; role: "user" | "assistant"; content: string; citations?: ChatCitation[]; createdAt: string; }
 export interface ChatSession { id: string; title: string; messages: ChatMessage[]; createdAt: string; updatedAt: string; }
 

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
-import { isAuthGuardActive, isAuthorized } from "../auth";
+import { isAuthGuardActive, isAuthorized, readCookieToken } from "../auth";
 import { WebSocketServer, WebSocket } from "ws";
 import type { BailianRealtimeVoiceClient, BailianVoiceEnrollmentClient, BailianEmbeddingClient } from "../providers/bailian";
 import { COSYVOICE_PRESET_VOICES } from "../voice-presets";
@@ -11,9 +11,16 @@ import {
   type BailianStreamingTtsClient
 } from "../providers/bailian-streaming-tts";
 import type { ProductStateRepository } from "../product-state-repository";
+import { replaceStateDurable } from "../product-state-repository";
 import { asNativeRecall } from "../recall/native-recall-capability";
 import { prefetchRecall } from "../recall/prefetch-recall";
-import { resolveInterviewTopicHint } from "../../../../src/domain/context-pack";
+import {
+  applyMidSessionCardRefresh,
+  buildInterviewContextPack,
+  resolveInterviewTopicHint,
+  resolveMidSessionRecallTopic
+} from "../../../../src/domain/context-pack";
+import { mergeInterviewSessionRefresh } from "../../../../src/domain/session-merge";
 import {
   appendRealtimeSignalTrace,
   buildInterviewEnginePolicy,
@@ -58,6 +65,11 @@ interface RealtimeVoiceRouteOptions {
   streamingTtsClient?: BailianStreamingTtsClient;
   /** Runtime env for auth checks on the raw WS upgrade path (which bypasses Fastify hooks). */
   env?: Record<string, string | undefined>;
+  /**
+   * IV-P0-02: GET agent-context may persist guide/card refresh. GET bypasses the mutating
+   * write preHandler, so final merge must re-enter writeGate (re-read+merge inside).
+   */
+  writeGate?: { runExclusive<T>(label: string, fn: () => Promise<T> | T): Promise<T> };
 }
 
 interface RealtimeVoiceSessionPayload {
@@ -353,7 +365,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
             reason
           }
         );
-        stateRepo.replaceState(nextState);
+        await replaceStateDurable(stateRepo, nextState);
       }
     }
 
@@ -401,18 +413,24 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     // refresh memory recall (queryEmbedding) so the persona's 【可引用的历史】 tracks the
     // conversation instead of being frozen at the opening snapshot. 配置边界:无 client/无文本 →
     // 关键词召回。运行时失败(embed/召回错)→ 如实 502,由 agent 决定如何向用户暴露。
+    // C-P1-02/04 + R-P1-01: mid-session native prefetch + persist guide (parity with /turns).
     const { latestUserText } = request.query as { latestUserText?: string };
     let queryEmbedding: number[] | undefined;
     let recall: Awaited<ReturnType<typeof prefetchRecall>> | undefined;
+    const midTopic = resolveMidSessionRecallTopic(
+      state,
+      session.guide.topicHint || resolveInterviewTopicHint(state, {}),
+      latestUserText
+    );
     try {
       queryEmbedding = await embedRecallQuery(latestUserText, options.embeddingClient);
-      // P2b:surreal 权威时预召回原生图遍历/HNSW/溯源,刷新 guide(主题资产/记忆/证据原话);
-      // 非原生 repo 或无 queryEmbedding → recall undefined,buildInterviewGuide 走域层回落。
       const nativeRecall = asNativeRecall(stateRepo);
-      recall = nativeRecall && queryEmbedding
-        ? await prefetchRecall(nativeRecall, state, session.guide.topicHint || resolveInterviewTopicHint(state, {}), queryEmbedding, {
+      // Prefetch when native is available; embedding optional (BM25/theme still useful).
+      recall = nativeRecall
+        ? await prefetchRecall(nativeRecall, state, midTopic.themeTopic, queryEmbedding, {
             includeSensitive: state.systemConfig.memory.includeSensitiveMemoriesInContext,
-            topN: state.systemConfig.search.maxSources
+            topN: state.systemConfig.search.maxSources,
+            queryText: midTopic.queryText
           })
         : undefined;
     } catch (error) {
@@ -420,22 +438,68 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       console.warn(JSON.stringify({ event: "agent_context_recall_failed", error: message }));
       return reply.status(502).send({ error: `agent 上下文召回失败：${message}` });
     }
-    const refreshedGuide = queryEmbedding
-      ? buildInterviewGuide(state, {
-          topicHint: session.guide.topicHint || undefined,
-          ...(session.card.searchBriefId ? { searchBriefId: session.card.searchBriefId } : {}),
-          queryEmbedding
-        }, recall)
-      : session.guide;
-    // Re-stamp enginePolicy from latest state so a mid-session PlaybookPatch reaches the
-    // LiveKit agent's instructions (not frozen at the opening snapshot) — same as /turns.
-    const effectiveSession = {
-      ...session,
-      enginePolicy: buildInterviewEnginePolicy(state),
-      guide: refreshedGuide
-    };
+    const guideTopicHint = midTopic.queryText || session.guide.topicHint || undefined;
+    const refreshedGuide =
+      queryEmbedding || recall
+        ? buildInterviewGuide(
+            state,
+            {
+              ...(guideTopicHint ? { topicHint: guideTopicHint } : {}),
+              ...(session.card.searchBriefId ? { searchBriefId: session.card.searchBriefId } : {}),
+              ...(queryEmbedding ? { queryEmbedding } : {})
+            },
+            recall
+          )
+        : session.guide;
+    const livePack =
+      queryEmbedding || recall
+        ? buildInterviewContextPack(
+            state,
+            {
+              ...(guideTopicHint ? { topicHint: guideTopicHint } : {}),
+              ...(session.card.searchBriefId ? { searchBriefId: session.card.searchBriefId } : {}),
+              ...(queryEmbedding ? { queryEmbedding } : {})
+            },
+            recall
+          )
+        : undefined;
+    const refreshedCard = applyMidSessionCardRefresh(session.card, refreshedGuide, livePack);
 
-    return buildInterviewAgentContext(effectiveSession, corrections, state.profile.explicitBoundaries);
+    // IV-P0-02: embed/prefetch outside write slot; final merge re-enters writeGate and
+    // re-reads LATEST inside exclusive section so concurrent record-turn cannot be clobbered.
+    const commitAgentContext = async () => {
+      const latestState = stateRepo.getState();
+      const latestSession = await stateRepo.getInterviewSession(interviewSessionId);
+      if (!latestSession) {
+        return { missing: true as const };
+      }
+      const effectiveSession = mergeInterviewSessionRefresh(latestSession, {
+        guide: refreshedGuide,
+        card: refreshedCard,
+        enginePolicy: buildInterviewEnginePolicy(latestState)
+      });
+      // Persist so archive/UI/quality see the same pack the agent just used (C-P1-04).
+      if (queryEmbedding || recall) {
+        await replaceStateDurable(stateRepo, replaceSession(latestState, effectiveSession));
+      }
+      return {
+        missing: false as const,
+        context: buildInterviewAgentContext(
+          effectiveSession,
+          latestState.memoryCorrections ?? [],
+          latestState.profile.explicitBoundaries
+        ),
+        turnCount: effectiveSession.turns.length,
+        turnIds: effectiveSession.turns.map((t) => t.id)
+      };
+    };
+    const committed = options.writeGate
+      ? await options.writeGate.runExclusive("agent-context-merge", commitAgentContext)
+      : await commitAgentContext();
+    if (committed.missing) {
+      return reply.status(404).send({ error: "session_not_found" });
+    }
+    return committed.context;
   });
 
   server.get("/api/realtime-voice/livekit-token", async (request, reply) => {
@@ -514,7 +578,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       ? receiveUserTurn(session, text)
       : addTurn(session, { role: "assistant", content: text, strategy });
 
-    stateRepo.replaceState(replaceSession(stateRepo.getState(), updated));
+    await replaceStateDurable(stateRepo, replaceSession(stateRepo.getState(), updated));
     return { status: "recorded" };
   });
 
@@ -541,7 +605,12 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     // Browsers can't set WS headers, so a ?token= query value is also accepted.
     if (!isAuthorized(runtimeEnv, {
       authHeader: request.headers.authorization,
-      tokenQuery: url.searchParams.get("token") ?? undefined
+      tokenQuery: url.searchParams.get("token") ?? undefined,
+      cookieToken: readCookieToken(
+        typeof request.headers.cookie === "string"
+          ? request.headers.cookie
+          : undefined
+      )
     })) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();

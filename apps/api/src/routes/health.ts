@@ -32,13 +32,17 @@ export function registerHealthRoutes(
   auditGraphConsistency?: () => Promise<GraphAuditLite> | undefined
 ) {
   return async function healthPlugin(server: FastifyInstance) {
-    server.get("/api/health", async () => {
+server.get("/api/health", async () => {
       const ph = getPersistHealth?.();
+      const persistDegraded = Boolean(ph && ph.consecutiveFailures > 0);
+      // GV: separate liveness (ok) from readiness (ready). Docker/process probes use ok;
+      // operators / readiness gates should require ready && !persist.degraded.
       return {
         ok: true,
+        ready: !persistDegraded,
         service: "interview-product-api",
-        ...(ph && ph.consecutiveFailures > 0
-          ? { persist: { degraded: true, consecutiveFailures: ph.consecutiveFailures, lastErrorAt: ph.lastErrorAt } }
+        ...(persistDegraded
+          ? { persist: { degraded: true, consecutiveFailures: ph!.consecutiveFailures, lastErrorAt: ph!.lastErrorAt } }
           : {})
       };
     });
