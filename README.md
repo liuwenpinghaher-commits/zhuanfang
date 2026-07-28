@@ -208,6 +208,15 @@ R7 起 SurrealDB（`.data/surreal`）是**唯一**持久仓库，`GET /api/state
 - `tests/e2e`: Playwright 验收流程。
 - `docs/superpowers`: 阶段开发方案和规格文档。
 
+## Stage-2：记忆 / 召回 / 语音度量
+
+- **低置信拒召**：chat 与访谈相关记忆在 hybrid 分数过低或空命中时不硬塞资料；prompt 注入「无可靠记忆」说明（`src/domain/retrieval.ts`）。
+- **Boot context**：`buildBootContextPack` 按字符预算组装画像 + 近场专访 + 语义事实 + 记忆策略，供开场/语音指令复用。
+- **通道配额**：知识块按 memory / material / transcript / asset 分通道截断，避免长文素材挤掉个人记忆。
+- **运行时度量**：`GET /api/health` 附带 `metrics.voice`（ttfa p50/p95、interruptCount）与 `metrics.recall`；完整环形缓冲见 `GET /api/system/runtime-metrics`。配置页在 capabilities 返回 metrics 时展示 TTFA 与召回计数；p95>700ms 会 amber 提示。
+- **语音路径选型**：`cascade`（ASR→LLM→TTS）可控、易调试、transcript 一等公民；`bailian` omni / livekit 更自然但中间态更黑盒。生产默认优先 cascade；barge-in 走 `POST /api/realtime-voice/sessions/:id/interrupt` 截断已播并记 metrics。
+- **配置边界**：服务端 env（密钥/模型/CORPUS_AUDIO_PUBLIC_BASE_URL）≠ ProductState.systemConfig（产品策略，含可选 `memory.minRecallScore`）。
+
 ## 当前架构
 
 ```text

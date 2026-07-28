@@ -4,9 +4,11 @@ import {
   appendChatMessage,
   buildChatPrompt,
   createChatSession,
-  rankKnowledgeChunks
+  rankKnowledgeChunks,
+  retrieveAndRankKnowledge
 } from "../../../../src/domain/knowledge";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
+import { recordRecallEvent } from "../observability/runtime-metrics";
 import type { BailianChatClient, BailianEmbeddingClient } from "../providers/bailian";
 import type { KnowledgeIndexRepository } from "../knowledge-index-repository";
 import type { ProductStateRepository } from "../product-state-repository"
@@ -110,6 +112,9 @@ export async function registerChatRoutes(
     // - sqlite / in-memory 档(无 searchHybrid):listAll+cosine 是该配置档的正式实现(配置态,非降级)。
     // - 原生路径抛错 → 如实 502,不再静默换路。
     let retrieved: KnowledgeChunk[];
+    let recallRejected = false;
+    let rejectReason: "empty" | "below_threshold" | undefined;
+    let topScore = 0;
     if (typeof knowledgeRepo.searchHybrid === "function") {
       try {
         const candidates = await knowledgeRepo.searchHybrid({
@@ -117,17 +122,37 @@ export async function registerChatRoutes(
           ...(queryEmbedding && queryEmbedding.length > 0 ? { embedding: queryEmbedding } : {}),
           limit: TOP_K * NATIVE_CANDIDATE_FACTOR
         });
-        retrieved = candidates.length > 0
-          ? rankKnowledgeChunks(candidates, message, queryEmbedding, TOP_K)
-          : [];
+        const ranked = retrieveAndRankKnowledge(candidates, message, queryEmbedding, TOP_K);
+        retrieved = ranked.chunks;
+        recallRejected = ranked.rejected;
+        rejectReason = ranked.reason;
+        topScore = ranked.topScore;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.warn(JSON.stringify({ event: "chat_native_recall_failed", error: msg }));
+        recordRecallEvent({ capability: "chat", outcome: "error" });
         return reply.code(502).send({ error: `对话资料召回失败：${msg}。请重试。` });
       }
     } else {
-      retrieved = rankKnowledgeChunks(await knowledgeRepo.listAll(), message, queryEmbedding, TOP_K);
+      const ranked = retrieveAndRankKnowledge(await knowledgeRepo.listAll(), message, queryEmbedding, TOP_K);
+      retrieved = ranked.chunks;
+      recallRejected = ranked.rejected;
+      rejectReason = ranked.reason;
+      topScore = ranked.topScore;
     }
+    recordRecallEvent({
+      capability: "chat",
+      outcome: recallRejected ? (rejectReason === "below_threshold" ? "low_score" : "empty") : "hit",
+      topScore,
+      hitCount: retrieved.length,
+      threshold: 0.08
+    });
+    console.warn(JSON.stringify({
+      event: recallRejected ? (rejectReason === "below_threshold" ? "recall_low_score" : "recall_empty") : "recall_hit",
+      capability: "chat",
+      topScore,
+      hitCount: retrieved.length
+    }));
 
     // ── 答案生成（慢 IO 在写锁外）──
     let answer: string;
@@ -136,7 +161,10 @@ export async function registerChatRoutes(
       const session = promptState.chatSessions.find((s) => s.id === sessionId) as ChatSession;
       // history 不含刚 append 的当前 user 消息(session.messages 末尾即它)，
       // 否则它会同时出现在 buildChatPrompt 的"对话历史"与"当前问题"里，造成最新问题重复。
-      const { system, user } = buildChatPrompt(retrieved, session.messages.slice(0, -1), message);
+      const { system, user } = buildChatPrompt(retrieved, session.messages.slice(0, -1), message, {
+        recallRejected,
+        ...(rejectReason ? { rejectReason } : {})
+      });
       try {
         answer = await options.bailianChatClient.complete({
           messages: [

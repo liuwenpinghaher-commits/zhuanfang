@@ -141,6 +141,28 @@ export function ConfigView({
                   <span>引擎版本：{systemCapabilities.configVersion}</span>
                   <span>检查时间：{new Date(systemCapabilities.generatedAt).toLocaleString("zh-CN")}</span>
                 </div>
+                {(systemCapabilities as { metrics?: { voice?: { ttfaP50Ms?: number; ttfaP95Ms?: number; sampleCount?: number; interruptCount?: number }; recall?: { empty?: number; low_score?: number; hit?: number } } }).metrics && (
+                  <div className="config-hint" data-testid="runtime-metrics-strip">
+                    <span>
+                      语音 TTFA p50/p95：
+                      {(systemCapabilities as any).metrics?.voice?.ttfaP50Ms ?? "—"}
+                      {" / "}
+                      {(systemCapabilities as any).metrics?.voice?.ttfaP95Ms ?? "—"}
+                      ms
+                      {typeof (systemCapabilities as any).metrics?.voice?.ttfaP95Ms === "number" &&
+                      (systemCapabilities as any).metrics.voice.ttfaP95Ms > 700
+                        ? " ⚠ 高于 700ms 人感阈值"
+                        : ""}
+                    </span>
+                    <span>
+                      召回 hit/empty/low：
+                      {(systemCapabilities as any).metrics?.recall?.hit ?? 0}/
+                      {(systemCapabilities as any).metrics?.recall?.empty ?? 0}/
+                      {(systemCapabilities as any).metrics?.recall?.low_score ?? 0}
+                    </span>
+                    <span>打断样本：{(systemCapabilities as any).metrics?.voice?.interruptCount ?? 0}</span>
+                  </div>
+                )}
                 <div className="provider-grid">
                   {systemCapabilities.capabilities.map((capability) => (
                     <article className="provider-card live-provider-card" key={capability.id}>

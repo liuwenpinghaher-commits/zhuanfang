@@ -33,7 +33,8 @@ export {
 
 export {
   addMemoryGraphToken, buildInterviewCard, buildInterviewContextPack,
-  buildInterviewGuide, buildInterviewResumeCard,
+  buildInterviewGuide,
+  buildInterviewResumeCard,
   collectAppliedPlaybookRules,
   computeRecordThemeIds,
   createSessionDraft, formatMemoryGraphTargetLabel,
@@ -691,3 +692,5 @@ function flattenConfig(value: unknown, prefix = ""): Record<string, string> {
 function cloneConfig(config: SystemConfig): SystemConfig {
   return JSON.parse(JSON.stringify(config)) as SystemConfig;
 }
+
+export { buildBootContextPack, retrievePersonalKnowledge, decideRecallAcceptance } from "./retrieval";

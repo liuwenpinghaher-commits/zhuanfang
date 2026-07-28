@@ -62,6 +62,8 @@ export interface SystemConfig {
     includeSensitiveMemoriesInContext: boolean;
     includePendingCandidatesInContext: boolean;
     externalMaterialMemoryPolicy: "review-only" | "never" | "auto-candidate";
+    /** Stage-2: minimum hybrid score (0..1) to accept a memory/RAG hit; below → reject grounding. */
+    minRecallScore?: number;
   };
   research?: {
     /** 是否启用后台自动调研调度（默认 false；常驻服务时生效，非常驻靠手动触发 auto-run） */

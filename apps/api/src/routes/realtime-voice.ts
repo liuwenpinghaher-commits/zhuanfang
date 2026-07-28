@@ -1,3 +1,4 @@
+import { recordVoiceLatency } from "../observability/runtime-metrics";
 import type { FastifyInstance } from "fastify";
 import type { IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
@@ -369,6 +370,20 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       }
     }
 
+    recordVoiceLatency({
+      path: "interrupt",
+      interrupted: true,
+      sessionId,
+      ttfaMs: typeof interruptedAtMs === "number" ? interruptedAtMs : undefined
+    });
+    console.warn(JSON.stringify({
+      event: "voice_interrupt",
+      sessionId,
+      truncated,
+      spokenChars,
+      originalChars,
+      reason
+    }));
     return {
       interrupted: true,
       sessionId,

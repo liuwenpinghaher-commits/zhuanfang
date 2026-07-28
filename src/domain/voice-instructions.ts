@@ -63,7 +63,9 @@ export function buildRealtimeVoiceInstructions(
   session: InterviewSession | null,
   fallbackCard?: InterviewCard,
   corrections: MemoryCorrection[] = [],
-  boundaries: string[] = []
+  boundaries: string[] = [],
+  /** Stage-2 compact boot pack (profile + recent sessions + facts). */
+  bootContextText?: string
 ) {
   const card = session?.card ?? fallbackCard;
   const guide = session?.guide;
@@ -108,6 +110,9 @@ export function buildRealtimeVoiceInstructions(
     guide?.recommendedPerspectives?.length ? `建议视角（以一个自然问题呈现，别讲理论课）：${guide.recommendedPerspectives.slice(0, 3).join("、")}` : "",
     buildAppliedPlaybookRulesBlock(appliedRules),
     buildBoundariesBlock(boundaries),
-    buildCorrectionsBlock(corrections)
+    buildCorrectionsBlock(corrections),
+    bootContextText?.trim()
+      ? `【开场背景包】\n${bootContextText.trim()}`
+      : ""
   ].filter(Boolean).join("\n");
 }

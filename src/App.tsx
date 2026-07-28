@@ -104,6 +104,7 @@ import {
   type View
 } from "./ui";
 import { appendAssistantTranscriptFinal } from "./domain/session-transcript";
+import { buildBootContextPack } from "./domain/retrieval";
 
 const navIconByView: Record<View, typeof Compass> = {
   home: Compass,
@@ -1719,7 +1720,13 @@ const approveCandidate = (id: string, mode: "merge" | "add" = "merge") =>
     try {
       const voiceSession = await productApiClient.createRealtimeVoiceSession({
         ...(session ? { interviewSessionId: session.id } : {}),
-        instructions: buildRealtimeVoiceInstructions(session, card, productState.memoryCorrections ?? []),
+        instructions: buildRealtimeVoiceInstructions(
+          session,
+          card,
+          productState.memoryCorrections ?? [],
+          productState.profile.explicitBoundaries ?? [],
+          buildBootContextPack(productState).text
+        ),
         voice: productState.systemConfig.voice.defaultVoice
       });
       setRealtimeVoiceSession(voiceSession);

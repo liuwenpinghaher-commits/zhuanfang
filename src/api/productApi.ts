@@ -615,6 +615,11 @@ export interface HealthResponse {
  * (不含 lastError 原文,与 /api/health 的非泄漏形状一致)。consecutiveFailures 是"连续失败"
  * 语义:下一笔成功落库即清零,不因单次瞬态误报。
  */
+export interface RuntimeMetricsLite {
+  voice?: { sampleCount?: number; ttfaP50Ms?: number; ttfaP95Ms?: number; interruptCount?: number };
+  recall?: { eventCount?: number; hit?: number; empty?: number; low_score?: number; error?: number };
+}
+
 export interface PersistHealthLite {
   consecutiveFailures: number;
   lastErrorAt?: string;

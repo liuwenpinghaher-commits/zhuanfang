@@ -25,6 +25,7 @@ import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, formatSearc
 
 import { buildInterviewEnginePolicy } from "./strategy";
 import { cosineSimilarity, topKByCosine } from "./vector";
+import { decideRecallAcceptance, resolveMinRecallScore, scoreMemoryTextsForReject } from "./retrieval";
 
 // ponytail: 有界常量 — 上下文包中最多携带的 corrections 条数
 const MAX_CONTEXT_CORRECTIONS = 20;
@@ -1125,6 +1126,8 @@ function collectRelevantMemories(
       merged.push(text);
     }
   }
+  // Stage-2: chat path applies hybrid reject + channel quotas. Interview relevantMemories
+  // already use relevance>0 floors (R-P2-01); do not second-guess and empty the guide channel.
   return merged.slice(0, 5);
 }
 function countOccurrences(text: string, signal: string) {

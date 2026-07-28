@@ -7,7 +7,7 @@ it("无探针(sqlite/测试)→ ok:true ready:true,无 persist 字段", async ()
     const app = Fastify();
     await app.register(registerHealthRoutes());
     const res = await app.inject({ method: "GET", url: "/api/health" });
-    expect(res.json()).toEqual({ ok: true, ready: true, service: "interview-product-api" });
+    expect(res.json()).toMatchObject({ ok: true, ready: true, service: "interview-product-api" });
     await app.close();
   });
 

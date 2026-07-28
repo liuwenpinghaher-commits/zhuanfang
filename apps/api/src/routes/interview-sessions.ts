@@ -42,6 +42,7 @@ import {
   resolveMidSessionRecallTopic
 } from "../../../../src/domain/context-pack";
 import { mergeInterviewSessionRefresh } from "../../../../src/domain/session-merge";
+import { buildBootContextPack } from "../../../../src/domain/retrieval";
 import { asNativeRecall } from "../recall/native-recall-capability";
 import { prefetchRecall } from "../recall/prefetch-recall";
 
@@ -810,7 +811,8 @@ const referencedMemory = normalizeOptionalString(body.referencedMemory);
         refreshedSession,
         refreshedSession.card,
         latestState.memoryCorrections,
-        latestState.profile.explicitBoundaries
+        latestState.profile.explicitBoundaries,
+        buildBootContextPack(latestState).text
       );
       const nextState = upsertSession(latestState, refreshedSession);
       const persisted = await replaceStateDurable(repository, nextState);

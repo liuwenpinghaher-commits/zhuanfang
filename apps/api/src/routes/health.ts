@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { getRuntimeMetricsSnapshot } from "../observability/runtime-metrics";
 
 /** E:权威库落库健康度快照(内联,避免跨包 import PersistHealth)。 */
 type PersistHealthLite = { consecutiveFailures: number; lastError?: string; lastErrorAt?: string };
@@ -37,15 +38,33 @@ server.get("/api/health", async () => {
       const persistDegraded = Boolean(ph && ph.consecutiveFailures > 0);
       // GV: separate liveness (ok) from readiness (ready). Docker/process probes use ok;
       // operators / readiness gates should require ready && !persist.degraded.
+      const metrics = getRuntimeMetricsSnapshot();
       return {
         ok: true,
         ready: !persistDegraded,
         service: "interview-product-api",
         ...(persistDegraded
           ? { persist: { degraded: true, consecutiveFailures: ph!.consecutiveFailures, lastErrorAt: ph!.lastErrorAt } }
-          : {})
+          : {}),
+        metrics: {
+          voice: {
+            sampleCount: metrics.voice.sampleCount,
+            ttfaP50Ms: metrics.voice.ttfaP50Ms,
+            ttfaP95Ms: metrics.voice.ttfaP95Ms,
+            interruptCount: metrics.voice.interruptCount
+          },
+          recall: {
+            eventCount: metrics.recall.eventCount,
+            hit: metrics.recall.hit,
+            empty: metrics.recall.empty,
+            low_score: metrics.recall.low_score,
+            error: metrics.recall.error
+          }
+        }
       };
     });
+
+    server.get("/api/system/runtime-metrics", async () => getRuntimeMetricsSnapshot());
     // 方案二:图↔软链双表示一致性审计(公理引擎的图层对偶)。无能力档位(memory)→ 501;
     // 审计自身失败 → 500 且不吞错误细节。只读、不修复——发现漂移由运维决定处置。
     server.get("/api/ops/graph-consistency", async (_request, reply) => {

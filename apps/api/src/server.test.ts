@@ -80,7 +80,7 @@ describe("Product API", () => {
     const response = await server.inject({ method: "GET", url: "/api/health" });
 
     expect(response.statusCode).toBe(200);
-expect(response.json()).toEqual({ ok: true, ready: true, service: "interview-product-api" });
+expect(response.json()).toMatchObject({ ok: true, ready: true, service: "interview-product-api" });
   });
 
   it("allows browser clients on the Vite dev origin to call the Product API", async () => {
@@ -1443,7 +1443,7 @@ it("renders podcast audio through Bailian CosyVoice when the audio client is con
       const response = await server.inject({ method: "GET", url: "/api/health" });
 
       expect(response.statusCode).toBe(200);
-expect(response.json()).toEqual({ ok: true, ready: true, service: "interview-product-api" });
+expect(response.json()).toMatchObject({ ok: true, ready: true, service: "interview-product-api" });
     });
   });
 });

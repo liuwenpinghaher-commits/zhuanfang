@@ -18,6 +18,7 @@ import type {
   BailianSearchClient
 } from "../providers/bailian";
 import { writeEnvFileUpdates, type RuntimeEnv } from "../env";
+import { getRuntimeMetricsSnapshot } from "../observability/runtime-metrics";
 import type { ProductStateRepository } from "../product-state-repository";
 
 type CapabilityStatus = "ready" | "degraded" | "needs-key" | "needs-endpoint" | "disabled";
@@ -50,6 +51,10 @@ interface SystemRouteOptions {
   bailianInterviewClient?: BailianCharacterInterviewClient;
   bailianRealtimeVoiceClient?: BailianRealtimeVoiceClient;
   bailianTranscriptionClient?: BailianAudioTranscriptionClient;
+  /** Stage-2: optional embedding readiness (cloud or local). */
+  embeddingConfigured?: boolean;
+  /** Optional LLM budget snapshot getter. */
+  getLlmBudgetRemaining?: () => number | undefined;
 }
 
 type ConfigSectionId = "secrets" | "models" | "search" | "voice" | "storage";
@@ -494,6 +499,34 @@ export async function registerSystemRoutes(
         lastCheckedAt: generatedAt
       },
       {
+        id: "embedding",
+        kind: "llm",
+        label: "向量嵌入（记忆/知识召回）",
+        status: options.embeddingConfigured || Boolean(env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY) || (env.EMBEDDING_PROVIDER ?? "").trim().toLowerCase() === "local"
+          ? "ready"
+          : "needs-key",
+        active: true,
+        detail: (env.EMBEDDING_PROVIDER ?? "").trim().toLowerCase() === "local"
+          ? "本地 embedding（EMBEDDING_PROVIDER=local）已启用。"
+          : (env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY)
+            ? "云端 embedding 可用（DashScope/百炼 key）。"
+            : "未配置 embedding：chat/interview 语义召回会受限（关键词仍可用）。",
+        requiredEnv: (env.EMBEDDING_PROVIDER ?? "").trim().toLowerCase() === "local" ? ["EMBEDDING_PROVIDER"] : ["DASHSCOPE_API_KEY"],
+        lastCheckedAt: generatedAt
+      },
+      {
+        id: "corpus-audio-public",
+        kind: "voice",
+        label: "语料本地音频公开基址",
+        status: (env.CORPUS_AUDIO_PUBLIC_BASE_URL ?? "").trim() ? "ready" : "degraded",
+        active: Boolean((env.CORPUS_AUDIO_PUBLIC_BASE_URL ?? "").trim()),
+        detail: (env.CORPUS_AUDIO_PUBLIC_BASE_URL ?? "").trim()
+          ? `本地上传可映射到公开 URL 后走 SenseVoice：${(env.CORPUS_AUDIO_PUBLIC_BASE_URL ?? "").trim()}`
+          : "未配置 CORPUS_AUDIO_PUBLIC_BASE_URL：本地音频会落盘并诚实 422；公网 URL 仍可转写。",
+        requiredEnv: ["CORPUS_AUDIO_PUBLIC_BASE_URL"],
+        lastCheckedAt: generatedAt
+      },
+      {
         id: "bailian-realtime",
         kind: "voice",
         label: "百炼 Qwen-Omni Realtime",
@@ -515,6 +548,7 @@ export async function registerSystemRoutes(
       }
     ];
 
+    const metrics = getRuntimeMetricsSnapshot();
     return {
       generatedAt,
       configVersion: state.systemConfig.version,
@@ -524,6 +558,20 @@ export async function registerSystemRoutes(
       runtime: {
         service: "interview-product-api",
         stateStore: options.stateStore
+      },
+      metrics: {
+        voice: {
+          sampleCount: metrics.voice.sampleCount,
+          ttfaP50Ms: metrics.voice.ttfaP50Ms,
+          ttfaP95Ms: metrics.voice.ttfaP95Ms,
+          interruptCount: metrics.voice.interruptCount
+        },
+        recall: {
+          eventCount: metrics.recall.eventCount,
+          hit: metrics.recall.hit,
+          empty: metrics.recall.empty,
+          low_score: metrics.recall.low_score
+        }
       },
       capabilities
     };
