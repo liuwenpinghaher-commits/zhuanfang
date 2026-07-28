@@ -67,6 +67,7 @@ import { useOfflineProductSync } from "./hooks/useOfflineProductSync";
 import { useCascadeVoiceMetrics } from "./hooks/useCascadeVoiceMetrics";
 import { useInterruptedUtteranceStash } from "./hooks/useInterruptedUtteranceStash";
 import { useInterviewSessionShell } from "./hooks/useInterviewSessionShell";
+import { useRealtimeVoiceSession } from "./hooks/useRealtimeVoiceSession";
 import { shouldStageLocalBeforeAdopt } from "./domain/adopt-stage";
 import type {
   AssetStatus,
@@ -171,6 +172,39 @@ export default function App() {
   } = interviewShell;
   const { reportLatency } = useCascadeVoiceMetrics(session?.id);
   const interruptedStash = useInterruptedUtteranceStash();
+  const [guidanceState, setGuidanceState] = useState<{
+    active: boolean;
+    kind: string | null;
+    text: string | null;
+    countThisTurn: number;
+    lastTimestamp: string | null;
+  }>({ active: false, kind: null, text: null, countThisTurn: 0, lastTimestamp: null });
+  const {
+    recording,
+    setRecording,
+    realtimeVoiceSession,
+    setRealtimeVoiceSession,
+    realtimeVoiceConnection,
+    setRealtimeVoiceConnection,
+    livekitVoiceSession,
+    setLivekitVoiceSession,
+    cascadePipelineRef,
+    audioRecorderRef,
+    ttsSinkRef,
+    assistantTranscriptTurnRef,
+    audioLevel,
+    setAudioLevel,
+    voiceStatus,
+    setVoiceStatus,
+    liveUserTranscript,
+    setLiveUserTranscript,
+    closeRealtimeVoiceSession,
+    interruptAssistant: interruptAssistantVoice
+  } = useRealtimeVoiceSession({
+    interviewSessionId: session?.id,
+    interruptedStash,
+    onGuidanceReset: () => setGuidanceState((prev) => ({ ...prev, countThisTurn: 0, active: false }))
+  });
   const [notice, setNotice] = useState<UiNotice | null>(null);
   // N-02:权威库(surreal)落库健康度——degraded 期间常驻顶栏警告(独立持久状态,区别于一次性 notice)。
   // 由低频轮询 route-agnostic 的 GET /api/health 驱动(见下方 health 轮询 effect):后端仅在
@@ -186,39 +220,7 @@ export default function App() {
   const [confirmingDecisionId, setConfirmingDecisionId] = useState<string | undefined>(undefined);
   const [configSection, setConfigSection] = useState<ConfigSection>("status");
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
-  const [recording, setRecording] = useState(false);
-  const [realtimeVoiceSession, setRealtimeVoiceSession] = useState<RealtimeVoiceSessionResponse | null>(null);
-  const [realtimeVoiceConnection, setRealtimeVoiceConnection] = useState<BailianRealtimeWebrtcConnection | BailianRealtimeWebsocketConnection | LivekitVoiceSession | null>(null);
-  const [livekitVoiceSession, setLivekitVoiceSession] = useState<LivekitVoiceSession | null>(null);
-  // Cascade pipeline instance — held in a ref so closing it doesn't trigger re-render.
-  const cascadePipelineRef = useRef<CascadedPipeline | null>(null);
-  // Whole-session voice recorder — held in a ref so its lifecycle is decoupled from
-  // render. Only set when the cascade ASR tees us a live mic stream (voice path);
-  // null on the text path so we naturally skip recording. Recording is best-effort:
-  // a failed start/stop/upload must never block ending the interview.
-  const audioRecorderRef = useRef<SessionAudioRecorder | null>(null);
-  // Host (interviewer) TTS sink — held in a ref so finishInterview() can drain its
-  // side-channel PCM tap into a WAV and upload it as role=interviewer. Only set on
-  // the voice path; null on the text path (no TTS) → interviewer upload skipped.
-  const ttsSinkRef = useRef<TtsSink | null>(null);
-  // P1-12: which assistant turn index has already absorbed a `final` transcript
-  // segment. A realtime turn can emit MULTIPLE finals (omni: audio_transcript.done
-  // + text.done; livekit: one TranscriptionSegment per sentence) — the first final
-  // for a given turn REPLACES the turn content, later finals APPEND, so a multi-part
-  // reply isn't collapsed to its last segment. Reset implicitly: when the assistant
-  // turn index advances (a new user+assistant pair was appended) the first final
-  // again replaces. A ref (not state) so accumulation never triggers a re-render race.
-  const assistantTranscriptTurnRef = useRef<number>(-1);
-  const [audioLevel, setAudioLevel] = useState(0);
-  const [voiceStatus, setVoiceStatus] = useState<"idle" | "connecting" | "listening" | "speaking" | "interrupted">("idle");
-  const [liveUserTranscript, setLiveUserTranscript] = useState("");
-  const [guidanceState, setGuidanceState] = useState<{
-    active: boolean;
-    kind: string | null;
-    text: string | null;
-    countThisTurn: number;
-    lastTimestamp: string | null;
-  }>({ active: false, kind: null, text: null, countThisTurn: 0, lastTimestamp: null });
+  // recording / voice transport state: useRealtimeVoiceSession
   const [voices, setVoices] = useState<VoiceInfo[]>([]);
   const [voicesLoading, setVoicesLoading] = useState(false);
   const [searchTopic, setSearchTopic] = useState("AI 产品商业化热点");
@@ -671,37 +673,6 @@ const approveCandidate = (id: string, mode: "merge" | "add" = "merge") =>
     }
   }, [voiceStatus, realtimeState?.shouldInterrupt]);
 
-  function closeRealtimeVoiceSession() {
-    if (livekitVoiceSession) {
-      livekitVoiceSession.close();
-      setLivekitVoiceSession(null);
-    }
-    realtimeVoiceConnection?.close();
-    setRealtimeVoiceConnection(null);
-    setRealtimeVoiceSession(null);
-    if (cascadePipelineRef.current) {
-      cascadePipelineRef.current.close();
-      cascadePipelineRef.current = null;
-    }
-    // Drop the host TTS sink ref. The pipeline.close() above already closed the
-    // sink (releasing its WS + AudioContext); we just clear the handle so a torn-
-    // down session can't leak a stale sink (and its recorded PCM) into the next.
-    ttsSinkRef.current = null;
-    // Discard any orphan whole-session recorder (voice session torn down without a
-    // proper /end upload — e.g. new interview / purge / reset). finishInterview()
-    // already nulls the ref BEFORE calling us when it wants to upload, so reaching
-    // here with a recorder means the recording is intentionally dropped. Stop it to
-    // release the MediaRecorder; ignore the resulting blob.
-    if (audioRecorderRef.current) {
-      const orphan = audioRecorderRef.current;
-      audioRecorderRef.current = null;
-      void orphan.stop().catch(() => { /* discarded */ });
-    }
-    setRecording(false);
-    setAudioLevel(0);
-    setVoiceStatus("idle");
-  }
-
   useEffect(() => {
     if (view !== "config") return;
     let cancelled = false;
@@ -745,59 +716,7 @@ const approveCandidate = (id: string, mode: "merge" | "add" = "merge") =>
   }
 
   async function interruptAssistant() {
-    setGuidanceState(prev => ({ ...prev, countThisTurn: 0, active: false }));
-    // Hit whichever transport is live. cascade / omni have full barge-in; livekit
-    // mutes local playback and publishes {type:"interrupt"} so agent session.interrupt()
-    // stops synthesis (see agent/main.py + parse_interrupt_data_payload).
-    let interrupted = false;
-    // Capture how much of the reply was actually spoken aloud so the server can truncate the
-    // persisted assistant turn to what the guest really heard (P0-2). Without this the session
-    // record keeps the full reply the AI never finished saying, and downstream memory/extraction
-    // treats unspoken text as spoken.
-    let spokenTextSoFar = "";
-    if (cascadePipelineRef.current) {
-      const info = cascadePipelineRef.current.interrupt();
-      spokenTextSoFar = info?.spokenTextSoFar ?? "";
-      interrupted = true;
-    }
-    const conn = realtimeVoiceConnection as
-      | { interruptAssistant?: () => Promise<{ spokenTextSoFar?: string } | null> | void }
-      | null;
-    if (conn?.interruptAssistant) {
-      const result = await conn.interruptAssistant();
-      if (result && typeof result.spokenTextSoFar === "string") {
-        spokenTextSoFar = result.spokenTextSoFar;
-      }
-      interrupted = true;
-    }
-    if (livekitVoiceSession) {
-      livekitVoiceSession.interrupt();
-      interrupted = true;
-    }
-    if (interrupted) {
-      // Persist the interruption server-side so the assistant turn is truncated to the spoken
-      // portion. Best-effort: a failure here must not break the local barge-in UX.
-      const realtimeSessionId = realtimeVoiceSession?.sessionId;
-      if (realtimeSessionId) {
-        try {
-          const interruptResult = await productApiClient.interruptRealtimeVoiceSession(realtimeSessionId, {
-            spokenTextSoFar,
-            reason: "user_interrupt"
-          });
-          const stashText =
-            (interruptResult as { previousAgentUtteranceInterrupted?: string } | undefined)
-              ?.previousAgentUtteranceInterrupted ?? spokenTextSoFar;
-          interruptedStash.recordInterrupt(stashText, session?.id ?? undefined);
-        } catch (error) {
-          interruptedStash.recordInterrupt(spokenTextSoFar, session?.id ?? undefined);
-          console.warn(JSON.stringify({ event: "interrupt_persist_failed", error: error instanceof Error ? error.message : String(error) }));
-        }
-      } else {
-        interruptedStash.recordInterrupt(spokenTextSoFar, session?.id ?? undefined);
-      }
-      setVoiceStatus("interrupted");
-      setTimeout(() => setVoiceStatus("listening"), 1500);
-    }
+    await interruptAssistantVoice();
   }
 
   /** 打开单条主题线工作区。 */
