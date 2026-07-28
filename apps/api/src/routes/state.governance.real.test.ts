@@ -98,10 +98,45 @@ describe("R2b 治理路由 × 真 SurrealDB(mem://)", () => {
   it("import 完整包:HTTP → 200,真实冷层 raw/audio 被替换恢复", async () => {
     const { stores, server } = await makeRig();
     await seedCold(stores); // 旧冷层:s1
+    const before = stores.productState.getState();
     const payload = {
       confirm: "REPLACE_ALL_STATE",
-      state: { profile: { name: "恢复者" }, notes: [] },
-      rawMaterials: [{ sessionId: "imp1", turns: [], createdAt: "2026-06-21T00:00:00.000Z" }, { sessionId: "imp2", turns: [], createdAt: "2026-06-21T00:00:01.000Z" }],
+      state: {
+        ...before,
+        profile: { ...before.profile, name: "恢复者" },
+        notes: [],
+        sessions: [{
+          id: "imp1",
+          mode: "daily",
+          strength: "standard",
+          status: "completed",
+          title: "恢复会话",
+          card: {},
+          guide: {},
+          turns: [],
+          rawMaterialOffloaded: true,
+          startedAt: "2026-06-21T00:00:00.000Z",
+          completedAt: "2026-06-21T00:05:00.000Z",
+        }],
+        points: [{
+          id: "pt_import_route",
+          title: "恢复观点",
+          content: "组织提效依赖流程重构",
+          status: "稳定观点",
+          confidence: "用户确认",
+          evidence: [],
+          relatedThemeIds: [],
+          important: false,
+          updatedAt: "2026-06-21T00:05:00.000Z",
+          evidenceAnchors: [{ sessionId: "imp1", turnId: "tu_import_route" }],
+        }],
+      },
+      rawMaterials: [{
+        sessionId: "imp1",
+        turns: [{ id: "tu_import_route", sessionId: "imp1", role: "user", content: "恢复路由原话", intent: "", timestamp: "2026-06-21T00:01:00.000Z" }],
+        strategyTrace: [],
+        createdAt: "2026-06-21T00:00:00.000Z",
+      }, { sessionId: "imp2", turns: [], strategyTrace: [], createdAt: "2026-06-21T00:00:01.000Z" }],
       audios: [{ sessionId: "imp1", mime: "audio/webm", audioBase64: Buffer.from([9, 9, 9]).toString("base64") }],
       audioSessions: ["imp1"],
     };
@@ -113,6 +148,59 @@ describe("R2b 治理路由 × 真 SurrealDB(mem://)", () => {
     expect((await stores.rawMaterial.list()).map((m) => m.sessionId).sort()).toEqual(["imp1", "imp2"]);
     expect(await stores.audio.has("imp1")).toBe(true);
     expect(await stores.audio.has("s1")).toBe(false);
+    expect(stores.productState.getState().sessions[0]?.turns).toEqual([]);
+    expect(await stores.productState.recallProvenanceTurns("point", "pt_import_route")).toEqual([
+      expect.objectContaining({ id: "tu_import_route", sessionId: "imp1", content: "恢复路由原话" }),
+    ]);
+    expect(await stores.productState.auditGraphConsistency()).toMatchObject({ ok: true, danglingProvenanceCount: 0 });
+  });
+
+  it("import 中 hot/cold 同 turn id 内容冲突 → 422 且事务整体不改写旧状态", async () => {
+    const { stores, server } = await makeRig();
+    await seedCold(stores);
+    const before = stores.productState.getState();
+    const sessionId = "se_conflict";
+    const turnBase = {
+      id: "tu_conflict",
+      sessionId,
+      role: "user",
+      intent: "",
+      timestamp: "2026-06-21T00:01:00.000Z",
+    };
+    const payload = {
+      confirm: "REPLACE_ALL_STATE",
+      state: {
+        ...before,
+        profile: { ...before.profile, name: "不应落库" },
+        sessions: [{
+          id: sessionId,
+          mode: "daily",
+          strength: "standard",
+          status: "completed",
+          title: "冲突会话",
+          card: {},
+          guide: {},
+          turns: [{ ...turnBase, content: "热态版本" }],
+          startedAt: "2026-06-21T00:00:00.000Z",
+          completedAt: "2026-06-21T00:05:00.000Z",
+        }],
+      },
+      rawMaterials: [{
+        sessionId,
+        turns: [{ ...turnBase, content: "冷层冲突版本" }],
+        strategyTrace: [],
+        createdAt: "2026-06-21T00:00:00.000Z",
+      }],
+      audios: [],
+      audioSessions: [],
+    };
+
+    const res = await server.inject({ method: "POST", url: "/api/state/import", payload });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json()).toMatchObject({ code: "IMPORT_TURN_CONFLICT", rolledBack: true, failedStep: "validation" });
+    expect(stores.productState.getState().profile.name).toBe(before.profile.name);
+    expect((await stores.rawMaterial.list()).map((m) => m.sessionId)).toEqual(["s1"]);
   });
 
   it("★DB 级基线推进:HTTP purge 后经完整路由栈重加同 id note,DB 真落库(基线未推进则丢失)", async () => {

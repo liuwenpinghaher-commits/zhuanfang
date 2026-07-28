@@ -30,6 +30,19 @@ afterEach(async () => {
 });
 
 const raw = (id: string): InterviewRawMaterial => ({ sessionId: id, turns: [], strategyTrace: [], createdAt: "2026-06-21T00:00:00.000Z" });
+const rawWithTurn = (sessionId: string, content = "恢复后的用户原话"): InterviewRawMaterial => ({
+  sessionId,
+  turns: [{
+    id: "tu_imported_1",
+    sessionId,
+    role: "user",
+    content,
+    intent: "",
+    timestamp: "2026-06-21T00:01:00.000Z",
+  }],
+  strategyTrace: [],
+  createdAt: "2026-06-21T00:00:00.000Z",
+});
 const aud = (id: string): InterviewAudio => ({ sessionId: id, role: "interviewee", audio: new Uint8Array([1, 2, 3]), mime: "audio/webm", byteSize: 3, createdAt: "2026-06-21T00:00:00.000Z" });
 const chunk = (id: string): KnowledgeChunk => ({ id, sourceType: "note", sourceId: "s1", title: "t", text: "x", keywords: [], createdAt: "2026-06-22T00:00:00.000Z" });
 // 越枚举 role → audio.role 的 schema ASSERT 拒绝 → 冷层 UPSERT 在事务内抛(真 SurrealDB 失败,非 mock)。
@@ -127,6 +140,72 @@ describe("R2b 治理事务 · 成功路径(mem://)", () => {
     expect((await s.rawMaterial.list()).map((m) => m.sessionId).sort()).toEqual(["r1", "r2"]);
     expect(await s.audio.has("a1")).toBe(true);
     expect(await s.knowledgeIndex.listAll()).toHaveLength(1); // preserve:知识索引未被触碰
+  });
+
+  it("完整 import:冷层 raw turns 在同一治理事务投影为 turn/part_of/derived_from，热态仍保持 offloaded", async () => {
+    const s = await makeStores();
+    await s.productState.flush();
+    const before = s.productState.getState();
+    const sessionId = "se_imported_1";
+    const imported = {
+      ...before,
+      sessions: [{
+        id: sessionId,
+        mode: "daily",
+        strength: "standard",
+        status: "completed",
+        title: "恢复会话",
+        card: {},
+        guide: {},
+        turns: [],
+        rawMaterialOffloaded: true,
+        startedAt: "2026-06-21T00:00:00.000Z",
+        completedAt: "2026-06-21T00:05:00.000Z",
+      }],
+      points: [{
+        id: "pt_imported_1",
+        title: "恢复观点",
+        content: "组织提效依赖流程重构",
+        status: "稳定观点",
+        confidence: "用户确认",
+        evidence: [],
+        relatedThemeIds: [],
+        important: false,
+        updatedAt: "2026-06-21T00:05:00.000Z",
+        evidenceAnchors: [{ sessionId, turnId: "tu_imported_1" }],
+      }],
+    } as unknown as ProductState;
+
+    await s.productState.runGovernanceTransaction!(
+      { kind: "replace", next: imported },
+      { rawMaterial: { action: "replace", materials: [rawWithTurn(sessionId)] } },
+    );
+
+    expect(s.productState.getState().sessions[0]?.turns).toEqual([]);
+    const [turnIds] = await s.productState.query<[unknown[]]>("SELECT VALUE id FROM turn;");
+    expect((turnIds ?? []).map(String).some((id) => id.includes("tu_imported_1"))).toBe(true);
+    const [partOf] = await s.productState.query<[unknown[]]>("SELECT VALUE ->part_of->session FROM turn:tu_imported_1;");
+    expect(partOf?.[0]).toHaveLength(1);
+    const provenance = await s.productState.recallProvenanceTurns("point", "pt_imported_1");
+    expect(provenance).toEqual([
+      expect.objectContaining({ id: "tu_imported_1", sessionId, content: "恢复后的用户原话", role: "user" }),
+    ]);
+    expect(await s.productState.auditGraphConsistency()).toMatchObject({ ok: true, danglingProvenanceCount: 0 });
+
+    // 模拟既有库已漂移，但热态基线与导入包资产完全相同。若 import 仍只做 prev→next edge diff，
+    // derived_from 不会被判为 added，重导同一备份也修不回缺边。
+    await s.productState.query("DELETE derived_from WHERE in = point:pt_imported_1;");
+    expect(await s.productState.recallProvenanceTurns("point", "pt_imported_1")).toEqual([]);
+
+    await s.productState.runGovernanceTransaction!(
+      { kind: "replace", next: imported },
+      { rawMaterial: { action: "replace", materials: [rawWithTurn(sessionId)] } },
+    );
+
+    expect(await s.productState.recallProvenanceTurns("point", "pt_imported_1")).toEqual([
+      expect.objectContaining({ id: "tu_imported_1", sessionId, content: "恢复后的用户原话" }),
+    ]);
+    expect(await s.productState.auditGraphConsistency()).toMatchObject({ ok: true, missingCount: 0, danglingProvenanceCount: 0 });
   });
 
   it("import(preserve-cold):冷层规格缺省 → 只替换热态,冷层原样保留", async () => {

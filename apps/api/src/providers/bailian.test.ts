@@ -421,6 +421,28 @@ describe("bailian provider client", () => {
     });
   });
 
+  it("character interview client honors its configured request timeout", async () => {
+    const state = createInitialProductState();
+    const session = createSessionDraft(state, "organization", "standard");
+    const fetchImpl = vi.fn((_input: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(init.signal?.reason ?? new Error("aborted"));
+        }, { once: true });
+      })
+    );
+    const client = createBailianCharacterInterviewClient({
+      apiKey: "test-key",
+      timeoutMs: 10,
+      fetchImpl
+    });
+
+    await expect(Promise.race([
+      client.createAssistantTurn({ session, userText: "组织效率没有随个人效率一起提升。" }),
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("client did not abort")), 100))
+    ])).rejects.not.toThrow("client did not abort");
+  });
+
   it("parses pre_signals from LLM response when present", async () => {
     const state = createInitialProductState();
     const session = createSessionDraft(state, "decision");
@@ -534,6 +556,41 @@ describe("bailian provider client", () => {
     expect(systemPrompt).toContain("用户已纠正过的表述");
     expect(systemPrompt).toContain("我现在带的是 12 个人");
     expect(systemPrompt).toContain("上次说的那个项目其实已经停了");
+  });
+
+  it("injects the exact structured reference selected for this turn into the model prompt", async () => {
+    const session = createSessionDraft(createInitialProductState(), "organization", "standard");
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ choices: [{ message: { role: "assistant", content: "继续追问。" } }] }),
+        { status: 200 }
+      )
+    );
+    const client = createBailianCharacterInterviewClient({ apiKey: "test-key", fetchImpl });
+    const strategyDecision = {
+      turnIndex: 1,
+      strategy: "mechanism_probe" as const,
+      label: "追问机制",
+      reason: "test",
+      depth: "surface" as const,
+      referencedMemory: "个人工具普及率不是组织提效的充分条件。",
+      references: [{
+        id: "memory:memory-1",
+        type: "memory",
+        text: "个人工具普及率不是组织提效的充分条件。",
+        sourceEntityType: "memory_record",
+        sourceEntityId: "memory-1",
+        sourceLabel: "已确认长期记忆"
+      }]
+    };
+
+    await client.createAssistantTurn({ session, userText: "为什么组织没有提效？", strategyDecision } as any);
+
+    const requestBody = JSON.parse(getLastFetchCall(fetchImpl as FetchMock)[1]?.body as string);
+    const systemPrompt = requestBody.messages[0].content as string;
+    expect(systemPrompt).toContain("本轮选定引用");
+    expect(systemPrompt).toContain("memory:memory-1");
+    expect(systemPrompt).toContain("个人工具普及率不是组织提效的充分条件。");
   });
 
   it("omits the playbook/corrections sections from the system prompt when there are none", async () => {

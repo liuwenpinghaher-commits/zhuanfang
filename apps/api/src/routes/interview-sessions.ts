@@ -73,6 +73,8 @@ interface InterviewSessionRouteOptions {
    * final session merge MUST re-enter write serialization so record-turn cannot land
    * between re-read and replaceStateDurable.
    */
+  /** Max wall time for a single interview turn LLM call (ms). */
+  interviewTurnTimeoutMs?: number;
   writeGate?: { runExclusive<T>(label: string, fn: () => Promise<T> | T): Promise<T> };
 }
 
@@ -86,6 +88,33 @@ const controlActions: InterviewControlAction[] = [
   "summary",
   "do-not-save"
 ];
+
+
+class InterviewTurnTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Interview turn timed out after ${timeoutMs}ms`);
+    this.name = "InterviewTurnTimeoutError";
+  }
+}
+
+async function withInterviewTurnDeadline<T>(task: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      task,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new InterviewTurnTimeoutError(timeoutMs)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function normalizeTimeoutMs(value: number | undefined, fallback = 45_000): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return fallback;
+  return Math.min(Math.max(Math.floor(value), 1_000), 180_000);
+}
 
 export async function registerInterviewSessionRoutes(
   server: FastifyInstance,

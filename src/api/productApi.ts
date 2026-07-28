@@ -328,6 +328,8 @@ export interface CreateInterviewSessionRequest {
   searchBriefId?: string;
   /** Theme/track revisit: create-time topic for prefetch & guide (AS-P0-01). */
   topicHint?: string;
+  /** Client-generated id for create retries; server dedupes by this key. */
+  clientRequestId?: string;
 }
 
 export interface SendInterviewTurnRequest {
@@ -675,7 +677,60 @@ function roleQuery(role?: SessionAudioRole): string {
   return role === "interviewer" ? "?role=interviewer" : "";
 }
 
-export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchImpl: FetchLike = fetch): ProductApiClient {
+export class InterviewTurnRequestTimeoutError extends Error {
+  readonly retryable = true;
+
+  constructor(public readonly timeoutMs: number) {
+    super(`专访追问等待超过 ${Math.ceil(timeoutMs / 1000)} 秒。本轮没有记录，请原样重试。`);
+    this.name = "InterviewTurnRequestTimeoutError";
+  }
+}
+
+function resolveClientTimeoutMs(explicit: number | undefined, envValue: string | undefined, fallback: number): number {
+  const parsed = explicit ?? (envValue?.trim() ? Number(envValue) : Number.NaN);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(1, Math.min(600_000, Math.round(parsed)));
+}
+
+function createDeadlineSignal(external: AbortSignal | undefined, timeoutMs: number) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const abortFromExternal = () => controller.abort(external?.reason);
+
+  if (external?.aborted) {
+    abortFromExternal();
+  } else {
+    external?.addEventListener("abort", abortFromExternal, { once: true });
+  }
+
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort(new DOMException(`Interview turn timed out after ${timeoutMs}ms.`, "TimeoutError"));
+  }, timeoutMs);
+
+  return {
+    signal: controller.signal,
+    didTimeout: () => timedOut,
+    dispose: () => {
+      clearTimeout(timer);
+      external?.removeEventListener("abort", abortFromExternal);
+    }
+  };
+}
+
+export interface ProductApiClientOptions {
+  interviewTurnTimeoutMs?: number;
+}
+
+export function createProductApiClient(
+  baseUrl = getProductApiBaseUrl(),
+  fetchImpl: FetchLike = fetch,
+  options: ProductApiClientOptions = {}
+): ProductApiClient {
+  void options;
+  const interviewTurnTimeoutMs = resolveClientTimeoutMs(options.interviewTurnTimeoutMs, undefined, 45_000);
   const normalizedBaseUrl = baseUrl.replace(/\/$/, "");
   // H 生产 bearer 鉴权:前端从 Vite env(VITE_PRODUCT_API_TOKEN)注入 token,所有请求自动附 Authorization。
   // 无 token(dev / 未配)→ 不附头,dev fail-open 行为不变;配了 token 的生产 profile 不再整站 401。
@@ -1072,21 +1127,31 @@ export function createProductApiClient(baseUrl = getProductApiBaseUrl(), fetchIm
       };
     },
     async sendInterviewTurn(sessionId, input, signal) {
-      const response = (await requestJson(`/api/interview-sessions/${sessionId}/turns`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(input),
-        // Pass the barge-in AbortSignal so an interrupted cascade turn cancels the
-        // in-flight LLM call server-side instead of letting it run to completion and
-        // overwrite the user's newly-started turn (P0-D). Optional → backward compatible.
-        ...(signal ? { signal } : {})
-      })) as InterviewSessionResponse;
+      const deadline = createDeadlineSignal(signal, interviewTurnTimeoutMs);
+      let response: InterviewSessionResponse;
+      try {
+        response = (await requestJson(`/api/interview-sessions/${sessionId}/turns`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(input),
+          // 外部 signal 保留语音打断语义；内部 deadline 保证普通文本提交也一定退出等待态。
+          signal: deadline.signal
+        })) as InterviewSessionResponse;
+      } catch (error) {
+        if (deadline.didTimeout()) {
+          throw new InterviewTurnRequestTimeoutError(interviewTurnTimeoutMs);
+        }
+        throw error;
+      } finally {
+        deadline.dispose();
+      }
 
       return {
         ...response,
         state: normalizeProductState(response.state)
       };
     },
+
     async recordInterviewTurn(sessionId, input) {
       const response = (await requestJson(`/api/interview-sessions/${sessionId}/record-turn`, {
         method: "POST",

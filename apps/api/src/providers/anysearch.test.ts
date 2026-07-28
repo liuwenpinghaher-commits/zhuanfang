@@ -46,6 +46,8 @@ describe("anysearch provider client", () => {
       fetchImpl
     });
 
+    expect(client.getAvailability!()).toMatchObject({ status: "unknown" });
+
     const result = await client.createSearchBrief({
       topic: "AI 产品商业化热点",
       providerId: "anysearch",
@@ -85,6 +87,27 @@ describe("anysearch provider client", () => {
       url: "https://example.com/agentic-search",
       publisher: "example.com",
       usage: "topic-suggestion"
+    });
+    expect(client.getAvailability!()).toMatchObject({ status: "available", lastCheckedAt: expect.any(String) });
+  });
+
+  it("configured client reports unavailable after the real request fails", async () => {
+    const client = createAnySearchClient({
+      apiKey: "configured-but-unreachable",
+      fetchImpl: vi.fn(async () => new Response("bad gateway", { status: 502 })),
+    });
+
+    expect(client.getAvailability!()).toMatchObject({ status: "unknown" });
+    await expect(client.createSearchBrief({
+      topic: "连通性验证",
+      providerId: "anysearch",
+      maxSources: 1,
+      recencyDays: 1,
+    })).rejects.toThrow("502");
+    expect(client.getAvailability!()).toMatchObject({
+      status: "unavailable",
+      lastCheckedAt: expect.any(String),
+      lastErrorCode: "http_502",
     });
   });
 

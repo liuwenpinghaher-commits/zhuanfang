@@ -351,8 +351,8 @@ export async function startRealtimeVoiceConnect(deps: StartRealtimeVoiceConnectD
             .then((res) => {
               deps.voiceRecallRefreshSucceeded();
               if ("updateInstructions" in connection) connection.updateInstructions(res.instructions);
-              if (res.state) deps.adoptServerState(res.state);
-              if (res.session) deps.setSession(res.session);
+              if ("state" in res && res.state) deps.adoptServerState(res.state as never);
+              if ("session" in res && res.session) deps.setSession(res.session as never);
             })
             .catch((err) => deps.voiceRecallRefreshFailed("voice_instructions", err));
         }

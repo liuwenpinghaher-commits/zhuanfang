@@ -110,4 +110,37 @@ describe("extractCandidateMemories", () => {
       extractCandidateMemories("测试", "内容", mockChat("[1,2,3]"))
     ).rejects.toThrow("unparseable JSON");
   });
+
+  it("injects explicit corrections and rejects a candidate that revives the corrected prerequisite claim", async () => {
+    let capturedPrompt = "";
+    const chat: BailianChatClient = {
+      async complete(input) {
+        capturedPrompt = input.messages.map((message) => message.content).join("\n");
+        return JSON.stringify({
+          candidates: [
+            {
+              text: "五项构成 AI Native 转型的结构性前提，缺一不可。",
+              evidenceQuote: "转型前要把五项条件全部准备好",
+              sensitivity: "normal"
+            },
+            {
+              text: "个人工具普及率不是组织提效的充分条件。",
+              evidenceQuote: "个人工具快了，但价值流没有缩短",
+              sensitivity: "normal"
+            }
+          ]
+        });
+      }
+    };
+    const correction = "我明确纠正：结构条件不是转型开始前必须全部满足的准入门槛，而应当在试点中一起改变。";
+
+    const result = await extractCandidateMemories("AI Native 转型", "访谈逐字稿", chat, {
+      corrections: [correction]
+    });
+
+    expect(capturedPrompt).toContain(correction);
+    expect(result.map((candidate) => candidate.text)).toEqual([
+      "个人工具普及率不是组织提效的充分条件。"
+    ]);
+  });
 });

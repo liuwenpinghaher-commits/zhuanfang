@@ -5,6 +5,7 @@ import type {
   InterviewGuide,
   InterviewGuideOptions,
   InterviewMode,
+  InterviewReference,
   InterviewResumeCard,
   InterviewSession,
   InterviewTurn,
@@ -272,7 +273,14 @@ export function buildInterviewCard(state: ProductState, searchBriefId?: string, 
       : explicitTopicHint && hasContextSources
         ? `我们先拿这条导入资料做参照：${ensureSentenceEnd(explicitTopicHint)}它和你最近的真实场景有什么关系？`
         : guide.suggestedOpening,
-    historyReferences: Array.from(new Set([...(agendaContext ? [agendaContext] : []), ...sourceReferences, reference, ...evidenceQuotes, ...confirmedMemoryTexts])).slice(0, 4),
+    historyReferences: Array.from(new Set([
+      ...(explicitTopicHint ? [`本次主题：${explicitTopicHint}`] : []),
+      ...(agendaContext ? [agendaContext] : []),
+      ...sourceReferences,
+      reference,
+      ...evidenceQuotes,
+      ...confirmedMemoryTexts
+    ])).slice(0, 4),
     potentialTension: searchBrief?.sourceAngles[0] ?? contextPack.ragChunks[0]?.text ?? neutralTension,
     suggestedPerspectives: guide.recommendedPerspectives,
     likelyOutputs: [
@@ -548,6 +556,7 @@ export function buildInterviewGuide(state: ProductState, options: InterviewGuide
     nowIso(),
     recall
   );
+  const availableReferences = buildAvailableInterviewReferences(contextPack.memoryRecords, relevantMemories);
   // 审计修复(P2-10) + 回归审查 R5-3(注释因果修正):「已放弃/已修正」是用户/推理已废弃的立场——
   // 此前不筛状态,直接 slice 前 4 条(数组序,非 updatedAt 排序),主持人 prompt 把用户亲手废弃的观点
   // 当"过去的立场"对质,而同一资产的溯源门控又拒绝它——口径分裂。与溯源门控对齐:终态(已放弃/已修正)出局。
@@ -586,6 +595,7 @@ export function buildInterviewGuide(state: ProductState, options: InterviewGuide
     recommendedPerspectives,
     perspectiveRationale: buildPerspectiveRationale(recommendedPerspectives, missingPerspectives, searchBrief),
     relevantMemories,
+    availableReferences,
     graphReferences: contextPack.graphReferences,
     opinionEvolution: buildOpinionEvolution(state),
     statedPositions,
@@ -604,15 +614,37 @@ export function buildInterviewGuide(state: ProductState, options: InterviewGuide
     })
   };
 }
+
+function buildAvailableInterviewReferences(
+  memoryRecords: MemoryRecord[],
+  relevantMemories: string[]
+): InterviewReference[] {
+  const rankByText = new Map(relevantMemories.map((text, index) => [text, index]));
+  return memoryRecords
+    .filter((record) => rankByText.has(record.text))
+    .sort((left, right) => (rankByText.get(left.text) ?? 999) - (rankByText.get(right.text) ?? 999))
+    .map((record) => ({
+      id: `memory:${record.id}`,
+      type: "memory" as const,
+      text: record.text,
+      sourceEntityType: "memory_record" as const,
+      sourceEntityId: record.id,
+      sourceLabel: record.sourceType === "interview_session" ? "已确认专访记忆" : "已确认长期记忆",
+      ...(record.evidenceAnchors?.[0] ? { evidenceTurn: record.evidenceAnchors[0] } : {})
+    }));
+}
 export function buildInterviewResumeCard(state: ProductState): InterviewResumeCard | null {
-  const activeSession = [...state.sessions]
+  return buildInterviewResumeCards(state)[0] ?? null;
+}
+
+export function buildInterviewResumeCards(state: ProductState): InterviewResumeCard[] {
+  return [...state.sessions]
     .filter((item) => item.status === "active")
-    .sort((a, b) => Date.parse(getSessionLastUpdatedAt(b)) - Date.parse(getSessionLastUpdatedAt(a)))[0];
+    .sort((a, b) => Date.parse(getSessionLastUpdatedAt(b)) - Date.parse(getSessionLastUpdatedAt(a)))
+    .map(toInterviewResumeCard);
+}
 
-  if (!activeSession) {
-    return null;
-  }
-
+function toInterviewResumeCard(activeSession: InterviewSession): InterviewResumeCard {
   const lastUserTurn = findLastTurn(activeSession, "user");
   const lastAssistantTurn = findLastTurn(activeSession, "assistant");
   const lastDecision = activeSession.strategyTrace?.at(-1);

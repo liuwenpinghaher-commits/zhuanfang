@@ -18,8 +18,7 @@ interface ProfileViewProps {
   onPrivacyReport: () => Promise<PrivacyReport>;
   onPurge: () => Promise<ProductState>;
   onSetProductState: (state: ProductState) => void;
-  /** When provided, profile save waits for this before showing 已保存. */
-  onSaveProfilePersist?: (state: ProductState) => Promise<void>;
+  onSaveProfile: (state: ProductState) => Promise<ProductState>;
 }
 
 type GovernanceAction = "export" | "import" | "privacy" | "purge";
@@ -76,7 +75,7 @@ export function ProfileView({
   onPrivacyReport,
   onPurge,
   onSetProductState,
-  onSaveProfilePersist
+  onSaveProfile
 }: ProfileViewProps) {
   const [form, setForm] = useState({
     name: state.profile.name,
@@ -87,25 +86,23 @@ export function ProfileView({
     preferredStrength: state.profile.preferredStrength
   });
   const [profileSaved, setProfileSaved] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileSaveError, setProfileSaveError] = useState<string | null>(null);
   const [boundaryText, setBoundaryText] = useState("");
 
-  const [profileSaveError, setProfileSaveError] = useState<string | null>(null);
   async function handleSaveProfile() {
-    const next = updateProfile(state, form);
+    if (profileSaving) return;
+    setProfileSaving(true);
     setProfileSaved(false);
     setProfileSaveError(null);
-    if (onSaveProfilePersist) {
-      try {
-        await onSaveProfilePersist(next);
-        setProfileSaved(true);
-      } catch (err) {
-        setProfileSaved(false);
-        setProfileSaveError(err instanceof Error && err.message ? err.message : "保存失败，请稍后重试。");
-      }
-      return;
+    try {
+      await onSaveProfile(updateProfile(state, form));
+      setProfileSaved(true);
+    } catch (error) {
+      setProfileSaveError(error instanceof Error && error.message ? error.message : "档案保存失败，请重试。");
+    } finally {
+      setProfileSaving(false);
     }
-    onSetProductState(next);
-    setProfileSaved(true);
   }
   function handleAddBoundary() {
     const text = boundaryText.trim();
@@ -294,10 +291,12 @@ export function ProfileView({
               </select>
             </label>
             <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
-              <button className="primary-action" type="button" onClick={handleSaveProfile}>保存档案</button>
+              <button className="primary-action" type="button" onClick={handleSaveProfile} disabled={profileSaving} aria-busy={profileSaving}>
+                {profileSaving ? "保存中…" : "保存档案"}
+              </button>
               {profileSaved && <span style={{ color: "var(--color-success, #22c55e)", fontSize: "0.875rem" }}>已保存</span>}
-              {profileSaveError && <span style={{ color: "var(--color-danger, #ef4444)", fontSize: "0.875rem" }}>{profileSaveError}</span>}
             </div>
+            {profileSaveError && <p className="field-error" role="alert">{profileSaveError}</p>}
           </div>
         </section>
         <section className="panel">

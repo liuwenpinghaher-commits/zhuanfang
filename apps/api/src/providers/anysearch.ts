@@ -7,6 +7,15 @@ type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface AnySearchClient {
   createSearchBrief(input: AnySearchBriefRequest): Promise<SearchBriefInput>;
+  getAvailability?(): AnySearchAvailability;
+}
+
+export type AnySearchAvailabilityStatus = "unknown" | "available" | "unavailable";
+
+export interface AnySearchAvailability {
+  status: AnySearchAvailabilityStatus;
+  lastCheckedAt?: string;
+  lastErrorCode?: string;
 }
 
 export interface AnySearchBriefRequest {
@@ -50,63 +59,87 @@ export function createAnySearchClient(options: AnySearchClientOptions = {}): Any
   const language = options.language ?? "zh-CN";
   const fetchImpl = options.fetchImpl ?? fetch;
   const requestTimeoutMs = options.requestTimeoutMs;
+  let availability: AnySearchAvailability = { status: "unknown" };
 
   return {
+    getAvailability() {
+      return { ...availability };
+    },
     async createSearchBrief(input) {
-      const headers: Record<string, string> = {
-        "content-type": "application/json"
-      };
-      if (options.apiKey?.trim()) {
-        headers.authorization = `Bearer ${options.apiKey.trim()}`;
+      try {
+        const headers: Record<string, string> = {
+          "content-type": "application/json"
+        };
+        if (options.apiKey?.trim()) {
+          headers.authorization = `Bearer ${options.apiKey.trim()}`;
+        }
+
+        const response = await fetchWithTimeout(fetchImpl, `${baseUrl}/v1/search`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            query: input.topic,
+            max_results: input.maxSources,
+            content_types: ["web", "news"],
+            language,
+            ...(options.zone ? { zone: options.zone } : {}),
+            params: {
+              recency_days: input.recencyDays
+            }
+          })
+        }, requestTimeoutMs);
+
+        if (!response.ok) {
+          throw new Error(`AnySearch API request failed: ${response.status}`);
+        }
+
+        const payload = (await response.json()) as AnySearchResponse;
+        if (payload.code !== undefined && Number(payload.code) !== 0) {
+          throw new Error(`AnySearch API returned non-zero code: ${String(payload.message ?? payload.code)}`);
+        }
+
+        const results = normalizeResults(payload.data?.results, input.maxSources);
+        if (results.length === 0) {
+          throw new Error("AnySearch response did not include search results.");
+        }
+
+        const sources = results.map((result, index) => mapSource(result, index));
+        const requestId = typeof payload.data?.metadata?.request_id === "string" ? payload.data.metadata.request_id : undefined;
+        availability = { status: "available", lastCheckedAt: new Date().toISOString() };
+
+        return {
+          topic: input.topic,
+          provider: "anysearch",
+          status: "ready",
+          summary: buildSummary(input.topic, results, requestId),
+          facts: results.slice(0, 3).map((result) => `${result.title}：${pickEvidence(result)}`),
+          controversies: buildControversies(input.topic, results),
+          opposingViews: buildOpposingViews(input.topic, results),
+          interviewAngles: buildInterviewAngles(input.topic, results),
+          discussionTopics: buildDiscussionTopics(input.topic, results),
+          sourceAngles: buildSourceAngles(results),
+          sources
+        };
+      } catch (error) {
+        availability = {
+          status: "unavailable",
+          lastCheckedAt: new Date().toISOString(),
+          lastErrorCode: classifyAvailabilityError(error),
+        };
+        throw error;
       }
-
-      const response = await fetchWithTimeout(fetchImpl, `${baseUrl}/v1/search`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          query: input.topic,
-          max_results: input.maxSources,
-          content_types: ["web", "news"],
-          language,
-          ...(options.zone ? { zone: options.zone } : {}),
-          params: {
-            recency_days: input.recencyDays
-          }
-        })
-      }, requestTimeoutMs);
-
-      if (!response.ok) {
-        throw new Error(`AnySearch API request failed: ${response.status}`);
-      }
-
-      const payload = (await response.json()) as AnySearchResponse;
-      if (payload.code !== undefined && Number(payload.code) !== 0) {
-        throw new Error(`AnySearch API returned non-zero code: ${String(payload.message ?? payload.code)}`);
-      }
-
-      const results = normalizeResults(payload.data?.results, input.maxSources);
-      if (results.length === 0) {
-        throw new Error("AnySearch response did not include search results.");
-      }
-
-      const sources = results.map((result, index) => mapSource(result, index));
-      const requestId = typeof payload.data?.metadata?.request_id === "string" ? payload.data.metadata.request_id : undefined;
-
-      return {
-        topic: input.topic,
-        provider: "anysearch",
-        status: "ready",
-        summary: buildSummary(input.topic, results, requestId),
-        facts: results.slice(0, 3).map((result) => `${result.title}：${pickEvidence(result)}`),
-        controversies: buildControversies(input.topic, results),
-        opposingViews: buildOpposingViews(input.topic, results),
-        interviewAngles: buildInterviewAngles(input.topic, results),
-        discussionTopics: buildDiscussionTopics(input.topic, results),
-        sourceAngles: buildSourceAngles(results),
-        sources
-      };
     }
   };
+}
+
+function classifyAvailabilityError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const httpStatus = message.match(/request failed:\s*(\d{3})/i)?.[1];
+  if (httpStatus) return `http_${httpStatus}`;
+  if (/abort|timeout|timed out/i.test(message) || (error instanceof Error && error.name === "AbortError")) return "timeout";
+  if (/non-zero code/i.test(message)) return "provider_code";
+  if (/did not include search results/i.test(message)) return "empty_results";
+  return "request_error";
 }
 
 export function createAnySearchClientFromEnv(env: Record<string, string | undefined> = process.env): AnySearchClient | undefined {

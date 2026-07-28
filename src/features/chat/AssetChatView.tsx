@@ -1,7 +1,7 @@
 import { MessagesSquare, Plus, Quote, SendHorizontal, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { HeaderBlock } from "../../components/HeaderBlock";
-import type { ChatCitation, ChatSession, KnowledgeSourceType, ProductState } from "../../domain/types";
+import type { ChatCitation, ChatSession, ProductState } from "../../domain/types";
 
 interface AssetChatViewProps {
   state: ProductState;
@@ -12,17 +12,6 @@ interface AssetChatViewProps {
   selectedSessionId: string | null;
   onCitationClick: (c: ChatCitation) => void;
 }
-
-const SOURCE_TYPE_LABEL: Record<KnowledgeSourceType, string> = {
-  note: "笔记",
-  memory: "记忆",
-  theme: "主题",
-  point: "观点",
-  decision: "决策",
-  debt: "知识债",
-  transcript: "逐字稿",
-  material: "素材"
-};
 
 function sortByUpdatedDesc(sessions: ChatSession[]): ChatSession[] {
   return [...sessions].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -225,7 +214,7 @@ export function AssetChatView({
                             >
                               <Quote size={14} />
                               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                [{citation.citationIndex ?? index + 1}] ({SOURCE_TYPE_LABEL[citation.sourceType] ?? citation.sourceType}) {citation.title}
+                                [{citation.number ?? "?"}] ({citation.sourceLabel ?? "来源类型待确认"}) {citation.title}
                               </span>
                             </button>
                           </li>

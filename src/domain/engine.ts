@@ -35,6 +35,8 @@ export {
   addMemoryGraphToken, buildInterviewCard, buildInterviewContextPack,
   buildInterviewGuide,
   buildInterviewResumeCard,
+  buildInterviewResumeCards,
+  resolveInterviewTopicHint,
   collectAppliedPlaybookRules,
   computeRecordThemeIds,
   createSessionDraft, formatMemoryGraphTargetLabel,

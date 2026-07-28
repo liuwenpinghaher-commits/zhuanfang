@@ -13,10 +13,11 @@
 
 import type { ExpressionState, InteractionPreSignals } from "../domain/types";
 import { stripSpokenAsides, deriveSpeechProsody, type SpeechProsody } from "../domain/speech-text";
-import { decideCascadeTurn, shouldAcceptBargeIn } from "./cascadeTurnDecision";
+import { decideCascadeTurn } from "./cascadeTurnDecision";
 import { applyPvadDecisionBias, resolveEndpointingTuning, type EndpointingMode } from "./pvadEndpointing";
 import { assessTurnCompleteness, type Completeness } from "./turnCompleteness";
 import { createBackchannelPicker } from "./backchannel";
+import { createTurnAssembler } from "./turnAssembler";
 
 // ---------------------------------------------------------------------------
 // Public interfaces — shared between orchestrator, tests and Task 5 wiring
@@ -58,11 +59,9 @@ export interface AsrSource {
    * Test impl: returns a fixed or dynamically-set value.
    */
   getExpressionState(): ExpressionState;
-  /**
-   * Optional peak |sample| energy 0..1 from the latest speech window.
-   * Used by pvad-experimental endpointing; omitted by test doubles.
-   */
+  /** Optional peak |sample| energy 0..1 from the latest speech window (pVAD-lite). */
   getRecentEnergy?(): number;
+  hasRecentUserEnergyEvidence?(): boolean;
 }
 
 /**
@@ -111,13 +110,14 @@ export interface CascadedPipelineCallbacks {
   onUserTranscript: (text: string, isFinal: boolean) => void;
   onAssistantText: (text: string) => void;
   onError: (e: Error) => void;
-  /** Stage-2 TTFA probe: fired when first assistant audio/speak begins after user stop. */
+  /** Stage-2 TTFA probe */
   onLatency?: (sample: {
     ttfaMs: number;
     vadEndToSttMs?: number;
     sttToLlmMs?: number;
     llmTtftMs?: number;
   }) => void;
+  onTranscriptQuarantined?: (item: { text: string; reason: string }) => void;
 }
 
 /** Trace emitted for each layer-0/1/2 turn decision, for logging / UI. */
@@ -145,6 +145,9 @@ export interface ConnectCascadedPipelineOptions {
     minPauseMs?: number;
     maxWaitMs?: number;
     minBargeInMs?: number;
+    finalStabilityMs?: number;
+    echoWindowMs?: number;
+    echoSimilarityThreshold?: number;
     /** Stage-3: silence | semantic | pvad-experimental */
     endpointingMode?: EndpointingMode;
   };
@@ -160,6 +163,8 @@ export interface CascadedPipeline {
   startListening(openingText?: string): Promise<void>;
   updatePreSignals(next: InteractionPreSignals | null): void;
   interrupt(): { spokenTextSoFar: string };
+  confirmQuarantinedTranscript(text: string): void;
+  discardQuarantinedTranscript(): void;
   close(): void;
 }
 
@@ -183,15 +188,23 @@ export function connectCascadedPipeline(
     classifyEndpoint, onDecision, assessCompleteness = assessTurnCompleteness,
   } = opts;
   const {
-    minPauseMs: baseMinPauseMs = 600,
-    maxWaitMs: baseMaxWaitMs = 8000,
+    minPauseMs = 600,
+    maxWaitMs = 8000,
     minBargeInMs = 280,
+    finalStabilityMs = 0,
+    echoWindowMs = 1_200,
+    echoSimilarityThreshold = 0.8,
     endpointingMode = "semantic"
   } = decisionOpts;
 
   const pickBackchannel = createBackchannelPicker();
   let currentPreSignals: InteractionPreSignals | null = preSignals;
   let classifyAbort: AbortController | null = null;
+  const turnAssembler = createTurnAssembler({
+    stabilityWindowMs: finalStabilityMs,
+    echoWindowMs,
+    similarityThreshold: echoSimilarityThreshold
+  });
 
   let state: CascadePipelineState = "idle";
   let closed = false;
@@ -207,34 +220,23 @@ export function connectCascadedPipeline(
   // only). interrupt() returns it so the server can truncate the persisted assistant turn to
   // what the guest really heard, instead of the full reply the AI never finished saying.
   let spokenText = "";
-  let userSpeechStartedAt: number | null = null;
-  // Stage-2 TTFA probe marks
-  let markSpeechStoppedAt: number | null = null;
-  let markThinkingAt: number | null = null;
-  let markFirstAudioAt: number | null = null;
-  let pendingBargeTimer: ReturnType<typeof setTimeout> | null = null;
   let lastPlannedSpokenText = "";
   // Max-wait safety-net timer handle
   let maxWaitTimer: ReturnType<typeof setTimeout> | null = null;
+  let stableCommitTimer: ReturnType<typeof setTimeout> | null = null;
+  let surfacedQuarantineKey = "";
+
+  function surfaceQuarantine(item: { text: string; reason: string }) {
+    const key = `${item.text}\n${item.reason}`;
+    if (key === surfacedQuarantineKey) return;
+    surfacedQuarantineKey = key;
+    callbacks.onTranscriptQuarantined?.(item);
+  }
 
   function setState(next: CascadePipelineState) {
     if (state === next) return;
-    const prev = state;
     state = next;
     callbacks.onStateChange(next);
-    if (next === "speaking" && prev !== "speaking" && markSpeechStoppedAt != null) {
-      markFirstAudioAt = Date.now();
-      const ttfaMs = markFirstAudioAt - markSpeechStoppedAt;
-      const llmTtftMs =
-        markThinkingAt != null ? markFirstAudioAt - markThinkingAt : undefined;
-      callbacks.onLatency?.({
-        ttfaMs,
-        ...(llmTtftMs != null ? { llmTtftMs } : {}),
-        ...(markThinkingAt != null && markSpeechStoppedAt != null
-          ? { sttToLlmMs: Math.max(0, markThinkingAt - markSpeechStoppedAt) }
-          : {})
-      });
-    }
   }
 
   function clearMaxWaitTimer() {
@@ -247,13 +249,44 @@ export function connectCascadedPipeline(
   function resetTurn() {
     committedTranscript = "";
     partialTranscript = "";
+    turnAssembler.reset();
+    surfacedQuarantineKey = "";
     clearMaxWaitTimer();
+    if (stableCommitTimer !== null) {
+      clearTimeout(stableCommitTimer);
+      stableCommitTimer = null;
+    }
+  }
+
+  function requestStableCommit(allowCommit: boolean) {
+    if (closed || state === "thinking" || state === "speaking") return;
+    const decision = turnAssembler.decide({ atMs: Date.now(), allowCommit, questionContext: true });
+    if (decision.action === "quarantine") {
+      surfaceQuarantine({ text: decision.transcript, reason: decision.reason });
+      return;
+    }
+    if (decision.action === "commit") {
+      if (stableCommitTimer !== null) {
+        clearTimeout(stableCommitTimer);
+        stableCommitTimer = null;
+      }
+      void doRespond(decision.transcript);
+      return;
+    }
+    if (allowCommit && decision.waitMs !== undefined) {
+      if (stableCommitTimer !== null) clearTimeout(stableCommitTimer);
+      stableCommitTimer = setTimeout(() => {
+        stableCommitTimer = null;
+        requestStableCommit(true);
+      }, Math.max(0, decision.waitMs));
+    }
   }
 
   // Arm the max-wait safety net (留白 timeout). When it fires, emit a layer-0
   // decision trace (so timer-driven responses are audited too — not just the
   // synchronous heuristic ones) and respond.
   function armMaxWait(transcript: string, expressionState: ExpressionState) {
+    if (!transcript.trim()) return;
     if (maxWaitTimer !== null) return;
     maxWaitTimer = setTimeout(() => {
       maxWaitTimer = null;
@@ -262,10 +295,10 @@ export function connectCascadedPipeline(
       // mid-TTS and respond to the AI's own echoed transcript — the half-duplex
       // feedback loop the echo guard exists to prevent.
       if (!closed && !micSuppressed && state !== "thinking" && state !== "speaking") {
-        onDecision?.({ layer: 0, action: "respond", reason: "max-wait timer fired", transcript, silenceMs: baseMaxWaitMs, expressionState });
-        void doRespond();
+        onDecision?.({ layer: 0, action: "respond", reason: "max-wait timer fired", transcript, silenceMs: maxWaitMs, expressionState });
+        requestStableCommit(true);
       }
-    }, baseMaxWaitMs);
+    }, maxWaitMs);
   }
 
   // ── Echo guard (half-duplex during AI speech) ─────────────────────────────
@@ -300,44 +333,13 @@ export function connectCascadedPipeline(
    * Called when ASR fires speech_started.
    * Returns true if a barge-in was performed (was thinking/speaking).
    */
-  async function performBargeIn(): Promise<boolean> {
+  function handleSpeechStarted(): boolean {
     if (closed) return false;
-    if (state !== "thinking" && state !== "speaking") return false;
-    if (activeAbort) {
-      activeAbort.abort();
-      activeAbort = null;
-    }
-    tts.stop();
-    classifyAbort?.abort();
-    classifyAbort = null;
-    clearMaxWaitTimer();
-    setState("interrupted");
-    committedTranscript = "";
-    partialTranscript = "";
-    return true;
-  }
-
-  function handleSpeechStarted(nowMs: number = Date.now()): boolean {
-
-    if (closed) return false;
-    userSpeechStartedAt = nowMs;
     // Echo guard: while the AI's TTS is playing, the mic is hearing the AI's own
     // voice — do NOT treat it as the user barging in. (Real user barge-in during
     // the LLM "thinking" window — before any audio plays — is still honored.)
     if (micSuppressed) return false;
-    // False-barge suppression during speaking: require speech to sustain minBargeInMs
-    // before cancelling TTS (filters coughs / blips after echo guard lifts).
-    if (state === "speaking") {
-      if (pendingBargeTimer != null) clearTimeout(pendingBargeTimer);
-      pendingBargeTimer = setTimeout(() => {
-        pendingBargeTimer = null;
-        if (closed || micSuppressed || state !== "speaking") return;
-        // Re-enter as confirmed barge-in
-        void performBargeIn();
-      }, minBargeInMs);
-      return false;
-    }
-    const wasActive = state === "thinking";
+    const wasActive = state === "thinking" || state === "speaking";
     if (wasActive) {
       // Abort in-flight LLM call
       if (activeAbort) {
@@ -360,6 +362,7 @@ export function connectCascadedPipeline(
       // Normal turn boundaries are cleared by resetTurn() after doRespond() instead.
       committedTranscript = "";
       partialTranscript = "";
+      turnAssembler.reset();
     }
     return wasActive;
   }
@@ -383,8 +386,8 @@ export function connectCascadedPipeline(
       silenceMs,
       completeness,
       ...(energy != null ? { recentEnergy: energy } : {}),
-      baseMinPauseMs,
-      baseMaxWaitMs
+      baseMinPauseMs: minPauseMs,
+      baseMaxWaitMs: maxWaitMs
     });
     const rawDecision = decideCascadeTurn({
       expressionState,
@@ -393,15 +396,12 @@ export function connectCascadedPipeline(
       minPauseMs: tuning.minPauseMs,
       maxWaitMs: tuning.maxWaitMs
     });
+    const biasedAction = applyPvadDecisionBias(rawDecision.action, tuning);
     const decision = {
       ...rawDecision,
-      action: applyPvadDecisionBias(rawDecision.action, tuning),
-      reason:
-        rawDecision.action !== applyPvadDecisionBias(rawDecision.action, tuning)
-          ? `${rawDecision.reason} + ${tuning.label} bias`
-          : rawDecision.reason
+      action: biasedAction,
+      reason: biasedAction != rawDecision.action ? `${rawDecision.reason} + ${tuning.label} bias` : rawDecision.reason
     };
-
     onDecision?.({
       // layer 0 = VAD max-wait timeout fired synchronously; layer 1 = heuristic.
       layer: silenceMs >= tuning.maxWaitMs ? 0 : 1,
@@ -416,8 +416,10 @@ export function connectCascadedPipeline(
     if (decision.action === "backchannel") {
       clearMaxWaitTimer();
       const text = pickBackchannel(expressionState, currentPreSignals?.depthDirection?.guidance);
+      const startedAtMs = Date.now();
       suppressMic();
       try { await tts.speak([text]); } catch { /* stopped */ }
+      turnAssembler.noteTtsPlayback({ text, startedAtMs, endedAtMs: Date.now() });
       releaseMicAfterGuard();
       return;
     }
@@ -444,25 +446,29 @@ export function connectCascadedPipeline(
       } finally {
         if (classifyAbort?.signal === sig) classifyAbort = null;
       }
-      if (done) { await doRespond(); }
+      if (done) { requestStableCommit(true); }
       else { armMaxWait(transcript, expressionState); }
       return;
     }
 
     // action === "respond"
     clearMaxWaitTimer();
-    await doRespond();
+    requestStableCommit(true);
   }
 
   // ── Core respond flow ──────────────────────────────────────────────────────
-  async function doRespond() {
+  async function doRespond(authoritativeTranscript?: string) {
     if (closed) return;
     if (state === "thinking" || state === "speaking") return;
 
-    const fullTranscript = (committedTranscript + partialTranscript).trim();
+    const fullTranscript = authoritativeTranscript?.trim() || (committedTranscript + partialTranscript).trim();
+    if (!fullTranscript) {
+      resetTurn();
+      return;
+    }
     callbacks.onUserTranscript(fullTranscript, true);
 
-    markThinkingAt = Date.now(); setState("thinking");
+    setState("thinking");
     const ctrl = new AbortController();
     activeAbort = ctrl;
 
@@ -513,11 +519,13 @@ export function connectCascadedPipeline(
       callbacks.onAssistantText(filler);
       setState("speaking");
       suppressMic();
+      const startedAtMs = Date.now();
       try {
         await tts.speak([filler]);
       } catch {
         /* TTS stopped (barge-in) — handled by barge-in path */
       } finally {
+        turnAssembler.noteTtsPlayback({ text: filler, startedAtMs, endedAtMs: Date.now() });
         releaseMicAfterGuard();
       }
       if (!closed && (state as string) === "speaking") setState("listening");
@@ -529,8 +537,9 @@ export function connectCascadedPipeline(
 
     setState("speaking");
     suppressMic();
-    spokenText = ""; // set to full text on clean finish; interrupt falls back to lastPlannedSpokenText
-    lastPlannedSpokenText = spokenSource;
+    const ttsStartedAtMs = Date.now();
+    spokenText = ""; // set to the full spoken text ONLY if the utterance finishes uninterrupted
+    lastPlannedSpokenText = "";
     try {
       // ONE batch call: the TTS sink streams every sentence gaplessly off a single scheduling
       // clock. Calling speak() per-sentence resets that clock and waits for each sentence to
@@ -538,6 +547,7 @@ export function connectCascadedPipeline(
       // (audible "断"). So we hand it all sentences at once and only track spoken text coarsely:
       // a manual interrupt happens DURING playback, so spokenText stays "" (conservative — we
       // never claim words we can't confirm were heard); a clean finish records the full text.
+      lastPlannedSpokenText = spokenSource;
       await tts.speak(sentences, undefined, prosody);
       if (!closed && !ctrl.signal.aborted) {
         spokenText = spokenSource;
@@ -545,6 +555,7 @@ export function connectCascadedPipeline(
     } catch {
       // TTS stopped (barge-in) — already handled; state will be "interrupted"/"listening"
     } finally {
+      turnAssembler.noteTtsPlayback({ text: spokenSource, startedAtMs: ttsStartedAtMs, endedAtMs: Date.now() });
       releaseMicAfterGuard();
     }
 
@@ -561,6 +572,16 @@ export function connectCascadedPipeline(
   asr.register({
     onTranscriptDelta(text: string, isFinal: boolean) {
       if (closed || micSuppressed) return; // ignore the AI's own echoed transcription
+      const assembled = turnAssembler.ingest({
+        text,
+        isFinal,
+        atMs: Date.now(),
+        hasUserEnergyEvidence: asr.hasRecentUserEnergyEvidence?.() ?? true
+      });
+      if (assembled.action === "quarantine") {
+        surfaceQuarantine({ text: assembled.transcript, reason: assembled.reason });
+        return;
+      }
       if (isFinal) {
         // Finalized segment: commit it and clear the in-progress partial.
         committedTranscript += text;
@@ -600,7 +621,9 @@ export function connectCascadedPipeline(
       if (openingText && openingText.trim()) {
         setState("speaking");
         suppressMic();
+        const startedAtMs = Date.now();
         try { await tts.speak([openingText.trim()]); } catch { /* stopped */ }
+        turnAssembler.noteTtsPlayback({ text: openingText.trim(), startedAtMs, endedAtMs: Date.now() });
         releaseMicAfterGuard();
         if (!closed) setState("listening");
       }
@@ -618,15 +641,26 @@ export function connectCascadedPipeline(
       tts.stop();
       clearMaxWaitTimer();
       setState("interrupted");
-      // Prefer confirmed progress; if still empty mid-batch-TTS, keep planned text non-empty
-      // so truncateAssistantTurn does not wipe the assistant turn.
       return { spokenTextSoFar: spokenText || lastPlannedSpokenText };
     },
 
+    confirmQuarantinedTranscript(text: string) {
+      turnAssembler.confirmQuarantined(text, Date.now());
+      surfacedQuarantineKey = "";
+      committedTranscript = text.trim();
+      partialTranscript = "";
+      requestStableCommit(true);
+    },
+
+    discardQuarantinedTranscript() {
+      resetTurn();
+      callbacks.onUserTranscript("", false);
+    },
+
     close() {
-    if (pendingBargeTimer != null) { clearTimeout(pendingBargeTimer); pendingBargeTimer = null; }
       closed = true;
       clearMaxWaitTimer();
+      if (stableCommitTimer !== null) { clearTimeout(stableCommitTimer); stableCommitTimer = null; }
       if (echoGuardTimer !== null) { clearTimeout(echoGuardTimer); echoGuardTimer = null; }
       micSuppressed = false;
       classifyAbort?.abort(); classifyAbort = null;

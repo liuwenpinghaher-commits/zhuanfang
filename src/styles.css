@@ -282,6 +282,43 @@ select:focus-visible {
   flex: 0 0 auto;
 }
 
+.resume-session-picker,
+.resume-session-picker .resume-banner-main {
+  width: 100%;
+}
+
+.resume-session-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.resume-session-option {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 11px 12px;
+  text-align: left;
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-base);
+  cursor: pointer;
+}
+
+.resume-session-option:hover,
+.resume-session-option:focus-visible {
+  border-color: var(--action-primary, #7c5cff);
+}
+
+.resume-session-option small {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .sync-conflict-banner {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1125,6 +1162,46 @@ select:focus-visible {
   line-height: 1.5;
   color: var(--text-primary);
   min-height: 20px;
+}
+
+.voice-review {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent-amber) 55%, var(--border-default));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent-amber) 8%, var(--surface-raised));
+}
+
+.voice-review-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.voice-review-heading span,
+.voice-review small {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.voice-review textarea {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-base);
+  color: var(--text-primary);
+  padding: 9px 10px;
+  font: inherit;
+}
+
+.voice-review-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 

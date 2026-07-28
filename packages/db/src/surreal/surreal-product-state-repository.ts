@@ -202,6 +202,79 @@ export class PersistUnavailableError extends Error {
 /** persist 失败后的后台恢复重试间隔。 */
 const PERSIST_RECOVERY_RETRY_MS = 30_000;
 
+/** 完整导入包中同一 turn id 出现了互相矛盾的内容/归属。只暴露 id，不把逐字稿写入错误或日志。 */
+export class GovernanceImportTurnConflictError extends Error {
+  statusCode = 422;
+  code = "IMPORT_TURN_CONFLICT";
+  constructor(turnId: string) {
+    super(`导入包中的 turn ${turnId} 存在内容或会话归属冲突，已整体拒绝。`);
+    this.name = "GovernanceImportTurnConflictError";
+  }
+}
+
+/** 完整导入包中的 evidence anchor 找不到同会话 turn；拒绝恢复假来源。 */
+export class GovernanceImportProvenanceError extends Error {
+  statusCode = 422;
+  code = "IMPORT_PROVENANCE_MISSING";
+  constructor(turnId: string) {
+    super(`导入包中的来源锚点 turn ${turnId} 不存在或会话归属不一致，已整体拒绝。`);
+    this.name = "GovernanceImportProvenanceError";
+  }
+}
+
+/**
+ * 为治理 import 构造仅供 turn/edge 持久化的完整投影。
+ *
+ * hot state 继续保持 offloaded（session.turns=[]）；raw material 中的 turns 只临时挂回对应
+ * session，使同一事务能够 UPSERT turn 并 RELATE part_of/derived_from。没有对应 hot session 的
+ * legacy raw material 仍照常恢复到冷层，但不会伪造 session 节点。
+ */
+function buildGovernanceProvenanceProjection(nextHot: ProductState, cold: GovernanceColdSpec): ProductState {
+  if (cold.rawMaterial?.action !== "replace" || cold.rawMaterial.materials.length === 0) return nextHot;
+
+  type Turn = InterviewRawMaterial["turns"][number];
+  const signatures = new Map<string, string>();
+  const rawTurnsBySession = new Map<string, Turn[]>();
+
+  const register = (turn: Turn, sessionId: string): Turn => {
+    if (turn.sessionId && turn.sessionId !== sessionId) throw new GovernanceImportTurnConflictError(turn.id);
+    const normalized = { ...turn, sessionId };
+    const signature = stableStringify(normalized);
+    const existing = signatures.get(turn.id);
+    if (existing !== undefined && existing !== signature) throw new GovernanceImportTurnConflictError(turn.id);
+    signatures.set(turn.id, signature);
+    return normalized;
+  };
+
+  for (const session of nextHot.sessions) {
+    for (const turn of session.turns ?? []) register(turn, session.id);
+  }
+  for (const material of cold.rawMaterial.materials) {
+    const bucket = rawTurnsBySession.get(material.sessionId) ?? [];
+    const existingIds = new Set(bucket.map((turn) => turn.id));
+    for (const turn of material.turns) {
+      const normalized = register(turn, material.sessionId);
+      if (!existingIds.has(normalized.id)) {
+        bucket.push(normalized);
+        existingIds.add(normalized.id);
+      }
+    }
+    rawTurnsBySession.set(material.sessionId, bucket);
+  }
+
+  let changed = false;
+  const sessions = nextHot.sessions.map((session) => {
+    const coldTurns = rawTurnsBySession.get(session.id);
+    if (!coldTurns?.length) return session;
+    const hotIds = new Set((session.turns ?? []).map((turn) => turn.id));
+    const missing = coldTurns.filter((turn) => !hotIds.has(turn.id));
+    if (missing.length === 0) return session;
+    changed = true;
+    return { ...session, turns: [...(session.turns ?? []), ...missing] };
+  });
+  return changed ? { ...nextHot, sessions } : nextHot;
+}
+
 /**
  * N-03/N-05:治理并发共享上下文。治理事务(热态 + 三冷层)与冷层直读直写共用**同一个嵌入式连接**
  * (见 createSurrealStores 注释),因此必须共享同一"治理在途"标志与"治理代际",否则批次 A 的 M1
@@ -287,7 +360,7 @@ export interface SurrealRepoHandle extends ProductStateRepository {
 /** 方案二审计报告:missing=期望有而 DB 无(投影漏写),unexpected=DB 有而期望无(漏删/带外写入)。
  *  样本各截前 20 条(edgeKey 形如 `belongs_to_theme|point:pt_1->theme:th_1`),计数为全量。
  *  danglingProvenanceCount:④ 根修的对偶——内存 anchor 指向已被 A5 级联删除的 turn,持久层
- *  按 DB 真相未投影该 derived_from(非漂移,turn 真的不存在),在此单列而不进 missing。 */
+ *  按 DB 真相未投影该 derived_from。它单列而不进 missing,但仍令 ok=false，防审计假绿。 */
 export interface GraphConsistencyReport {
   ok: boolean;
   auditedEdgeTables: string[];
@@ -483,13 +556,16 @@ export async function buildSurrealProductStateRepositoryOnConnection(
   async function executeGovernanceTransaction(hot: GovernanceHotSpec, cold: GovernanceColdSpec): Promise<ProductState> {
     const nextHot = hot.kind === "reset" ? computeResetNextState() : computeReplaceNextState(hot.next, { ...(hot.expectedRevision !== undefined ? { expectedRevision: hot.expectedRevision } : {}) });
 
+    // 完整备份把已降冷 turns 放在 raw_material，而 hot session.turns 保持为空。治理导入必须在
+    // 同一事务中把这些 turns 投影成图节点/边，但不能把它们重新塞回 session 记录或内存热态。
+    // 因此 projection 只供 buildPersistStatements 的 turn/edge 阶段消费；节点、单例、流水和
+    // 提交后的 state/lastPersisted 仍严格使用 nextHot。
+    const provenanceProjection = buildGovernanceProvenanceProjection(nextHot, cold);
+
     // ① 热态 diff 语句(相对执行时刻的 lastPersisted 基线;含 keepOnlyLiveTurnProvenance 的 async 预查)。
-    // P0 import 溯源:冷层 raw_material 在同事务 replace 时,把降冷 turns 补进 turn 表,避免
-    // derived_from 因端点不存在被 keepOnlyLiveTurnProvenance 丢弃。
-    const coldTurnSources =
-      cold.rawMaterial?.action === "replace" ? cold.rawMaterial.materials : undefined;
     const { surql: hotSurql, vars } = await buildPersistStatements(db, lastPersisted, nextHot, {
-      coldTurnSources,
+      provenanceProjection,
+      rebuildProvenance: cold.rawMaterial?.action === "replace",
     });
 
     // ② 冷层语句(cold_ 前缀避免与热态 vars 撞名)。DELETE 全表 = wipe;replace = 全删 + 逐条 UPSERT。
@@ -950,8 +1026,8 @@ async function runGraphAudit(db: Surreal, baseline: ProductState): Promise<Graph
     // 有悬空溯源即 fail-closed(仍单列 danglingProvenanceCount 便于诊断)。
     ok:
       missingInDb.length === 0 && unexpectedInDb.length === 0 &&
-      nodeMissingInDb.length === 0 && nodeUnexpectedInDb.length === 0 &&
-      danglingProvenanceCount === 0,
+      danglingProvenanceCount === 0 &&
+      nodeMissingInDb.length === 0 && nodeUnexpectedInDb.length === 0,
     auditedEdgeTables: [...AUDITED_EDGE_TABLES],
     expectedCount: expected.size,
     actualCount: actual.size,
@@ -1036,14 +1112,15 @@ async function persist(db: Surreal, prev: ProductState, next: ProductState): Pro
 }
 
 /** R2b:生成 prev→next 的热态 diff 语句(不含 BEGIN/COMMIT),供 persist 与治理事务共用。
- *  返回的 surql 是若干以 `;\n` 结尾的语句;vars 为其绑定参数。调用方自行包裹事务边界。
- *  opts.coldTurnSources:import 同事务恢复的冷层 raw_material;其 turns 并入 turn UPSERT 与 nextTurnIds。 */
+ *  返回的 surql 是若干以 `;\n` 结尾的语句;vars 为其绑定参数。调用方自行包裹事务边界。 */
 async function buildPersistStatements(
   db: Surreal,
   prev: ProductState,
   next: ProductState,
-  opts?: { coldTurnSources?: InterviewRawMaterial[] },
+  options: { provenanceProjection?: ProductState; rebuildProvenance?: boolean } = {},
 ): Promise<{ surql: string; vars: Record<string, unknown> }> {
+  const provenanceProjection = options.provenanceProjection ?? next;
+  const rebuildProvenance = options.rebuildProvenance === true;
   let surql = "";
   const vars: Record<string, unknown> = {};
   let i = 0;
@@ -1082,20 +1159,24 @@ async function buildPersistStatements(
   //    故 turn 永不删:只投影 upsert。`void removeIds` 显式弃用,避免 noUnusedLocals 报错。
   const nextTurnIds = new Set<string>();
   {
-    const hotTurns = turnRecordsOf(next) as Array<Record<string, unknown> & { id: string }>;
-    const coldTurns = opts?.coldTurnSources?.length
-      ? (turnRecordsFromRawMaterials(opts.coldTurnSources) as Array<Record<string, unknown> & { id: string }>)
-      : [];
-    const byId = new Map<string, Record<string, unknown> & { id: string }>();
-    for (const t of hotTurns) byId.set(String(t.id), t);
-    for (const t of coldTurns) byId.set(String(t.id), t); // cold wins on same id
-    const nextTurns = [...byId.values()];
+    const nextTurns = turnRecordsOf(provenanceProjection) as Array<Record<string, unknown> & { id: string }>;
     for (const t of nextTurns) nextTurnIds.add(String(t.id));
-    const { upsert, removeIds } = diffById(
+    const diff = diffById(
       turnRecordsOf(prev) as Array<Record<string, unknown> & { id: string }>,
       nextTurns,
     );
-    void removeIds;
+    // 完整 raw-material replace 是目标快照恢复，不是普通 hot diff。保留同 id 避开 Surreal 3.x
+    // 同事务 delete→recreate 陷阱，删除不在备份中的旧 turn，再全量 UPSERT 目标 turns。
+    if (rebuildProvenance) {
+      if (nextTurns.length > 0) {
+        vars.import_turn_keep = nextTurns.map((turn) => new RecordId("turn", turn.id));
+        surql += "DELETE turn WHERE id NOT IN $import_turn_keep;\n";
+      } else {
+        surql += "DELETE turn;\n";
+      }
+    }
+    const upsert = rebuildProvenance ? nextTurns : diff.upsert;
+    void diff.removeIds;
     for (const t of upsert) {
       const tv = `t${i++}`;
       vars[tv] = fillUpsertDefaults("turn", { ...t });
@@ -1106,7 +1187,34 @@ async function buildPersistStatements(
 
   // 3) 边:diffEdges → DELETE 移除(WHERE in/out)+ RELATE 新增
   {
-    const { added: addedRaw, removed } = diffEdges(collectEdges(prev), collectEdges(next));
+    const targetEdges = collectEdges(provenanceProjection);
+    const edgeDiff = diffEdges(collectEdges(prev), targetEdges);
+    let addedRaw = edgeDiff.added;
+    let removed = edgeDiff.removed;
+    if (rebuildProvenance) {
+      const importedTurnSession = new Map(
+        (turnRecordsOf(provenanceProjection) as Array<Record<string, unknown> & { id: string }>).map((turn) => [
+          String(turn.id),
+          String(turn.sessionId ?? ""),
+        ]),
+      );
+      for (const edge of targetEdges) {
+        if (edge.edge !== "derived_from" || edge.toTable !== "turn") continue;
+        const targetSession = importedTurnSession.get(edge.toId);
+        if (!targetSession || targetSession !== edge.data?.provenance.sessionId) {
+          throw new GovernanceImportProvenanceError(edge.toId);
+        }
+      }
+      // 重导同一备份也必须修复数据库中已漂移的来源边，不能依赖 prev→next 是否发生领域变化。
+      // 在同一事务内清空两张 provenance 边表，再按目标投影全量重建；其他业务边仍走增量 diff。
+      surql += "DELETE derived_from;\nDELETE part_of;\n";
+      const isProvenance = (edge: EdgeSpec) => edge.edge === "derived_from" || edge.edge === "part_of";
+      addedRaw = [
+        ...addedRaw.filter((edge) => !isProvenance(edge)),
+        ...targetEdges.filter(isProvenance),
+      ];
+      removed = removed.filter((edge) => !isProvenance(edge));
+    }
     // ④ 根修(H1×A5 碰撞,E2E 复现+diff 形状诊断指认):derived_from 的 turn 端点在
     // "会话被真正删除(reset/purge,A5 级联按隐私语义删其 turn)后,其资产又被重新引入
     // (seed/备份导入,turns 已降冷不随行)"时不存在 → RELATE ENFORCED 拒 → 整事务确定性

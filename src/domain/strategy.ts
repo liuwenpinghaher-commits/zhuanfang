@@ -223,11 +223,13 @@ export function decideInterviewStrategy(session: InterviewSession, userText: str
   const trace = session.strategyTrace ?? [];
   const perspectiveShiftCount = trace.filter((item) => item.strategy === "perspective_shift").length;
   const nextPerspective = session.guide.recommendedPerspectives[perspectiveShiftCount];
-  const referencedMemory = pickReferencedMemory(session, userText);
+  const selectedReference = pickStructuredReference(session, userText);
   const maxFollowUpDepth = Math.max(1, session.enginePolicy?.maxFollowUpDepth ?? 4);
   const base = {
     turnIndex: previousUserTurns + 1,
-    referencedMemory
+    ...(selectedReference
+      ? { referencedMemory: selectedReference.text, references: [selectedReference] }
+      : {})
   };
 
   if (
@@ -325,12 +327,41 @@ export function decideInterviewStrategy(session: InterviewSession, userText: str
   }
 
   if (previousUserTurns >= Math.max(3, session.guide.recommendedPerspectives.length + 4)) {
+    if (trace.at(-1)?.strategy === "synthesis") {
+      return {
+        ...base,
+        strategy: "premise_challenge",
+        label: "挑战前提",
+        reason: "上一轮已经完成阶段总结；为避免重复收束，转而验证总结中的关键前提。",
+        depth: "meta"
+      };
+    }
     return {
       ...base,
       strategy: "synthesis",
       label: "阶段总结",
       reason: "已有多轮材料，先收束为可验证假设。",
       depth: "synthesis"
+    };
+  }
+
+  if (trace.at(-1)?.strategy === "mechanism_probe") {
+    return {
+      ...base,
+      strategy: "premise_challenge",
+      label: "挑战前提",
+      reason: "上一轮已经追问机制；为避免重复同一种问法，改为检查当前判断的隐含前提。",
+      depth: "mechanism"
+    };
+  }
+
+  if (trace.at(-1)?.strategy === "premise_challenge") {
+    return {
+      ...base,
+      strategy: "concrete_example_probe",
+      label: "索要具体时刻",
+      reason: "上一轮已经挑战前提；为避免重复抽象追问，回到一个可核验的具体时刻。",
+      depth: "surface"
     };
   }
 
@@ -399,14 +430,10 @@ function isAbstractInterviewClaim(text: string) {
   const hasConcreteSignal = concreteSignals.some((signal) => text.includes(signal));
   return hasAbstractSignal && !hasConcreteSignal;
 }
-function pickReferencedMemory(session: InterviewSession, userText: string) {
+function pickStructuredReference(session: InterviewSession, userText: string) {
   const anchor = extractAnchor(userText);
-  return (
-    session.guide.relevantMemories.find((memory) => memory.includes(anchor)) ??
-    session.card.historyReferences.find((memory) => memory.includes(anchor)) ??
-    session.guide.relevantMemories[0] ??
-    session.card.historyReferences[0]
-  );
+  const references = session.guide.availableReferences ?? [];
+  return references.find((reference) => reference.text.includes(anchor)) ?? references[0];
 }
 function qualityActionPriorityRank(action: QualityRemediationAction) {
   return action.priority === "high" ? 3 : action.priority === "medium" ? 2 : 1;

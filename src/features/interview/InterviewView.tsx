@@ -17,6 +17,7 @@ interface InterviewViewProps {
   audioLevel: number;
   voiceStatus: "idle" | "connecting" | "listening" | "speaking" | "interrupted";
   liveUserTranscript: string;
+  voiceReviewItem?: { text: string; reason: string } | null;
   voiceTransport: "webrtc" | "websocket" | "livekit" | null;
   onInput: (value: string) => void;
   onStart: (mode?: InterviewMode, searchBriefId?: string) => void;
@@ -25,7 +26,11 @@ interface InterviewViewProps {
   onControl: (action: InterviewControlAction) => void;
   onToggleRecording: () => void | Promise<void>;
   onInterrupt: () => void;
+  onVoiceReviewText?: (text: string) => void;
+  onConfirmVoiceReview?: () => void;
+  onDiscardVoiceReview?: () => void;
   submitting?: boolean;
+  retryAvailable?: boolean;
   starting?: boolean;
   finishing?: boolean;
   guidanceState?: {
@@ -46,6 +51,7 @@ export function InterviewView({
   audioLevel,
   voiceStatus,
   liveUserTranscript,
+  voiceReviewItem,
   voiceTransport,
   onInput,
   onStart,
@@ -54,7 +60,11 @@ export function InterviewView({
   onControl,
   onToggleRecording,
   onInterrupt,
+  onVoiceReviewText,
+  onConfirmVoiceReview,
+  onDiscardVoiceReview,
   submitting,
+  retryAvailable,
   starting,
   finishing,
   guidanceState
@@ -195,6 +205,24 @@ export function InterviewView({
               <p>{liveUserTranscript}</p>
             </div>
           )}
+          {voiceReviewItem && (
+            <div className="voice-review" data-testid="voice-review" role="alert">
+              <div className="voice-review-heading">
+                <strong>等待确认的转写</strong>
+                <span>可能混入刚才的 AI 语音，尚未写入专访</span>
+              </div>
+              <textarea
+                aria-label="等待确认的语音转写"
+                value={voiceReviewItem.text}
+                onChange={(event) => onVoiceReviewText?.(event.target.value)}
+              />
+              <small>{voiceReviewItem.reason}</small>
+              <div className="voice-review-actions">
+                <button type="button" data-action="discard" onClick={onDiscardVoiceReview}>丢弃</button>
+                <button type="button" data-action="confirm" onClick={onConfirmVoiceReview} disabled={!voiceReviewItem.text.trim()}>确认并提交</button>
+              </div>
+            </div>
+          )}
           {guidanceState?.active && guidanceState.text && (
             <div className="guidance-indicator" aria-live="polite">
               <span className="guidance-badge">
@@ -270,7 +298,15 @@ export function InterviewView({
                     )}
                   </div>
                   <p>{turn.content}</p>
-                  {turn.referencedMemory && <small>引用历史：{turn.referencedMemory}</small>}
+                  {turn.references && turn.references.length > 0 ? (
+                    <div className="turn-references" aria-label="本轮引用">
+                      {turn.references.map((reference) => (
+                        <small key={reference.id}>引用 · {reference.sourceLabel}：{reference.text}</small>
+                      ))}
+                    </div>
+                  ) : turn.referencedMemory ? (
+                    <small>引用：未提供结构化引用</small>
+                  ) : null}
                 </article>
               );
             })}
@@ -292,7 +328,7 @@ export function InterviewView({
                 {finishing ? "正在生成档案…" : "结束并生成档案"}
               </button>
               <button className="primary-action" type="submit" disabled={submitting || !input.trim()} aria-busy={submitting}>
-                <ChevronRight size={18} />{submitting ? "思考中…" : "提交表达"}
+                <ChevronRight size={18} />{submitting ? "思考中…" : retryAvailable ? "重试本轮" : "提交表达"}
               </button>
             </div>
           </form>

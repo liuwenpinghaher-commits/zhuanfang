@@ -3,6 +3,7 @@ import type { InteractionPreSignals, InterviewControlAction, InterviewSession, I
 import { INTERVIEWER_CRAFT_RULES } from "../../../../src/domain/interviewer-craft";
 import { buildAppliedPlaybookRulesBlock, buildBoundariesBlock, buildCorrectionsBlock } from "../../../../src/domain/voice-instructions";
 import { sanitizeExternalMaterialList } from "../../../../src/domain/utils";
+import { resolveRequestTimeoutMs } from "../request-timeout";
 
 export const BAILIAN_DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 export const BAILIAN_DEFAULT_AUDIO_BASE_URL = "https://dashscope.aliyuncs.com";
@@ -169,6 +170,7 @@ interface BailianCharacterInterviewClientOptions {
   apiKey: string;
   baseUrl?: string;
   model?: string;
+  timeoutMs?: number;
   fetchImpl?: FetchLike;
 }
 
@@ -434,6 +436,7 @@ export function createBailianCharacterInterviewClient(
     apiKey: options.apiKey,
     baseUrl: options.baseUrl,
     model,
+    timeoutMs: options.timeoutMs,
     fetchImpl: options.fetchImpl
   });
 
@@ -752,7 +755,8 @@ export function createBailianCharacterInterviewClientFromEnv(
   return createBailianCharacterInterviewClient({
     apiKey,
     baseUrl: env.BAILIAN_BASE_URL,
-    model: env.BAILIAN_CHARACTER_MODEL ?? BAILIAN_ROLE_PLAY_MODEL
+    model: env.BAILIAN_CHARACTER_MODEL ?? BAILIAN_ROLE_PLAY_MODEL,
+    timeoutMs: resolveRequestTimeoutMs(env, "BAILIAN_INTERVIEW_REQUEST_TIMEOUT_MS")
   });
 }
 
@@ -961,6 +965,15 @@ export function buildCharacterSystemPrompt(
   // 策略引擎为本轮选定的动作方向 —— 作为软指引注入，让策略真正驱动 LLM 提问，
   // 而不是事后只贴个标签。要顺着用户刚说的具体内容自然展开，不报动作名。
   if (strategyDecision) {
+    const selectedReferences = (strategyDecision.references ?? []).slice(0, 2);
+    if (selectedReferences.length > 0) {
+      ensureReferenceGuard();
+      lines.push(
+        `【本轮选定引用】${selectedReferences
+          .map((reference) => `${reference.id}｜${reference.sourceLabel}｜${sanitizeExternalMaterialList([reference.text], "")[0] ?? "引用内容已清洗"}`)
+          .join("；")}。如果本轮引用历史，只能引用这里列出的证据。`
+      );
+    }
     const perspectiveHint = strategyDecision.perspective ? `，可引入「${strategyDecision.perspective}」视角` : "";
     const blindspotHint = strategyDecision.blindspotConcept ? `，留意盲区「${strategyDecision.blindspotConcept}」` : "";
     lines.push(

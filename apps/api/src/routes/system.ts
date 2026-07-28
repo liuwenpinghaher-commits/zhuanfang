@@ -34,6 +34,9 @@ interface SystemCapability {
   requiredEnv: string[];
   model?: string;
   transport?: string;
+  configured?: boolean;
+  availability?: "unknown" | "available" | "unavailable";
+  lastErrorCode?: string;
   lastCheckedAt: string;
 }
 
@@ -401,6 +404,7 @@ export async function registerSystemRoutes(
     const dashscopeKeyConfigured = Boolean(env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY);
     const anySearchKeyConfigured = Boolean(env.ANYSEARCH_API_KEY);
     const anySearchAnonymous = env.ANYSEARCH_ALLOW_ANONYMOUS === "true";
+    const anySearchAvailability = options.anySearchClient?.getAvailability?.() ?? { status: "unknown" as const };
     const realtimeEndpointConfigured = Boolean(env.BAILIAN_REALTIME_WEBRTC_ENDPOINT);
     const realtimeTransport = env.BAILIAN_REALTIME_TRANSPORT === "webrtc" ? "webrtc" : "websocket";
 
@@ -448,15 +452,26 @@ export async function registerSystemRoutes(
         id: "anysearch",
         kind: "search",
         label: "AnySearch",
-        status: options.anySearchClient ? "ready" : "needs-key",
+        status: !options.anySearchClient
+          ? "needs-key"
+          : anySearchAvailability.status === "available"
+            ? "ready"
+            : "degraded",
         active: state.systemConfig.search.activeProvider === "anysearch",
-        detail: options.anySearchClient
-          ? anySearchKeyConfigured
-            ? "已配置 ANYSEARCH_API_KEY，可通过 Product API 调用 AnySearch /v1/search。"
-            : "已显式启用 AnySearch 匿名模式，额度和并发受匿名策略限制。"
-          : "ANYSEARCH_API_KEY 未配置，AnySearch 将降级为本地可复核素材。",
+        detail: !options.anySearchClient
+          ? "ANYSEARCH_API_KEY 未配置，AnySearch 将降级为本地可复核素材。"
+          : anySearchAvailability.status === "available"
+            ? "AnySearch 已配置，且最近一次真实请求成功。"
+            : anySearchAvailability.status === "unavailable"
+              ? `AnySearch 已配置，但最近一次真实请求失败（${anySearchAvailability.lastErrorCode ?? "request_error"}）。`
+              : anySearchKeyConfigured
+                ? "AnySearch API Key 已配置，但尚未经过真实请求验证。"
+                : "AnySearch 匿名模式已启用，但尚未经过真实请求验证。",
         requiredEnv: anySearchAnonymous ? ["ANYSEARCH_ALLOW_ANONYMOUS"] : ["ANYSEARCH_API_KEY"],
-        lastCheckedAt: generatedAt
+        configured: Boolean(options.anySearchClient),
+        availability: options.anySearchClient ? anySearchAvailability.status : "unavailable",
+        ...(anySearchAvailability.lastErrorCode ? { lastErrorCode: anySearchAvailability.lastErrorCode } : {}),
+        lastCheckedAt: anySearchAvailability.lastCheckedAt ?? generatedAt
       },
       {
         id: "bailian-cosyvoice",
