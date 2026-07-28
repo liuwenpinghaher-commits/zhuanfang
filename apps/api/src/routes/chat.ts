@@ -8,7 +8,8 @@ import {
   retrieveAndRankKnowledge
 } from "../../../../src/domain/knowledge";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
-import { recordRecallEvent } from "../observability/runtime-metrics";
+import { recordGroundingEvent, recordRecallEvent } from "../observability/runtime-metrics";
+import { decideGroundingMode } from "../../../../src/domain/retrieval";
 import type { BailianChatClient, BailianEmbeddingClient } from "../providers/bailian";
 import type { KnowledgeIndexRepository } from "../knowledge-index-repository";
 import type { ProductStateRepository } from "../product-state-repository"
@@ -36,6 +37,7 @@ interface ChatResponse {
   sessionId: string;
   answer: string;
   citations: ChatCitation[];
+  groundingMode: "grounded" | "partial" | "refused";
 }
 
 /**
@@ -199,6 +201,17 @@ export async function registerChatRoutes(
         }));
     }
 
+    const groundingMode = decideGroundingMode({
+      rejected: recallRejected,
+      retrievedCount: retrieved.length,
+      citationCount: citations.length
+    });
+    recordGroundingEvent({
+      capability: "chat",
+      mode: groundingMode,
+      citationCount: citations.length
+    });
+
     // ── 追加 user+assistant 并持久化（重读 latest，经写门）──
     const commitChat = async () => {
       let latest = productRepo.getState();
@@ -225,7 +238,8 @@ export async function registerChatRoutes(
       state: committed.state,
       sessionId: committed.sessionId,
       answer,
-      citations
+      citations,
+      groundingMode
     } satisfies ChatResponse);
   });
 }

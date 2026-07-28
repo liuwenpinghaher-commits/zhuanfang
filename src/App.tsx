@@ -65,6 +65,8 @@ import { CACHE_CORRUPTION_MARKER_KEY, isPristineDemoState, loadProductState, nor
 import { readOfflineOutbox, upsertOfflineOutbox, type OfflineOutbox } from "./domain/offline-sync";
 import { useOfflineProductSync } from "./hooks/useOfflineProductSync";
 import { useCascadeVoiceMetrics } from "./hooks/useCascadeVoiceMetrics";
+import { useInterruptedUtteranceStash } from "./hooks/useInterruptedUtteranceStash";
+import { useInterviewSessionShell } from "./hooks/useInterviewSessionShell";
 import { shouldStageLocalBeforeAdopt } from "./domain/adopt-stage";
 import type {
   AssetStatus,
@@ -149,9 +151,26 @@ export default function App() {
   const [runtimeConfig, setRuntimeConfig] = useState<SystemConfigResponse | null>(null);
   const [runtimeConfigSaving, setRuntimeConfigSaving] = useState(false);
   const [view, setView] = useState<View>("home");
-  const [session, setSession] = useState<InterviewSession | null>(null);
+  const interviewShell = useInterviewSessionShell();
+  const {
+    session,
+    setSession,
+    pendingMode,
+    setPendingMode,
+    startingInterview,
+    setSubmittingTurn,
+    submittingTurn,
+    finishingInterview,
+    startingRef,
+    finishingRef,
+    togglingRef,
+    beginStartGuard,
+    endStartGuard,
+    beginFinishGuard,
+    endFinishGuard
+  } = interviewShell;
   const { reportLatency } = useCascadeVoiceMetrics(session?.id);
-  const [pendingMode, setPendingMode] = useState<InterviewMode>("decision");
+  const interruptedStash = useInterruptedUtteranceStash();
   const [notice, setNotice] = useState<UiNotice | null>(null);
   // N-02:权威库(surreal)落库健康度——degraded 期间常驻顶栏警告(独立持久状态,区别于一次性 notice)。
   // 由低频轮询 route-agnostic 的 GET /api/health 驱动(见下方 health 轮询 effect):后端仅在
@@ -159,19 +178,7 @@ export default function App() {
   // "200+异步落库"写路径(资产确认/记忆编辑等从不 PUT /api/state,却共享同一 persistQueue)。
   const [persistHealth, setPersistHealth] = useState<PersistHealthLite | null>(null);
   const [interviewInput, setInterviewInput] = useState("");
-  const [submittingTurn, setSubmittingTurn] = useState(false);
-  const [startingInterview, setStartingInterview] = useState(false);
-  // 同步防重入:setStartingInterview 是异步 state,挡不住"创建请求在途时"的二次触发(双击 /
-  // 快速重渲染),会创建多个空 session。startInterview 入口用这个 ref 同步短路。
-  const startingRef = useRef(false);
-  // P3-19:录音开关同步防重入。开始录音的连接建立(创建 voice session + 连 ASR/TTS WS)是异步的,
-  // recording state 要等连接就绪才置 true——期间双击/快速重渲染会开出两条 pipeline、两个 getUserMedia
-  // (mic 泄漏)。与 startingRef 同构:进"开始"分支前同步短路,连接流程 settle 后在 finally 复位。
-  const togglingRef = useRef(false);
-  // 同步防重入:/end 要调真实 LLM 做档案抽取(数秒),用户等不及会重复点"结束"。没有这个 guard,
-  // 第一次成功 completed 后,后续点击全部 409(已结束)→ "结束失败"提示覆盖成功 → 诱导继续点。
-  const finishingRef = useRef(false);
-  const [finishingInterview, setFinishingInterview] = useState(false); // UI:结束按钮显示"正在生成档案…"
+  // starting/finishing/toggling guards + session shell: useInterviewSessionShell
   const [correctionText, setCorrectionText] = useState("");
   const [assetQuery, setAssetQuery] = useState("");
   const [assetFilter, setAssetFilter] = useState<AssetFilter>("all");
@@ -773,13 +780,20 @@ const approveCandidate = (id: string, mode: "merge" | "add" = "merge") =>
       const realtimeSessionId = realtimeVoiceSession?.sessionId;
       if (realtimeSessionId) {
         try {
-          await productApiClient.interruptRealtimeVoiceSession(realtimeSessionId, {
+          const interruptResult = await productApiClient.interruptRealtimeVoiceSession(realtimeSessionId, {
             spokenTextSoFar,
             reason: "user_interrupt"
           });
+          const stashText =
+            (interruptResult as { previousAgentUtteranceInterrupted?: string } | undefined)
+              ?.previousAgentUtteranceInterrupted ?? spokenTextSoFar;
+          interruptedStash.recordInterrupt(stashText, session?.id ?? undefined);
         } catch (error) {
+          interruptedStash.recordInterrupt(spokenTextSoFar, session?.id ?? undefined);
           console.warn(JSON.stringify({ event: "interrupt_persist_failed", error: error instanceof Error ? error.message : String(error) }));
         }
+      } else {
+        interruptedStash.recordInterrupt(spokenTextSoFar, session?.id ?? undefined);
       }
       setVoiceStatus("interrupted");
       setTimeout(() => setVoiceStatus("listening"), 1500);
@@ -820,9 +834,7 @@ const approveCandidate = (id: string, mode: "merge" | "add" = "merge") =>
     searchBriefId = activeSearchBriefId,
     topicHint?: string
   ) {
-    if (startingRef.current) return; // 已在创建中 → 跳过,避免双触发产生多个空 session
-    startingRef.current = true;
-    setStartingInterview(true);
+    if (!beginStartGuard()) return; // 已在创建中 → 跳过,避免双触发产生多个空 session
     try {
       const apiRun = await productApiClient.createInterviewSession({
         mode,
@@ -848,8 +860,7 @@ const approveCandidate = (id: string, mode: "merge" | "add" = "merge") =>
         setNotice(buildNotice("danger", "无法开始专访", message));
       }
     } finally {
-      startingRef.current = false;
-      setStartingInterview(false);
+      endStartGuard();
     }
   }
 
@@ -1334,7 +1345,6 @@ const approveCandidate = (id: string, mode: "merge" | "add" = "merge") =>
     if (!session) {
       return;
     }
-    if (finishingRef.current) return; // 防重入:/end 在途(LLM 档案抽取慢),忽略重复点击
     // Align with the server's rule: at least one USER turn (control feedback turns
     // don't count). Pre-checking avoids a 422 that the catch would misread as offline.
     const userTurnCount = session.turns.filter((turn) => turn.role === "user").length;
@@ -1342,9 +1352,7 @@ const approveCandidate = (id: string, mode: "merge" | "add" = "merge") =>
       setNotice(buildNotice("warning", "还不能结束", "先回答至少一轮，再结束并生成档案。"));
       return;
     }
-
-    finishingRef.current = true;
-    setFinishingInterview(true);
+    if (!beginFinishGuard()) return; // 防重入:/end 在途(LLM 档案抽取慢),忽略重复点击
     try {
       const endedSessionId = session.id;
       const apiRun = await productApiClient.endInterviewSession(endedSessionId);
@@ -1443,8 +1451,7 @@ const approveCandidate = (id: string, mode: "merge" | "add" = "merge") =>
         setNotice(buildNotice("danger", "结束失败", `${message}`));
       }
     } finally {
-      finishingRef.current = false;
-      setFinishingInterview(false);
+      endFinishGuard();
     }
   }
 
@@ -1780,6 +1787,15 @@ const approveCandidate = (id: string, mode: "merge" | "add" = "merge") =>
             const sendUserTurn = async (text: string, signal: AbortSignal) => {
               if (!interviewId) {
                 return { assistantText: "" };
+              }
+              // Stage-3: consume barge-in stash once so the next LLM turn sees cut-off speech.
+              const stashFragment = interruptedStash.consumeForPrompt();
+              if (stashFragment) {
+                try {
+                  await productApiClient.refreshVoiceInstructions(interviewId, `${stashFragment}\n\n用户新输入：${text}`);
+                } catch {
+                  /* best-effort — turn still proceeds */
+                }
               }
               // P0-D: forward the pipeline's barge-in signal so an interrupted turn
               // aborts the server LLM call rather than running to completion (which

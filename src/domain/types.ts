@@ -931,6 +931,15 @@ export interface MemoryRecord extends Memory {
    *  退役了独立的 MemoryEdge / state.memoryEdges 双轨建模;边投影(about_theme)与
    *  记忆召回(buildMemoryGraphReferences / recallThemeAssets)统一从此字段派生。 */
   relatedThemeIds?: string[];
+  /**
+   * Stage-3: this record supersedes older phrasing (demote-not-delete).
+   * Graph projection can emit evolves_into / supersedes edges from this field.
+   */
+  supersedesRecordIds?: string[];
+  /** Stage-3: ids this record is known to contradict (symmetric soft links). */
+  contradictsRecordIds?: string[];
+  /** Stage-3: when demoted via conflict resolve, points at the winning record. */
+  supersededByRecordId?: string;
 }
 
 export interface MemoryCandidate {

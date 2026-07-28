@@ -370,9 +370,14 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       }
     }
 
+    // Stage-3: barge-in success = session live + interrupt applied (truncated when we had speech).
+    const bargeInSuccess = true;
+    const interruptRecovery = truncated || spokenTextSoFar.length > 0;
     recordVoiceLatency({
       path: "interrupt",
       interrupted: true,
+      bargeInSuccess,
+      interruptRecovery,
       sessionId,
       ttfaMs: typeof interruptedAtMs === "number" ? interruptedAtMs : undefined
     });
@@ -382,7 +387,9 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       truncated,
       spokenChars,
       originalChars,
-      reason
+      reason,
+      bargeInSuccess,
+      interruptRecovery
     }));
     return {
       interrupted: true,
@@ -391,7 +398,10 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       spokenChars,
       originalChars,
       assistantTurnId: resolvedAssistantTurnId,
-      providerTurnId
+      providerTurnId,
+      bargeInSuccess,
+      /** Stash for next LLM turn: partial spoken text the user actually heard. */
+      previousAgentUtteranceInterrupted: spokenTextSoFar || undefined
     };
   });
   server.get("/api/realtime-voice/sessions/:id/memory-context", async (request) => {

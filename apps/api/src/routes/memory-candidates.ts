@@ -8,7 +8,14 @@ import {
 import { withMemoryCandidateReview } from "../../../../src/domain/memoryReview";
 import { makeId, nowIso, withAuditEvent } from "../../../../src/domain/utils";
 import type { MemoryCandidate, MemoryRecord, ProductState } from "../../../../src/domain/types";
-import { enrichStateAfterDedupe } from "../../../../src/domain/memory-consolidation";
+import {
+  buildConsolidationQueuePreview,
+  enrichStateAfterDedupe,
+  filterEchoChamberTexts,
+  collectEchoChamberKnownTexts,
+  findConflictPairRecords,
+  resolveMemoryConflict
+} from "../../../../src/domain/memory-consolidation";
 import type { ProductStateRepository } from "../product-state-repository"
 import { replaceStateDurable } from "../product-state-repository";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
@@ -203,7 +210,26 @@ export async function registerMemoryCandidateRoutes(
   // consolidate 原子失败（503/429/502，未持久化任何变更），不再静默降级为"仅去重"。
   // R3 有意不换轨:读态与写态之间有最多 4×60s 的串行 LLM(慢 IO 在临界区)且全量记忆宽事务,
   // 本该串行——留在全局写锁内(路径 /api/memory/ 与候选前缀不同,天然不在豁免名单)。
-  server.post("/api/memory/consolidate", async (_request, reply) => {
+  // Stage-3: sleep-time queue — preview only, no durable mutation.
+  server.post("/api/memory/consolidate", async (request, reply) => {
+    const body =
+      request.body && typeof request.body === "object"
+        ? (request.body as Record<string, unknown>)
+        : {};
+    if (body.mode === "queue") {
+      const preview = buildConsolidationQueuePreview(repository.getState());
+      return {
+        mode: "queue" as const,
+        summary: {
+          contradictionCandidates: preview.contradictionCandidates.length,
+          echoFilteredCount: preview.echoFilteredCount,
+          decayPreviewCount: preview.decayPreview.length
+        },
+        candidates: preview.contradictionCandidates,
+        state: repository.getState()
+      };
+    }
+
     const state = repository.getState();
     const before = state.memoryRecords;
     const after = dedupeMemoryRecords(before);
@@ -254,10 +280,17 @@ export async function registerMemoryCandidateRoutes(
         return reply.code(code).send({ error: `记忆整合失败：${message}。未做任何变更，请稍后重试。` });
       }
       // ME-P1-03: summary candidates point at keeper so approve merge can replace keeper text.
+      const known = collectEchoChamberKnownTexts(nextState);
+      const echoKept = filterEchoChamberTexts(
+        summaryCandidates.map((c) => c.text),
+        known
+      );
+      const echoSet = new Set(echoKept);
+      const filteredSummaries = summaryCandidates.filter((c) => echoSet.has(c.text));
       nextState = {
         ...nextState,
         memoryCandidates: [
-          ...summaryCandidates.map((c, i) => ({
+          ...filteredSummaries.map((c, i) => ({
             ...c,
             similarToRecordId: clusters[i]?.keeper.id,
             suggestedUpdate: "update" as const
@@ -291,6 +324,55 @@ export async function registerMemoryCandidateRoutes(
     return {
       state: persisted,
       summary: { deprecated, contradictions: contradictionCandidates, decayApplied: true }
+    };
+  });
+
+  // Stage-3: resolve contradiction HITL → supersede / demote-not-delete.
+  server.post("/api/memory-candidates/:id/resolve-conflict", async (request, reply) => {
+    const candidateId = getCandidateId(request.params);
+    const body =
+      request.body && typeof request.body === "object"
+        ? (request.body as Record<string, unknown>)
+        : {};
+    const keepRecordId = typeof body.keepRecordId === "string" ? body.keepRecordId.trim() : "";
+    const demoteRecordId = typeof body.demoteRecordId === "string" ? body.demoteRecordId.trim() : "";
+
+    const state = repository.getState();
+    const candidate = findCandidate(state, candidateId);
+    if (!candidate) {
+      return reply.code(404).send({ error: "Memory candidate not found." });
+    }
+    if (candidate.status !== "pending") {
+      return reply.code(409).send({ error: "Memory candidate is not pending." });
+    }
+
+    let keepId = keepRecordId;
+    let demoteId = demoteRecordId;
+    if (!keepId || !demoteId) {
+      const pair = findConflictPairRecords(state, candidate);
+      if (body.keepSide === "b") {
+        keepId = keepId || pair.bId || "";
+        demoteId = demoteId || pair.aId || "";
+      } else {
+        keepId = keepId || pair.aId || "";
+        demoteId = demoteId || pair.bId || "";
+      }
+    }
+    if (!keepId || !demoteId || keepId === demoteId) {
+      return reply.code(422).send({ error: "keepRecordId and demoteRecordId are required and must differ." });
+    }
+
+    const nextState = resolveMemoryConflict(state, {
+      keepRecordId: keepId,
+      demoteRecordId: demoteId,
+      candidateId: candidate.id
+    });
+    const persisted = /*durable*/await replaceStateDurable(repository, nextState);
+    return {
+      state: persisted,
+      keepRecordId: keepId,
+      demoteRecordId: demoteId,
+      candidate: findCandidate(persisted, candidate.id)
     };
   });
 }

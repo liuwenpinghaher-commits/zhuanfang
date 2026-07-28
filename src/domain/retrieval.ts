@@ -164,6 +164,48 @@ export function scoreKnowledgeChunk(
  * Rank knowledge chunks with hybrid score, channel quotas, and reject decision.
  * Drop-in enrichment around rankKnowledgeChunks for chat / personal RAG.
  */
+/** Stage-3 citation envelope — every accepted hit carries provenance for grounded answers. */
+export interface CitationEnvelope {
+  id: string;
+  text: string;
+  score: number;
+  sourceType: KnowledgeSourceType | string;
+  sourceId: string;
+  title?: string;
+  retrievedAt: string;
+  channel?: RetrievalChannel;
+}
+
+export type GroundingMode = "grounded" | "partial" | "refused";
+
+export function toCitationEnvelopes(
+  chunks: KnowledgeChunk[],
+  scores: number[],
+  retrievedAt: string = new Date().toISOString()
+): CitationEnvelope[] {
+  return chunks.map((c, i) => ({
+    id: c.id,
+    text: c.text,
+    score: scores[i] ?? 0,
+    sourceType: c.sourceType,
+    sourceId: c.sourceId,
+    title: c.title,
+    retrievedAt,
+    channel: channelForKnowledgeSource(c.sourceType)
+  }));
+}
+
+/** Decide answer grounding mode from recall + how many citations the model actually used. */
+export function decideGroundingMode(opts: {
+  rejected: boolean;
+  retrievedCount: number;
+  citationCount: number;
+}): GroundingMode {
+  if (opts.rejected || opts.retrievedCount === 0) return "refused";
+  if (opts.citationCount <= 0) return "partial";
+  return "grounded";
+}
+
 export function retrievePersonalKnowledge(
   chunks: KnowledgeChunk[],
   query: string,
@@ -172,10 +214,12 @@ export function retrievePersonalKnowledge(
     topK?: number;
     quota?: ChannelQuota;
     minScore?: number;
+    retrievedAt?: string;
   } = {}
 ): {
   chunks: KnowledgeChunk[];
   scores: number[];
+  citations: CitationEnvelope[];
   rejected: boolean;
   reason?: "empty" | "below_threshold";
   topScore: number;
@@ -183,6 +227,7 @@ export function retrievePersonalKnowledge(
 } {
   const topK = opts.topK ?? 8;
   const threshold = opts.minScore ?? DEFAULT_MIN_RECALL_SCORE;
+  const retrievedAt = opts.retrievedAt ?? new Date().toISOString();
   const scored = chunks
     .map((item) => ({ item, score: scoreKnowledgeChunk(item, query, opts.queryEmbedding) }))
     .filter((s) => s.score > 0)
@@ -193,6 +238,7 @@ export function retrievePersonalKnowledge(
     return {
       chunks: [],
       scores: [],
+      citations: [],
       rejected: true,
       reason: decision.reason,
       topScore: decision.topScore,
@@ -201,9 +247,12 @@ export function retrievePersonalKnowledge(
   }
 
   const capped = applyChannelQuotas(scored, opts.quota ?? DEFAULT_CHANNEL_QUOTA).slice(0, topK);
+  const outChunks = capped.map((c) => c.item);
+  const outScores = capped.map((c) => c.score);
   return {
-    chunks: capped.map((c) => c.item),
-    scores: capped.map((c) => c.score),
+    chunks: outChunks,
+    scores: outScores,
+    citations: toCitationEnvelopes(outChunks, outScores, retrievedAt),
     rejected: false,
     topScore: decision.topScore,
     threshold

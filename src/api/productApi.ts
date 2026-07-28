@@ -617,8 +617,27 @@ export interface HealthResponse {
  * 语义:下一笔成功落库即清零,不因单次瞬态误报。
  */
 export interface RuntimeMetricsLite {
-  voice?: { sampleCount?: number; ttfaP50Ms?: number; ttfaP95Ms?: number; interruptCount?: number };
+  voice?: {
+    sampleCount?: number;
+    ttfaP50Ms?: number;
+    ttfaP95Ms?: number;
+    interruptCount?: number;
+    bargeInSuccessCount?: number;
+    bargeInSuccessRate?: number;
+    interruptRecoveryCount?: number;
+    interruptRecoveryRate?: number;
+    budgetHint?: { ttfaP50TargetMs?: number; ttfaP95TargetMs?: number; bargeInStopTargetMs?: number };
+  };
   recall?: { eventCount?: number; hit?: number; empty?: number; low_score?: number; error?: number };
+  grounding?: {
+    eventCount?: number;
+    grounded?: number;
+    partial?: number;
+    refused?: number;
+    groundedAnswerRate?: number;
+    refuseRate?: number;
+    citationPresentRate?: number;
+  };
 }
 
 export interface PersistHealthLite {

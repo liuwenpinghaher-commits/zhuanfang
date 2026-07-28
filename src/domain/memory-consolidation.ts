@@ -122,12 +122,130 @@ export function buildContradictionCandidates(
   );
 }
 
+/**
+ * Stage-3 echo-chamber guard: drop candidate texts that merely restate already-confirmed
+ * rules / user corrections so consolidate does not re-propose known facts as insights.
+ */
+export function filterEchoChamberTexts(
+  proposedTexts: string[],
+  knownTexts: string[],
+  opts: { minOverlapRatio?: number } = {}
+): string[] {
+  const minOverlap = opts.minOverlapRatio ?? 0.72;
+  const knownTokenSets = knownTexts.map((t) => new Set(tokenizeMemoryGraphText(t)));
+  return proposedTexts.filter((text) => {
+    const tokens = tokenizeMemoryGraphText(text);
+    const tokenList = [...tokens];
+    if (!tokenList.length) return false;
+    for (const known of knownTokenSets) {
+      let hits = 0;
+      for (const t of tokenList) {
+        if (known.has(t)) hits += 1;
+      }
+      if (hits / tokenList.length >= minOverlap) return false;
+    }
+    return true;
+  });
+}
+
+export function collectEchoChamberKnownTexts(state: ProductState): string[] {
+  const fromRecords = state.memoryRecords
+    .filter((r) => r.status === "confirmed" || r.status === "deprecated")
+    .map((r) => r.text);
+  const fromCorrections = (state.memoryCorrections ?? []).map((c) => c.text).filter(Boolean);
+  const fromBoundaries = state.profile?.explicitBoundaries ?? [];
+  return [...fromRecords, ...fromCorrections, ...fromBoundaries].filter(Boolean);
+}
+
+/** Resolve a contradiction candidate: keep one side, demote the other with supersede links. */
+export function resolveMemoryConflict(
+  state: ProductState,
+  opts: {
+    keepRecordId: string;
+    demoteRecordId: string;
+    candidateId?: string;
+    now?: string;
+  }
+): ProductState {
+  const now = opts.now ?? nowIso();
+  const keep = state.memoryRecords.find((r) => r.id === opts.keepRecordId);
+  const demote = state.memoryRecords.find((r) => r.id === opts.demoteRecordId);
+  if (!keep || !demote) return state;
+
+  let next: ProductState = {
+    ...state,
+    memoryRecords: state.memoryRecords.map((r) => {
+      if (r.id === opts.keepRecordId) {
+        const supersedes = Array.from(new Set([...(r.supersedesRecordIds ?? []), opts.demoteRecordId]));
+        const contradicts = Array.from(new Set([...(r.contradictsRecordIds ?? []), opts.demoteRecordId]));
+        return {
+          ...r,
+          supersedesRecordIds: supersedes,
+          contradictsRecordIds: contradicts,
+          updatedAt: now,
+          lastAccessedAt: now
+        };
+      }
+      if (r.id === opts.demoteRecordId) {
+        return {
+          ...r,
+          status: "deprecated" as const,
+          deprecatedReason: `矛盾裁决：被 ${opts.keepRecordId} 取代`,
+          supersededByRecordId: opts.keepRecordId,
+          contradictsRecordIds: Array.from(new Set([...(r.contradictsRecordIds ?? []), opts.keepRecordId])),
+          updatedAt: now
+        };
+      }
+      return r;
+    }),
+    memoryCandidates: opts.candidateId
+      ? state.memoryCandidates.map((c) =>
+          c.id === opts.candidateId ? { ...c, status: "approved" as const, reviewedAt: now } : c
+        )
+      : state.memoryCandidates
+  };
+
+  return withAuditEvent(next, {
+    type: "memory_record_deprecated",
+    label: "矛盾裁决：demote-not-delete",
+    detail: `保留 ${opts.keepRecordId}，降级 ${opts.demoteRecordId}`,
+    severity: "warning",
+    entityType: "memory_record",
+    entityId: opts.demoteRecordId,
+    createdAt: now
+  });
+}
+
+/** Parse 【待裁决矛盾】A：…｜B：… candidate into paired record ids when similarTo + text match. */
+export function findConflictPairRecords(
+  state: ProductState,
+  candidate: MemoryCandidate
+): { aId?: string; bId?: string } {
+  if (candidate.suggestedUpdate !== "conflict" && !candidate.text.startsWith("【待裁决矛盾】")) {
+    return {};
+  }
+  const body = candidate.text.replace(/^【待裁决矛盾】/, "");
+  const parts = body.split(/｜|\|/);
+  const aText = (parts[0] ?? "").replace(/^A：/, "").trim();
+  const bText = (parts[1] ?? "").replace(/^B：/, "").trim();
+  const a = state.memoryRecords.find((r) => r.text === aText || r.id === candidate.similarToRecordId);
+  const b = state.memoryRecords.find((r) => r.text === bText);
+  return { aId: a?.id, bId: b?.id };
+}
+
 /** Full pure consolidation enrichment after dedupe: decay + contradiction candidates. */
 export function enrichStateAfterDedupe(state: ProductState, now: string = nowIso()): ProductState {
   const decayed = applyImportanceDecay(state.memoryRecords, now);
   const pairs = detectMemoryContradictions(decayed);
   const existingTexts = new Set(state.memoryCandidates.map((c) => c.text));
-  const fresh = buildContradictionCandidates(pairs, now).filter((c) => !existingTexts.has(c.text));
+  const known = collectEchoChamberKnownTexts({ ...state, memoryRecords: decayed });
+  const freshRaw = buildContradictionCandidates(pairs, now).filter((c) => !existingTexts.has(c.text));
+  // Echo-chamber: drop contradiction cards whose both sides are already explicit boundaries-only noise
+  // (keep real conflicts). Also filter any non-conflict summary-like dups if present.
+  const fresh = freshRaw.filter((c) => {
+    if (c.suggestedUpdate === "conflict") return true;
+    return filterEchoChamberTexts([c.text], known).length > 0;
+  });
   let next: ProductState = {
     ...state,
     memoryRecords: decayed,
@@ -145,4 +263,29 @@ export function enrichStateAfterDedupe(state: ProductState, now: string = nowIso
     });
   }
   return next;
+}
+
+/** Stage-3 sleep-time queue: propose without mutating durable records. */
+export function buildConsolidationQueuePreview(state: ProductState, now: string = nowIso()): {
+  decayPreview: MemoryRecord[];
+  contradictionCandidates: MemoryCandidate[];
+  echoFilteredCount: number;
+} {
+  const decayPreview = applyImportanceDecay(state.memoryRecords, now);
+  const pairs = detectMemoryContradictions(decayPreview);
+  const raw = buildContradictionCandidates(pairs, now);
+  const known = collectEchoChamberKnownTexts({ ...state, memoryRecords: decayPreview });
+  const keptTexts = filterEchoChamberTexts(
+    raw.filter((c) => c.suggestedUpdate !== "conflict").map((c) => c.text),
+    known
+  );
+  const keptSet = new Set(keptTexts);
+  const contradictionCandidates = raw.filter(
+    (c) => c.suggestedUpdate === "conflict" || keptSet.has(c.text)
+  );
+  return {
+    decayPreview,
+    contradictionCandidates,
+    echoFilteredCount: Math.max(0, raw.length - contradictionCandidates.length)
+  };
 }

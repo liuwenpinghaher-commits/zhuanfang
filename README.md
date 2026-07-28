@@ -208,6 +208,15 @@ R7 起 SurrealDB（`.data/surreal`）是**唯一**持久仓库，`GET /api/state
 - `tests/e2e`: Playwright 验收流程。
 - `docs/superpowers`: 阶段开发方案和规格文档。
 
+## Stage-3：评测 / 记忆生命周期 / 语音 SLO
+
+- **RAG golden**：`tests/fixtures/rag-golden/cases.json`（30+ 中文个人域 query）+ `src/domain/rag-golden.ts` 确定性 hit@k / 拒召正确率（CI 无 LLM-judge）。
+- **Citation envelope + groundingMode**：召回命中带 sourceId/score；chat 返回 `grounded | partial | refused` 并记 runtime metrics。
+- **记忆生命周期**：echo-chamber 过滤；矛盾 `POST /api/memory-candidates/:id/resolve-conflict`（supersede/demote-not-delete）；consolidate 支持 `mode=queue` 只预览。
+- **语音 SLO**：TTFA 分段 p50/p95、barge-in 成功率、interrupt recovery；打断 stash 注入下一轮（`previousAgentUtteranceInterrupted`）。本地参考预算 p50≤700ms / p95≤1200ms（非硬 SLA）。
+- **脚本**：`npx tsx scripts/voice-slo-smoke.ts`；`node scripts/backup-export-smoke.mjs`。
+- **非目标**：多租户、Surreal 原生 CRDT 多设备同步、强绑单一 S2S。
+
 ## Stage-2：记忆 / 召回 / 语音度量
 
 - **低置信拒召**：chat 与访谈相关记忆在 hybrid 分数过低或空命中时不硬塞资料；prompt 注入「无可靠记忆」说明（`src/domain/retrieval.ts`）。

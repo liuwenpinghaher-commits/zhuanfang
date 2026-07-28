@@ -564,13 +564,29 @@ export async function registerSystemRoutes(
           sampleCount: metrics.voice.sampleCount,
           ttfaP50Ms: metrics.voice.ttfaP50Ms,
           ttfaP95Ms: metrics.voice.ttfaP95Ms,
-          interruptCount: metrics.voice.interruptCount
+          interruptCount: metrics.voice.interruptCount,
+          bargeInSuccessCount: metrics.voice.bargeInSuccessCount,
+          bargeInFailCount: metrics.voice.bargeInFailCount,
+          bargeInSuccessRate: metrics.voice.bargeInSuccessRate,
+          interruptRecoveryCount: metrics.voice.interruptRecoveryCount,
+          interruptRecoveryRate: metrics.voice.interruptRecoveryRate,
+          segments: metrics.voice.segments,
+          budgetHint: metrics.voice.budgetHint
         },
         recall: {
           eventCount: metrics.recall.eventCount,
           hit: metrics.recall.hit,
           empty: metrics.recall.empty,
           low_score: metrics.recall.low_score
+        },
+        grounding: {
+          eventCount: metrics.grounding.eventCount,
+          grounded: metrics.grounding.grounded,
+          partial: metrics.grounding.partial,
+          refused: metrics.grounding.refused,
+          groundedAnswerRate: metrics.grounding.groundedAnswerRate,
+          refuseRate: metrics.grounding.refuseRate,
+          citationPresentRate: metrics.grounding.citationPresentRate
         }
       },
       capabilities

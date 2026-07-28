@@ -136,5 +136,27 @@ export function collectEdges(state: ProductState): EdgeSpec[] {
     edges.push({ edge: "evolves_into", fromTable: "point", fromId: p.id, toTable: "point", toId: newId });
   }
 
+  // ⑦ Stage-3 memory supersede / contradict soft-links → graph edges (demote-not-delete).
+  const memoryIds = new Set(state.memoryRecords.map((m) => m.id));
+  const seenMemContradicts = new Set<string>();
+  for (const m of state.memoryRecords) {
+    for (const otherId of m.contradictsRecordIds ?? []) {
+      if (m.id === otherId || !memoryIds.has(otherId)) continue;
+      const [lo, hi] = m.id < otherId ? [m.id, otherId] : [otherId, m.id];
+      const key = `${lo}|${hi}`;
+      if (seenMemContradicts.has(key)) continue;
+      seenMemContradicts.add(key);
+      edges.push({ edge: "contradicts", fromTable: "memory", fromId: lo, toTable: "memory", toId: hi });
+    }
+    for (const oldId of m.supersedesRecordIds ?? []) {
+      if (!oldId || oldId === m.id || !memoryIds.has(oldId)) continue;
+      edges.push({ edge: "evolves_into", fromTable: "memory", fromId: oldId, toTable: "memory", toId: m.id });
+    }
+    const newer = m.supersededByRecordId;
+    if (newer && newer !== m.id && memoryIds.has(newer)) {
+      edges.push({ edge: "evolves_into", fromTable: "memory", fromId: m.id, toTable: "memory", toId: newer });
+    }
+  }
+
   return edges;
 }

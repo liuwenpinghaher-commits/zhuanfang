@@ -693,5 +693,24 @@ function cloneConfig(config: SystemConfig): SystemConfig {
   return JSON.parse(JSON.stringify(config)) as SystemConfig;
 }
 
-export { buildBootContextPack, retrievePersonalKnowledge, decideRecallAcceptance } from "./retrieval";
-export { applyImportanceDecay, detectMemoryContradictions, enrichStateAfterDedupe } from "./memory-consolidation";
+export {
+  buildBootContextPack,
+  retrievePersonalKnowledge,
+  decideRecallAcceptance,
+  decideGroundingMode,
+  toCitationEnvelopes,
+  noReliableMemoryNotice
+} from "./retrieval";
+export {
+  applyImportanceDecay,
+  detectMemoryContradictions,
+  enrichStateAfterDedupe,
+  filterEchoChamberTexts,
+  resolveMemoryConflict,
+  buildConsolidationQueuePreview,
+  findConflictPairRecords
+} from "./memory-consolidation";
+export {
+  buildInterruptedStash,
+  formatInterruptedStashForPrompt
+} from "./voice-interrupt-stash";

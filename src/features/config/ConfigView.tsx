@@ -141,7 +141,7 @@ export function ConfigView({
                   <span>引擎版本：{systemCapabilities.configVersion}</span>
                   <span>检查时间：{new Date(systemCapabilities.generatedAt).toLocaleString("zh-CN")}</span>
                 </div>
-                {(systemCapabilities as { metrics?: { voice?: { ttfaP50Ms?: number; ttfaP95Ms?: number; sampleCount?: number; interruptCount?: number }; recall?: { empty?: number; low_score?: number; hit?: number } } }).metrics && (
+                {(systemCapabilities as { metrics?: { voice?: { ttfaP50Ms?: number; ttfaP95Ms?: number; sampleCount?: number; interruptCount?: number; bargeInSuccessRate?: number; interruptRecoveryRate?: number; budgetHint?: { ttfaP95TargetMs?: number } }; recall?: { empty?: number; low_score?: number; hit?: number }; grounding?: { grounded?: number; refused?: number; citationPresentRate?: number } } }).metrics && (
                   <div className="config-hint" data-testid="runtime-metrics-strip">
                     <span>
                       语音 TTFA p50/p95：
@@ -150,9 +150,13 @@ export function ConfigView({
                       {(systemCapabilities as any).metrics?.voice?.ttfaP95Ms ?? "—"}
                       ms
                       {typeof (systemCapabilities as any).metrics?.voice?.ttfaP95Ms === "number" &&
-                      (systemCapabilities as any).metrics.voice.ttfaP95Ms > 700
-                        ? " ⚠ 高于 700ms 人感阈值"
-                        : ""}
+                      (systemCapabilities as any).metrics.voice.ttfaP95Ms >
+                        ((systemCapabilities as any).metrics?.voice?.budgetHint?.ttfaP95TargetMs ?? 1200)
+                        ? " ⚠ 高于 mouth-to-ear p95 预算"
+                        : typeof (systemCapabilities as any).metrics?.voice?.ttfaP95Ms === "number" &&
+                            (systemCapabilities as any).metrics.voice.ttfaP95Ms > 700
+                          ? " ⚠ 高于 700ms 人感参考"
+                          : ""}
                     </span>
                     <span>
                       召回 hit/empty/low：
@@ -161,6 +165,20 @@ export function ConfigView({
                       {(systemCapabilities as any).metrics?.recall?.low_score ?? 0}
                     </span>
                     <span>打断样本：{(systemCapabilities as any).metrics?.voice?.interruptCount ?? 0}</span>
+                    <span>
+                      barge-in 成功率：
+                      {typeof (systemCapabilities as any).metrics?.voice?.bargeInSuccessRate === "number"
+                        ? `${Math.round((systemCapabilities as any).metrics.voice.bargeInSuccessRate * 100)}%`
+                        : "—"}
+                    </span>
+                    <span>
+                      引用/拒召：
+                      {(systemCapabilities as any).metrics?.grounding?.grounded ?? 0}/
+                      {(systemCapabilities as any).metrics?.grounding?.refused ?? 0}
+                      {typeof (systemCapabilities as any).metrics?.grounding?.citationPresentRate === "number"
+                        ? ` · cite ${Math.round((systemCapabilities as any).metrics.grounding.citationPresentRate * 100)}%`
+                        : ""}
+                    </span>
                   </div>
                 )}
                 <div className="provider-grid">
