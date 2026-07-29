@@ -121,6 +121,7 @@ export async function registerInterviewSessionRoutes(
   repository: ProductStateRepository,
   options: InterviewSessionRouteOptions = {}
 ) {
+  const interviewTurnTimeoutMs = normalizeTimeoutMs(options.interviewTurnTimeoutMs);
   const budget = options.llmBudget ?? createLlmBudget();
 
   // Per-session write serialization. /turns is a read-modify-write on the global state with
@@ -333,12 +334,15 @@ export async function registerInterviewSessionRoutes(
     request.raw.once("aborted", onClientAbort);
     let updatedResult: Awaited<ReturnType<typeof receiveTurn>>;
     try {
-      updatedResult = await receiveTurn(
-        freshSession,
-        content,
-        options.bailianInterviewClient,
-        state.memoryCorrections,
-        state.profile.explicitBoundaries
+      updatedResult = await withInterviewTurnDeadline(
+        receiveTurn(
+          freshSession,
+          content,
+          options.bailianInterviewClient,
+          state.memoryCorrections,
+          state.profile.explicitBoundaries
+        ),
+        interviewTurnTimeoutMs
       );
     } catch (error) {
       request.raw.off("aborted", onClientAbort);
@@ -883,10 +887,10 @@ const referencedMemory = normalizeOptionalString(body.referencedMemory);
 // memory recall. 语义边界:无 embeddingClient（未配置=关键词召回的产品配置态）/ 空文本 →
 // undefined。运行时失败（embed 报错/超时）→ 抛错,由路由如实 5xx——不再静默退化成
 // 关键词召回让召回质量无声下降。Embeddings are computed here (route layer); the domain stays pure.
-// I:嵌入查询超时上限。本地 embedding(transformers.js)首次需加载模型、无内部超时,直接 await
-// 会把"开始专访"/turn 卡住;超时即抛错。server 启动会预热本地模型(见 server.ts startServer),
-// 稳态下 embed 远快于此;真超时只在冷启动未预热完就建会话的窄窗口。
-const EMBED_QUERY_TIMEOUT_MS = 8000;
+// I:嵌入查询超时上限。本地 embedding(transformers.js)首次需加载/下载模型,无内部超时。
+// server 启动在 EMBEDDING_PROVIDER=local 时会 await 预热;本地给更宽窗口避免冷启动误杀。
+const EMBED_QUERY_TIMEOUT_MS =
+  (process.env.EMBEDDING_PROVIDER ?? "").trim().toLowerCase() === "local" ? 120_000 : 20_000;
 
 async function embedQueryText(
   text: string | undefined,
@@ -896,23 +900,33 @@ async function embedQueryText(
   if (!embeddingClient || !trimmed) {
     return undefined;
   }
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const vectors = await Promise.race([
-      embeddingClient.embed([trimmed]),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("embed timeout")), EMBED_QUERY_TIMEOUT_MS);
-      })
-    ]);
-    const vector = vectors[0];
-    return Array.isArray(vector) && vector.length > 0 ? vector : undefined;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(JSON.stringify({ event: "interview_query_embed_failed", error: message }));
-    throw new Error(`召回嵌入失败：${message}`);
-  } finally {
-    if (timer) clearTimeout(timer);
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const vectors = await Promise.race([
+        embeddingClient.embed([trimmed]),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("embed timeout")), EMBED_QUERY_TIMEOUT_MS);
+        })
+      ]);
+      const vector = vectors[0];
+      return Array.isArray(vector) && vector.length > 0 ? vector : undefined;
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(JSON.stringify({ event: "interview_query_embed_failed", attempt, error: message }));
+      // Retry once on timeout/transient network; fail closed otherwise.
+      if (!/timeout|aborted|ECONNRESET|ETIMEDOUT|fetch failed/i.test(message) || attempt === 2) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
+  const message = lastError instanceof Error ? lastError.message : String(lastError);
+  throw new Error(`召回嵌入失败：${message}`);
 }
 
 function normalizeObject<T>(value: unknown): Partial<T> {

@@ -730,7 +730,11 @@ export function createProductApiClient(
   options: ProductApiClientOptions = {}
 ): ProductApiClient {
   void options;
-  const interviewTurnTimeoutMs = resolveClientTimeoutMs(options.interviewTurnTimeoutMs, undefined, 45_000);
+  const interviewTurnTimeoutMs = resolveClientTimeoutMs(
+    options.interviewTurnTimeoutMs,
+    (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_INTERVIEW_TURN_TIMEOUT_MS,
+    120_000
+  );
   const normalizedBaseUrl = baseUrl.replace(/\/$/, "");
   // H 生产 bearer 鉴权:前端从 Vite env(VITE_PRODUCT_API_TOKEN)注入 token,所有请求自动附 Authorization。
   // 无 token(dev / 未配)→ 不附头,dev fail-open 行为不变;配了 token 的生产 profile 不再整站 401。

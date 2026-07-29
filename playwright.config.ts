@@ -21,6 +21,11 @@ const apiEnv: Record<string, string> = REAL
       // real 族:surreal 权威档,但数据目录隔离到 tmp(红线:零接触仓库 .data/)。
       PRODUCT_STORE: "surreal",
       PRODUCT_STATE_DB_PATH: REAL_DB_PATH,
+      // Real e2e keeps cloud LLM, but uses local embeddings for stable create/approve paths.
+      EMBEDDING_PROVIDER: "local",
+      PROVIDER_REQUEST_TIMEOUT_MS: "120000",
+      BAILIAN_REQUEST_TIMEOUT_MS: "120000",
+      BAILIAN_INTERVIEW_REQUEST_TIMEOUT_MS: "120000",
       PRODUCT_ENV_FILE: join(tmpdir(), "zhuanfang-e2e-real.env.local"),
       // 透传真实 provider key(开发者跑 E2E_REAL=1 时须在环境里提供);缺失时对应 real 用例自 skip。
       DASHSCOPE_API_KEY: process.env.DASHSCOPE_API_KEY ?? "",
@@ -73,6 +78,8 @@ export default defineConfig({
   ...(REAL ? { testMatch: REAL_GLOB } : { testIgnore: REAL_GLOB }),
   fullyParallel: false,
   workers: 1,
+  // Real provider suites are subject to transient LLM/network flakes.
+  retries: REAL ? 1 : 0,
   reporter: [["list"]],
   use: {
     baseURL: "http://127.0.0.1:3220",
@@ -91,15 +98,21 @@ export default defineConfig({
       command: "npm run start:api",
       // real 模式强制自起隔离进程:绝不复用可能连着真实 .data/ 的开发服务器(红线)。
       reuseExistingServer: !REAL,
-      timeout: 120_000,
+      // local embedding prewarm may download Xenova/bge-large-zh on first run.
+      timeout: REAL ? 600_000 : 120_000,
       url: "http://127.0.0.1:3210/api/health",
       env: apiEnv
     },
     {
       command: "npm run dev -- --host 127.0.0.1",
-      reuseExistingServer: true,
+      reuseExistingServer: !REAL,
       timeout: 120_000,
-      url: "http://127.0.0.1:3220"
+      url: "http://127.0.0.1:3220",
+      env: {
+        ...process.env,
+        VITE_INTERVIEW_TURN_TIMEOUT_MS: REAL ? "180000" : (process.env.VITE_INTERVIEW_TURN_TIMEOUT_MS ?? ""),
+        VITE_PRODUCT_API_BASE_URL: process.env.VITE_PRODUCT_API_BASE_URL ?? "http://127.0.0.1:3210"
+      }
     }
   ],
   projects: [

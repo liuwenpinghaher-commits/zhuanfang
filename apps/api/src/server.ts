@@ -1011,11 +1011,24 @@ export function createGracefulShutdown(deps: GracefulShutdownDeps): (signal: str
 export async function startServer() {
   loadLocalEnvFile();
 
-  // I 预热:本地 embedding(transformers.js)首次需加载模型(~数十秒)。启动即后台预热,让首个
-  // "开始专访"不撞冷加载(embedQueryText 有 8s 超时,未预热完只是降级关键词召回、不卡住)。
-  // fire-and-forget + catch:预热失败绝不阻塞启动;单例 extractorPromise 模块级,与路由层共享同一次加载。
+  // I 预热:本地 embedding(transformers.js)首次需加载/下载模型。启动期 await 预热完成再 listen,
+  // 避免 create session 撞冷加载 + embed timeout → 502。失败不阻断启动(可后续首请求重试)。
+  // 单例 extractorPromise 模块级,与路由层共享同一次加载。
   if ((process.env.EMBEDDING_PROVIDER ?? "").trim().toLowerCase() === "local") {
-    void createLocalEmbeddingClient().embed(["预热"]).catch(() => {});
+    const prewarmStarted = Date.now();
+    try {
+      await createLocalEmbeddingClient().embed(["预热"]);
+      console.info(JSON.stringify({
+        event: "local_embedding_prewarm_ok",
+        ms: Date.now() - prewarmStarted
+      }));
+    } catch (error) {
+      console.warn(JSON.stringify({
+        event: "local_embedding_prewarm_failed",
+        ms: Date.now() - prewarmStarted,
+        error: error instanceof Error ? error.message : String(error)
+      }));
+    }
   }
 
   // P0-A fail-closed: in the production profile the bearer guard only activates when a

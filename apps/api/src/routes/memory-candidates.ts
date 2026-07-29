@@ -493,18 +493,25 @@ async function embedCandidateText(
   if (!embeddingClient) {
     return { status: "unavailable" };
   }
-  try {
-    const vectors = await embeddingClient.embed([text.slice(0, MAX_EMBED_CHARS)]);
-    const vector = vectors[0];
-    if (Array.isArray(vector) && vector.length > 0) {
+  let lastError = "嵌入失败";
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const vectors = await embeddingClient.embed([text]);
+      const vector = vectors[0];
+      if (!Array.isArray(vector) || vector.length === 0) {
+        return { status: "failed", error: "嵌入模型返回空向量" };
+      }
       return { status: "ok", embedding: vector };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+      console.warn(JSON.stringify({ event: "memory_approve_embed_failed", attempt, error: lastError }));
+      if (!/timeout|aborted|ECONNRESET|ETIMEDOUT|fetch failed/i.test(lastError) || attempt === 2) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
     }
-    return { status: "failed", error: "嵌入模型返回空向量" };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(JSON.stringify({ event: "memory_approve_embed_failed", error: message }));
-    return { status: "failed", error: message };
   }
+  return { status: "failed", error: lastError };
 }
 
 function normalizeObject<T>(value: unknown): Partial<T> {
