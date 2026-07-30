@@ -170,10 +170,12 @@ export PRODUCT_API_TOKEN='…'
 
 ## 7. 真实 Provider Compose 演练（Full GO 建议）
 
-- [ ] `.env.production.local` 填入真实 `DASHSCOPE_API_KEY`（勿提交）
-- [ ] `docker compose --env-file .env.production.local up --build -d`
-- [ ] 完成 §5 冒烟 + 一场真实短专访 + 一次 TTS/ASR（若启用）
-- [ ] `docker compose down` 后数据仍在卷中（未误加 `-v`）
+- [x] `.env.production.local` 填入真实 `DASHSCOPE_API_KEY`（勿提交）— 本机已有
+- [x] `docker compose --env-file .env.production.local up --build -d` — **2026-07-30 PASS**
+- [x] 完成 §5 冒烟 + 一场真实短专访 + chat（TTS/ASR 可选未强跑）— **12/12 API 冒烟**
+- [x] `docker compose down` 后数据仍在卷中（未误加 `-v`）— **VOLUME_PERSIST PASS**
+
+报告：`docs/superpowers/2026-07-30-v2-compose-exercise.md`
 
 ---
 

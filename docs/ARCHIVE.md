@@ -24,6 +24,7 @@
 | 9 | CI 工件 | `.github/workflows/ci.yml` | **存在** |
 | 10 | 部署清单 | `docs/DEPLOYMENT-CHECKLIST.md` | **存在（定稿）** |
 | 11 | Playwright 默认 e2e | `npm run test:e2e` | **PASS 35/35**（V1 · 隔离端口） |
+| 12 | V2 真 key compose | checklist §7 | **PASS** · build+冒烟+卷持久 |
 
 ### 1.1 测试边界（诚实）
 

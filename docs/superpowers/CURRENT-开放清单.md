@@ -74,6 +74,7 @@
 | 非目标 | n/a | 多租户、CRDT、完整 AWS SDK |
 | 维护路线 | 定稿 | `docs/MAINTENANCE-ROADMAP.md`（V 验证优先 → D 按需） |
 | V1 Playwright e2e | closed | 默认族 35/35 绿；端口隔离 13210/13220/13230，避免本机 3210 鉴权 API 被 reuse |
+| V2 真 key compose | closed | `up --build` + 鉴权冒烟 12/12 + down 无 -v 卷保留；见 `2026-07-30-v2-compose-exercise.md` |
 
 ## 集成与部署态（2026-07-30 · 定稿）
 
