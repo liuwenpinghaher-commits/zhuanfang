@@ -74,6 +74,7 @@ describe("POST /api/rag/query", () => {
     };
 
     const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
       productStateRepository: repository,
       embeddingClient: fakeEmbeddingClient as never,
       bailianChatClient: fakeChatClient as never
@@ -120,6 +121,7 @@ describe("POST /api/rag/query", () => {
     const repository = createInMemoryProductStateRepository(initialState);
 
     const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
       productStateRepository: repository
       // no embeddingClient, no bailianChatClient
     });
@@ -201,7 +203,8 @@ describe("POST /api/rag/query", () => {
     };
     const repository = createInMemoryProductStateRepository(initialState);
 
-    const server = buildApiServer({ productStateRepository: repository });
+    const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" }, productStateRepository: repository });
 
     const res = await server.inject({
       method: "POST",
@@ -218,7 +221,8 @@ describe("POST /api/rag/query", () => {
   });
 
   it("缺少 question 字段 → 422", async () => {
-    const server = buildApiServer({});
+    const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },});
     const res = await server.inject({
       method: "POST",
       url: "/api/rag/query",
@@ -264,6 +268,7 @@ describe("POST /api/rag/query", () => {
     };
 
     const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
       productStateRepository: repository,
       embeddingClient: fakeEmbeddingClient as never,
       bailianChatClient: fakeChatClient as never
@@ -302,6 +307,7 @@ describe("POST /api/rag/query", () => {
       importSources: [makeSource("src-no-cite")]
     });
     const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
       productStateRepository: repository,
       embeddingClient: { embed: async () => [QUERY_VEC] } as never,
       bailianChatClient: { complete: async () => "没有任何编号的回答" } as never

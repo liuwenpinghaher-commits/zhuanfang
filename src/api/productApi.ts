@@ -639,6 +639,13 @@ export interface RuntimeMetricsLite {
     bargeInSuccessRate?: number;
     interruptRecoveryCount?: number;
     interruptRecoveryRate?: number;
+    /** Per-stage latency percentiles (cascade reports segments when available). */
+    segments?: {
+      vadEndToStt?: { count?: number; p50Ms?: number; p95Ms?: number };
+      sttToLlm?: { count?: number; p50Ms?: number; p95Ms?: number };
+      llmTtft?: { count?: number; p50Ms?: number; p95Ms?: number };
+      ttsTtfb?: { count?: number; p50Ms?: number; p95Ms?: number };
+    };
     budgetHint?: { ttfaP50TargetMs?: number; ttfaP95TargetMs?: number; bargeInStopTargetMs?: number };
   };
   recall?: { eventCount?: number; hit?: number; empty?: number; low_score?: number; error?: number };

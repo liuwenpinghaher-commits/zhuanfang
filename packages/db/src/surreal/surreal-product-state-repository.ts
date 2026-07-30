@@ -848,6 +848,33 @@ export async function buildSurrealProductStateRepositoryOnConnection(
         // 非伪造),并记日志使差异可查。
         if (rows.length === 0) {
           console.warn(JSON.stringify({ event: "surreal_hybrid_fusion_empty", path: "rag_chunk", queryChars: queryText.length }));
+          // Preserve BM25-only chunks (no embedding). Pure HNSW fallback drops them.
+          try {
+            const [bmRows] = await db.query(
+              `SELECT id, text FROM rag_chunk
+               WHERE ${usageGate} AND (${bmClause})
+               LIMIT ${k};`,
+              { ...gateVars, tokens }
+            );
+            const bm = toHits(bmRows);
+            if (bm.length > 0) {
+              const hn = await hnswOnly();
+              const seen = new Set(bm.map((h) => h.id));
+              const merged = [...bm];
+              for (const row of hn) {
+                if (seen.has(row.id)) continue;
+                seen.add(row.id);
+                merged.push(row);
+                if (merged.length >= k) break;
+              }
+              return merged.slice(0, k);
+            }
+          } catch (bmErr) {
+            console.warn(JSON.stringify({
+              event: "surreal_rag_bm25_fallback_failed",
+              error: bmErr instanceof Error ? bmErr.message : String(bmErr)
+            }));
+          }
           return hnswOnly();
         }
         const order = ((results[results.length - 1] ?? []) as unknown[]).map((rid) => recordIdToDomainId(rid));

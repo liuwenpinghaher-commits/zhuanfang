@@ -15,6 +15,7 @@ describe("POST /api/podcast/episodes", () => {
     const failingTts = { synthesize: async () => { throw new Error("TTS 400"); } };
     // Default create: no auto render even if TTS client is present (PO-P1-01).
     const serverDefault = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
       bailianPodcastAudioClient: failingTts as never,
       bailianChatClient: createFakeChatClient()
     });
@@ -34,6 +35,7 @@ describe("POST /api/podcast/episodes", () => {
     process.env.PODCAST_AUTO_RENDER_ON_CREATE = "true";
     try {
       const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
         bailianPodcastAudioClient: failingTts as never,
         bailianChatClient: createFakeChatClient()
       });
@@ -85,6 +87,7 @@ describe("POST /api/podcast/episodes", () => {
     process.env.PODCAST_AUTO_RENDER_ON_CREATE = "true";
     try {
       const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
         bailianPodcastAudioClient: successTts as never,
         bailianChatClient: createFakeChatClient()
       });
@@ -107,7 +110,7 @@ describe("POST /api/podcast/episodes", () => {
   });
 
   it("note 路径无 chatClient → 503（脚本 LLM 必选，不落任何 episode）", async () => {
-    const server = buildApiServer({}); // no bailianChatClient
+    const server = buildApiServer({ env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" } }); // no bailianChatClient
     const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
     const noteId = state.notes[0]?.id;
     const res = await server.inject({
@@ -123,7 +126,8 @@ describe("POST /api/podcast/episodes", () => {
   });
 
   it("note 路径 LLM 运行时失败 → 502（不落任何 episode）", async () => {
-    const server = buildApiServer({ bailianChatClient: createFailingChatClient("script boom") });
+    const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" }, bailianChatClient: createFailingChatClient("script boom") });
     const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
     const noteId = state.notes[0]?.id;
     const res = await server.inject({
@@ -161,7 +165,8 @@ describe("POST /api/podcast/episodes", () => {
 
 describe("POST /api/podcast/episodes/:id/synthesize", () => {
   it("returns 404 when episode does not exist", async () => {
-    const server = buildApiServer({});
+    const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },});
     const res = await server.inject({
       method: "POST",
       url: "/api/podcast/episodes/nonexistent-id/synthesize"
@@ -172,7 +177,8 @@ describe("POST /api/podcast/episodes/:id/synthesize", () => {
   });
 
   it("no TTS client → 503; caller-supplied script is persisted before failing", async () => {
-    const server = buildApiServer({ bailianChatClient: createFakeChatClient() }); // no TTS
+    const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" }, bailianChatClient: createFakeChatClient() }); // no TTS
     // First create an episode (creation succeeds with audioRenderStatus=pending)
     const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
     const noteId = state.notes[0]?.id;
@@ -209,6 +215,7 @@ describe("POST /api/podcast/episodes/:id/synthesize", () => {
       }
     };
     const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
       bailianPodcastAudioClient: fakeTts as never,
       bailianChatClient: createFakeChatClient()
     });
@@ -248,6 +255,7 @@ describe("POST /api/podcast/episodes/:id/synthesize", () => {
   it("TTS client throws → 502 {error, episode, state}; script + failed status persisted", async () => {
     const failingTts = { synthesize: async () => { throw new Error("TTS upstream error"); } };
     const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
       bailianPodcastAudioClient: failingTts as never,
       bailianChatClient: createFakeChatClient()
     });

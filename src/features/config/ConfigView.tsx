@@ -158,6 +158,15 @@ export function ConfigView({
                           ? " ⚠ 高于 700ms 人感参考"
                           : ""}
                     </span>
+                    <span data-testid="voice-ttfa-segments">
+                      分段 p50：
+                      {(() => {
+                        const seg = (systemCapabilities as any).metrics?.voice?.segments;
+                        const fmt = (s?: { p50Ms?: number }) =>
+                          typeof s?.p50Ms === "number" ? `${Math.round(s.p50Ms)}` : "—";
+                        return `VAD→STT ${fmt(seg?.vadEndToStt)} / STT→LLM ${fmt(seg?.sttToLlm)} / LLM TTFT ${fmt(seg?.llmTtft)} / TTS TTFB ${fmt(seg?.ttsTtfb)} ms`;
+                      })()}
+                    </span>
                     <span>
                       召回 hit/empty/low：
                       {(systemCapabilities as any).metrics?.recall?.hit ?? 0}/

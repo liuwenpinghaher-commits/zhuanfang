@@ -32,6 +32,7 @@ describe("POST /api/chat", () => {
     const fakeChatClient = { complete: async () => "根据你的资料[1],你担心放权失控。" };
 
     const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
       productStateRepository: repository,
       knowledgeIndexRepository,
       bailianChatClient: fakeChatClient as never
@@ -72,6 +73,7 @@ describe("POST /api/chat", () => {
     };
 
     const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
       productStateRepository: repository,
       knowledgeIndexRepository,
       bailianChatClient: fakeChatClient as never
@@ -105,6 +107,7 @@ describe("POST /api/chat", () => {
     const fakeChatClient = { complete: async () => "x" };
 
     const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
       productStateRepository: repository,
       knowledgeIndexRepository,
       bailianChatClient: fakeChatClient as never
@@ -148,6 +151,7 @@ describe("POST /api/chat", () => {
     const fakeEmbedding = { providerId: "fake", embed: async (texts: string[]) => texts.map(() => [1, 0, 0]) };
 
     const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
       productStateRepository: repository,
       knowledgeIndexRepository: repo,
       bailianChatClient: fakeChatClient as never,
@@ -185,6 +189,7 @@ describe("POST /api/chat", () => {
     const fakeChatClient = { complete: async () => "根据你的资料[1],你担心放权失控。" };
 
     const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
       productStateRepository: repository,
       knowledgeIndexRepository: repo,
       bailianChatClient: fakeChatClient as never
@@ -209,6 +214,7 @@ describe("POST /api/chat", () => {
     const fakeChatClient = { complete: async () => "我没有检索到相关资料，仅凭对话历史回答。" };
 
     const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
       productStateRepository: repository,
       knowledgeIndexRepository: repo,
       bailianChatClient: fakeChatClient as never
@@ -243,6 +249,7 @@ describe("POST /api/chat", () => {
     const fakeEmbedding = { providerId: "fake", embed: async (texts: string[]) => texts.map(() => [1, 0, 0]) };
 
     const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
       productStateRepository: repository,
       knowledgeIndexRepository: repo,
       bailianChatClient: fakeChatClient as never,
@@ -269,6 +276,7 @@ describe("POST /api/chat", () => {
     const knowledgeIndexRepository = await seedKnowledge();
 
     const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
       productStateRepository: repository,
       knowledgeIndexRepository
       // no bailianChatClient
@@ -291,6 +299,7 @@ describe("POST /api/chat", () => {
   it("模型输出越界 citation 编号时返回 502，且本轮不入库", async () => {
     const repository = createInMemoryProductStateRepository(createInitialProductState());
     const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
       productStateRepository: repository,
       knowledgeIndexRepository: await seedKnowledge(),
       bailianChatClient: { complete: async () => "根据你的资料[9]，你担心放权失控。" } as never
@@ -307,6 +316,7 @@ describe("POST /api/chat", () => {
   it("memory 来源被回答称为用户原话时返回 502，且不保存错误来源断言", async () => {
     const repository = createInMemoryProductStateRepository(createInitialProductState());
     const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
       productStateRepository: repository,
       knowledgeIndexRepository: await seedKnowledge(),
       bailianChatClient: { complete: async () => "根据你的用户原话[1]，你担心放权失控。" } as never
@@ -332,6 +342,7 @@ describe("POST /api/chat", () => {
       text: "我担心放权之后团队失控。", keywords: ["担心", "放权", "失控"]
     }));
     const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
       productStateRepository: repository,
       knowledgeIndexRepository,
       bailianChatClient: { complete: async () => "已确认长期记忆[2]显示，你担心放权后的失控。" } as never

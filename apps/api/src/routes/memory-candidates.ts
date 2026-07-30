@@ -496,7 +496,7 @@ async function embedCandidateText(
   let lastError = "嵌入失败";
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      const vectors = await embeddingClient.embed([text]);
+      const vectors = await embeddingClient.embed([text.slice(0, MAX_EMBED_CHARS)]);
       const vector = vectors[0];
       if (!Array.isArray(vector) || vector.length === 0) {
         return { status: "failed", error: "嵌入模型返回空向量" };

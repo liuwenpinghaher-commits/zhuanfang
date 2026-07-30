@@ -269,7 +269,12 @@ export async function startRealtimeVoiceConnect(deps: StartRealtimeVoiceConnectD
             if (!isFinal || !text.trim()) return;
             productApiClient
               .recordInterviewTurn(interviewId, { role: "user", content: text })
-              .then((r) => deps.setSession(r.session))
+              .then((r) => {
+                deps.setSession(r.session);
+                // R-P1-03: adopt authoritative state so strategyTrace / referencedMemory
+                // from server-side derive land in productState (not only local session).
+                if (r.state) deps.adoptServerState(r.state);
+              })
               .catch((err) => deps.recordTurnFailedFallback(text, err));
             if (interviewId) {
               productApiClient
@@ -287,7 +292,12 @@ export async function startRealtimeVoiceConnect(deps: StartRealtimeVoiceConnectD
             if (interviewId) {
               productApiClient
                 .recordInterviewTurn(interviewId, { role: "assistant", content: text })
-                .then((r) => deps.setSession(r.session))
+                .then((r) => {
+                deps.setSession(r.session);
+                // R-P1-03: adopt authoritative state so strategyTrace / referencedMemory
+                // from server-side derive land in productState (not only local session).
+                if (r.state) deps.adoptServerState(r.state);
+              })
                 .catch(() => {
                   deps.setSession((prev) =>
                     prev ? appendAssistantTranscriptFinal(prev, text, deps.assistantTranscriptTurnRef) : prev
@@ -390,7 +400,12 @@ export async function startRealtimeVoiceConnect(deps: StartRealtimeVoiceConnectD
         if (voiceSid) {
           productApiClient
             .recordInterviewTurn(voiceSid, { role: "user", content: text })
-            .then((r) => deps.setSession(r.session))
+            .then((r) => {
+                deps.setSession(r.session);
+                // R-P1-03: adopt authoritative state so strategyTrace / referencedMemory
+                // from server-side derive land in productState (not only local session).
+                if (r.state) deps.adoptServerState(r.state);
+              })
             .catch((err) => deps.recordTurnFailedFallback(text, err));
         } else {
           deps.setSession((prev) => (prev ? receiveUserTurn(prev, text) : prev));
@@ -421,7 +436,12 @@ export async function startRealtimeVoiceConnect(deps: StartRealtimeVoiceConnectD
         if (assistantSid) {
           productApiClient
             .recordInterviewTurn(assistantSid, { role: "assistant", content: text })
-            .then((r) => deps.setSession(r.session))
+            .then((r) => {
+                deps.setSession(r.session);
+                // R-P1-03: adopt authoritative state so strategyTrace / referencedMemory
+                // from server-side derive land in productState (not only local session).
+                if (r.state) deps.adoptServerState(r.state);
+              })
             .catch(() => {
               deps.setSession((prev) =>
                 prev ? appendAssistantTranscriptFinal(prev, text, deps.assistantTranscriptTurnRef) : prev
