@@ -44,3 +44,4 @@
 - **处理**：
   - 预算：等滑窗（默认 1h）或调 `LLM_MAX_CALLS_PER_SESSION` / `LLM_SYSTEM_WINDOW_MS`
   - 限流：等 `Retry-After`；测试可设 `RATE_LIMIT_DISABLED=true`
+  - 桶与场景上界：见 [`docs/COST-ENVELOPE.md`](../COST-ENVELOPE.md)（次数 ≠ 美元）

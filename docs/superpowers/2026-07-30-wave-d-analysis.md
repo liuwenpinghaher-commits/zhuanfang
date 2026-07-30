@@ -117,11 +117,11 @@
 
 | 切片 | 验收 |
 | --- | --- |
-| D3.a 文档成本信封 | README/清单：单场 call 上界表 |
+| D3.a 文档成本信封 | **closed 2026-07-30** · [`docs/COST-ENVELOPE.md`](../COST-ENVELOPE.md) |
 | D3.b metrics counters | `llm_calls_by_capability`（已有部分 event）汇总 API |
 | D3.c （可选）usage 透传 | 若百炼返回 usage，记 estimatedTokens |
 
-**维护原则：** 个人 MVP 可长期停在 D3.a+b；商业化前再做 D3.c。
+**维护原则：** 个人 MVP 可长期停在 D3.a（已闭）+ 按需 D3.b；商业化前再做 D3.c。
 
 ---
 

@@ -124,6 +124,7 @@ curl -sS http://127.0.0.1:3210/api/health
 | SSRF / 限流 | 默认开启；生产禁止 `RATE_LIMIT_DISABLED=true` |
 | HTTPS / 备份 / 运维 | 反代 TLS；定期 export；`docs/runbooks/README.md` |
 | 容量 | 单用户单机；1 路 cascade；知识块建议 &lt;~10k |
+| 成本信封 | 调用次数闸 ≠ 美元；见 [`docs/COST-ENVELOPE.md`](docs/COST-ENVELOPE.md) |
 
 ### D. 可选：OSS / MinIO 语料直传
 
@@ -434,6 +435,7 @@ React UI
 文档归档与最终健康检查：`docs/ARCHIVE.md`。  
 上线勾选清单：`docs/DEPLOYMENT-CHECKLIST.md`。  
 长期维护路线：`docs/MAINTENANCE-ROADMAP.md`。  
+成本/调用信封（D3.a）：`docs/COST-ENVELOPE.md`。  
 Wave D 分析：`docs/superpowers/2026-07-30-wave-d-analysis.md`。
 
 ## 验证状态
