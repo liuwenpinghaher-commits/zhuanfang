@@ -73,12 +73,15 @@
 | D1–D6 | open | 播客/搜索/成本/a11y/可移植/OTEL 增强按需 |
 | 非目标 | n/a | 多租户、CRDT、完整 AWS SDK |
 
-## 集成与部署态（2026-07-30）
+## 集成与部署态（2026-07-30 · 定稿）
 
-全量集成矩阵、架构、容量信封与上线清单见：
-[`docs/superpowers/2026-07-30-integration-and-deployment-state.md`](./2026-07-30-integration-and-deployment-state.md)
+| 文档 | 用途 |
+| --- | --- |
+| [`docs/DEPLOYMENT-CHECKLIST.md`](../DEPLOYMENT-CHECKLIST.md) | **上线勾选清单（定稿真源）** |
+| [`docs/superpowers/2026-07-30-integration-and-deployment-state.md`](./2026-07-30-integration-and-deployment-state.md) | 集成矩阵、架构、容量信封 |
+| [`docs/runbooks/README.md`](../runbooks/README.md) | 故障手册 |
 
-摘要（`dafbba1f`）：typecheck + **1600 pass / 0 fail** + `npm run build` + voice-slo + capacity smoke + compose fail-closed → **Conditional GO**（建议补 Playwright e2e 与带 key 的 compose 演练）。
+摘要（代码 `dafbba1f` + 文档后续 commit）：typecheck + **1600 pass / 0 fail** + build + voice-slo + capacity + compose fail-closed → **Conditional GO**。Full GO = 清单 §6–§8（Playwright e2e、真实 key compose、live export）。
 
 ## 验收
 

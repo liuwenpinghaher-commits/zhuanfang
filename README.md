@@ -104,22 +104,26 @@ curl -sS http://127.0.0.1:3210/api/health
 - Compose 默认 `PRODUCT_STORE=surreal`；**不要**在生产用 `memory`。
 - 停止 / 查看：`docker compose --env-file .env.production.local logs -f`，`docker compose down`（加 `-v` 会删卷，等同清库）。
 
-### C. 上线检查清单
+### C. 上线检查清单（定稿）
+
+**完整可勾选清单（发布前 / 密钥 / 基建 / 启动 / 冒烟 / Full GO）：**
+[`docs/DEPLOYMENT-CHECKLIST.md`](docs/DEPLOYMENT-CHECKLIST.md)
+
+**集成验证与系统态：**
+[`docs/superpowers/2026-07-30-integration-and-deployment-state.md`](docs/superpowers/2026-07-30-integration-and-deployment-state.md)
+
+摘要要求：
 
 | 项 | 要求 |
 | --- | --- |
-| 鉴权 | `DEPLOYMENT_PROFILE=production` + 非空 `PRODUCT_API_TOKEN` |
-| CORS | `PRODUCT_WEB_ORIGINS` 仅正式前端 origin（逗号分隔） |
-| 状态库 | `PRODUCT_STORE=surreal`，数据目录可写且**单进程独占** |
-| LLM / 语音 | `DASHSCOPE_API_KEY`（或 `BAILIAN_API_KEY`）；未配则相关能力 503，不静默假成功 |
-| Embedding | 默认云端；离线可 `EMBEDDING_PROVIDER=local`（需本机已缓存 `bge-large-zh-v1.5`） |
-| 语料转写 | 本地上传需 `CORPUS_AUDIO_PUBLIC_BASE_URL`；或走 S3/OSS 预签名 + 公网 `publicUrl` |
-| SSRF | 用户音频 URL 默认禁私网；内网 SenseVoice 源设 `CORPUS_AUDIO_URL_ALLOWLIST` |
-| 限流 | 默认开启（export/chat/rag/voice 等）；可用 `RATE_LIMIT_*` 调整 |
-| HTTPS | 公网部署时前端/API 使用 HTTPS；配置页 production 检查会严格校验 |
-| 备份 | 定期 `GET /api/state/export`，确认 `completeness.status=complete` |
-| 容量假设 | **单用户 / 单机 MVP**；推荐 1 路 cascade 语音；知识块建议 &lt;10k 量级（`node scripts/capacity-smoke.mjs`） |
-| 运维 | 见 `docs/runbooks/README.md` |
+| 鉴权 | `DEPLOYMENT_PROFILE=production` + 强随机 `PRODUCT_API_TOKEN`（缺失拒启） |
+| CORS | `PRODUCT_WEB_ORIGINS` 仅正式 origin |
+| 状态库 | `PRODUCT_STORE=surreal`，可写，**单进程独占** |
+| LLM / 语音 | `DASHSCOPE_API_KEY`（或 `BAILIAN_API_KEY`）；未配 → 5xx，不假成功 |
+| 语料 | `CORPUS_AUDIO_PUBLIC_BASE_URL` 和/或 S3 path-style；内网 URL → allowlist |
+| SSRF / 限流 | 默认开启；生产禁止 `RATE_LIMIT_DISABLED=true` |
+| HTTPS / 备份 / 运维 | 反代 TLS；定期 export；`docs/runbooks/README.md` |
+| 容量 | 单用户单机；1 路 cascade；知识块建议 &lt;~10k |
 
 ### D. 可选：OSS / MinIO 语料直传
 

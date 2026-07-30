@@ -136,8 +136,12 @@ npm run start:api
 
 ### 4.3 上线检查清单（勾选）
 
+**定稿完整清单（含 Full GO 与签字栏）：[`docs/DEPLOYMENT-CHECKLIST.md`](../DEPLOYMENT-CHECKLIST.md)**
+
+摘要：
+
 - [ ] `DEPLOYMENT_PROFILE=production` + 强随机 `PRODUCT_API_TOKEN`
-- [ ] `PRODUCT_WEB_ORIGINS` 仅正式 origin（含 https）
+- [ ] `PRODUCT_WEB_ORIGINS` 仅正式前端 origin（逗号分隔）
 - [ ] `PRODUCT_STORE=surreal`，磁盘可写，**单实例**
 - [ ] Provider key 已配；未配能力会 5xx（预期）
 - [ ] 语料：公网 base 或 S3 + path-style；内网 URL 走 allowlist
@@ -146,6 +150,7 @@ npm run start:api
 - [ ] 备份：`GET /api/state/export` 且 `completeness.status=complete`
 - [ ] 健康：`GET /api/health`（voice/recall/persist）
 - [ ] 阅读 `docs/runbooks/README.md`
+- [ ] （Full GO）Playwright e2e + 真实 key compose + live export smoke
 
 ### 4.4 部署后冒烟
 
