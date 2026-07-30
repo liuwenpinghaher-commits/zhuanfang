@@ -1936,8 +1936,38 @@ export default function App() {
       }
       setSession(null);
       closeRealtimeVoiceSession();
-      setNotice(buildNotice("success", "专访档案已生成", "双轨笔记和认知资产已更新。"));
-      setView("notes");
+      // Journey honesty (R-P1-04 / doNotSave):
+      // - doNotSave must not claim "档案已生成"
+      // - pending HITL candidates must not feel "already remembered" across sessions
+      const pendingCount = Number(apiRun.pendingMemoryCandidateCount ?? 0);
+      const needsHitl =
+        apiRun.longTermRecallRequiresApproval === true || pendingCount > 0;
+      if (skipAudioUpload) {
+        setNotice(
+          buildNotice(
+            "info",
+            "专访已结束（本场不保存）",
+            "按你的选择，本场未写入长期资产与录音；对话仅作当次体验。"
+          )
+        );
+        setView("notes");
+      } else if (needsHitl) {
+        setNotice(
+          buildNotice(
+            "success",
+            "专访档案已生成",
+            pendingCount > 0
+              ? `双轨笔记已更新。另有 ${pendingCount} 条记忆待确认后才会进入跨会话召回——请在「记忆治理」审核。`
+              : "双轨笔记已更新。长期记忆需你确认后才会进入跨会话召回。"
+          )
+        );
+        setView("memory");
+      } else {
+        setNotice(
+          buildNotice("success", "专访档案已生成", "双轨笔记和认知资产已更新。")
+        );
+        setView("notes");
+      }
       return;
     } catch (err) {
       // 已结束(409)/会话不存在(404):这场专访其实已经收尾(常见于 /end 调 LLM 较慢时用户

@@ -12,6 +12,67 @@ const PROVENANCE_MAX_TURNS = 3;
  * 真实性原则:任一路召回失败即向上抛,由调用方（建会话路由）如实 5xx——
  * 不再逐路吞错返回 undefined 让会话"看起来成功但少了召回"。
  */
+
+/**
+ * Resolve a theme for graph recall without falling back to "most appearances"
+ * (that polluted new topics — P3-43). Prefer exact name, then conservative soft
+ * containment / token overlap against topicHint + lexical query (R-P2-05).
+ */
+export function resolveThemeForPrefetch(
+  state: ProductState,
+  topicHint: string,
+  queryText?: string
+): ProductState["themes"][number] | undefined {
+  const themeTopic = topicHint.trim();
+  const lexical = (queryText ?? "").trim();
+  if (!themeTopic && !lexical) return undefined;
+
+  const exact =
+    (themeTopic ? state.themes.find((t) => t.name === themeTopic) : undefined) ??
+    (lexical ? state.themes.find((t) => t.name === lexical) : undefined);
+  if (exact) return exact;
+
+  const haystack = `${themeTopic}\n${lexical}`.toLowerCase();
+  const scored = state.themes
+    .map((theme) => {
+      const name = theme.name.trim();
+      if (name.length < 2) return null;
+      const n = name.toLowerCase();
+      let score = 0;
+      if (haystack.includes(n)) score += 3 + Math.min(n.length, 12) / 12;
+      else if (themeTopic && n.includes(themeTopic.toLowerCase()) && themeTopic.length >= 2) {
+        score += 2;
+      } else if (lexical && n.includes(lexical.toLowerCase()) && lexical.length >= 2) {
+        score += 1.5;
+      } else {
+        // light token overlap for multi-char CJK / space-separated tokens
+        const tokens = Array.from(
+          new Set(
+            `${themeTopic} ${lexical}`
+              .split(/[\s,，。！？、；;:\/|]+/u)
+              .map((x) => x.trim().toLowerCase())
+              .filter((x) => x.length >= 2)
+          )
+        );
+        let hits = 0;
+        for (const tok of tokens) {
+          if (n.includes(tok) || tok.includes(n)) hits += 1;
+        }
+        if (hits === 0) return null;
+        score += hits;
+      }
+      if (score <= 0) return null;
+      return { theme, score, appearances: theme.appearances ?? 0, len: name.length };
+    })
+    .filter((x): x is NonNullable<typeof x> => x != null)
+    .sort((a, b) => b.score - a.score || b.len - a.len || b.appearances - a.appearances);
+
+  // Require a minimum signal so unrelated high-frequency themes never win.
+  const best = scored[0];
+  if (!best || best.score < 1.5) return undefined;
+  return best.theme;
+}
+
 export async function prefetchRecall(
   port: NativeRecallPort,
   state: ProductState,
@@ -28,11 +89,10 @@ export async function prefetchRecall(
     queryText?: string;
   }
 ): Promise<RecallResult> {
-  // 审计修复(P3-43):与域内 resolveInterviewTopicHint 对齐——仅【名字匹配】的主题参与图召回。
-  // 此前名字不匹配即回退"出现次数最高的旧主题",导致显式新话题会话被无关旧主题资产污染
-  // (原生分支只排序不过滤)。新话题无匹配主题 → themeId undefined → 该路召回自然为空,正确。
-  const themeTopic = topicHint.trim();
-  const theme = themeTopic ? state.themes.find((t) => t.name === themeTopic) : undefined;
+  // P3-43: never fall back to "top appearances" theme (pollutes new topics).
+  // R-P2-05: allow conservative soft match (containment / token overlap) so mid-session
+  // drift still hits the graph when the user restates a known theme without exact equality.
+  const theme = resolveThemeForPrefetch(state, topicHint, opts.queryText);
   const themeId = theme?.id;
 
   // 方案一:rag_chunk 原生混合召回是可选能力(仅 surreal 权威档位),typeof 探测 + bind 后使用。

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { prefetchRecall } from "./prefetch-recall";
+import { prefetchRecall, resolveThemeForPrefetch } from "./prefetch-recall";
 import { createInitialProductState } from "../../../../src/domain/engine";
 import type { ProductState } from "../../../../src/domain/types";
 import type { NativeRecallPort } from "./native-recall-port";
@@ -147,5 +147,31 @@ describe("prefetchRecall: rag 混合召回注入(方案一)+ 溯源敏感透传(
     };
     await prefetchRecall(port, stateWithTheme(), "放权", [0.1], { includeSensitive: true, topN: 5 });
     expect(seen?.includeSensitive).toBe(true);
+  });
+});
+
+
+describe("resolveThemeForPrefetch (R-P2-05 soft match)", () => {
+  const baseState = {
+    themes: [
+      { id: "th_old", name: "放权", appearances: 99 },
+      { id: "th_growth", name: "第二增长曲线", appearances: 2 },
+      { id: "th_sleep", name: "睡眠焦虑", appearances: 5 }
+    ]
+  } as any;
+
+  it("exact name wins", () => {
+    const t = resolveThemeForPrefetch(baseState, "放权");
+    expect(t?.id).toBe("th_old");
+  });
+
+  it("soft containment: utterance contains theme name", () => {
+    const t = resolveThemeForPrefetch(baseState, "增长", "今天我想谈第二增长曲线的焦虑");
+    expect(t?.id).toBe("th_growth");
+  });
+
+  it("does not fall back to highest-appearances unrelated theme", () => {
+    const t = resolveThemeForPrefetch(baseState, "全新话题XYZ", "这是一个从未出现过的主题讨论");
+    expect(t).toBeUndefined();
   });
 });

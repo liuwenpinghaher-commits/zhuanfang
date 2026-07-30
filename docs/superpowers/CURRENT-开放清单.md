@@ -38,6 +38,11 @@
 - Silero 神经 pVAD：`endpointingMode=pvad-experimental` 融合 speechProb
 - LiveKit interrupt：客户端 reliable data channel + agent `await session.interrupt()` 多级回退与可观测日志
 
+## 用户旅程收口（2026-07-30）
+- 结束页诚实：`finishInterview` 消费 `pendingMemoryCandidateCount` / `longTermRecallRequiresApproval`；有待审 → 跳转记忆治理；`doNotSave` 不再宣称「档案已生成」
+- 主题图召回软匹配：`resolveThemeForPrefetch`（精确优先，保守包含/词重叠；禁止 appearances 回退污染）
+- 已闭合核对：R-P1-01 mid queryText、R-P1-05 includePending 配置+域消费、R-P2-01/02 relevance 地板、双通道 guide 优先
+
 ## 仍 open / 后置
 
 - 真音频 e2e 分段 TTFA 生产级统计（`E2E_REAL=1` voice-cascade 已可跑通主路径）
