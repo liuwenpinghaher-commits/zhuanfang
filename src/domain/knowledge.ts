@@ -2,7 +2,7 @@ import type { ChatCitation, ChatMessage, ChatSession, InterviewTurn, KnowledgeCh
 import { cloneState, makeId, nowIso, withAuditEvent, sanitizeExternalMaterialText } from "./utils";
 import { tokenizeMemoryGraphText } from "./context-pack";
 import { cosineSimilarity } from "./vector";
-import { noReliableMemoryNotice, retrievePersonalKnowledge } from "./retrieval";
+import { noReliableMemoryNotice, resolveMinRecallScore, retrievePersonalKnowledge } from "./retrieval";
 
 /** chat 会话总数上限：每个 ProductState 最多保留的会话数，超出按 updatedAt 升序淘汰最旧。 */
 const MAX_CHAT_SESSIONS = 50;
@@ -390,17 +390,24 @@ export function rankKnowledgeChunks(
   return scored.slice(0, topK).map((s) => s.chunk);
 }
 
-/** Stage-2: hybrid rank + channel quota + low-confidence reject for personal chat/RAG. */
+/** Stage-2: hybrid rank + channel quota + low-confidence reject for personal chat/RAG.
+ *  Wave C · C1.1: minScore 与 systemConfig.memory.minRecallScore / DEFAULT_MIN_RECALL_SCORE 对齐
+ *  （此前硬编码 0.08，与域默认 0.12 及 chat metrics 漂移）。 */
 export function retrieveAndRankKnowledge(
   chunks: KnowledgeChunk[],
   queryText: string,
   queryEmbedding: number[] | undefined,
-  topK: number
+  topK: number,
+  opts?: { minScore?: number; memoryConfig?: ProductState["systemConfig"]["memory"] }
 ) {
+  const minScore =
+    typeof opts?.minScore === "number" && Number.isFinite(opts.minScore)
+      ? opts.minScore
+      : resolveMinRecallScore(opts?.memoryConfig);
   return retrievePersonalKnowledge(chunks, queryText, {
     queryEmbedding,
     topK,
-    minScore: 0.08
+    minScore
   });
 }
 

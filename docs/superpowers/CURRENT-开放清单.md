@@ -1,7 +1,7 @@
-# CURRENT 开放清单（Stage-3 · 2026-07-28）
+# CURRENT 开放清单（Wave 路线图 · 2026-07-30）
 
-> 真源：Stage-1/2 已闭合；Stage-3 将第二大脑推到可评测 / 可巩固 / 可恢复层。
-> 收口 commit：`4391dafd`（pVAD-lite + 可选 S3 presign）及后续 workspace/docs 清理。
+> 真源：Stage-1/2/3 与旅程后置项已闭合。后续按「全维度优化实施路线图」推进。
+> 注：`docs/ontology/2026-06-28-落地符合度审视` 中「混合检索/contradicts 全空」已过时。
 
 ## Stage-1 / Stage-2
 
@@ -50,16 +50,35 @@
 - 导入/approve 向量 warning 前后端透出（不再假成功）
 - 语音 strategyTrace：record-turn 后 adopt 权威 state
 - 分段 TTFA：cascade 记录 VAD→STT / STT→应答 / LLM TTFT / TTS TTFB；Config + /health + capabilities 可见
-- 混合召回 empty-fusion 保留无向量 BM25 块
+- 混合召回 empty-fusion + 非空 RRF 并入无向量 BM25 块（P4 e2e 稳定）
 - 真音频 e2e 长跑压测（`E2E_REAL=1`）可按需加深
 - 多设备 CRDT（非目标）
+
+## Wave 路线图进度
+
+| ID | 状态 | 说明 |
+|---|---|---|
+| W0 基线 | closed | README Hybrid RAG + 部署；本清单对齐 |
+| A1.3 SSRF | closed | `apps/api/src/safe-url.ts`；corpus transcription 校验；`CORPUS_AUDIO_URL_ALLOWLIST` |
+| A1.4 限流 | closed | `rate-limit.ts` + server hook；`RATE_LIMIT_*`；Vitest 默认关 |
+| A2 CI | closed | `.github/workflows/ci.yml` |
+| A3 容量 | closed | `scripts/capacity-smoke.mjs` + runbook 双开锁 |
+| A4 runbook | closed | `docs/runbooks/README.md` |
+| B1 纵向策略 | closed | 债排序；`decision_review`；互斥；privacy.longitudinal KPI |
+| B2 图消费薄 | closed | `contradiction_review`（checklist 对立看法） |
+| B3 Playbook 可证 | closed | 既有 ruleType 单测 + concrete-moment 断言保留 |
+| C1 chat 阈值 | closed | `retrieveAndRankKnowledge` 用 `resolveMinRecallScore`（去 0.08 硬编码） |
+| C2 rubric | closed | `docs/superpowers/eval/interview-rubric.md` |
+| C3 隐私 KPI | closed | `buildPrivacyReport().longitudinal` |
+| D1–D6 | open | 播客/搜索/成本/a11y/可移植/OTEL 增强按需 |
+| 非目标 | n/a | 多租户、CRDT、完整 AWS SDK |
 
 ## 验收
 
 ```bash
 npm run typecheck
 env -u DASHSCOPE_API_KEY -u BAILIAN_API_KEY REAL_PROVIDER_SMOKE=off npm test -- --run
-REAL_PROVIDER_SMOKE=off npm test -- --run src/realtime/pvadEndpointing.test.ts apps/api/src/s3-presign.test.ts
+node scripts/capacity-smoke.mjs
 npx tsx scripts/voice-slo-smoke.ts
 node scripts/backup-export-smoke.mjs
 npm run test:e2e

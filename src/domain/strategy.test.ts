@@ -82,6 +82,39 @@ describe("decideInterviewStrategy — ruleType-driven mechanism-reversal", () =>
   });
 });
 
+describe("decideInterviewStrategy — decision_review (Wave B)", () => {
+  it("triggers decision_review on turn 2–4 when a due decision is present and no debt wins", () => {
+    const session = sessionWithRules([]);
+    session.turns = [
+      { id: "u1", role: "user", content: "第一轮", intent: "用户表达", timestamp: new Date().toISOString() }
+    ];
+    session.strategyTrace = [];
+    session.guide.debtToAddress = undefined;
+    session.guide.openDebts = [];
+    session.guide.decisionsToReview = [
+      { title: "是否放权", choice: "关键节点把控", daysOpen: 40 }
+    ];
+    const decision = decideInterviewStrategy(session, "最近团队还是老样子");
+    expect(decision.strategy).toBe("decision_review");
+    expect(decision.reason).toContain("是否放权");
+  });
+
+  it("does not double-fire decision_review after it already appears in strategyTrace", () => {
+    const session = sessionWithRules([]);
+    session.turns = [
+      { id: "u1", role: "user", content: "第一轮", intent: "用户表达", timestamp: new Date().toISOString() },
+      { id: "a1", role: "assistant", content: "追问", intent: "追问", timestamp: new Date().toISOString() },
+      { id: "u2", role: "user", content: "第二轮", intent: "用户表达", timestamp: new Date().toISOString() }
+    ];
+    session.strategyTrace = [
+      { turnIndex: 2, strategy: "decision_review", label: "决策复盘", reason: "done", depth: "mechanism" }
+    ];
+    session.guide.decisionsToReview = [{ title: "是否放权", choice: "关键节点把控", daysOpen: 40 }];
+    const decision = decideInterviewStrategy(session, "继续说");
+    expect(decision.strategy).not.toBe("decision_review");
+  });
+});
+
 describe("decideInterviewStrategy — late-session anti-repeat", () => {
   it("does not repeat synthesis when the latest strategy already synthesized the discussion", () => {
     const session = sessionWithRules([]);

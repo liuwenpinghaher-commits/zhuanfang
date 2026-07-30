@@ -24,10 +24,11 @@
 
 Redis 暂缓；Prisma 不是当前首选。项目使用嵌入式 SurrealDB（surrealkv）作为唯一持久状态仓库，原生支持图、向量与混合检索，适合本地单机部署。
 
-## 运行
+## 运行（本地开发）
 
 ```bash
 npm install
+cp .env.example .env.local   # 填入 DASHSCOPE_API_KEY 等可选密钥
 npm run dev:full
 ```
 
@@ -41,28 +42,18 @@ npm run dev:api
 npm run dev
 ```
 
-生产构建：
+生产构建（不启动服务）：
 
 ```bash
 npm run build
 ```
 
-生产容器演练：
-
-```bash
-cp .env.production.example .env.production.local
-# 在 .env.production.local 中设置一个长随机 PRODUCT_API_TOKEN（生产必填）
-docker compose --env-file .env.production.local up --build
-```
-
-> **生产必须设置 `PRODUCT_API_TOKEN`。** 当 `DEPLOYMENT_PROFILE=production` 时服务会 fail-closed：缺少该令牌时直接拒绝启动并报错——否则鉴权守卫不会生效，所有 `/api/*` 路由（隐私导出、一键清空、修改 provider 配置、语音代理）将无凭据即可访问。`docker-compose.yml` 使用 `${PRODUCT_API_TOKEN:?...}`，未设置时 `docker compose up` 会直接失败。客户端通过 `Authorization: Bearer <token>` 或 `?token=<token>`（WebSocket）携带令牌。
-
-容器会在同一个 `PORT` 上托管前端静态产物和 Product API，默认访问 `http://127.0.0.1:3210`。`VITE_PRODUCT_API_BASE_URL` 在生产模板中保持空值，表示浏览器同源请求 `/api/*`；如果前端和 API 分域部署，再把它改成公开 API 地址。
-
 测试：
 
 ```bash
-npm test -- --run
+npm run typecheck
+# 本机若已 export DASHSCOPE_API_KEY，建议关掉 provider smoke，避免单测误打外网
+env -u DASHSCOPE_API_KEY -u BAILIAN_API_KEY REAL_PROVIDER_SMOKE=off npm test -- --run
 npm run test:e2e
 # 真实供应商 / surreal 隔离库（需要 key；不污染仓库 .data/）
 npm run test:e2e:real
@@ -73,6 +64,158 @@ npm run test:e2e:real
 `npm run test:e2e:real`（或 `E2E_REAL=1 playwright test`）使用临时 surreal 数据目录 + 真实 key 跑 real 族与语音 cascade；无 key 时相关用例 skip。语音门控是 `E2E_REAL=1` + DashScope/Bailian key，**没有** `E2E_REAL_VOICE` 环境变量。
 
 `*.real.test.ts` 是外部 provider smoke（从 `.env.local` 读真实 key，会真调 DashScope / AnySearch）。在持有真实 key 的机器上跑全量 vitest 而不想触发外部调用时，设 `REAL_PROVIDER_SMOKE=off`（也接受 `0`/`false`，大小写不敏感）即可让这些用例全部按"未配置 key"跳过。
+
+## 部署步骤
+
+### A. 本机 / 单机进程（开发或小流量）
+
+1. `npm install && npm run build`
+2. 准备环境变量（见下方「关键配置」与 `.env.example`）：至少 `PRODUCT_STORE=surreal`；生产再加 `DEPLOYMENT_PROFILE=production` + 长随机 `PRODUCT_API_TOKEN`。
+3. 启动 API（同时托管前端静态产物时设 `PRODUCT_STATIC_DIR=dist`）：
+
+```bash
+export PRODUCT_STATIC_DIR=dist
+export PRODUCT_STORE=surreal
+export PRODUCT_STATE_DB_PATH=.data/product-state.db
+npm run start:api
+# 默认 http://127.0.0.1:3210  （HOST/PORT 可改）
+```
+
+4. 数据目录：Surreal 落在 `PRODUCT_STATE_DB_PATH` 同级的 `surreal/`（默认 `.data/surreal`）；语料音频默认 `.data/corpus-audio`。备份用 `GET /api/state/export`，不要只拷进程内存。
+5. 健康检查：`GET /api/health`（含 `metrics.voice` / `metrics.recall` 等运行时信号）。
+
+### B. Docker Compose（推荐生产演练）
+
+```bash
+cp .env.production.example .env.production.local
+# 必填：长随机 PRODUCT_API_TOKEN
+# 建议：DASHSCOPE_API_KEY、PRODUCT_WEB_ORIGINS（正式域名）、CORPUS_AUDIO_PUBLIC_BASE_URL（若要 SenseVoice 拉本地音频）
+docker compose --env-file .env.production.local up --build -d
+curl -sS http://127.0.0.1:3210/api/health
+```
+
+> **生产必须设置 `PRODUCT_API_TOKEN`。** 当 `DEPLOYMENT_PROFILE=production` 时服务会 fail-closed：缺少该令牌时直接拒绝启动并报错——否则鉴权守卫不会生效，所有 `/api/*` 路由（隐私导出、一键清空、修改 provider 配置、语音代理）将无凭据即可访问。`docker-compose.yml` 使用 `${PRODUCT_API_TOKEN:?...}`，未设置时 `docker compose up` 会直接失败。客户端通过 `Authorization: Bearer <token>` 或 `?token=<token>`（WebSocket）携带令牌。
+
+容器要点：
+
+- 同一 `PORT`（默认 3210）托管前端静态产物 + Product API；`PRODUCT_STATIC_DIR=/app/dist`。
+- `VITE_PRODUCT_API_BASE_URL` 在生产模板中保持**空值** → 浏览器同源请求 `/api/*`；前后端分域时再写成公开 API 基址，并同步 `PRODUCT_WEB_ORIGINS`。
+- 持久卷 `zhuanfang-data` → `/app/.data`（含 Surreal 与语料音频）。
+- Compose 默认 `PRODUCT_STORE=surreal`；**不要**在生产用 `memory`。
+- 停止 / 查看：`docker compose --env-file .env.production.local logs -f`，`docker compose down`（加 `-v` 会删卷，等同清库）。
+
+### C. 上线检查清单
+
+| 项 | 要求 |
+| --- | --- |
+| 鉴权 | `DEPLOYMENT_PROFILE=production` + 非空 `PRODUCT_API_TOKEN` |
+| CORS | `PRODUCT_WEB_ORIGINS` 仅正式前端 origin（逗号分隔） |
+| 状态库 | `PRODUCT_STORE=surreal`，数据目录可写且**单进程独占** |
+| LLM / 语音 | `DASHSCOPE_API_KEY`（或 `BAILIAN_API_KEY`）；未配则相关能力 503，不静默假成功 |
+| Embedding | 默认云端；离线可 `EMBEDDING_PROVIDER=local`（需本机已缓存 `bge-large-zh-v1.5`） |
+| 语料转写 | 本地上传需 `CORPUS_AUDIO_PUBLIC_BASE_URL`；或走 S3/OSS 预签名 + 公网 `publicUrl` |
+| SSRF | 用户音频 URL 默认禁私网；内网 SenseVoice 源设 `CORPUS_AUDIO_URL_ALLOWLIST` |
+| 限流 | 默认开启（export/chat/rag/voice 等）；可用 `RATE_LIMIT_*` 调整 |
+| HTTPS | 公网部署时前端/API 使用 HTTPS；配置页 production 检查会严格校验 |
+| 备份 | 定期 `GET /api/state/export`，确认 `completeness.status=complete` |
+| 容量假设 | **单用户 / 单机 MVP**；推荐 1 路 cascade 语音；知识块建议 &lt;10k 量级（`node scripts/capacity-smoke.mjs`） |
+| 运维 | 见 `docs/runbooks/README.md` |
+
+### D. 可选：OSS / MinIO 语料直传
+
+```bash
+CORPUS_S3_BUCKET=your-bucket
+CORPUS_S3_REGION=cn-hangzhou
+CORPUS_S3_ENDPOINT=https://oss-cn-hangzhou.aliyuncs.com   # 自定义端点
+CORPUS_S3_FORCE_PATH_STYLE=true                          # 有 ENDPOINT 时默认 true（path-style）
+CORPUS_S3_PUBLIC_BASE_URL=https://cdn.example.com/corpus # SenseVoice 可拉的公网基址
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
+```
+
+`POST /api/corpus/audio-files/presign` 在 bucket+凭证齐全时返回 `provider:"s3"` + SigV4 `uploadUrl`；否则保持 `provider:"local"`。
+
+## Hybrid RAG 架构
+
+导入资料问答与知识索引在 **Surreal 权威档**（`PRODUCT_STORE=surreal`）走原生混合检索，而不是仅靠域层 cosine/关键词排序。
+
+### 目标与分层
+
+```text
+Browser / 外部集成
+  POST /api/rag/query          # 纯导入资料 QA（HTTP 唯一原生 rag 出口）
+  POST /api/chat 等            # 全局助手：八源知识索引（含 knowledge_chunk 混合召回）
+       │
+       ▼
+Product API (Fastify)
+  embed(question)              # 云端 embedding 或 EMBEDDING_PROVIDER=local
+  asNativeRecall(repository)   # 探测 Surreal 原生能力
+       │
+       ├─ recallRagChunks      # 热态 rag_chunk（导入块）
+       ├─ searchHybrid         # 冷层 knowledge_chunk
+       └─ recallMemoriesByVector + queryText  # 长期记忆 memory
+       │
+       ▼
+域层门控重验（不信任 SQL 门控 alone）
+  buildSemanticRagContextFromRecall / 同等 policy
+  usage=interview-context + 来源 isImportSourceAllowedInContext
+       │
+       ▼
+LLM 生成答案；citations 只保留模型实际标注的 [n]
+```
+
+内存档（`PRODUCT_STORE=memory`）没有原生索引能力，回落域层 `buildSemanticRagContext`（cosine + 关键词）——这是配置态，不是生产降级伪装。
+
+### 三路索引（Surreal）
+
+| 表 | HNSW（向量） | BM25 全文 | Analyzer |
+| --- | --- | --- | --- |
+| `memory` | `memory_emb` COSINE dim=1024 | `memory_ft` on `text` | `zh` ngram(1,3) |
+| `rag_chunk` | `rag_emb` | `rag_ft` | 同上 |
+| `knowledge_chunk` | `kc_emb` | `kc_ft` | 同上 |
+
+- 维度常量：`packages/db/src/surreal/constants.ts` → `EMBEDDING_DIMENSION = 1024`（与 `bge-large-zh-v1.5` / 云端默认输出对齐；schema 守卫防漂移）。
+- Analyzer 升级见 migration `010_r4a_ngram.surql`（自 ngram(2,2) → (1,3)，并 REBUILD 三索引）。
+- 查询侧 token 治理（三路统一）：`search::analyze('zh', q)` → `selectBm25QueryTokens`（去重 → 有多字 gram 则丢单字 1-gram → cap 32）→ `buildBm25Clause` 生成 `text @@ $t0 OR …`。
+
+### `rag_chunk` 混合召回契约（`recallRagChunks`）
+
+实现：`packages/db/src/surreal/surreal-product-state-repository.ts`。
+
+1. **纯 HNSW**：仅 `embedding`、无 `queryText` → KNN `<|k,ef|>` + usage 门控。
+2. **BM25-only**：有 `queryText`、无向量 → 关键词直查；**无 embedding 的降级摄入块由此可达**（HNSW 索引不含它们）。
+3. **Hybrid**（有向量 + 有 queryText）：
+   - `LET $vec` / `LET $bm` 保持**纯索引**子查询（LET 内禁止再叠 AND，否则 KNN/BM25 路径会空——P2a）。
+   - `search::rrf([$vec,$bm], limit, 60)` 融合；`limit = max(k, 60)`，衰减常量 `RRF_RANK_CONSTANT=60`。
+   - 最终 `SELECT` 再叠 `usage` 门控；`WHERE id IN …` 不保序 → JS `reorderByRrfRank`。
+4. **BM25 并入（稳定性关键）**：
+   - 融合**为空**：BM25 ∪ HNSW 复核（关键词块优先），并打 `surreal_hybrid_fusion_empty`。
+   - 融合**非空**：保留 RRF 名次，并为 BM25 独有命中（典型：无向量块）**预留 top-k 名额**再追加——避免 rrf 只返回 HNSW 路时丢掉专名/无嵌入块（P4 e2e 判别器 `rc_y`）。
+5. **失败语义**：`search::rrf` / BM25 真错误上抛 → 路由 502，**不**静默回落域层 cosine 冒充混合结果。原生命中被门控滤空 = 诚实空结果。
+
+`knowledge_chunk.searchHybrid` 与 `memory` 混合路径共用同一套 RRF/BM25 机械件（`buildBm25Clause` / `reorderByRrfRank`）；knowledge 表无行级 usage/sensitivity 门控（摄入侧已过滤）。
+
+### HTTP 与消费点
+
+- **`POST /api/rag/query`**：`{ question }` → embed → `recallRagChunks({ embedding, queryText, k: TOP_K*2, usage: "interview-context" })` → `buildSemanticRagContextFromRecall` → LLM；citations 仅含答案中的 `[n]`（C-P2-03，不 dump 全部 top-k）。
+- **Chat / 访谈预召回**：冷层 `searchHybrid` + 记忆混合召回；低置信拒召见 Stage-2（`src/domain/retrieval.ts`）。
+- **导入 / 再索引**：嵌入失败或截断会在 import/approve 响应里透出 warning 字段；无向量块仍应能被 BM25 路径检索到。
+
+### 可观测事件（stderr JSON）
+
+| event | 含义 |
+| --- | --- |
+| `surreal_hybrid_fusion_empty` | RRF 结果空，已走 BM25/HNSW 复核 |
+| `surreal_rag_bm25_skipped` / `*_bm25_skipped` | analyze 后无 token，跳过 BM25 |
+| `surreal_rag_bm25_fallback_failed` / `surreal_rag_bm25_union_failed` | BM25 直查异常 |
+| `surreal_rag_recall_failed` / `rag_native_recall_failed` | 原生召回失败 → API 502 |
+| `rag_embed_failed` | 问题向量化失败 → 502 |
+
+### 回归锁
+
+- 包测：`packages/db/src/surreal/surreal-recall.test.ts`（HNSW / 混合拉无向量块 / BM25-only / usage 门控）。
+- 生产接线 e2e：`apps/api/src/e2e/surreal-data-layer-journey.real.test.ts` ④ P4——有向量无关块 `rc_x` + 无向量关键词块 `rc_y`，断言原生 `recallRagChunks` 与 `/api/rag/query` citations 均含 `rc_y`（域层纯 cosine 物理不可达 `rc_y`）。
+- Golden：`tests/fixtures/rag-golden/cases.json` + `src/domain/rag-golden.ts`（确定性 hit@k，无 LLM-judge）。
 
 ## 关键配置
 
@@ -148,8 +291,13 @@ CORPUS_AUDIO_PUBLIC_BASE_URL=
 CORPUS_AUDIO_MAX_BYTES=52428800
 CORPUS_S3_BUCKET=
 CORPUS_S3_REGION=
+CORPUS_S3_ENDPOINT=
+# true/false；设置 ENDPOINT 时默认 true（OSS/MinIO path-style）
+CORPUS_S3_FORCE_PATH_STYLE=
 CORPUS_S3_PUBLIC_BASE_URL=
 # or AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION / AWS_SESSION_TOKEN
+# Embedding：默认云端；本地离线可设 EMBEDDING_PROVIDER=local（bge-large-zh-v1.5，1024 维）
+# EMBEDDING_PROVIDER=local
 PODCAST_AUTO_RENDER_ON_CREATE=false
 ```
 
@@ -159,9 +307,11 @@ PODCAST_AUTO_RENDER_ON_CREATE=false
 
 `BAILIAN_ASR_LANGUAGE_HINT`、`BAILIAN_ASR_POLL_ATTEMPTS` 和 `BAILIAN_ASR_POLL_INTERVAL_MS` 控制导入语音专访时的 SenseVoice 转写语言提示和轮询节奏。公网音频较长时可提高轮询次数；本地调试时建议保持默认。
 
-`BAILIAN_REALTIME_WEBRTC_ENDPOINT` 需要百炼侧白名单 Endpoint。Product API 可用但 endpoint 未配置时，实时语音入口会停留在文本专访并显示配置原因；只有 Product API 完全不可用时才进入本地节奏模拟，不会暴露 key。
+`BAILIAN_REALTIME_TRANSPORT`：`websocket`（默认）或 `webrtc`。WebRTC 默认走 DashScope 公网信令 `https://dashscope.aliyuncs.com/api/v1/webrtc/realtime`，**不需要**工作区 endpoint 白名单；`BAILIAN_REALTIME_WEBRTC_ENDPOINT` 仅在你要覆盖该默认信令 URL 时设置。专访主路径仍优先 cascade（ASR→LLM→TTS）；Omni Realtime / LiveKit 为可选传输。
 
 `BAILIAN_REALTIME_ENABLE_SEARCH` 控制 Realtime session.update 是否允许携带联网材料能力；开启后仍由 Product API 负责整理搜索简报和可追溯来源，浏览器不会直接接触 provider key。
+
+`EMBEDDING_PROVIDER=local` 时使用本机 `bge-large-zh-v1.5`（1024 维，与 Surreal HNSW DIMENSION 一致）；未设置则走云端 embedding（需 DashScope/Bailian key）。本地模型缓存通常在 `node_modules/@huggingface/transformers/.cache/...`；首次会下载。
 
 `PRODUCT_STATE_DB_PATH` 为空或不写时，`npm run start:api` 会默认在 `.data/product-state.db` 旁建立 SurrealDB 数据目录 `.data/surreal`；设置为 `memory`、`:memory:` 或 `in-memory`（或 `PRODUCT_STORE=memory`）时使用内存状态库，重启后回到 seed 状态。R7：`PRODUCT_STORE` 仅 `memory|surreal`，旧值 `sqlite/dual/dual-surreal` 已废弃并自动归一到 `surreal`（启动期会响亮提示改档位）。
 
@@ -174,7 +324,8 @@ PODCAST_AUTO_RENDER_ON_CREATE=false
 `CORPUS_S3_*` / `AWS_*`（可选云预签名）：
 - 启用条件：`CORPUS_S3_BUCKET` + (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` 或 `CORPUS_S3_ACCESS_KEY_ID`/`CORPUS_S3_SECRET_ACCESS_KEY`)。
 - 区域：`AWS_REGION` 或 `CORPUS_S3_REGION`（默认 `us-east-1`）；临时凭证可用 `AWS_SESSION_TOKEN` / `CORPUS_S3_SESSION_TOKEN`。
-- 行为：`POST /api/corpus/audio-files/presign` 返回 `provider:"s3"`、`uploadUrl`、`uploadHeaders`、`publicUrl`（优先 `CORPUS_S3_PUBLIC_BASE_URL`，否则标准 `bucket.s3.region.amazonaws.com`）。
+- 自定义端点：`CORPUS_S3_ENDPOINT`（阿里云 OSS、MinIO 等）；`CORPUS_S3_FORCE_PATH_STYLE` 在设置 ENDPOINT 时默认 path-style（`true`），虚拟主机样式可显式设 `false`。
+- 行为：`POST /api/corpus/audio-files/presign` 返回 `provider:"s3"`、`uploadUrl`、`uploadHeaders`、`publicUrl`（优先 `CORPUS_S3_PUBLIC_BASE_URL`，否则按 endpoint/region 推导）。
 - 未配置时保持 `provider:"local"` + `uploadPath` 本地 PUT，不伪造云上传。
 - 实现：`apps/api/src/s3-presign.ts`（最小 SigV4 PutObject，无额外 AWS SDK）。
 
@@ -236,7 +387,7 @@ R7 起 SurrealDB（`.data/surreal`）是**唯一**持久仓库，`GET /api/state
   - `pvad-experimental`：用 ASR `getRecentEnergy` + `ExpressionState` + completeness 调整 `minPauseMs`/`maxWaitMs`，并可把 `uncertain` 偏置为 `respond`
   - **诚实边界**：不是神经网络 pVAD 权重；capabilities 标注为实验启发式
   - 入口：`startRealtimeVoiceConnect` 从 `productState.systemConfig.voice` 注入 cascade `decisionOpts`
-- **非目标**：多租户、Surreal 原生 CRDT 多设备同步、强绑单一 S2S、OSS 私有兼容端点。
+- **非目标**：多租户、Surreal 原生 CRDT 多设备同步、强绑单一 S2S。OSS/MinIO 已通过 `CORPUS_S3_ENDPOINT` + path-style 支持；不实现完整 AWS SDK 面。
 
 ## Stage-2：记忆 / 召回 / 语音度量
 
@@ -255,13 +406,16 @@ R7 起 SurrealDB（`.data/surreal`）是**唯一**持久仓库，`GET /api/state
 React UI
   -> Product API (Fastify)
      -> ProductStateRepository (Surreal 默认 / memory 测试)
+        -> 热态：会话/资产/记忆/rag_chunk + 原生混合召回
+        -> 冷层：rawMaterial / audio / knowledge_chunk(+searchHybrid)
+     -> Hybrid RAG：HNSW + BM25 + search::rrf（见上文专节）
      -> Search providers (AnySearch / Tavily / Exa / Brave)
      -> Bailian Character interview (文本追问，fail-loud)
      -> Bailian Realtime / LiveKit / cascade 语音栈
-     -> Bailian TTS / ASR providers
+     -> Bailian TTS / ASR / Embedding providers（或 local bge）
 ```
 
-**真实性立场**：专访追问与归档是 LLM 能力——未配置或调用失败返回 5xx/429，**不会**静默用确定性模板冒充 AI 追问。演示用的 `local-demo` 搜索等须显式标记 degraded / needs-review。
+**真实性立场**：专访追问与归档是 LLM 能力——未配置或调用失败返回 5xx/429，**不会**静默用确定性模板冒充 AI 追问。演示用的 `local-demo` 搜索等须显式标记 degraded / needs-review。原生混合召回失败同样 502，不用域层路径掩盖 Surreal 差异。
 
 实时语音的留白、打断和语音追问信号会写入会话 `realtimeSignals`。实时打断支持回填：调用 `POST /api/realtime-voice/sessions/:id/interrupt`，服务端 `truncateAssistantTurn` 截断已说出口的内容。详见 [docs/realtime-improvement-plan.md](docs/realtime-improvement-plan.md)。
 
@@ -287,6 +441,11 @@ node scripts/backup-export-smoke.mjs
 
 按需：`npm run test:e2e`、`npm run test:e2e:real`（需 `agent/.env` 或环境中的 key）、`npm run build`。
 
-聚焦单测：`src/realtime/pvadEndpointing.test.ts`、`apps/api/src/s3-presign.test.ts`、`apps/api/src/routes/corpus-presign.test.ts`。
+聚焦单测：
 
-（具体通过数字以本机最近一次命令输出为准；审查报告见 `docs/superpowers/`。）
+- 混合召回：`packages/db/src/surreal/surreal-recall.test.ts`
+- Surreal 数据层 e2e（含 P4 无向量 BM25）：`apps/api/src/e2e/surreal-data-layer-journey.real.test.ts`
+- RAG 路由：`apps/api/src/routes/rag.test.ts`
+- 语音 / 预签名：`src/realtime/pvadEndpointing.test.ts`、`apps/api/src/s3-presign.test.ts`、`apps/api/src/routes/corpus-presign.test.ts`
+
+（具体通过数字以本机最近一次命令输出为准；审查报告见 `docs/superpowers/`。开放项真源：`docs/superpowers/CURRENT-开放清单.md`。）

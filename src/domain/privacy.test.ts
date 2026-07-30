@@ -25,6 +25,20 @@ describe("buildPrivacyReport", () => {
     const report = buildPrivacyReport(createInitialProductState(), "2026-06-19T00:00:00.000Z");
     expect(report.inventory.map((item) => item.id)).not.toContain("intel");
   });
+
+  it("includes longitudinal KPIs (Wave B/C)", () => {
+    const report = buildPrivacyReport(createInitialProductState(), "2026-06-19T00:00:00.000Z");
+    expect(report.longitudinal).toEqual(
+      expect.objectContaining({
+        openDebts: expect.any(Number),
+        dueDecisions: expect.any(Number),
+        contradictionPairs: expect.any(Number),
+        appliedPatches: expect.any(Number),
+        sensitiveMemories: expect.any(Number),
+        activeThemes: expect.any(Number)
+      })
+    );
+  });
 });
 
 describe("createScopedPurge", () => {

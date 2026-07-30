@@ -42,6 +42,7 @@ import {
 } from "./providers/bailian-streaming-tts";
 import { isAuthGuardActive, isAuthorized, readCookieToken } from "./auth";
 import { createLlmBudget } from "./llm-budget";
+import { createRateLimiter, rateLimitBucket } from "./rate-limit";
 import { resolveRequestTimeoutMs } from "./request-timeout";
 import { registerAssetRoutes } from "./routes/assets";
 import { registerCorpusRoutes } from "./routes/corpus";
@@ -125,6 +126,7 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   registerCors(server, runtimeEnv);
   registerProductionAuth(server, runtimeEnv);
   registerRuntimeBootstrap(server, runtimeEnv);
+  registerSensitiveRouteRateLimit(server, runtimeEnv);
   const writeGate = registerWriteSerialization(server);
   registerErrorHandler(server);
   // R7:默认工厂只构造内存仓库(surreal 需异步连接,只能由 startServer 经 createSurrealStores 注入)。
@@ -875,6 +877,63 @@ function registerRuntimeBootstrap(server: ReturnType<typeof Fastify>, env: Recor
     );
     // Deliberately omit the long-lived secret from the response body.
     return { authRequired: true, cookieSet: true, secureCookie: secure };
+  });
+}
+
+/** Wave A · A1.4: sliding-window limits on expensive / destructive API surfaces. */
+function registerSensitiveRouteRateLimit(server: ReturnType<typeof Fastify>, env: Record<string, string | undefined>) {
+  const disabled = (env.RATE_LIMIT_DISABLED ?? "").trim().toLowerCase();
+  // Vitest injects many rapid requests; default off under VITEST unless explicitly enabled.
+  if (disabled === "1" || disabled === "true" || disabled === "yes") return;
+  if (disabled !== "0" && disabled !== "false" && process.env.VITEST) return;
+
+  const windowMs = Math.max(1_000, Number(env.RATE_LIMIT_WINDOW_MS) || 60_000);
+  const defaultMax = Math.max(1, Number(env.RATE_LIMIT_MAX) || 60);
+  const limiter = createRateLimiter({ max: defaultMax, windowMs });
+
+  // Path prefix → optional stricter max (falls back to defaultMax via same limiter window;
+  // we emulate stricter caps by requiring more "virtual" budget via separate limiter instances).
+  const strict = createRateLimiter({
+    max: Math.max(1, Number(env.RATE_LIMIT_STRICT_MAX) || 20),
+    windowMs
+  });
+
+  const STRICT_PREFIXES = [
+    "/api/state/export",
+    "/api/state/purge",
+    "/api/state/import",
+    "/api/state/reset",
+    "/api/chat",
+    "/api/rag/query",
+    "/api/corpus/transcriptions",
+    "/api/corpus/audio-files",
+    "/api/realtime-voice"
+  ];
+
+  server.addHook("onRequest", async (request: FastifyRequest, reply: FastifyReply) => {
+    const path = request.url.split("?")[0] ?? "";
+    if (!path.startsWith("/api/")) return;
+    if (path === "/api/health" || path.startsWith("/api/health/") || path === "/api/runtime-bootstrap") return;
+
+    const useStrict = STRICT_PREFIXES.some((p) => path === p || path.startsWith(p + "/") || path.startsWith(p));
+    // Only rate-limit mutating methods on general API; always limit strict prefixes (incl. GET export).
+    if (!useStrict && request.method === "GET") return;
+
+    const ip = request.ip || "unknown";
+    const bucket = rateLimitBucket(useStrict ? `strict:${path}` : `api:${request.method}`, ip);
+    const result = (useStrict ? strict : limiter).take(bucket);
+    if (!result.allowed) {
+      const retrySec = Math.max(1, Math.ceil(result.retryAfterMs / 1000));
+      reply.header("retry-after", String(retrySec));
+      console.warn(JSON.stringify({
+        event: "rate_limit_exceeded",
+        path,
+        method: request.method,
+        ip,
+        retryAfterSec: retrySec
+      }));
+      return reply.code(429).send({ error: `请求过于频繁，请 ${retrySec} 秒后重试。` });
+    }
   });
 }
 

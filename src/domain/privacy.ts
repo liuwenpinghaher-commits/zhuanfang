@@ -32,12 +32,23 @@ export interface PrivacyOperationsReport {
   runtimeEnvPreservedOnPurge: boolean;
 }
 
+export interface PrivacyLongitudinalKpis {
+  openDebts: number;
+  dueDecisions: number;
+  contradictionPairs: number;
+  appliedPatches: number;
+  sensitiveMemories: number;
+  activeThemes: number;
+}
+
 export interface PrivacyReport {
   generatedAt: string;
   totalRecords: number;
   hasPersonalData: boolean;
   inventory: PrivacyInventoryItem[];
   operations: PrivacyOperationsReport;
+  /** Wave B/C: second-brain + privacy KPIs (always present). */
+  longitudinal: PrivacyLongitudinalKpis;
   retentionNotes: string[];
 }
 
@@ -132,6 +143,18 @@ export function buildPrivacyReport(state: ProductState, generatedAt = new Date()
     .filter((item) => item.id !== "operations")
     .reduce((total, item) => total + item.count, 0);
 
+  const now = generatedAt;
+  const openDebts = state.debts.filter((d) => d.status === "待了解").length;
+  const sensitiveMemories = state.memoryRecords.filter((r) => (r.sensitivity ?? "normal") === "sensitive").length;
+  const dueDecisions = state.decisions.filter(
+    (d) =>
+      d.status === "待复盘" &&
+      d.confirmationStatus === "用户确认" &&
+      (!d.reviewAt || Date.parse(d.reviewAt) <= Date.parse(now))
+  ).length;
+  const appliedPatches = state.playbookPatches.filter((p) => p.status === "applied").length;
+  const contradictionPairs = countContradictionPairs(state);
+
   return {
     generatedAt,
     totalRecords,
@@ -145,12 +168,34 @@ export function buildPrivacyReport(state: ProductState, generatedAt = new Date()
       providerSecretsExcluded: true,
       runtimeEnvPreservedOnPurge: true
     },
+    // Wave B · B1.5 / Wave C · C3.2: longitudinal + privacy KPIs (additive, non-breaking).
+    longitudinal: {
+      openDebts,
+      dueDecisions,
+      contradictionPairs,
+      appliedPatches,
+      sensitiveMemories,
+      activeThemes: state.themes.filter((t) => t.maturity !== "关闭").length
+    },
     retentionNotes: [
       "JSON 导出包含产品状态，不包含 .env.local、DASHSCOPE_API_KEY、BAILIAN_API_KEY 或第三方搜索 key。",
       "通过 Product API 执行彻底清空时，会删除个人档案、专访、资产、记忆、导入资料、播客、运行历史和已引用的 local-object 本地音频原件，只保留当前 provider/模型配置和一条清空审计事件。",
-      "重置演示数据会恢复初始样例，不等同于隐私清空；生产删除应使用彻底清空。"
+      "重置演示数据会恢复初始样例，不等同于隐私清空；生产删除应使用彻底清空。",
+      "默认不自动硬删音频/事件；retain*Days 配置预留作报告提示，未启用自动删除。"
     ]
   };
+}
+
+function countContradictionPairs(state: ProductState): number {
+  const seen = new Set<string>();
+  for (const p of state.points) {
+    for (const otherId of p.contradictsPointIds ?? []) {
+      if (p.id === otherId) continue;
+      const key = p.id < otherId ? `${p.id}|${otherId}` : `${otherId}|${p.id}`;
+      seen.add(key);
+    }
+  }
+  return seen.size;
 }
 
 // Selective deletion: a user can purge one data category at a time instead of only the

@@ -12,6 +12,7 @@ import type { ProductStateRepository } from "../product-state-repository";
 import { replaceStateDurable } from "../product-state-repository";
 import { resolveCorpusAudioMaxBytes } from "../storage-config";
 import { isAuthorized, readCookieToken } from "../auth";
+import { assertSafeAudioSourceUrl, UnsafeUrlError } from "../safe-url";
 import { presignS3PutObject, readS3CorpusEnv } from "../s3-presign";
 
 interface CorpusInsightRequestPayload {
@@ -250,7 +251,7 @@ export async function registerCorpusRoutes(
   });
 
   server.post("/api/corpus/transcriptions", async (request, reply) => {
-    const input = normalizeTranscriptionInput(request.body);
+    let input = normalizeTranscriptionInput(request.body);
 
     // Local file upload branch.
     // SenseVoice only accepts publicly fetchable file_urls. When CORPUS_AUDIO_PUBLIC_BASE_URL
@@ -358,6 +359,17 @@ export async function registerCorpusRoutes(
     if (!isSupportedAudioSourceUrl(input.sourceUrl)) {
       return reply.code(422).send({ error: "Audio source URL must use http, https, or oss protocol." });
     }
+
+    // Wave A · A1.3: block SSRF via user-supplied audio URLs (oss:// is provider-side, allowed).
+    let safeSourceUrl = input.sourceUrl;
+    try {
+      safeSourceUrl = assertSafeAudioSourceUrl(input.sourceUrl);
+    } catch (err) {
+      const message = err instanceof UnsafeUrlError ? err.message : "不安全的音频 URL。";
+      console.warn(JSON.stringify({ event: "ssrf_blocked", path: "corpus_transcription", error: message }));
+      return reply.code(422).send({ error: message });
+    }
+    input = { ...input, sourceUrl: safeSourceUrl };
 
     if (!options.bailianTranscriptionClient) {
       return reply.code(503).send({ error: "缺少 DASHSCOPE_API_KEY 或 BAILIAN_API_KEY，无法调用百炼 SenseVoice 录音转写。" });

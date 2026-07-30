@@ -10,7 +10,7 @@ import {
 } from "../../../../src/domain/knowledge";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import { recordGroundingEvent, recordRecallEvent } from "../observability/runtime-metrics";
-import { decideGroundingMode } from "../../../../src/domain/retrieval";
+import { decideGroundingMode, resolveMinRecallScore } from "../../../../src/domain/retrieval";
 import type { BailianChatClient, BailianEmbeddingClient } from "../providers/bailian";
 import type { KnowledgeIndexRepository } from "../knowledge-index-repository";
 import type { ProductStateRepository } from "../product-state-repository"
@@ -118,6 +118,7 @@ export async function registerChatRoutes(
     let recallRejected = false;
     let rejectReason: "empty" | "below_threshold" | undefined;
     let topScore = 0;
+    const recallThreshold = resolveMinRecallScore(state.systemConfig.memory);
     if (typeof knowledgeRepo.searchHybrid === "function") {
       try {
         const candidates = await knowledgeRepo.searchHybrid({
@@ -125,7 +126,9 @@ export async function registerChatRoutes(
           ...(queryEmbedding && queryEmbedding.length > 0 ? { embedding: queryEmbedding } : {}),
           limit: TOP_K * NATIVE_CANDIDATE_FACTOR
         });
-        const ranked = retrieveAndRankKnowledge(candidates, message, queryEmbedding, TOP_K);
+        const ranked = retrieveAndRankKnowledge(candidates, message, queryEmbedding, TOP_K, {
+          memoryConfig: state.systemConfig.memory
+        });
         retrieved = ranked.chunks;
         recallRejected = ranked.rejected;
         rejectReason = ranked.reason;
@@ -137,7 +140,9 @@ export async function registerChatRoutes(
         return reply.code(502).send({ error: `对话资料召回失败：${msg}。请重试。` });
       }
     } else {
-      const ranked = retrieveAndRankKnowledge(await knowledgeRepo.listAll(), message, queryEmbedding, TOP_K);
+      const ranked = retrieveAndRankKnowledge(await knowledgeRepo.listAll(), message, queryEmbedding, TOP_K, {
+        memoryConfig: state.systemConfig.memory
+      });
       retrieved = ranked.chunks;
       recallRejected = ranked.rejected;
       rejectReason = ranked.reason;
@@ -148,7 +153,7 @@ export async function registerChatRoutes(
       outcome: recallRejected ? (rejectReason === "below_threshold" ? "low_score" : "empty") : "hit",
       topScore,
       hitCount: retrieved.length,
-      threshold: 0.08
+      threshold: recallThreshold
     });
     console.warn(JSON.stringify({
       event: recallRejected ? (rejectReason === "below_threshold" ? "recall_low_score" : "recall_empty") : "recall_hit",

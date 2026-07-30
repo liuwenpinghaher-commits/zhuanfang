@@ -273,13 +273,57 @@ export function decideInterviewStrategy(session: InterviewSession, userText: str
     };
   }
 
-  if ((previousUserTurns === 1 || previousUserTurns === 2) && session.guide.debtToAddress && !hasStrategy(trace, "debt_followup")) {
+  // Wave B · B1.2/B1.3: decision_review vs debt_followup — mutual exclusion same session;
+  // prefer older due decision when both exist; loser stays on checklist only.
+  const dueDecision = session.guide.decisionsToReview?.[0];
+  if (
+    (previousUserTurns === 1 || previousUserTurns === 2 || previousUserTurns === 3) &&
+    dueDecision &&
+    !hasStrategy(trace, "decision_review") &&
+    !hasStrategy(trace, "debt_followup")
+  ) {
+    // Prefer decision_review when daysOpen >= debt days (or no debt).
+    const debtDays = session.guide.openDebts?.[0]?.daysOpen ?? -1;
+    if (!session.guide.debtToAddress || dueDecision.daysOpen >= debtDays) {
+      return {
+        ...base,
+        strategy: "decision_review",
+        label: "决策复盘",
+        reason: `回访待复盘决策「${dueDecision.title}」(已做出 ${dueDecision.daysOpen} 天)：当初选「${dueDecision.choice}」的假设成立了吗？`,
+        depth: "mechanism"
+      };
+    }
+  }
+
+  if (
+    (previousUserTurns === 1 || previousUserTurns === 2) &&
+    session.guide.debtToAddress &&
+    !hasStrategy(trace, "debt_followup") &&
+    !hasStrategy(trace, "decision_review")
+  ) {
     return {
       ...base,
       strategy: "debt_followup",
       label: "知识债追问",
       reason: `第 2-3 轮回访未完成知识债：${session.guide.debtToAddress}`,
       depth: "mechanism"
+    };
+  }
+
+  // Wave B · B2.1: one contradiction_review per session in mid-late turns.
+  if (
+    previousUserTurns >= 4 &&
+    previousUserTurns <= 8 &&
+    !hasStrategy(trace, "contradiction_review") &&
+    session.guide.strategyChecklist.some((line) => line.includes("对立看法"))
+  ) {
+    const contradictionLine = session.guide.strategyChecklist.find((line) => line.includes("对立看法"));
+    return {
+      ...base,
+      strategy: "contradiction_review",
+      label: "对立观点复盘",
+      reason: contradictionLine ?? "复盘同主题下的对立看法。",
+      depth: "meta"
     };
   }
 

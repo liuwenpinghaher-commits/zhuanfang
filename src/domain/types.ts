@@ -328,6 +328,8 @@ export type InterviewStrategyId =
   | "concrete_example_probe"
   | "mechanism_reversal_probe"
   | "debt_followup"
+  | "decision_review"
+  | "contradiction_review"
   | "perspective_shift"
   | "blindspot_probe"
   | "premise_challenge"

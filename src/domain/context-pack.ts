@@ -499,14 +499,19 @@ export function buildInterviewGuide(state: ProductState, options: InterviewGuide
   const searchBrief = resolveInterviewContextSearchBrief(state, options);
   const topTheme = [...state.themes].sort((a, b) => b.appearances - a.appearances)[0];
   const focusQuestion = searchBrief || explicitTopicHint ? undefined : findNextInterviewFocusQuestion(state);
+  // Wave B · B1.1: open debts ranked by topic relevance then age (not array order).
+  const topicHintForDebt = resolveInterviewTopicHint(state, options);
   const openDebts = state.debts
     .filter((debt) => debt.status === "待了解")
     .map((debt) => ({
       concept: debt.concept,
       context: debt.context,
       daysOpen: daysBetween(debt.updatedAt, nowIso()),
-      nextQuestion: debt.nextQuestion
-    }));
+      nextQuestion: debt.nextQuestion,
+      _topicScore: scoreDebtTopicOverlap(debt.concept, debt.context, topicHintForDebt)
+    }))
+    .sort((a, b) => b._topicScore - a._topicScore || b.daysOpen - a.daysOpen)
+    .map(({ _topicScore: _s, ...rest }) => rest);
   const debtToAddress = openDebts[0]?.concept;
   // 审计修复(P2·复盘闭环 + 回归审查 R5-1/R5-2):收集待复盘决策,让 decision.status 真实驱动引导。
   // R5-2:门控须三条齐备——status「待复盘」+ confirmationStatus「用户确认」(未确认的 AI 候选不催,
@@ -930,6 +935,19 @@ export function buildSemanticRagContextFromRecall(
     importSources
   };
 }
+/** Wave B · B1.1 helper: crude topic overlap for debt ranking (keyword includes). */
+function scoreDebtTopicOverlap(concept: string, context: string, topicHint: string): number {
+  const hint = (topicHint ?? "").trim();
+  if (!hint) return 0;
+  const blob = `${concept} ${context}`;
+  let score = 0;
+  if (blob.includes(hint)) score += 3;
+  for (const part of hint.split(/[\s,，、/]+/).filter((p) => p.length >= 2)) {
+    if (blob.includes(part)) score += 1;
+  }
+  return score;
+}
+
 function buildStrategyChecklist(
   state: ProductState,
   input: {
