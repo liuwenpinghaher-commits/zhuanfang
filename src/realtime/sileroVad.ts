@@ -1,7 +1,7 @@
 /**
  * Browser Silero VAD (neural) via @ricky0123/vad-web.
- * Uses CDN assets by default so Vite does not need onnx/wasm copy plugins.
- * Optional: fails soft when WASM/model cannot load.
+ * Loads ONNX + ort WASM from same-origin `/vad/` (copied by scripts/copy-vad-assets.mjs).
+ * Optional: fails soft when WASM/model cannot load — cascade falls back to energy VAD.
  */
 import type { MicVAD } from "@ricky0123/vad-web";
 
@@ -20,8 +20,18 @@ export interface SileroVadController {
   readonly ready: boolean;
 }
 
-const VAD_WEB_CDN = "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.27/dist/";
-const ORT_CDN = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/";
+/** Same-origin asset roots (Vite `public/vad` → `/vad/…` in dev and production). */
+function vadAssetPaths(): { baseAssetPath: string; onnxWASMBasePath: string } {
+  const base =
+    typeof import.meta !== "undefined" && import.meta.env?.BASE_URL
+      ? String(import.meta.env.BASE_URL)
+      : "/";
+  const root = base.endsWith("/") ? base : `${base}/`;
+  return {
+    baseAssetPath: `${root}vad/`,
+    onnxWASMBasePath: `${root}vad/ort/`
+  };
+}
 
 function unavailableController(): SileroVadController {
   return {
@@ -48,10 +58,11 @@ export async function createSileroVadController(
 
   try {
     const mod = await import("@ricky0123/vad-web");
+    const paths = vadAssetPaths();
     vad = await mod.MicVAD.new({
       model: "v5",
-      baseAssetPath: VAD_WEB_CDN,
-      onnxWASMBasePath: ORT_CDN,
+      baseAssetPath: paths.baseAssetPath,
+      onnxWASMBasePath: paths.onnxWASMBasePath,
       // Reuse the cascade mic stream (do not open a second getUserMedia).
       getStream: async () => stream,
       pauseStream: async () => {

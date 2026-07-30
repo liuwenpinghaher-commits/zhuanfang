@@ -24,8 +24,9 @@
 ### pVAD / Silero
 - 配置：`ProductState.systemConfig.voice.endpointingMode = "pvad-experimental"`（亦可 `silence` / `semantic`）
 - 代码：`src/realtime/sileroVad.ts`（浏览器 Silero 神经 VAD）+ `pvadEndpointing.ts` → `cascadedAsrSource` / `cascadedPipeline`
+- 资源：`npm run copy:vad-assets`（`postinstall` / `dev` / `build` 自动）把 onnx + ORT wasm 拷到 `public/vad/`，浏览器 **同源** 加载 `/vad/`（无 jsDelivr CDN）
 - 信号：Silero `isSpeech` 概率与能量/表情启发式融合；失败软降级能量启发式
-- 边界：Node/单测无 WebAudio 时静默不可用；真浏览器加载 CDN onnx/wasm
+- 边界：Node/单测无 WebAudio 时静默不可用；资源缺失时 init 失败软降级（不拉 CDN）
 
 ### 语料预签名
 - 本地：`POST /api/corpus/audio-files/presign` → `provider:"local"` + `uploadPath`

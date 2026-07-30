@@ -1,5 +1,7 @@
 node_modules/
 dist/
+# Generated Silero/ORT browser assets (scripts/copy-vad-assets.mjs)
+public/vad/
 test-results/
 playwright-report/
 tsconfig.tsbuildinfo

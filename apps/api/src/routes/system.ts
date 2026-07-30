@@ -560,7 +560,7 @@ export async function registerSystemRoutes(
         status: "ready",
         active: true,
         detail:
-          "endpointingMode=pvad-experimental：浏览器 Silero 神经 VAD（失败软降级能量/表情启发式）+ cascade turns/stream 子句级流式 TTS。WebRTC 优先建连，失败诚实回退 WebSocket。",
+          "endpointingMode=pvad-experimental：浏览器 Silero 神经 VAD（同源 /vad/ onnx+wasm；失败软降级能量/表情启发式）+ cascade turns/stream 子句级流式 TTS。WebRTC 优先建连，失败诚实回退 WebSocket。",
         requiredEnv: [],
         lastCheckedAt: generatedAt
       },

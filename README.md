@@ -386,10 +386,11 @@ R7 起 SurrealDB（`.data/surreal`）是**唯一**持久仓库，`GET /api/state
   - 默认：`provider:"local"` → `PUT /api/corpus/audio-files/:file`（JSON `{ audioBase64 }`，需鉴权）
   - 云：配置 bucket + AWS 凭证后 → `provider:"s3"` → 客户端直传 `uploadUrl`（SigV4）
   - SenseVoice 仍需可拉取的 `publicUrl`（`CORPUS_AUDIO_PUBLIC_BASE_URL` 或 `CORPUS_S3_PUBLIC_BASE_URL`）
-- **pVAD-lite**（`src/realtime/pvadEndpointing.ts` + cascade 接线）
+- **pVAD / Silero**（`src/realtime/pvadEndpointing.ts` + `sileroVad.ts` + cascade 接线）
   - `systemConfig.voice.endpointingMode`：`silence` | `semantic`（默认）| `pvad-experimental`
-  - `pvad-experimental`：用 ASR `getRecentEnergy` + `ExpressionState` + completeness 调整 `minPauseMs`/`maxWaitMs`，并可把 `uncertain` 偏置为 `respond`
-  - **诚实边界**：不是神经网络 pVAD 权重；capabilities 标注为实验启发式
+  - `pvad-experimental`：浏览器 Silero 神经 VAD（`isSpeech`）与能量/`ExpressionState`/completeness 融合，调整 `minPauseMs`/`maxWaitMs`，并可把 `uncertain` 偏置为 `respond`
+  - 资源：`scripts/copy-vad-assets.mjs` 在 `postinstall`/`dev`/`build` 将 onnx + ORT wasm 拷到 `public/vad/`；运行时同源 `/vad/`（**不依赖** jsDelivr CDN）
+  - **诚实边界**：init/模型加载失败软降级能量启发式；Node/单测无 WebAudio 时不可用；capabilities 标注为实验端点
   - 入口：`startRealtimeVoiceConnect` 从 `productState.systemConfig.voice` 注入 cascade `decisionOpts`
 - **非目标**：多租户、Surreal 原生 CRDT 多设备同步、强绑单一 S2S。OSS/MinIO 已通过 `CORPUS_S3_ENDPOINT` + path-style 支持；不实现完整 AWS SDK 面。
 
