@@ -532,8 +532,13 @@ expect(response.json()).toMatchObject({ ok: true, ready: true, service: "intervi
     });
   });
 
-  it("uses AnySearch when the provider client is configured", async () => {
+  it("uses AnySearch when the provider client is configured", { timeout: 15_000 }, async () => {
     const server = buildApiServer({
+      // Isolate env so Bailian chat is not auto-created and forced into insight synthesis (502).
+      env: {
+        DASHSCOPE_API_KEY: "",
+        BAILIAN_API_KEY: ""
+      },
       anySearchClient: {
         async createSearchBrief(input) {
           return {
@@ -668,7 +673,14 @@ expect(response.json()).toMatchObject({ ok: true, ready: true, service: "intervi
 
   // 真实性重构:无转写 client → 如实 503（此前返回 status:"degraded" 的占位稿冒充转写草稿,已剔除）。
   it("returns 503 for audio transcription when ASR is not configured", async () => {
-    const server = buildApiServer();
+    // Isolate from developer process.env keys — otherwise FromEnv creates a real client
+    // and a failed upstream call returns 502 instead of the honest 503 not-configured path.
+    const server = buildApiServer({
+      env: {
+        DASHSCOPE_API_KEY: "",
+        BAILIAN_API_KEY: ""
+      }
+    });
 
     const response = await server.inject({
       method: "POST",

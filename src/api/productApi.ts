@@ -325,8 +325,11 @@ export interface ImportDocumentResponse {
   state: ProductState;
   chunkCount?: number;
   embeddedChunkCount?: number;
+  embeddingFailedCount?: number;
   embeddingReady?: boolean;
   vectorRecallAvailable?: boolean;
+  reindexFailed?: boolean;
+  reindexStaleDiscarded?: boolean;
   warning?: string;
 }
 

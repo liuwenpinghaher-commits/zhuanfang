@@ -47,7 +47,7 @@
 
 - WebRTC：公网 DashScope signaling 默认，**无需白名单**；`BAILIAN_REALTIME_WEBRTC_ENDPOINT` 仅可选覆盖
 - OSS/S3：`CORPUS_S3_ENDPOINT` + `CORPUS_S3_FORCE_PATH_STYLE` path-style 预签名
-- 导入向量：await reindex，回传 `embeddedChunkCount` / `embeddingFailedCount` / warning
+- 导入向量：await reindex，回传 `embeddedChunkCount` / `embeddingFailedCount` / warning；前端导入/approve 透出 warning（不再假成功）
 - 真音频 e2e 分段 TTFA 生产级统计仍可增强（`E2E_REAL=1` 主路径已可跑）
 - 多设备 CRDT（非目标）
 

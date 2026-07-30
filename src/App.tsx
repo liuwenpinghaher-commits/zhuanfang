@@ -1061,7 +1061,30 @@ export default function App() {
       const result = await productApiClient.importDocument({ title, content, sourceType: "text" });
       adoptServerState(result.state);
       setApiPersistenceEnabled(true);
-      setNotice(buildNotice("success", "导入完成", `抽取了 ${result.candidateCount} 条候选记忆，请在下方审核。`));
+      // Journey honesty: surface embedding coverage instead of always "success".
+      if (result.warning || result.embeddingReady === false) {
+        const coverage =
+          typeof result.embeddedChunkCount === "number" && typeof result.chunkCount === "number"
+            ? `向量 ${result.embeddedChunkCount}/${result.chunkCount}。`
+            : "";
+        setNotice(
+          buildNotice(
+            "warning",
+            "导入完成（向量未就绪）",
+            `${coverage}${result.warning ?? "跨会话向量召回可能暂不可用；候选记忆仍可审核。"} 已抽取 ${result.candidateCount} 条候选。`
+          )
+        );
+      } else {
+        setNotice(
+          buildNotice(
+            "success",
+            "导入完成",
+            `抽取了 ${result.candidateCount} 条候选记忆${
+              typeof result.embeddedChunkCount === "number" ? `，向量 ${result.embeddedChunkCount} 段` : ""
+            }，请在下方审核。`
+          )
+        );
+      }
     } catch {
       setNotice(buildNotice("warning", "导入失败", "需要后端在线且配置 DASHSCOPE_API_KEY 才能抽取候选记忆。"));
     } finally {
@@ -1069,7 +1092,17 @@ export default function App() {
     }
   }
 
-  function withMemoryAction(run: () => Promise<ProductState | { state: ProductState }>) {
+  function withMemoryAction(
+    run: () => Promise<
+      | ProductState
+      | {
+          state: ProductState;
+          warning?: string;
+          embeddingReady?: boolean;
+          vectorRecallAvailable?: boolean;
+        }
+    >
+  ) {
     // P3-03:返回链——让 MemoryGovernanceView 的 loading/done/error 状态机能真正 await 到完成
     //(此前返回 undefined,await 立即 resolve → loading/done 瞬时假信号、error 永不触发、防重入窗口≈0)。
     // P3-02:区分业务冲突(409/422/404:记忆状态已变,重试无益)与后端离线,不再一律"需要后端在线"。
@@ -1077,10 +1110,29 @@ export default function App() {
     //(deprecate/delete)在各自调用点 .catch 兜底,避免未处理 rejection。
     return run()
       .then((next) => {
-        const state = next && typeof next === "object" && "state" in (next as object)
-          ? (next as { state: ProductState }).state
-          : (next as ProductState);
+        const payload =
+          next && typeof next === "object" && "state" in (next as object)
+            ? (next as {
+                state: ProductState;
+                warning?: string;
+                embeddingReady?: boolean;
+                vectorRecallAvailable?: boolean;
+              })
+            : null;
+        const state = payload ? payload.state : (next as ProductState);
         adoptServerState(state);
+        // R-P2-06: surface approve embedding warnings instead of silent success.
+        if (payload?.warning) {
+          setNotice(buildNotice("warning", "已处理，但需注意", payload.warning));
+        } else if (payload && payload.embeddingReady === false) {
+          setNotice(
+            buildNotice(
+              "warning",
+              "已确认，向量未就绪",
+              "记忆已写入，但跨会话向量召回可能暂不可用（嵌入未完成或未配置）。"
+            )
+          );
+        }
       })
       .catch((err) => {
         const conflict = err instanceof ApiError && (err.status === 409 || err.status === 422 || err.status === 404);
