@@ -7,11 +7,14 @@ import {
   Library,
   MessagesSquare,
   Mic,
+  Monitor,
+  Moon,
   Play,
   Search,
   Settings,
   ShieldCheck,
   SlidersHorizontal,
+  Sun,
   Upload,
   Volume2
 } from "lucide-react";
@@ -115,6 +118,18 @@ import {
   type UiNotice,
   type View
 } from "./ui";
+import {
+  applyDocumentTheme,
+  cycleThemePreference,
+  getSystemTheme,
+  readStoredThemePreference,
+  resolveTheme,
+  themePreferenceLabel,
+  themeToggleAriaLabel,
+  writeStoredThemePreference,
+  type ResolvedTheme,
+  type ThemePreference
+} from "./theme";
 
 const navIconByView: Record<View, typeof Compass> = {
   home: Compass,
@@ -159,6 +174,12 @@ export default function App() {
   const [runtimeConfig, setRuntimeConfig] = useState<SystemConfigResponse | null>(null);
   const [runtimeConfigSaving, setRuntimeConfigSaving] = useState(false);
   const [view, setView] = useState<View>("home");
+  const [themePreference, setThemePreference] = useState<ThemePreference>(() => readStoredThemePreference());
+  const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(() => getSystemTheme());
+  const resolvedTheme = useMemo(
+    () => resolveTheme(themePreference, systemTheme),
+    [themePreference, systemTheme]
+  );
   const [session, setSession] = useState<InterviewSession | null>(null);
   const [pendingMode, setPendingMode] = useState<InterviewMode>("decision");
   const [notice, setNotice] = useState<UiNotice | null>(null);
@@ -255,6 +276,23 @@ export default function App() {
   // 引用跳源:逐字稿引用点击后,要在双轨笔记里展开的会话 + 高亮的轮次。
   // nonce 每次点击自增,使 NotesView 的 effect 即便 sessionId/turnId 未变(连点同一引用)也重新触发滚动高亮。
   const [notesFocus, setNotesFocus] = useState<{ sessionId: string; turnId?: string; nonce: number } | null>(null);
+
+  useEffect(() => {
+    applyDocumentTheme(resolvedTheme);
+  }, [resolvedTheme]);
+
+  useEffect(() => {
+    writeStoredThemePreference(themePreference);
+  }, [themePreference]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => setSystemTheme(mq.matches ? "dark" : "light");
+    onChange();
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
 
   useEffect(() => {
     saveProductState(productState);
@@ -2702,21 +2740,24 @@ export default function App() {
             <span>认知资产工作台</span>
           </div>
         </div>
-        <nav className="nav-list">
+        <nav className="nav-list" aria-label="应用导航">
           {groupedNavigation.map((group) => (
             <section className="nav-group" key={group.label} aria-label={`${group.label}导航`}>
               <span className="nav-group-label">{group.label}</span>
-              <div className="nav-group-items">
+              <div className="nav-group-items" role="list">
                 {group.items.map((item) => {
                   const Icon = navIconByView[item.id];
+                  const active = view === item.id;
                   return (
                     <button
                       key={item.id}
-                      className={view === item.id ? "nav-item active" : "nav-item"}
+                      className={active ? "nav-item active" : "nav-item"}
                       type="button"
+                      role="listitem"
+                      aria-current={active ? "page" : undefined}
                       onClick={() => setView(item.id)}
                     >
-                      <Icon size={18} />
+                      <Icon size={18} aria-hidden />
                       <span>{item.label}</span>
                     </button>
                   );
@@ -2725,9 +2766,33 @@ export default function App() {
             </section>
           ))}
         </nav>
-        <div className="sidebar-status">
-          <ShieldCheck size={18} />
-          <span>本地演示数据，用户可随时重置和修正记忆。</span>
+        <div className="sidebar-footer">
+          <button
+            type="button"
+            className="theme-toggle"
+            aria-label={themeToggleAriaLabel(themePreference, resolvedTheme)}
+            title={`外观：${themePreferenceLabel(themePreference)}`}
+            onClick={() => setThemePreference((prev) => cycleThemePreference(prev))}
+          >
+            {themePreference === "light" ? (
+              <Sun size={16} aria-hidden />
+            ) : themePreference === "dark" ? (
+              <Moon size={16} aria-hidden />
+            ) : (
+              <Monitor size={16} aria-hidden />
+            )}
+            <span className="theme-toggle-copy">
+              <strong>外观</strong>
+              <small>
+                {themePreferenceLabel(themePreference)}
+                {themePreference === "system" ? ` · ${resolvedTheme === "light" ? "亮" : "暗"}` : ""}
+              </small>
+            </span>
+          </button>
+          <div className="sidebar-status">
+            <ShieldCheck size={18} aria-hidden />
+            <span>本地演示数据，用户可随时重置和修正记忆。</span>
+          </div>
         </div>
       </aside>
 
