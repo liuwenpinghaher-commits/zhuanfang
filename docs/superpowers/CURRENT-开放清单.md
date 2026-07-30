@@ -77,11 +77,12 @@
 
 | 文档 | 用途 |
 | --- | --- |
+| [`docs/ARCHIVE.md`](../ARCHIVE.md) | **文档归档入口 + 最终健康检查** |
 | [`docs/DEPLOYMENT-CHECKLIST.md`](../DEPLOYMENT-CHECKLIST.md) | **上线勾选清单（定稿真源）** |
 | [`docs/superpowers/2026-07-30-integration-and-deployment-state.md`](./2026-07-30-integration-and-deployment-state.md) | 集成矩阵、架构、容量信封 |
 | [`docs/runbooks/README.md`](../runbooks/README.md) | 故障手册 |
 
-摘要（代码 `dafbba1f` + 文档后续 commit）：typecheck + **1600 pass / 0 fail** + build + voice-slo + capacity + compose fail-closed → **Conditional GO**。Full GO = 清单 §6–§8（Playwright e2e、真实 key compose、live export）。
+最终健康检查（`14304554`）：typecheck + **1600 pass / 0 fail** + build + voice-slo + capacity + compose → **绿 · Conditional GO**。Full GO = 清单 §6–§8。
 
 ## 验收
 

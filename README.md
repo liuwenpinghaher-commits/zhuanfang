@@ -429,7 +429,9 @@ React UI
 
 产品入口始终是**仓库根目录**（`src/`、`apps/api/`、`packages/db/`）。历史上的嵌套副本/agent worktree 已从工作区移除，勿再以子目录副本为开发主路径。
 
-开放项真源：`docs/superpowers/CURRENT-开放清单.md`。
+开放项真源：`docs/superpowers/CURRENT-开放清单.md`。  
+文档归档与最终健康检查：`docs/ARCHIVE.md`。  
+上线勾选清单：`docs/DEPLOYMENT-CHECKLIST.md`。
 
 ## 验证状态
 
