@@ -15,6 +15,7 @@ import type { AsrSource, AsrEventHandlers } from "./cascadedPipeline";
 import type { ExpressionState } from "../domain/types";
 import { createExpressionStateDetector, type ExpressionStateInput } from "./expressionStateDetector";
 import { createSpeechFeatureTracker, spectralCentroid } from "./speechFeatures";
+import { createSileroVadController, type SileroVadController } from "./sileroVad";
 
 /** Session-update payload for text-only (ASR) mode. */
 function buildAsrSessionUpdate(instructions: string, silenceDurationMs = 900) {
@@ -51,6 +52,8 @@ export interface CreateBrowserAsrSourceOptions {
    * Interview default 900 balances think-pauses vs TTFA; command profile can use 500–700.
    */
   silenceDurationMs?: number;
+  /** Load browser Silero VAD (neural). Soft-fails if WASM unavailable. Default true. */
+  enableSileroVad?: boolean;
   /** Called to get the mic stream — defaults to navigator.mediaDevices.getUserMedia. */
   getMicStream?: () => Promise<MediaStream>;
   /**
@@ -88,6 +91,7 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
     onMicStream,
     instructions = "",
     silenceDurationMs = 900,
+    enableSileroVad = true,
     maxReconnectAttempts = 2,
     baseReconnectDelayMs = 500,
     onConnectionLost,
@@ -118,6 +122,8 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
   let latestExpressionState: ExpressionState = "fluent";
   let latestPartialTranscript = "";
   let latestEnergy = 0;
+  let sileroSpeechProb = 0;
+  let sileroVadCtrl: SileroVadController | null = null;
   let lowEnergyFrames = 0;
   let lastHighEnergyAtMs = 0;
   let frameMs = 256; // will be updated once AudioContext is created
@@ -159,6 +165,11 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
   }
 
   function stopMic() {
+    if (sileroVadCtrl) {
+      try { sileroVadCtrl.destroy(); } catch { /* ok */ }
+      sileroVadCtrl = null;
+      sileroSpeechProb = 0;
+    }
     if (processor) {
       try { processor.disconnect(); } catch { /* ok */ }
       processor = null;
@@ -208,6 +219,22 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
         }));
       }
     }
+    if (enableSileroVad) {
+      try {
+        sileroVadCtrl = await createSileroVadController(stream, {
+          onFrame: (probs) => {
+            sileroSpeechProb = probs.isSpeech;
+          }
+        });
+        if (sileroVadCtrl.ready) await sileroVadCtrl.start();
+      } catch (err) {
+        console.warn(JSON.stringify({
+          event: "asr_silero_start_failed",
+          error: err instanceof Error ? err.message : String(err)
+        }));
+        sileroVadCtrl = null;
+      }
+    }
     audioCtx = new AudioContext({ sampleRate: 16000 });
     sourceNode = audioCtx.createMediaStreamSource(stream);
     analyser = audioCtx.createAnalyser();
@@ -236,13 +263,13 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
 
       // Update expression state + recent energy for pVAD-lite endpointing
       const level = Math.max(...Array.from(inputData).map(Math.abs));
-      latestEnergy = level;
+      latestEnergy = Math.max(level, sileroSpeechProb);
       if (analyser && freqData) {
         analyser.getByteFrequencyData(freqData);
         featureTracker.onCentroid(spectralCentroid(freqData, audioCtx!.sampleRate));
       }
       const ENERGY_THRESHOLD = 0.08;
-      if (level > ENERGY_THRESHOLD) {
+      if (level > ENERGY_THRESHOLD || sileroSpeechProb > 0.35) {
         lowEnergyFrames = 0;
         lastHighEnergyAtMs = Date.now();
       } else {
@@ -433,6 +460,8 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
     },
 
     hasRecentUserEnergyEvidence(): boolean {
+      // Blend energy-VAD + neural Silero speech probability (soft if Silero failed).
+      if (sileroSpeechProb > 0.35) return true;
       return Date.now() - lastHighEnergyAtMs <= 1_500;
     }
   };

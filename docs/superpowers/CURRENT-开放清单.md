@@ -21,27 +21,29 @@
 
 ## 已落地特性（用法摘要）
 
-### pVAD-lite
+### pVAD / Silero
 - 配置：`ProductState.systemConfig.voice.endpointingMode = "pvad-experimental"`（亦可 `silence` / `semantic`）
-- 代码：`src/realtime/pvadEndpointing.ts` → `cascadedPipeline` → `startRealtimeVoiceConnect`
-- 信号：ASR `getRecentEnergy()` + expression + completeness；调整 pause/wait，可对 `uncertain` 偏置 respond
-- 边界：启发式，**不是**神经网络 pVAD 权重
+- 代码：`src/realtime/sileroVad.ts`（浏览器 Silero 神经 VAD）+ `pvadEndpointing.ts` → `cascadedAsrSource` / `cascadedPipeline`
+- 信号：Silero `isSpeech` 概率与能量/表情启发式融合；失败软降级能量启发式
+- 边界：Node/单测无 WebAudio 时静默不可用；真浏览器加载 CDN onnx/wasm
 
 ### 语料预签名
 - 本地：`POST /api/corpus/audio-files/presign` → `provider:"local"` + `uploadPath`
 - 云：设 `CORPUS_S3_BUCKET` + AWS/`CORPUS_S3_*` 密钥 → `provider:"s3"` + `uploadUrl`（SigV4 PutObject）
 - 公开读：本地靠 `CORPUS_AUDIO_PUBLIC_BASE_URL`；S3 靠 `CORPUS_S3_PUBLIC_BASE_URL` 或默认 virtual-host URL
 
-## 语音链路（2026-07-30）
-- cascade：`POST /turns/stream` SSE + 首句流式 TTS；ASR silence 默认 900ms 可配；TurnEngine 统一决策
-- 仍后置：完整 WebRTC、神经网络 pVAD、LiveKit 可靠 interrupt、token 级 TTS 重叠
+## 语音链路（2026-07-30 后置收口）
+- cascade：`POST /turns/stream` SSE + **子句级**流式 TTS（`。！？` 硬边界 + `，、；;,` 软边界 ≥8 字）
+- WebRTC：`src/realtime/bailianWebrtc.ts` 优先建连，失败诚实回退 WebSocket
+- Silero 神经 pVAD：`endpointingMode=pvad-experimental` 融合 speechProb
+- LiveKit interrupt：客户端 reliable data channel + agent `await session.interrupt()` 多级回退与可观测日志
 
 ## 仍 open / 后置
 
 - 真音频 e2e 分段 TTFA 生产级统计（`E2E_REAL=1` voice-cascade 已可跑通主路径）
-- 真实神经网络 pVAD 权重接入（替换 pvad-lite）
 - OSS 兼容 / path-style / 非 AWS 端点适配
 - 多设备 CRDT（非目标）
+- WebRTC 真网联调（依赖 `BAILIAN_REALTIME_WEBRTC_ENDPOINT` 白名单）
 
 ## 验收
 

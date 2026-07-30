@@ -223,21 +223,107 @@ async def entrypoint(ctx: JobContext):
 
     # Client barge-in: livekitVoice publishes {"type":"interrupt"} on the data channel.
     # Honor it by interrupting the current agent speech so synthesis/playback stops.
+    async def _handle_interrupt_signal() -> None:
+        """Cancel in-flight agent speech/generation as reliably as the SDK allows."""
+        _log("interrupt_handling_start", room=room_name)
+        interrupted = False
+        errors: list[str] = []
+
+        # Preferred path: AgentSession.interrupt() (livekit-agents 1.x).
+        for attr in ("interrupt", "cancel_speech", "stop"):
+            fn = getattr(session, attr, None)
+            if not callable(fn):
+                continue
+            try:
+                result = fn()
+                if hasattr(result, "__await__"):
+                    await result
+                interrupted = True
+                _log("interrupt_api_ok", method=attr)
+                break
+            except Exception as exc:  # noqa: BLE001 — best-effort multi-fallback
+                errors.append(f"{attr}:{exc}")
+                _log("interrupt_api_error", method=attr, error=str(exc))
+
+        # Secondary hooks if exposed by the session.
+        for attr in ("clear_user_turn", "commit_user_turn"):
+            fn = getattr(session, attr, None)
+            if not callable(fn):
+                continue
+            try:
+                result = fn()
+                if hasattr(result, "__await__"):
+                    await result
+                _log("interrupt_secondary_ok", method=attr)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{attr}:{exc}")
+
+        # Last resort: mute/stop local audio publications so playback stops even
+        # if session.interrupt is unavailable in this SDK build.
+        try:
+            room = getattr(ctx, "room", None)
+            local = getattr(room, "local_participant", None) if room is not None else None
+            pubs_map = getattr(local, "track_publications", None) if local is not None else None
+            pubs = []
+            if pubs_map is not None:
+                try:
+                    pubs = list(pubs_map.values())  # type: ignore[call-arg]
+                except Exception:
+                    try:
+                        pubs = list(pubs_map)  # type: ignore[arg-type]
+                    except Exception:
+                        pubs = []
+            for pub in pubs:
+                track = getattr(pub, "track", None)
+                if track is None:
+                    continue
+                kind = str(getattr(pub, "kind", "") or getattr(track, "kind", "")).lower()
+                if kind and "audio" not in kind and kind not in ("1", "trackkind.audio"):
+                    continue
+                for meth in ("mute", "stop"):
+                    fn = getattr(track, meth, None)
+                    if not callable(fn):
+                        continue
+                    try:
+                        result = fn()
+                        if hasattr(result, "__await__"):
+                            await result
+                        interrupted = True
+                        _log("interrupt_track_ok", method=meth)
+                    except Exception as exc:  # noqa: BLE001
+                        errors.append(f"track.{meth}:{exc}")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"track_fallback:{exc}")
+            _log("interrupt_track_fallback_failed", error=str(exc))
+
+        if interrupted:
+            _log("interrupt_signal_applied", room=room_name)
+        else:
+            _log(
+                "interrupt_api_missing",
+                detail="no working interrupt/stop path",
+                errors=errors[:5],
+            )
+
     def _on_data_received(data_packet) -> None:
         try:
             payload = data_packet.data if hasattr(data_packet, "data") else data_packet
             if not parse_interrupt_data_payload(payload):
                 return
             _log("interrupt_signal_received", room=room_name)
-            # LiveKit agents API: AgentSession.interrupt() cancels in-flight speech synthesis.
-            interrupt_fn = getattr(session, "interrupt", None)
-            if callable(interrupt_fn):
-                result = interrupt_fn()
-                if hasattr(result, "__await__"):
-                    import asyncio
-                    asyncio.create_task(result)  # type: ignore[arg-type]
-            else:
-                _log("interrupt_api_missing", detail="AgentSession.interrupt not available")
+            import asyncio
+
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(_handle_interrupt_signal())
+            except RuntimeError:
+                try:
+                    asyncio.ensure_future(_handle_interrupt_signal())
+                except Exception as exc:  # noqa: BLE001
+                    _log("interrupt_schedule_failed", error=str(exc))
+                    interrupt_fn = getattr(session, "interrupt", None)
+                    if callable(interrupt_fn):
+                        interrupt_fn()
         except Exception as exc:
             _log("interrupt_signal_failed", error=str(exc))
 

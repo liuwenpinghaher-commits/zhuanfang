@@ -14,6 +14,7 @@ import {
   connectBailianRealtimeWebsocket,
   type BailianRealtimeWebsocketConnection
 } from "./bailianWebsocket";
+import { connectBailianRealtimeWebrtc } from "./bailianWebrtc";
 import type { BailianRealtimeWebrtcConnection } from "./realtimeTypes";
 import { appendAssistantTranscriptFinal } from "../domain/session-transcript";
 import { receiveUserTurn } from "../domain/engine";
@@ -323,11 +324,39 @@ export async function startRealtimeVoiceConnect(deps: StartRealtimeVoiceConnectD
       ...voiceSession,
       ...(suggestedOpening ? { openingLine: suggestedOpening } : {})
     };
+    let connection: BailianRealtimeWebrtcConnection | BailianRealtimeWebsocketConnection | null = null;
     if (voiceSession.transport === "webrtc") {
-      console.warn(JSON.stringify({ event: "webrtc_incomplete_fallback_to_ws" }));
-      deps.setNotice(buildNotice("info", "已改用 WebSocket 实时语音", "WebRTC answer 路径尚未完成，已强制回退 WebSocket（cascade/omni）。"));
+      try {
+        connection = await connectBailianRealtimeWebrtc(sessionWithOpening, {
+          productApiBaseUrl: baseWsUrl.replace(/^ws/i, "http"),
+          onAudioLevel: (level) => deps.setAudioLevel(level),
+          onSpeechStart: () => deps.setVoiceStatus("listening"),
+          onSpeechEnd: () => deps.setVoiceStatus("speaking"),
+          onConnectionLost: () => {
+            deps.setNotice(buildNotice("warning", "WebRTC 连接已断开", "可重试录音；或切换 cascade/WebSocket 路径。"));
+            deps.closeRealtimeVoiceSession();
+          }
+        });
+        deps.setRealtimeVoiceConnection(connection);
+        deps.setRecording(true);
+        deps.setVoiceStatus("listening");
+        deps.setNotice(buildNotice("success", "实时语音会话已就绪", "百炼 Omni WebRTC 已连接"));
+        return "connected";
+      } catch (err) {
+        console.warn(JSON.stringify({
+          event: "webrtc_connect_failed_fallback_to_ws",
+          error: err instanceof Error ? err.message : String(err)
+        }));
+        deps.setNotice(
+          buildNotice(
+            "info",
+            "WebRTC 建连失败，已回退 WebSocket",
+            err instanceof Error ? err.message : "将使用 WebSocket 实时语音继续。"
+          )
+        );
+      }
     }
-    const connection = await connectBailianRealtimeWebsocket(sessionWithOpening, {
+    connection = await connectBailianRealtimeWebsocket(sessionWithOpening, {
       productApiBaseUrl: baseWsUrl,
       preSignals: interviewSession?.interactionPreSignals,
       onAudioLevel: (level) => deps.setAudioLevel(level),
@@ -372,14 +401,14 @@ export async function startRealtimeVoiceConnect(deps: StartRealtimeVoiceConnectD
             .then((res) => {
               deps.voiceRecallRefreshSucceeded();
               deps.setSession((prev) => (prev ? { ...prev, interactionPreSignals: res.preSignals } : prev));
-              if ("updatePreSignals" in connection) connection.updatePreSignals(res.preSignals);
+              if (connection && "updatePreSignals" in connection) connection.updatePreSignals(res.preSignals);
             })
             .catch((err) => deps.voiceRecallRefreshFailed("pre_signals", err));
           productApiClient
             .refreshVoiceInstructions(voiceSid, text)
             .then((res) => {
               deps.voiceRecallRefreshSucceeded();
-              if ("updateInstructions" in connection) connection.updateInstructions(res.instructions);
+              if (connection && "updateInstructions" in connection) connection.updateInstructions(res.instructions);
               if ("state" in res && res.state) deps.adoptServerState(res.state as never);
               if ("session" in res && res.session) deps.setSession(res.session as never);
             })

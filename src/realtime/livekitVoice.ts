@@ -172,20 +172,11 @@ export async function createLivekitVoiceSession(
       // P1-10: best-effort real interrupt. Three actions, in order of immediacy:
       //
       //   1. Stop LOCAL playback of the agent's buffered TTS right now — pause +
-      //      mute the attached <audio> elements and detach the audio tracks. This
-      //      is the only thing the client can do unilaterally, and it makes the
-      //      agent's voice actually stop in the user's ear immediately instead of
-      //      playing the already-buffered sentence to the end.
+      //      mute the attached <audio> elements and detach the audio tracks.
       //   2. Publish an `interrupt` signal on the room data channel so the Python
-      //      livekit-agents side can cancel its in-flight TTS *synthesis* (the
-      //      authoritative stop — requires the agent to handle this envelope; see
-      //      INTERRUPT_SIGNAL). Without agent cooperation the agent keeps
-      //      generating, but local playback (step 1) is already silenced.
+      //      livekit-agents side can cancel its in-flight TTS synthesis
+      //      (await session.interrupt() with mute/stop track fallbacks).
       //   3. Re-arm the local mic so the user's barge-in speech is captured.
-      //
-      // NOTE (dependency): a fully clean interrupt — stopping the agent from
-      // *generating* further audio — still needs the agent to honor the data
-      // signal in step 2. Steps 1 & 3 work client-side regardless.
 
       // 1. Silence + tear down local playback of the agent's current utterance.
       for (const el of attachedAudioEls) {
@@ -196,16 +187,28 @@ export async function createLivekitVoiceSession(
       }
       attachedAudioEls.clear();
       subscribedAudioTracks.clear();
+      try { callbacks.onAudioLevel(0); } catch { /* ignore */ }
 
-      // 2. Tell the agent to cancel synthesis (best-effort; needs agent support).
+      // 2. Tell the agent to cancel synthesis (reliable delivery).
       try {
         const payload = new TextEncoder().encode(JSON.stringify(INTERRUPT_SIGNAL));
-        // reliable delivery — an interrupt must not be silently dropped.
         const maybePromise = room.localParticipant.publishData(payload, { reliable: true });
-        // publishData returns a Promise in current SDKs; swallow rejection.
-        void Promise.resolve(maybePromise).catch(() => { /* agent may not be ready */ });
-      } catch {
-        /* publishData unavailable (older SDK / mock) — playback is already stopped */
+        void Promise.resolve(maybePromise).then(
+          () => {
+            console.info(JSON.stringify({ event: "livekit_interrupt_published", signal: INTERRUPT_SIGNAL }));
+          },
+          (err: unknown) => {
+            console.warn(JSON.stringify({
+              event: "livekit_interrupt_publish_failed",
+              error: err instanceof Error ? err.message : String(err),
+            }));
+          },
+        );
+      } catch (err) {
+        console.warn(JSON.stringify({
+          event: "livekit_interrupt_publish_failed",
+          error: err instanceof Error ? err.message : String(err),
+        }));
       }
 
       // 3. Make sure the mic is live so the user's barge-in is heard.

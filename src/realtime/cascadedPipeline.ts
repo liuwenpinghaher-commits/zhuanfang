@@ -484,15 +484,17 @@ export function connectCascadedPipeline(
     const flushCompletedSentences = async (forceAll = false) => {
       const source = stripSpokenAsides(pendingText);
       // Match splitSentences logic for complete clauses ending with 。！？\n
-      const parts = source.split(/(?<=[。！？\n])/u);
+      // Hard stops: 。！？\n ; soft clause stops: ，、；;, when length>=8 (token-level-ish TTFA)
+      const parts = source.split(/(?<=[。！？\n，、；;,])/u);
       let keep = "";
       const ready: string[] = [];
       for (let i = 0; i < parts.length; i++) {
         const p = parts[i]?.trim() ?? "";
         if (!p) continue;
-        const complete = /[。！？]$/u.test(p) || p.endsWith("\n");
-        if (complete || (forceAll && i === parts.length - 1 && p)) {
-          ready.push(p.replace(/\n$/u, "").trim());
+        const hard = /[。！？]$/u.test(p) || p.endsWith("\n");
+        const soft = /[，、；;,]$/u.test(p) && p.replace(/[，、；;,。！？\s]/gu, "").length >= 8;
+        if (hard || soft || (forceAll && i === parts.length - 1 && p)) {
+          ready.push(p.replace(/[\n]$/u, "").trim());
         } else {
           keep += parts[i];
         }

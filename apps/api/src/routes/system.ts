@@ -560,7 +560,18 @@ export async function registerSystemRoutes(
         status: "ready",
         active: true,
         detail:
-          "endpointingMode=pvad-experimental 为 pVAD-lite（能量/表情启发式）；cascade 支持 turns/stream 首句流式 TTS。WebRTC 传输未完成，会话会回退 WebSocket。",
+          "endpointingMode=pvad-experimental：浏览器 Silero 神经 VAD（失败软降级能量/表情启发式）+ cascade turns/stream 子句级流式 TTS。WebRTC 优先建连，失败诚实回退 WebSocket。",
+        requiredEnv: [],
+        lastCheckedAt: generatedAt
+      },
+      {
+        id: "voice-livekit-interrupt",
+        kind: "voice",
+        label: "LiveKit barge-in interrupt",
+        status: "ready",
+        active: true,
+        detail:
+          "客户端 data channel 发送 {type:interrupt}；Python agent await session.interrupt()，失败时 mute/stop 本地音频轨并打点可观测。本地播报立即静音。",
         requiredEnv: [],
         lastCheckedAt: generatedAt
       },
@@ -721,10 +732,10 @@ function buildRealtimeDetail(keyConfigured: boolean, endpointConfigured: boolean
     return "缺少 DASHSCOPE_API_KEY 或 BAILIAN_API_KEY，实时语音不会连接百炼。";
   }
   if (transport === "websocket") {
-    return "服务端已配置 WebSocket 代理，浏览器可通过 Product API 建立实时语音会话。";
+    return "服务端已配置 WebSocket 代理；浏览器经 Product API 建立实时语音会话。cascade 路径默认优先。";
   }
   if (!endpointConfigured) {
-    return "缺少 BAILIAN_REALTIME_WEBRTC_ENDPOINT，WebRTC 需要白名单 Endpoint。可设置 BAILIAN_REALTIME_TRANSPORT=websocket 使用 WebSocket 通道。";
+    return "transport=webrtc 但缺少 BAILIAN_REALTIME_WEBRTC_ENDPOINT；客户端会尝试 WebRTC 后诚实回退 WebSocket。可设 BAILIAN_REALTIME_TRANSPORT=websocket。";
   }
-  return "服务端已配置 WebRTC SDP 代理，浏览器可通过 Product API 建立实时语音会话。";
+  return "服务端已配置 WebRTC SDP 代理（POST .../webrtc/answer）；客户端优先 WebRTC，失败回退 WebSocket。";
 }
