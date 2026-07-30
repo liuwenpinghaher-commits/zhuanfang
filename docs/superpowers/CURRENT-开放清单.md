@@ -70,8 +70,9 @@
 | C1 chat 阈值 | closed | `retrieveAndRankKnowledge` 用 `resolveMinRecallScore`（去 0.08 硬编码） |
 | C2 rubric | closed | `docs/superpowers/eval/interview-rubric.md` |
 | C3 隐私 KPI | closed | `buildPrivacyReport().longitudinal` |
-| D1–D6 | open | 播客/搜索/成本/a11y/可移植/OTEL 增强按需 |
+| D1–D6 | open | 分析已完成：见 `2026-07-30-wave-d-analysis.md`；实现按 `docs/MAINTENANCE-ROADMAP.md` 按需切片 |
 | 非目标 | n/a | 多租户、CRDT、完整 AWS SDK |
+| 维护路线 | 定稿 | `docs/MAINTENANCE-ROADMAP.md`（V 验证优先 → D 按需） |
 
 ## 集成与部署态（2026-07-30 · 定稿）
 

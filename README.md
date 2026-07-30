@@ -431,7 +431,9 @@ React UI
 
 开放项真源：`docs/superpowers/CURRENT-开放清单.md`。  
 文档归档与最终健康检查：`docs/ARCHIVE.md`。  
-上线勾选清单：`docs/DEPLOYMENT-CHECKLIST.md`。
+上线勾选清单：`docs/DEPLOYMENT-CHECKLIST.md`。  
+长期维护路线：`docs/MAINTENANCE-ROADMAP.md`。  
+Wave D 分析：`docs/superpowers/2026-07-30-wave-d-analysis.md`。
 
 ## 验证状态
 
