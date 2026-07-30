@@ -3,7 +3,7 @@ import { resetServerState } from "./helpers";
 
 // 真实业务 UI E2E(不 mock):前端直连真后端 3210/真 key,UI 操作 → 真 LLM → 断言后台副作用。
 // 真实业务测试模式样板,区别于现有 mock 8787 的前端单元测(那些不碰真实 LLM/后台逻辑)。
-const API = "http://127.0.0.1:3210";
+const API = "http://127.0.0.1:13210";
 
 interface Turn { role: string; content: string; prosody?: unknown }
 interface Session { id: string; status: string; pendingControl?: string; turns?: Turn[] }

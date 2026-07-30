@@ -43,7 +43,7 @@ test.describe("primary navigation", () => {
     // 旧 mock 挂在 8787 从未匹配,页面实际渲染真后端 capabilities——隔离环境(F-02,provider key 全空)下
     // “缺少 DASHSCOPE_API_KEY…”出现 10 处,getByText 严格模式必炸。把 mock 指回真实端口,恢复本测试
     // “UI 按 capabilities 契约渲染”的本意(不依赖 key 配置)。
-    await page.route("http://127.0.0.1:3210/api/system/capabilities", async (route) => {
+    await page.route("http://127.0.0.1:13210/api/system/capabilities", async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -141,7 +141,7 @@ test.describe("primary navigation", () => {
     // B 类修正(规格陈旧,2026-07-10):同上,mock 端口 8787→3210。此前 mock 永不匹配,
     // “保存服务端配置”的 PATCH 直达真后端并写进仓库根 .env.local(server.ts 默认 envFilePath),
     // 把真实 DASHSCOPE_API_KEY 覆盖成测试占位值——修正端口后 PATCH 被拦截,不再触碰真实 env 文件。
-    await page.route("http://127.0.0.1:3210/api/system/config", async (route) => {
+    await page.route("http://127.0.0.1:13210/api/system/config", async (route) => {
       const request = route.request();
       if (request.method() === "PATCH") {
         receivedUpdates = JSON.parse(request.postData() ?? "{}").updates;
@@ -174,7 +174,7 @@ test.describe("primary navigation", () => {
         body: JSON.stringify(configResponse)
       });
     });
-    await page.route("http://127.0.0.1:3210/api/system/capabilities", async (route) => {
+    await page.route("http://127.0.0.1:13210/api/system/capabilities", async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -244,7 +244,7 @@ test.describe("primary navigation", () => {
     await expect
       .poll(
         async () => {
-          const st = (await (await page.request.get("http://127.0.0.1:3210/api/state")).json()) as {
+          const st = (await (await page.request.get("http://127.0.0.1:13210/api/state")).json()) as {
             systemConfig?: { search?: { maxSources?: number; activeProvider?: string } };
           };
           return `${st.systemConfig?.search?.activeProvider}:${st.systemConfig?.search?.maxSources}`;

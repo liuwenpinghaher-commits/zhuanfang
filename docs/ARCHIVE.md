@@ -23,6 +23,7 @@
 | 8 | Compose | `PRODUCT_API_TOKEN=… docker compose config -q` | **PASS** |
 | 9 | CI 工件 | `.github/workflows/ci.yml` | **存在** |
 | 10 | 部署清单 | `docs/DEPLOYMENT-CHECKLIST.md` | **存在（定稿）** |
+| 11 | Playwright 默认 e2e | `npm run test:e2e` | **PASS 35/35**（V1 · 隔离端口） |
 
 ### 1.1 测试边界（诚实）
 

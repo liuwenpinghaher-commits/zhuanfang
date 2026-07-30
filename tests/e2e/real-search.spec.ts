@@ -5,7 +5,7 @@ import { resetServerState } from "./helpers";
 /**
  * 真实业务 E2E（不 mock）·外部调研 / 搜索模块
  *
- * 前端 baseURL http://127.0.0.1:3220（playwright.config）直连真后端 http://127.0.0.1:3210（真 key）。
+ * 前端 baseURL http://127.0.0.1:13220（playwright.config）直连真后端 http://127.0.0.1:13210（真 key）。
  * 整个文件无 page.route —— UI 操作经 productApiClient 打到真 3210，关键正确性断言走后端真实副作用 GET /api/state。
  *
  * 为什么改成「种子注入」而非「UI 创建简报」：
@@ -35,7 +35,7 @@ import { resetServerState } from "./helpers";
  *       + briefs().find(byId)），auto-run append 的其它行不干扰；且 auto-run 是 append 不删除，种子必存活。
  */
 
-const API = "http://127.0.0.1:3210";
+const API = "http://127.0.0.1:13210";
 
 /* ---------- 类型化助手（GET /api/state 读真后端） ---------- */
 

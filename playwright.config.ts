@@ -16,11 +16,13 @@ const REAL_DB_PATH = join(tmpdir(), "zhuanfang-e2e-real", "product-state.db");
 
 const apiEnv: Record<string, string> = REAL
   ? {
-      PORT: "3210",
+      PORT: "13210",
       HOST: "127.0.0.1",
       // real 族:surreal 权威档,但数据目录隔离到 tmp(红线:零接触仓库 .data/)。
       PRODUCT_STORE: "surreal",
       PRODUCT_STATE_DB_PATH: REAL_DB_PATH,
+      DEPLOYMENT_PROFILE: "local",
+      PRODUCT_API_TOKEN: "",
       // Real e2e keeps cloud LLM, but uses local embeddings for stable create/approve paths.
       EMBEDDING_PROVIDER: "local",
       PROVIDER_REQUEST_TIMEOUT_MS: "120000",
@@ -35,16 +37,19 @@ const apiEnv: Record<string, string> = REAL
       EXA_API_KEY: process.env.EXA_API_KEY ?? "",
       BRAVE_SEARCH_API_KEY: process.env.BRAVE_SEARCH_API_KEY ?? "",
       BAILIAN_REALTIME_WEBRTC_ENDPOINT: process.env.BAILIAN_REALTIME_WEBRTC_ENDPOINT ?? "",
-      PRODUCT_WEB_ORIGINS: "http://127.0.0.1:3220,http://localhost:3220"
+      PRODUCT_WEB_ORIGINS: "http://127.0.0.1:13220,http://localhost:13220"
     }
   : {
-      PORT: "3210",
+      PORT: "13210",
       HOST: "127.0.0.1",
       // 审计修复(F-02/A2):双保险隔离。startServer 会 loadLocalEnvFile() 继承 .env.local 中
       // 未被覆盖的键——只设 dbPath sentinel 时曾继承 PRODUCT_STORE(现为 surreal)连上真实存储。
       // 显式 PRODUCT_STORE=memory 掐断继承;dbPath sentinel 保留,两者任一都足以进内存档位。
       PRODUCT_STORE: "memory",
       PRODUCT_STATE_DB_PATH: "memory",
+      // Track V1: never inherit production auth from a developer's shell/.env.local.
+      DEPLOYMENT_PROFILE: "local",
+      PRODUCT_API_TOKEN: "",
       // F-02 事故收口(2026-07-10):陈旧 mock 未拦截时,PATCH /api/system/config 曾打到这个
       // 真实 API 并把仓库根 .env.local 的真实 DASHSCOPE_API_KEY 覆盖成测试占位值。
       // PRODUCT_ENV_FILE 把 config 写盘路径隔离到 tmp——即使将来再有 mock 漏拦,写坏的也
@@ -57,14 +62,14 @@ const apiEnv: Record<string, string> = REAL
       DASHSCOPE_API_KEY: "e2e-fake-key",
       BAILIAN_API_KEY: "",
       ANYSEARCH_API_KEY: "e2e-fake-key",
-      BAILIAN_BASE_URL: "http://127.0.0.1:3230",
-      BAILIAN_AUDIO_BASE_URL: "http://127.0.0.1:3230",
-      ANYSEARCH_BASE_URL: "http://127.0.0.1:3230",
+      BAILIAN_BASE_URL: "http://127.0.0.1:13230",
+      BAILIAN_AUDIO_BASE_URL: "http://127.0.0.1:13230",
+      ANYSEARCH_BASE_URL: "http://127.0.0.1:13230",
       TAVILY_API_KEY: "",
       EXA_API_KEY: "",
       BRAVE_SEARCH_API_KEY: "",
       BAILIAN_REALTIME_WEBRTC_ENDPOINT: "",
-      PRODUCT_WEB_ORIGINS: "http://127.0.0.1:3220,http://localhost:3220"
+      PRODUCT_WEB_ORIGINS: "http://127.0.0.1:13220,http://localhost:13220"
     };
 
 // real 族:real-*.spec.ts + voice-cascade.spec.ts。默认族 testIgnore 掉它们;real 模式只跑它们。
@@ -82,7 +87,7 @@ export default defineConfig({
   retries: REAL ? 1 : 0,
   reporter: [["list"]],
   use: {
-    baseURL: "http://127.0.0.1:3220",
+    baseURL: "http://127.0.0.1:13220",
     trace: "on-first-retry"
   },
   webServer: [
@@ -90,28 +95,30 @@ export default defineConfig({
     // (base URL 不指向它),但进程无害地闲置。
     {
       command: "node tests/e2e/fake-provider-server.mjs",
-      reuseExistingServer: true,
+      // Isolated ports: never reuse a foreign process on the default stack.
+      reuseExistingServer: false,
       timeout: 30_000,
-      url: "http://127.0.0.1:3230/health"
+      url: "http://127.0.0.1:13230/health",
+      env: { FAKE_PROVIDER_PORT: "13230" }
     },
     {
       command: "npm run start:api",
-      // real 模式强制自起隔离进程:绝不复用可能连着真实 .data/ 的开发服务器(红线)。
-      reuseExistingServer: !REAL,
+      // Default + real: always self-start on isolated ports (Track V1: avoid 3210 prod-auth reuse).
+      reuseExistingServer: false,
       // local embedding prewarm may download Xenova/bge-large-zh on first run.
       timeout: REAL ? 600_000 : 120_000,
-      url: "http://127.0.0.1:3210/api/health",
+      url: "http://127.0.0.1:13210/api/health",
       env: apiEnv
     },
     {
-      command: "npm run dev -- --host 127.0.0.1",
-      reuseExistingServer: !REAL,
+      command: "npm run dev -- --host 127.0.0.1 --port 13220 --strictPort",
+      reuseExistingServer: false,
       timeout: 120_000,
-      url: "http://127.0.0.1:3220",
+      url: "http://127.0.0.1:13220",
       env: {
         ...process.env,
         VITE_INTERVIEW_TURN_TIMEOUT_MS: REAL ? "180000" : (process.env.VITE_INTERVIEW_TURN_TIMEOUT_MS ?? ""),
-        VITE_PRODUCT_API_BASE_URL: process.env.VITE_PRODUCT_API_BASE_URL ?? "http://127.0.0.1:3210"
+        VITE_PRODUCT_API_BASE_URL: process.env.VITE_PRODUCT_API_BASE_URL ?? "http://127.0.0.1:13210"
       }
     }
   ],

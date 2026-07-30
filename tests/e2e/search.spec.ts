@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { expectNoHorizontalOverflow, openView, resetDemoState } from "./helpers";
 
 test("creates a successful AnySearch brief with structured material and can delete it", async ({ page }) => {
-  // AnySearch goes through the fake provider (127.0.0.1:3230); generous timeout for the full pipeline.
+  // AnySearch goes through the fake provider (127.0.0.1:13230); generous timeout for the full pipeline.
   test.setTimeout(90000);
   await resetDemoState(page);
   await openView(page, "外部调研", "主动搜集热点、素材和可讨论主题");

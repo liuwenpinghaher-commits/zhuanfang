@@ -3,7 +3,7 @@ import { createInitialProductState } from "../../src/domain/engine";
 import { resetServerState } from "./helpers";
 
 /**
- * 真实业务 E2E·认知资产模块(不 mock):前端 127.0.0.1:3220 直连真后端 127.0.0.1:3210。
+ * 真实业务 E2E·认知资产模块(不 mock):前端 127.0.0.1:13220 直连真后端 127.0.0.1:13210。
  *
  * 与 my-assets.spec.ts(mock 8787 的前端单元测)的区别:这里所有断言都校验后端 GET /api/state
  * 的真实副作用(confirmationStatus / status 字段真的变了),而不是只看 UI 文案。
@@ -22,7 +22,7 @@ import { resetServerState } from "./helpers";
  *    决策确认按钮「确认决策」,确认后显示状态药丸「已用户确认」。
  */
 
-const API = "http://127.0.0.1:3210";
+const API = "http://127.0.0.1:13210";
 
 interface AnyState {
   revision?: number;

@@ -6,7 +6,7 @@ import { resetServerState } from "./helpers";
 /**
  * 真实业务 E2E（不 mock）·记忆治理模块
  *
- * 前端 baseURL http://127.0.0.1:3220（playwright.config）直连真后端 http://127.0.0.1:3210（真 key）。
+ * 前端 baseURL http://127.0.0.1:13220（playwright.config）直连真后端 http://127.0.0.1:13210（真 key）。
  * 整个文件无 page.route —— UI 操作经 productApiClient 打到真 3210，断言走后端真实副作用 GET /api/state。
  *
  * 隔离：每个 test 先 POST /api/state/reset（state 已在 reset 实现里有备份/可重置）回到 createInitialProductState
@@ -29,7 +29,7 @@ import { resetServerState } from "./helpers";
  *     记忆不变。 => 断言不崩（state 仍在、confirmed 数不丢），合并按钮仅在 confirmed≥2 时渲染。
  */
 
-const API = "http://127.0.0.1:3210";
+const API = "http://127.0.0.1:13210";
 
 /* ---------- 真后端状态读写助手 ---------- */
 

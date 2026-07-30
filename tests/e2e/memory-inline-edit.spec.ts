@@ -16,7 +16,7 @@ import { createInitialProductState } from "../../src/domain/engine";
 import type { MemoryCandidate, MemoryRecord } from "../../src/domain/types";
 import { expectNoHorizontalOverflow, openView, resetDemoState } from "./helpers";
 
-const STATE_URL = "http://127.0.0.1:3210/api/state";
+const STATE_URL = "http://127.0.0.1:13210/api/state";
 
 /** 构造一条 confirmed MemoryRecord（整理记忆按钮需 confirmed≥2 才渲染） */
 function confirmedRecord(id: string, text: string): MemoryRecord {

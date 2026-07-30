@@ -2,7 +2,7 @@
 //
 // 生产代码已剔除全部离线兜底——LLM/搜索/TTS/ASR 能力不可用即 503/429/502。默认族 E2E
 // 因此不再依赖生产降级路径充当"无 key 可跑"的替身，而是把造假推到【外部网络边界】：
-// 本服务在 127.0.0.1:3230 冒充 DashScope(compatible-mode + audio) 与 AnySearch 的 HTTP
+// 本服务在 127.0.0.1:13230 冒充 DashScope(compatible-mode + audio) 与 AnySearch 的 HTTP
 // 契约，playwright 用 BAILIAN_BASE_URL / BAILIAN_AUDIO_BASE_URL / ANYSEARCH_BASE_URL
 // 指过来。生产代码 100% 走真实代码路径（真 fetch、真解析、真校验、真落库）。
 //
@@ -10,7 +10,7 @@
 // vitest 层的进程内替身，本文件是 E2E 层的网络替身）——改动任一侧请同步。
 import { createServer } from "node:http";
 
-const PORT = Number(process.env.FAKE_PROVIDER_PORT ?? 3230);
+const PORT = Number(process.env.FAKE_PROVIDER_PORT ?? 13230);
 
 // ── canned LLM 产物（按 prompt 特征路由，见 detectCapability）──────────────────
 const FINALIZE_JSON = JSON.stringify({
@@ -210,12 +210,12 @@ const server = createServer(async (req, res) => {
         sourceAngles: ["可引用来源[1]作为追问线索。"],
         sources: [
           {
-            title: `${topic}：来源一`, url: "http://127.0.0.1:3230/source/1",
+            title: `${topic}：来源一`, url: "http://127.0.0.1:13230/source/1",
             publisher: "Fake Provider", publishedAt: new Date().toISOString(),
             snippet: `${topic} 的来源一摘要。`, relevanceScore: 0.9
           },
           {
-            title: `${topic}：来源二`, url: "http://127.0.0.1:3230/source/2",
+            title: `${topic}：来源二`, url: "http://127.0.0.1:13230/source/2",
             publisher: "Fake Provider", publishedAt: new Date().toISOString(),
             snippet: `${topic} 的来源二摘要。`, relevanceScore: 0.7
           }
@@ -234,12 +234,12 @@ const server = createServer(async (req, res) => {
         metadata: { request_id: "fake-req-1" },
         results: [
           {
-            title: `${topic}：AnySearch 来源一`, url: "http://127.0.0.1:3230/source/a1",
+            title: `${topic}：AnySearch 来源一`, url: "http://127.0.0.1:13230/source/a1",
             snippet: `${topic} 的 AnySearch 摘要一。`, publisher: "Fake AnySearch",
             published_at: new Date().toISOString()
           },
           {
-            title: `${topic}：AnySearch 来源二`, url: "http://127.0.0.1:3230/source/a2",
+            title: `${topic}：AnySearch 来源二`, url: "http://127.0.0.1:13230/source/a2",
             snippet: `${topic} 的 AnySearch 摘要二。`, publisher: "Fake AnySearch",
             published_at: new Date().toISOString()
           }

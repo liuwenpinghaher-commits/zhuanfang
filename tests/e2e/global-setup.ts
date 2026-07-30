@@ -5,7 +5,7 @@
 // 档位、在仓库根 .data/ 创建 surreal/ 目录,险些覆盖真实数据。此闸门在跑任何测试前核验实际档位,
 // 不是 memory 就熔断。
 
-const API_CAPABILITIES_URL = "http://127.0.0.1:3210/api/system/capabilities";
+const API_CAPABILITIES_URL = "http://127.0.0.1:13210/api/system/capabilities";
 
 export default async function globalSetup() {
   let body: { productStore?: unknown } | null;

@@ -18,8 +18,8 @@ import { expect, test } from "@playwright/test";
 import { createEmptyProductState, createInitialProductState } from "../../src/domain/engine";
 import { expectNoHorizontalOverflow, openView, resetDemoState } from "./helpers";
 
-const AUTO_RUN_URL = "http://127.0.0.1:3210/api/research/auto-run";
-const STATE_URL = "http://127.0.0.1:3210/api/state";
+const AUTO_RUN_URL = "http://127.0.0.1:13210/api/research/auto-run";
+const STATE_URL = "http://127.0.0.1:13210/api/state";
 
 test("外部调研：自动盯梢完成后显示新增/刷新汇总", async ({ page }) => {
   await resetDemoState(page);

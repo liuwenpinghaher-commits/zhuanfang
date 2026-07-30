@@ -6,7 +6,7 @@ import { resetServerState } from "./helpers";
 // 语音办法 B 端到端:fakeMic 注入合成麦克风 → 进 cascade 语音模式 → 说一轮(项目 TTS 预生成的真实
 // 16k 语音)→ 真实 DashScope ASR 转写 → 主持人 LLM 追问 → 写进同一份专访记录。前端直连真后端 3210/真 key。
 // 机制可行性已由 voice-fakemic-mechanism.spec.ts 证明;这里验证整条真实链路。
-const API = "http://127.0.0.1:3210";
+const API = "http://127.0.0.1:13210";
 const FIXTURE = "tests/e2e/fixtures/voice/sample.json";
 
 // N-15:真语音端到端(办法 B)需真实 DashScope ASR key,否则整条 cascade 无法转写、必然失败。

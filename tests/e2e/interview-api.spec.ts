@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { expectNoHorizontalOverflow, openView, resetDemoState } from "./helpers";
 
 // 真实性重构：本用例不再用 page.route 冒充本产品 API（旧 mock 指向 8787 早已打空）。
-// 全流程走真实后端（127.0.0.1:3210），外部网络由 fake-provider-server.mjs 承接：
+// 全流程走真实后端（127.0.0.1:13210），外部网络由 fake-provider-server.mjs 承接：
 //   · POST /turns → 假 character 模型回「你刚才提到「…」，能给一个具体发生过的时刻吗？」
 //     + <pre_signals> 块（服务端剥离进结构化字段），intent = 百炼角色扮演追问。
 //   · POST /end → canned finalize JSON → 双轨笔记档案真实生成。
@@ -14,7 +14,7 @@ test("runs the interview workflow through the Product API", async ({ page }) => 
   const apiCalls: string[] = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
-    if (url.host === "127.0.0.1:3210" && url.pathname.startsWith("/api/")) {
+    if (url.host === "127.0.0.1:13210" && url.pathname.startsWith("/api/")) {
       apiCalls.push(`${request.method()} ${url.pathname}`);
     }
   });

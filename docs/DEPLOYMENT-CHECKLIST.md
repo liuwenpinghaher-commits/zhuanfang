@@ -163,7 +163,7 @@ export PRODUCT_API_TOKEN='…'
 
 ## 6. 浏览器 E2E（Full GO 建议）
 
-- [ ] `npm run test:e2e`（memory 档，不写默认 surreal 目录）
+- [x] `npm run test:e2e`（memory 档，不写默认 surreal 目录）— **2026-07-30 本机 35/35 PASS**（端口隔离 13210/13220/13230）
 - [ ] （有 key）`npm run test:e2e:real` 或 `E2E_REAL=1`，使用隔离数据目录
 
 ---

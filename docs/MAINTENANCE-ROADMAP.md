@@ -55,7 +55,7 @@
 
 | 序号 | 项 | 完成定义 | 估计 |
 | --- | --- | --- | --- |
-| V1 | Playwright 默认 e2e | `npm run test:e2e` 绿 | 0.5–1d |
+| V1 | Playwright 默认 e2e | **closed 2026-07-30** · 35/35 绿；e2e 端口 13210/13220/13230 | done |
 | V2 | 真 key compose 演练 | checklist §7 | 0.5d |
 | V3 | Live export smoke | checklist §8 | 0.5d |
 | V4 | （可选）E2E_REAL 语音抽样 | 有 key 环境 | 1d |

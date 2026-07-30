@@ -73,6 +73,7 @@
 | D1–D6 | open | 分析已完成：见 `2026-07-30-wave-d-analysis.md`；实现按 `docs/MAINTENANCE-ROADMAP.md` 按需切片 |
 | 非目标 | n/a | 多租户、CRDT、完整 AWS SDK |
 | 维护路线 | 定稿 | `docs/MAINTENANCE-ROADMAP.md`（V 验证优先 → D 按需） |
+| V1 Playwright e2e | closed | 默认族 35/35 绿；端口隔离 13210/13220/13230，避免本机 3210 鉴权 API 被 reuse |
 
 ## 集成与部署态（2026-07-30 · 定稿）
 
