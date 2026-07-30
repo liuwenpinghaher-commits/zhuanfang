@@ -43,14 +43,15 @@
 - 主题图召回软匹配：`resolveThemeForPrefetch`（精确优先，保守包含/词重叠；禁止 appearances 回退污染）
 - 已闭合核对：R-P1-01 mid queryText、R-P1-05 includePending 配置+域消费、R-P2-01/02 relevance 地板、双通道 guide 优先
 
-## 后置收口（2026-07-30）
+## 后置收口（2026-07-30 · 已验证）
 
-- WebRTC：公网 DashScope signaling 默认，**无需白名单**；`BAILIAN_REALTIME_WEBRTC_ENDPOINT` 仅可选覆盖
-- OSS/S3：`CORPUS_S3_ENDPOINT` + `CORPUS_S3_FORCE_PATH_STYLE` path-style 预签名
-- 导入向量：await reindex，回传 `embeddedChunkCount` / `embeddingFailedCount` / warning；前端导入/approve 透出 warning（不再假成功）
-- 语音 strategyTrace：record-turn 后 adopt 权威 state，技法/引用进入 productState
-- 分段 TTFA：capabilities 暴露 VAD→STT / STT→LLM / LLM TTFT / TTS TTFB p50，Config 面板可见
-- 真音频 e2e 长跑压测（`E2E_REAL=1`）仍可按需加深
+- WebRTC：公网 DashScope signaling 默认，**无需白名单**
+- OSS/S3：endpoint + path-style 预签名
+- 导入/approve 向量 warning 前后端透出（不再假成功）
+- 语音 strategyTrace：record-turn 后 adopt 权威 state
+- 分段 TTFA：cascade 记录 VAD→STT / STT→应答 / LLM TTFT / TTS TTFB；Config + /health + capabilities 可见
+- 混合召回 empty-fusion 保留无向量 BM25 块
+- 真音频 e2e 长跑压测（`E2E_REAL=1`）可按需加深
 - 多设备 CRDT（非目标）
 
 ## 验收

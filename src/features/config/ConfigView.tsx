@@ -164,7 +164,7 @@ export function ConfigView({
                         const seg = (systemCapabilities as any).metrics?.voice?.segments;
                         const fmt = (s?: { p50Ms?: number }) =>
                           typeof s?.p50Ms === "number" ? `${Math.round(s.p50Ms)}` : "—";
-                        return `VAD→STT ${fmt(seg?.vadEndToStt)} / STT→LLM ${fmt(seg?.sttToLlm)} / LLM TTFT ${fmt(seg?.llmTtft)} / TTS TTFB ${fmt(seg?.ttsTtfb)} ms`;
+                        return `VAD→STT ${fmt(seg?.vadEndToStt)} / STT→应答 ${fmt(seg?.sttToLlm)} / LLM TTFT ${fmt(seg?.llmTtft)} / TTS TTFB ${fmt(seg?.ttsTtfb)} ms`;
                       })()}
                     </span>
                     <span>

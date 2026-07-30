@@ -225,6 +225,7 @@ export function connectCascadedPipeline(
   // AbortController for the active LLM call (null when not thinking)
   let activeAbort: AbortController | null = null;
   let speechStoppedAt = 0;
+  let sttFinalAtMs = 0;
   let llmFirstTokenAt = 0;
   let markThinkingAt = 0;
   // Text of the assistant reply actually spoken aloud so far this turn (completed sentences
@@ -262,6 +263,8 @@ export function connectCascadedPipeline(
     partialTranscript = "";
     turnAssembler.reset();
     surfacedQuarantineKey = "";
+    speechStoppedAt = 0;
+    sttFinalAtMs = 0;
     clearMaxWaitTimer();
     if (stableCommitTimer !== null) {
       clearTimeout(stableCommitTimer);
@@ -509,8 +512,12 @@ export function connectCascadedPipeline(
           ttsStartedAtMs = Date.now();
           callbacks.onLatency?.({
             ttfaMs: ttsStartedAtMs - (speechStoppedAt || thinkingStartedAt),
-            vadEndToSttMs: speechStoppedAt ? Math.max(0, thinkingStartedAt - speechStoppedAt) : undefined,
-            sttToLlmMs: 0,
+            vadEndToSttMs: speechStoppedAt
+              ? Math.max(0, (sttFinalAtMs || thinkingStartedAt) - speechStoppedAt)
+              : undefined,
+            sttToLlmMs: sttFinalAtMs
+              ? Math.max(0, thinkingStartedAt - sttFinalAtMs)
+              : undefined,
             llmTtftMs: llmFirstTokenAt ? Math.max(0, llmFirstTokenAt - thinkingStartedAt) : undefined,
             ttsTtfbMs: llmFirstTokenAt ? Math.max(0, ttsStartedAtMs - llmFirstTokenAt) : Math.max(0, ttsStartedAtMs - thinkingStartedAt)
           });
@@ -595,9 +602,12 @@ export function connectCascadedPipeline(
       ttsStartedAtMs = Date.now();
       callbacks.onLatency?.({
         ttfaMs: ttsStartedAtMs - (speechStoppedAt || thinkingStartedAt),
-        vadEndToSttMs: speechStoppedAt ? Math.max(0, thinkingStartedAt - speechStoppedAt) : undefined,
+        vadEndToSttMs: speechStoppedAt
+          ? Math.max(0, (sttFinalAtMs || thinkingStartedAt) - speechStoppedAt)
+          : undefined,
+        sttToLlmMs: sttFinalAtMs ? Math.max(0, thinkingStartedAt - sttFinalAtMs) : undefined,
         llmTtftMs: llmFirstTokenAt ? Math.max(0, llmFirstTokenAt - thinkingStartedAt) : undefined,
-        ttsTtfbMs: 0
+        ttsTtfbMs: llmFirstTokenAt ? Math.max(0, ttsStartedAtMs - llmFirstTokenAt) : undefined
       });
       spokenText = "";
       lastPlannedSpokenText = spokenSource;
@@ -646,6 +656,7 @@ export function connectCascadedPipeline(
         // Finalized segment: commit it and clear the in-progress partial.
         committedTranscript += text;
         partialTranscript = "";
+        if (!sttFinalAtMs) sttFinalAtMs = Date.now();
       } else {
         // Cumulative delta: REPLACE the partial (appending duplicates every word,
         // since each delta already carries the full text-so-far for this segment).

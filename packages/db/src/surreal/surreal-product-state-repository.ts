@@ -835,6 +835,58 @@ export async function buildSurrealProductStateRepositoryOnConnection(
         // 混合:两路纯索引 LET → search::rrf 融合 → 最终 SELECT 叠 usage 门控(P2a:LET 内绝不加 AND)。
         // 末条 RETURN 融合名次:`WHERE id IN …` 取回不保序;memory 路径有域层三因子精排兜着可容忍,
         // rag 无精排、名次即最终序,必须按 rrf 名次在 JS 侧重排。
+        // BM25 直查:融合空时兜底;融合非空时也必须并入——search::rrf 在 $bm 瞬时空/半空时
+        // 仍可能只返 HNSW 路,丢掉无 embedding 的关键词块(P4 e2e 判别器 rc_y 的根因)。
+        const bmOnly = async (): Promise<Array<{ id: string; text: string }>> => {
+          const [bmRows] = await db.query<[Array<Record<string, unknown>>]>(
+            `SELECT id, text FROM rag_chunk WHERE ${usageGate} AND (${bmClause}) LIMIT ${k};`,
+            { ...gateVars, ...tokenVars }
+          );
+          return toHits(bmRows);
+        };
+        /** 融合空兜底:关键词块优先(无向量块只在 BM25 路),再补 HNSW。 */
+        const mergeBm25ThenPrimary = (
+          primary: Array<{ id: string; text: string }>,
+          bm: Array<{ id: string; text: string }>
+        ): Array<{ id: string; text: string }> => {
+          if (bm.length === 0) return primary.slice(0, k);
+          const seen = new Set<string>();
+          const merged: Array<{ id: string; text: string }> = [];
+          for (const hit of bm) {
+            if (seen.has(hit.id)) continue;
+            seen.add(hit.id);
+            merged.push(hit);
+            if (merged.length >= k) return merged;
+          }
+          for (const hit of primary) {
+            if (seen.has(hit.id)) continue;
+            seen.add(hit.id);
+            merged.push(hit);
+            if (merged.length >= k) break;
+          }
+          return merged;
+        };
+        /** 融合非空:保留 rrf 名次,并为 BM25 独有块(典型:无 embedding)预留名额——
+         *  若 fused 已撑满 k,直接 append 会被截掉;故先截 primary 再并入 missing。 */
+        const appendMissingBm25 = (
+          primary: Array<{ id: string; text: string }>,
+          bm: Array<{ id: string; text: string }>
+        ): Array<{ id: string; text: string }> => {
+          if (bm.length === 0) return primary.slice(0, k);
+          const primaryIds = new Set(primary.map((h) => h.id));
+          const missing: Array<{ id: string; text: string }> = [];
+          const seenMissing = new Set<string>();
+          for (const hit of bm) {
+            if (primaryIds.has(hit.id) || seenMissing.has(hit.id)) continue;
+            seenMissing.add(hit.id);
+            missing.push(hit);
+            if (missing.length >= k) break;
+          }
+          if (missing.length === 0) return primary.slice(0, k);
+          const keepPrimary = Math.min(primary.length, Math.max(0, k - missing.length));
+          return [...primary.slice(0, keepPrimary), ...missing].slice(0, k);
+        };
+
         const results = await db.query<Array<unknown>>(
           `LET $vec = (SELECT id FROM rag_chunk WHERE embedding <|${k},${ef}|> $q);
            LET $bm  = (SELECT id FROM rag_chunk WHERE ${bmClause});
@@ -844,41 +896,34 @@ export async function buildSurrealProductStateRepositoryOnConnection(
           { q: embedding, ...gateVars, ...tokenVars }
         );
         const rows = toHits(results[results.length - 2]);
-        // 融合为空可能是 usage 门控合法滤空——用纯 HNSW 复核一次(同门控的另一条真实检索路径,
-        // 非伪造),并记日志使差异可查。
+        // 融合为空可能是 usage 门控合法滤空——用 BM25∪HNSW 复核(同门控真实检索路径,非伪造)。
         if (rows.length === 0) {
           console.warn(JSON.stringify({ event: "surreal_hybrid_fusion_empty", path: "rag_chunk", queryChars: queryText.length }));
-          // Preserve BM25-only chunks (no embedding). Pure HNSW fallback drops them.
           try {
-            const [bmRows] = await db.query(
-              `SELECT id, text FROM rag_chunk
-               WHERE ${usageGate} AND (${bmClause})
-               LIMIT ${k};`,
-              { ...gateVars, tokens }
-            );
-            const bm = toHits(bmRows);
-            if (bm.length > 0) {
-              const hn = await hnswOnly();
-              const seen = new Set(bm.map((h) => h.id));
-              const merged = [...bm];
-              for (const row of hn) {
-                if (seen.has(row.id)) continue;
-                seen.add(row.id);
-                merged.push(row);
-                if (merged.length >= k) break;
-              }
-              return merged.slice(0, k);
-            }
+            const bm = await bmOnly();
+            const hn = await hnswOnly();
+            return mergeBm25ThenPrimary(hn, bm);
           } catch (bmErr) {
             console.warn(JSON.stringify({
               event: "surreal_rag_bm25_fallback_failed",
               error: bmErr instanceof Error ? bmErr.message : String(bmErr)
             }));
+            return hnswOnly();
           }
-          return hnswOnly();
         }
         const order = ((results[results.length - 1] ?? []) as unknown[]).map((rid) => recordIdToDomainId(rid));
-        return reorderByRrfRank(rows, order);
+        const fusedOrdered = reorderByRrfRank(rows, order);
+        // 非空融合也并入 BM25 缺失项:保证无向量块不因 rrf/$bm 抖动从混合结果里消失。
+        try {
+          const bm = await bmOnly();
+          return appendMissingBm25(fusedOrdered, bm);
+        } catch (bmErr) {
+          console.warn(JSON.stringify({
+            event: "surreal_rag_bm25_union_failed",
+            error: bmErr instanceof Error ? bmErr.message : String(bmErr)
+          }));
+          return fusedOrdered.slice(0, k);
+        }
       } catch (err) {
         // 真实错误(search::rrf/BM25 报错)→ 如实上抛,由调用方暴露,不再退化掩盖。
         console.warn(JSON.stringify({ event: "surreal_rag_recall_failed", error: err instanceof Error ? err.message : String(err) }));

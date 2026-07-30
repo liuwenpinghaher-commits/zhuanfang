@@ -38,7 +38,19 @@ describe.skipIf(!hasModel)("SurrealDB 真实数据层 e2e(采访闭环 → 落�
       productStateRepository: repo,
       // 真实性重构:/turns、/end 是 LLM 必选(无 client 即 503)。注入假 client 走真实 LLM 代码路径。
       bailianInterviewClient: createFakeInterviewClient(),
-      bailianChatClient: createFakeChatClient()
+      // RAG 路径 citations 只收 answer 里的 [n]。默认 fake 只标 [1],会把 BM25 拉回的次位块
+      // (rc_y) 滤掉,造成「召回成功但 e2e 失败」的假 flaky。此处把资料上下文中出现的 [n] 全标上。
+      bailianChatClient: {
+        async complete({ messages }) {
+          const text = messages.map((m) => m.content).join("\n");
+          const nums = [...text.matchAll(/\[(\d+)\]\s*《/g)].map((m) => Number(m[1]));
+          const unique = [...new Set(nums)].filter((n) => n > 0).sort((a, b) => a - b);
+          if (unique.length > 0) {
+            return unique.map((n) => `根据资料[${n}]`).join("，") + "。";
+          }
+          return createFakeChatClient().complete({ messages });
+        }
+      }
     });
 
     await server.inject({ method: "POST", url: "/api/state/reset", payload: { confirm: "RESET_ALL_DATA" } });
@@ -138,10 +150,22 @@ describe.skipIf(!hasModel)("SurrealDB 真实数据层 e2e(采访闭环 → 落�
       ]
     });
     await repo.flush();
+    // 直查原生召回:不经 LLM citations 过滤,钉死混合路径本身能拉到无向量块。
+    const nativeHits = await repo.recallRagChunks({
+      embedding: vLunch,
+      queryText: "区块链",
+      k: 10,
+      usage: "interview-context"
+    });
+    expect(
+      nativeHits.map((h: { id: string }) => h.id),
+      "recallRagChunks 混合/BM25 应直接命中无嵌入块 rc_y"
+    ).toContain("rc_y");
     const res = await server.inject({ method: "POST", url: "/api/rag/query", payload: { question: "区块链" } });
     expect(res.statusCode).toBe(200);
-    const citations = (res.json().citations ?? []).map((c: any) => c.id);
-    expect(citations, "BM25 应拉回无嵌入块 rc_y(域层 cosine 排除它 → 只有原生混合召回能命中)").toContain("rc_y");
+    const body = res.json();
+    const citations = (body.citations ?? []).map((c: any) => c.id);
+    expect(citations, "生产接线 /api/rag/query citations 应含 BM25 拉回的 rc_y").toContain("rc_y");
   }, 60000);
 
   it("⑤ P4·图↔软链一致性审计不变量:真实业务闭环后 /api/ops/graph-consistency 必须 ok", async () => {

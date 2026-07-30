@@ -51,7 +51,9 @@ server.get("/api/health", async () => {
             sampleCount: metrics.voice.sampleCount,
             ttfaP50Ms: metrics.voice.ttfaP50Ms,
             ttfaP95Ms: metrics.voice.ttfaP95Ms,
-            interruptCount: metrics.voice.interruptCount
+            interruptCount: metrics.voice.interruptCount,
+            segments: metrics.voice.segments,
+            budgetHint: metrics.voice.budgetHint
           },
           recall: {
             eventCount: metrics.recall.eventCount,
