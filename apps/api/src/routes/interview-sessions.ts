@@ -9,6 +9,7 @@ import {
 } from "../../../../src/domain/engine";
 import type {
   FinalizeResult,
+  InteractionPreSignals,
   InterviewControlAction,
   InterviewMode,
   InterviewSession,
@@ -387,6 +388,149 @@ export async function registerInterviewSessionRoutes(
     return { session: nextSession, state: persisted, ...(preSignals ? { preSignals } : {}) };
     })
   );
+
+
+  /**
+   * Streaming turn for cascade voice TTFA: SSE events
+   *   event: delta  data: {"text":"..."}
+   *   event: final  data: { session, state, preSignals?, assistantText }
+   * Falls back to non-stream LLM when createAssistantTurnStream is unavailable.
+   */
+  server.post("/api/interview-sessions/:id/turns/stream", (request, reply) =>
+    runExclusive(getSessionId(request.params) ?? "", async () => {
+      const state = repository.getState();
+      const session = findSession(state, getSessionId(request.params));
+      if (!session) {
+        return reply.code(404).send({ error: "Interview session not found." });
+      }
+      if (session.status !== "active") {
+        return reply.code(409).send({ error: "Interview session is not active." });
+      }
+      if (!options.bailianInterviewClient) {
+        return reply.code(503).send({ error: "缺少 DASHSCOPE_API_KEY，专访追问 LLM 未配置。" });
+      }
+      const payload = (request.body && typeof request.body === "object" ? request.body : {}) as { content?: unknown };
+      const content = typeof payload.content === "string" ? payload.content.trim() : "";
+      if (!content) {
+        return reply.code(400).send({ error: "content is required." });
+      }
+
+      const budget = options.llmBudget ?? createLlmBudget();
+      if (!budget.tryConsume(session.id)) {
+        return reply.code(429).send({ error: "本会话 LLM 预算已耗尽，请稍后再试。" });
+      }
+
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no"
+      });
+      const writeEvent = (event: string, data: unknown) => {
+        reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      };
+
+      let clientAborted = false;
+      const onAbort = () => {
+        clientAborted = true;
+      };
+      request.raw.once("aborted", onAbort);
+
+      try {
+        const strategyDecision = decideInterviewStrategy(session, content);
+        const streamFn = options.bailianInterviewClient.createAssistantTurnStream;
+        let assistantResult: Awaited<ReturnType<NonNullable<typeof options.bailianInterviewClient>["createAssistantTurn"]>> | undefined;
+        let preSignals: InteractionPreSignals | undefined;
+
+        if (streamFn) {
+          const ac = new AbortController();
+          const onClientAbort = () => ac.abort();
+          request.raw.once("aborted", onClientAbort);
+          try {
+            for await (const ev of streamFn.call(options.bailianInterviewClient, {
+              session,
+              userText: content,
+              corrections: state.memoryCorrections,
+              boundaries: state.profile.explicitBoundaries,
+              strategyDecision,
+              signal: ac.signal
+            })) {
+              if (clientAborted) break;
+              if (ev.type === "delta") {
+                writeEvent("delta", { text: ev.text });
+              } else {
+                assistantResult = ev.result;
+                preSignals = ev.result.preSignals;
+              }
+            }
+          } finally {
+            request.raw.off("aborted", onClientAbort);
+          }
+        } else {
+          assistantResult = await withInterviewTurnDeadline(
+            options.bailianInterviewClient.createAssistantTurn({
+              session,
+              userText: content,
+              corrections: state.memoryCorrections,
+              boundaries: state.profile.explicitBoundaries,
+              strategyDecision
+            }),
+            interviewTurnTimeoutMs
+          );
+          preSignals = assistantResult.preSignals;
+          // Emit full content as one delta so clients still get progressive-ish path
+          if (assistantResult.content) writeEvent("delta", { text: assistantResult.content });
+        }
+
+        if (clientAborted || assistantResult === undefined) {
+          writeEvent("error", { error: "客户端已取消本轮，未写入轮次。" });
+          reply.raw.end();
+          return;
+        }
+
+        const built = receiveUserTurnWithAssistant(session, content, {
+          content: assistantResult.content,
+          intent: assistantResult.intent,
+          strategyDecision,
+          ...(strategyDecision.referencedMemory
+            ? { referencedMemory: strategyDecision.referencedMemory }
+            : {})
+        });
+        const nextSession = stripAsidesFromLatestAssistantTurn({
+          ...built,
+          interactionPreSignals: assistantResult.preSignals
+        });
+        const lastAssistant = [...nextSession.turns].reverse().find((x) => x.role === "assistant");
+        const baseNextState = {
+          ...state,
+          sessions: state.sessions.map((s) => (s.id === session.id ? nextSession : s)),
+          revision: state.revision
+        };
+        const persisted = await replaceStateDurable(repository, baseNextState);
+        writeEvent("final", {
+          session: nextSession,
+          state: persisted,
+          assistantText: lastAssistant?.content ?? assistantResult.content,
+          prosody: lastAssistant?.prosody,
+          ...(assistantResult.preSignals ? { preSignals: assistantResult.preSignals } : {})
+        });
+        reply.raw.end();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(JSON.stringify({ event: "llm_failed", capability: "interview_turn_stream", error: message }));
+        try {
+          writeEvent("error", { error: `追问生成失败：${message}` });
+        } catch {
+          /* ignore */
+        }
+        reply.raw.end();
+      } finally {
+        request.raw.off("aborted", onAbort);
+      }
+    })
+  );
+
 
   server.post("/api/interview-sessions/:id/control", async (request, reply) => {
     const state = repository.getState();

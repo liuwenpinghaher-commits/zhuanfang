@@ -111,6 +111,7 @@ export async function startRealtimeVoiceConnect(deps: StartRealtimeVoiceConnectD
 
       const asr = createBrowserAsrSource({
         asrWsUrl,
+        silenceDurationMs: 900,
         instructions: voiceSession.sessionUpdate.session.instructions,
         onConnectionLost: () => {
           deps.setNotice(buildNotice("warning", "语音连接已断开", "语音识别中断,请重新点击录音继续。文字输入不受影响。"));
@@ -154,10 +155,38 @@ export async function startRealtimeVoiceConnect(deps: StartRealtimeVoiceConnectD
         return { assistantText: lastTurn?.content ?? "", prosody: lastTurn?.prosody };
       };
 
+      const sendUserTurnStream = interviewId
+        ? async (text: string, signal: AbortSignal, onDelta: (chunk: string) => void) => {
+            const stashFragment = deps.consumeInterruptStashPrompt();
+            if (stashFragment) {
+              try {
+                await productApiClient.refreshVoiceInstructions(interviewId, `${stashFragment}\n\n用户新输入：${text}`);
+              } catch {
+                /* best-effort */
+              }
+            }
+            const r = await productApiClient.sendInterviewTurnStream(
+              interviewId,
+              { content: text },
+              { signal, onDelta }
+            );
+            deps.setSession(r.session);
+            deps.adoptServerState(r.state);
+            deps.setApiPersistenceEnabled(true);
+            if (r.preSignals) deps.cascadePipelineRef.current?.updatePreSignals(r.preSignals);
+            const lastTurn = r.session.turns.at(-1);
+            return {
+              assistantText: (r as { assistantText?: string }).assistantText ?? lastTurn?.content ?? "",
+              prosody: ((r as { prosody?: unknown }).prosody ?? lastTurn?.prosody) as any
+            };
+          }
+        : undefined;
+
       const pipeline = connectCascadedPipeline({
         asr,
         tts,
         sendUserTurn,
+        ...(sendUserTurnStream ? { sendUserTurnStream } : {}),
         preSignals: interviewSession?.interactionPreSignals ?? null,
         decisionOpts: {
           ...(deps.minBargeInMs != null ? { minBargeInMs: deps.minBargeInMs } : {}),
@@ -195,9 +224,9 @@ export async function startRealtimeVoiceConnect(deps: StartRealtimeVoiceConnectD
       deps.setRecording(true);
       const eotNote =
         deps.endpointingMode === "pvad-experimental"
-          ? "（endpointing: pVAD-lite 启发式，非神经网络权重）"
+          ? "（endpointing: pVAD-lite；LLM→TTS 已支持首句流式）"
           : deps.endpointingMode === "semantic"
-            ? "（endpointing: semantic）"
+            ? "（endpointing: semantic；LLM→TTS 首句流式）"
             : deps.endpointingMode === "silence"
               ? "（endpointing: silence）"
               : "";
@@ -296,7 +325,7 @@ export async function startRealtimeVoiceConnect(deps: StartRealtimeVoiceConnectD
     };
     if (voiceSession.transport === "webrtc") {
       console.warn(JSON.stringify({ event: "webrtc_incomplete_fallback_to_ws" }));
-      deps.setNotice(buildNotice("info", "已改用 WebSocket 实时语音", "WebRTC 通道尚未完整支持，已自动切换。"));
+      deps.setNotice(buildNotice("info", "已改用 WebSocket 实时语音", "WebRTC answer 路径尚未完成，已强制回退 WebSocket（cascade/omni）。"));
     }
     const connection = await connectBailianRealtimeWebsocket(sessionWithOpening, {
       productApiBaseUrl: baseWsUrl,

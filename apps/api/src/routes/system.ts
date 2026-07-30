@@ -560,7 +560,7 @@ export async function registerSystemRoutes(
         status: "ready",
         active: true,
         detail:
-          "endpointingMode=pvad-experimental 启用能量/表情启发式（pvad-lite），非神经网络权重；silence/semantic 仍可用。",
+          "endpointingMode=pvad-experimental 为 pVAD-lite（能量/表情启发式）；cascade 支持 turns/stream 首句流式 TTS。WebRTC 传输未完成，会话会回退 WebSocket。",
         requiredEnv: [],
         lastCheckedAt: generatedAt
       },

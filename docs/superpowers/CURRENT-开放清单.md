@@ -32,6 +32,10 @@
 - 云：设 `CORPUS_S3_BUCKET` + AWS/`CORPUS_S3_*` 密钥 → `provider:"s3"` + `uploadUrl`（SigV4 PutObject）
 - 公开读：本地靠 `CORPUS_AUDIO_PUBLIC_BASE_URL`；S3 靠 `CORPUS_S3_PUBLIC_BASE_URL` 或默认 virtual-host URL
 
+## 语音链路（2026-07-30）
+- cascade：`POST /turns/stream` SSE + 首句流式 TTS；ASR silence 默认 900ms 可配；TurnEngine 统一决策
+- 仍后置：完整 WebRTC、神经网络 pVAD、LiveKit 可靠 interrupt、token 级 TTS 重叠
+
 ## 仍 open / 后置
 
 - 真音频 e2e 分段 TTFA 生产级统计（`E2E_REAL=1` voice-cascade 已可跑通主路径）

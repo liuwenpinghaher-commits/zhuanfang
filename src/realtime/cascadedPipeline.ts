@@ -14,7 +14,8 @@
 import type { ExpressionState, InteractionPreSignals } from "../domain/types";
 import { stripSpokenAsides, deriveSpeechProsody, type SpeechProsody } from "../domain/speech-text";
 import { decideCascadeTurn } from "./cascadeTurnDecision";
-import { applyPvadDecisionBias, resolveEndpointingTuning, type EndpointingMode } from "./pvadEndpointing";
+import type { EndpointingMode } from "./pvadEndpointing";
+import { decideTurn } from "./turnEngine";
 import { assessTurnCompleteness, type Completeness } from "./turnCompleteness";
 import { createBackchannelPicker } from "./backchannel";
 import { createTurnAssembler } from "./turnAssembler";
@@ -116,6 +117,7 @@ export interface CascadedPipelineCallbacks {
     vadEndToSttMs?: number;
     sttToLlmMs?: number;
     llmTtftMs?: number;
+    ttsTtfbMs?: number;
   }) => void;
   onTranscriptQuarantined?: (item: { text: string; reason: string }) => void;
 }
@@ -138,6 +140,12 @@ export interface ConnectCascadedPipelineOptions {
     signal: AbortSignal
     // prosody is the server-distilled manner for the assistant turn (the （…）asides are now
     // stripped server-side, so the client can no longer derive it from assistantText).
+  ) => Promise<{ assistantText: string; prosody?: SpeechProsody }>;
+  /** Streaming turn path: onDelta gets token text; speak complete sentences ASAP for TTFA. */
+  sendUserTurnStream?: (
+    text: string,
+    signal: AbortSignal,
+    onDelta: (chunk: string) => void
   ) => Promise<{ assistantText: string; prosody?: SpeechProsody }>;
   callbacks: CascadedPipelineCallbacks;
   preSignals?: InteractionPreSignals | null;
@@ -184,7 +192,7 @@ export function connectCascadedPipeline(
   opts: ConnectCascadedPipelineOptions
 ): CascadedPipeline {
   const {
-    asr, tts, sendUserTurn, callbacks, preSignals = null, decisionOpts = {},
+    asr, tts, sendUserTurn, sendUserTurnStream, callbacks, preSignals = null, decisionOpts = {},
     classifyEndpoint, onDecision, assessCompleteness = assessTurnCompleteness,
   } = opts;
   const {
@@ -216,6 +224,9 @@ export function connectCascadedPipeline(
   let partialTranscript = "";
   // AbortController for the active LLM call (null when not thinking)
   let activeAbort: AbortController | null = null;
+  let speechStoppedAt = 0;
+  let llmFirstTokenAt = 0;
+  let markThinkingAt = 0;
   // Text of the assistant reply actually spoken aloud so far this turn (completed sentences
   // only). interrupt() returns it so the server can truncate the persisted assistant turn to
   // what the guest really heard, instead of the full reply the AI never finished saying.
@@ -369,6 +380,7 @@ export function connectCascadedPipeline(
 
   // ── Speech stopped: analysis gate ─────────────────────────────────────────
   async function handleSpeechStopped(silenceMs: number) {
+    speechStoppedAt = Date.now();
     if (closed) return;
     if (micSuppressed) return;
     if (state === "thinking" || state === "speaking") return;
@@ -380,7 +392,7 @@ export function connectCascadedPipeline(
     const completeness: Completeness =
       expressionState === "concluding" ? "complete" : assessCompleteness(transcript);
     const energy = typeof asr.getRecentEnergy === "function" ? asr.getRecentEnergy() : undefined;
-    const tuning = resolveEndpointingTuning({
+    const decision = decideTurn({
       mode: endpointingMode,
       expressionState,
       silenceMs,
@@ -389,22 +401,9 @@ export function connectCascadedPipeline(
       baseMinPauseMs: minPauseMs,
       baseMaxWaitMs: maxWaitMs
     });
-    const rawDecision = decideCascadeTurn({
-      expressionState,
-      silenceMs,
-      completeness,
-      minPauseMs: tuning.minPauseMs,
-      maxWaitMs: tuning.maxWaitMs
-    });
-    const biasedAction = applyPvadDecisionBias(rawDecision.action, tuning);
-    const decision = {
-      ...rawDecision,
-      action: biasedAction,
-      reason: biasedAction != rawDecision.action ? `${rawDecision.reason} + ${tuning.label} bias` : rawDecision.reason
-    };
     onDecision?.({
       // layer 0 = VAD max-wait timeout fired synchronously; layer 1 = heuristic.
-      layer: silenceMs >= tuning.maxWaitMs ? 0 : 1,
+      layer: silenceMs >= decision.maxWaitMs ? 0 : 1,
       action: decision.action, reason: decision.reason, transcript, silenceMs, expressionState,
     });
 
@@ -468,20 +467,91 @@ export function connectCascadedPipeline(
     }
     callbacks.onUserTranscript(fullTranscript, true);
 
+    const thinkingStartedAt = Date.now();
+    markThinkingAt = thinkingStartedAt;
+    llmFirstTokenAt = 0;
     setState("thinking");
     const ctrl = new AbortController();
     activeAbort = ctrl;
 
-    let assistantText: string;
+    let assistantText = "";
     let providedProsody: SpeechProsody | undefined;
+    const spokenSentences: string[] = [];
+    let pendingText = "";
+    let firstSpeakStarted = false;
+    let ttsStartedAtMs = 0;
+
+    const flushCompletedSentences = async (forceAll = false) => {
+      const source = stripSpokenAsides(pendingText);
+      // Match splitSentences logic for complete clauses ending with 。！？\n
+      const parts = source.split(/(?<=[。！？\n])/u);
+      let keep = "";
+      const ready: string[] = [];
+      for (let i = 0; i < parts.length; i++) {
+        const p = parts[i]?.trim() ?? "";
+        if (!p) continue;
+        const complete = /[。！？]$/u.test(p) || p.endsWith("\n");
+        if (complete || (forceAll && i === parts.length - 1 && p)) {
+          ready.push(p.replace(/\n$/u, "").trim());
+        } else {
+          keep += parts[i];
+        }
+      }
+      pendingText = keep;
+      for (const sentence of ready) {
+        if (!sentence || ctrl.signal.aborted || closed) return;
+        if (!firstSpeakStarted) {
+          firstSpeakStarted = true;
+          setState("speaking");
+          suppressMic();
+          ttsStartedAtMs = Date.now();
+          callbacks.onLatency?.({
+            ttfaMs: ttsStartedAtMs - (speechStoppedAt || thinkingStartedAt),
+            vadEndToSttMs: speechStoppedAt ? Math.max(0, thinkingStartedAt - speechStoppedAt) : undefined,
+            sttToLlmMs: 0,
+            llmTtftMs: llmFirstTokenAt ? Math.max(0, llmFirstTokenAt - thinkingStartedAt) : undefined,
+            ttsTtfbMs: llmFirstTokenAt ? Math.max(0, ttsStartedAtMs - llmFirstTokenAt) : Math.max(0, ttsStartedAtMs - thinkingStartedAt)
+          });
+        }
+        spokenSentences.push(sentence);
+        lastPlannedSpokenText = spokenSentences.join("");
+        try {
+          await tts.speak([sentence], undefined, providedProsody);
+          if (!closed && !ctrl.signal.aborted) {
+            spokenText = lastPlannedSpokenText;
+          }
+        } catch {
+          return;
+        }
+      }
+    };
+
     try {
-      const result = await sendUserTurn(fullTranscript, ctrl.signal);
-      assistantText = result.assistantText;
-      providedProsody = result.prosody;
+      if (sendUserTurnStream) {
+        let flushChain: Promise<void> = Promise.resolve();
+        const result = await sendUserTurnStream(fullTranscript, ctrl.signal, (chunk) => {
+          if (!llmFirstTokenAt && chunk) llmFirstTokenAt = Date.now();
+          pendingText += chunk;
+          flushChain = flushChain.then(() => flushCompletedSentences(false));
+        });
+        await flushChain;
+        assistantText = result.assistantText;
+        providedProsody = result.prosody;
+        const fullSpoken = stripSpokenAsides(assistantText);
+        const already = spokenSentences.join("");
+        const rest = fullSpoken.startsWith(already) ? fullSpoken.slice(already.length) : fullSpoken;
+        pendingText = rest;
+        await flushCompletedSentences(true);
+      } else {
+        const result = await sendUserTurn(fullTranscript, ctrl.signal);
+        assistantText = result.assistantText;
+        providedProsody = result.prosody;
+        llmFirstTokenAt = Date.now();
+        pendingText = assistantText;
+        await flushCompletedSentences(true);
+      }
     } catch (err) {
-      // Aborted by barge-in — normal, not an error
       if ((err as DOMException)?.name === "AbortError") {
-        // barge-in already called setState("interrupted") → "listening"
         return;
       }
       callbacks.onError(err instanceof Error ? err : new Error(String(err)));
@@ -493,75 +563,63 @@ export function connectCascadedPipeline(
       }
     }
 
-    // A barge-in may have superseded this turn while sendUserTurn was in flight.
-    // The REAL sendUserTurn is a non-abortable HTTP call that RESOLVES late (it
-    // does not throw AbortError), so the catch above won't fire — guard here so
-    // we never speak a stale/superseded reply. handleSpeechStarted calls
-    // ctrl.abort(), so ctrl.signal.aborted is the supersession signal.
     if (closed || ctrl.signal.aborted) return;
 
-    // Strip （…）/(…) manner & stage-direction asides BEFORE TTS so they are never read aloud.
-    // The character model emits them to convey HOW it would speak (e.g. 「（轻笑）」), not as
-    // words to say. The transcript (onAssistantText) keeps the full text; only the spoken
-    // stream is cleaned.
-    const spokenSource = stripSpokenAsides(assistantText); // no-op if already stripped server-side
-    // Prefer the server-distilled prosody (it parsed the （…）asides before stripping them out of
-    // the stored question); fall back to deriving from the text for any path that didn't strip.
+    const spokenSource = stripSpokenAsides(assistantText);
     const prosody = providedProsody ?? deriveSpeechProsody(assistantText);
-    const sentences = splitSentences(spokenSource);
-    if (sentences.length === 0) {
-      // 卫生: empty reply (no terminal punctuation / pure whitespace). Previously
-      // this silently dropped the whole turn — the user got no audio and no UI
-      // change, indistinguishable from a frozen app. Give explicit feedback:
-      // surface a visible filler line AND speak a short audible prompt so the
-      // user knows their turn registered and that it's their turn again.
-      const filler = "嗯，我在听，你可以继续说。";
-      callbacks.onAssistantText(filler);
+    if (spokenSentences.length === 0) {
+      const sentences = splitSentences(spokenSource);
+      if (sentences.length === 0) {
+        const filler = "嗯，我在听，你可以继续说。";
+        callbacks.onAssistantText(filler);
+        setState("speaking");
+        suppressMic();
+        const startedAtMs = Date.now();
+        try {
+          await tts.speak([filler]);
+        } catch {
+          /* barge-in */
+        } finally {
+          turnAssembler.noteTtsPlayback({ text: filler, startedAtMs, endedAtMs: Date.now() });
+          releaseMicAfterGuard();
+        }
+        if (!closed && (state as string) === "speaking") setState("listening");
+        resetTurn();
+        return;
+      }
+      callbacks.onAssistantText(assistantText);
       setState("speaking");
       suppressMic();
-      const startedAtMs = Date.now();
+      ttsStartedAtMs = Date.now();
+      callbacks.onLatency?.({
+        ttfaMs: ttsStartedAtMs - (speechStoppedAt || thinkingStartedAt),
+        vadEndToSttMs: speechStoppedAt ? Math.max(0, thinkingStartedAt - speechStoppedAt) : undefined,
+        llmTtftMs: llmFirstTokenAt ? Math.max(0, llmFirstTokenAt - thinkingStartedAt) : undefined,
+        ttsTtfbMs: 0
+      });
+      spokenText = "";
+      lastPlannedSpokenText = spokenSource;
       try {
-        await tts.speak([filler]);
+        await tts.speak(sentences, undefined, prosody);
+        if (!closed && !ctrl.signal.aborted) spokenText = spokenSource;
       } catch {
-        /* TTS stopped (barge-in) — handled by barge-in path */
+        /* barge-in */
       } finally {
-        turnAssembler.noteTtsPlayback({ text: filler, startedAtMs, endedAtMs: Date.now() });
+        turnAssembler.noteTtsPlayback({ text: spokenSource, startedAtMs: ttsStartedAtMs, endedAtMs: Date.now() });
         releaseMicAfterGuard();
       }
-      if (!closed && (state as string) === "speaking") setState("listening");
-      resetTurn();
-      return;
-    }
-
-    callbacks.onAssistantText(assistantText);
-
-    setState("speaking");
-    suppressMic();
-    const ttsStartedAtMs = Date.now();
-    spokenText = ""; // set to the full spoken text ONLY if the utterance finishes uninterrupted
-    lastPlannedSpokenText = "";
-    try {
-      // ONE batch call: the TTS sink streams every sentence gaplessly off a single scheduling
-      // clock. Calling speak() per-sentence resets that clock and waits for each sentence to
-      // fully drain before requesting the next → a synthesis-latency gap between sentences
-      // (audible "断"). So we hand it all sentences at once and only track spoken text coarsely:
-      // a manual interrupt happens DURING playback, so spokenText stays "" (conservative — we
-      // never claim words we can't confirm were heard); a clean finish records the full text.
+    } else {
+      callbacks.onAssistantText(assistantText);
       lastPlannedSpokenText = spokenSource;
-      await tts.speak(sentences, undefined, prosody);
-      if (!closed && !ctrl.signal.aborted) {
-        spokenText = spokenSource;
-      }
-    } catch {
-      // TTS stopped (barge-in) — already handled; state will be "interrupted"/"listening"
-    } finally {
-      turnAssembler.noteTtsPlayback({ text: spokenSource, startedAtMs: ttsStartedAtMs, endedAtMs: Date.now() });
+      if (!closed && !ctrl.signal.aborted) spokenText = spokenSource;
+      turnAssembler.noteTtsPlayback({
+        text: spokenSource,
+        startedAtMs: ttsStartedAtMs || Date.now(),
+        endedAtMs: Date.now()
+      });
       releaseMicAfterGuard();
     }
 
-    // After TTS completes naturally, transition back to listening.
-    // If barge-in fired, state has already changed (interrupted → listening), so
-    // we cast state to string to avoid TS narrowing false-positive.
     if (!closed && (state as string) === "speaking") {
       setState("listening");
     }

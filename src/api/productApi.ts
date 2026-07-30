@@ -95,6 +95,14 @@ export interface ProductApiClient {
   autoRunResearch(): Promise<AutoRunResearchResponse>;
   createInterviewSession(input: CreateInterviewSessionRequest): Promise<InterviewSessionResponse>;
   sendInterviewTurn(sessionId: string, input: SendInterviewTurnRequest, signal?: AbortSignal): Promise<InterviewSessionResponse>;
+  sendInterviewTurnStream(
+    sessionId: string,
+    input: SendInterviewTurnRequest,
+    handlers?: {
+      onDelta?: (text: string) => void;
+      signal?: AbortSignal;
+    }
+  ): Promise<InterviewSessionResponse & { assistantText?: string; prosody?: unknown }>;
   recordInterviewTurn(
     sessionId: string,
     input: {
@@ -1155,6 +1163,84 @@ export function createProductApiClient(
         state: normalizeProductState(response.state)
       };
     },
+
+    async sendInterviewTurnStream(
+      sessionId: string,
+      input: SendInterviewTurnRequest,
+      handlers: {
+        onDelta?: (text: string) => void;
+        signal?: AbortSignal;
+      } = {}
+    ): Promise<InterviewSessionResponse & { assistantText?: string; prosody?: unknown }> {
+      const deadline = createDeadlineSignal(handlers.signal, interviewTurnTimeoutMs);
+      try {
+        const res = await authedFetch(`/api/interview-sessions/${encodeURIComponent(sessionId)}/turns/stream`, {
+          method: "POST",
+          headers: { "content-type": "application/json", accept: "text/event-stream" },
+          body: JSON.stringify(input),
+          signal: deadline.signal
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          throw new ApiError(res.status, text || res.statusText);
+        }
+        if (!res.body) throw new Error("Interview turn stream returned empty body.");
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+        let finalPayload: (InterviewSessionResponse & { assistantText?: string; prosody?: unknown }) | null = null;
+        let streamError: string | null = null;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const chunks = buffer.split("\n\n");
+          buffer = chunks.pop() ?? "";
+          for (const chunk of chunks) {
+            const lines = chunk.split("\n");
+            let event = "message";
+            let data = "";
+            for (const line of lines) {
+              if (line.startsWith("event:")) event = line.slice(6).trim();
+              if (line.startsWith("data:")) data += line.slice(5).trim();
+            }
+            if (!data) continue;
+            let parsed: any;
+            try { parsed = JSON.parse(data); } catch { continue; }
+            if (event === "delta" && typeof parsed.text === "string") {
+              handlers.onDelta?.(parsed.text);
+            } else if (event === "final") {
+              finalPayload = {
+                session: parsed.session,
+                state: parsed.state,
+                ...(parsed.preSignals ? { preSignals: parsed.preSignals } : {}),
+                assistantText: parsed.assistantText,
+                prosody: parsed.prosody
+              };
+            } else if (event === "error") {
+              streamError = typeof parsed.error === "string" ? parsed.error : "stream error";
+            }
+          }
+        }
+        if (streamError) throw new Error(streamError);
+        if (!finalPayload?.session || !finalPayload.state) {
+          throw new Error("Interview turn stream ended without final payload.");
+        }
+        return {
+          ...finalPayload,
+          session: finalPayload.session,
+          state: normalizeProductState(finalPayload.state)
+        };
+      } catch (error) {
+        if (deadline.didTimeout()) {
+          throw new InterviewTurnRequestTimeoutError(interviewTurnTimeoutMs);
+        }
+        throw error;
+      } finally {
+        deadline.dispose();
+      }
+    },
+
 
     async recordInterviewTurn(sessionId, input) {
       const response = (await requestJson(`/api/interview-sessions/${sessionId}/record-turn`, {

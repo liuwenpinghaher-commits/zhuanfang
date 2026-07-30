@@ -46,6 +46,9 @@ export interface BailianSearchClient {
 
 export interface BailianCharacterInterviewClient {
   createAssistantTurn(input: BailianCharacterInterviewRequest): Promise<BailianCharacterInterviewResult>;
+  createAssistantTurnStream?(
+    input: BailianCharacterInterviewRequest & { signal?: AbortSignal }
+  ): AsyncIterable<{ type: "delta"; text: string } | { type: "done"; result: BailianCharacterInterviewResult }>;
 }
 
 export interface BailianRealtimeVoiceClient {
@@ -79,6 +82,8 @@ export interface BailianChatCompleteRequest {
  */
 export interface BailianChatClient {
   complete(input: BailianChatCompleteRequest): Promise<string>;
+  /** OpenAI-compatible SSE token stream; concat(deltas) ~= complete(). Optional on fakes. */
+  completeStream?(input: BailianChatCompleteRequest & { signal?: AbortSignal }): AsyncIterable<string>;
 }
 
 export interface BailianSearchBriefRequest {
@@ -424,6 +429,73 @@ export function createBailianChatClient(options: BailianChatClientOptions): Bail
           span.end();
         }
       });
+    },
+    async *completeStream(input: BailianChatCompleteRequest & { signal?: AbortSignal }): AsyncIterable<string> {
+      const model = input.model ?? defaultModel;
+      const body: Record<string, unknown> = {
+        model,
+        messages: input.messages,
+        max_tokens: input.maxTokens ?? 1200,
+        stream: true
+      };
+      if (typeof input.temperature === "number") body.temperature = input.temperature;
+      if (input.responseFormat === "json") {
+        body.response_format = { type: "json_object" };
+      }
+      const controller = new AbortController();
+      const timeoutMsResolved = input.timeoutMs ?? timeoutMs;
+      const timer = setTimeout(() => controller.abort(), timeoutMsResolved);
+      const onAbort = () => controller.abort();
+      if (input.signal) {
+        if (input.signal.aborted) controller.abort();
+        else input.signal.addEventListener("abort", onAbort, { once: true });
+      }
+      try {
+        const response = await fetchImpl(`${baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${options.apiKey}`,
+            "content-type": "application/json",
+            accept: "text/event-stream"
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal
+        });
+        if (!response.ok) {
+          throw new Error(`Bailian chat stream failed (${model}): ${response.status} ${await safeReadErrorBody(response)}`);
+        }
+        if (!response.body) {
+          throw new Error(`Bailian chat stream returned empty body (${model}).`);
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split("\n");
+          buffer = parts.pop() ?? "";
+          for (const rawLine of parts) {
+            const line = rawLine.trim();
+            if (!line.startsWith("data:")) continue;
+            const data = line.slice(5).trim();
+            if (!data || data === "[DONE]") continue;
+            try {
+              const json = JSON.parse(data) as {
+                choices?: Array<{ delta?: { content?: string | null }; message?: { content?: string | null } }>;
+              };
+              const delta = json.choices?.[0]?.delta?.content ?? json.choices?.[0]?.message?.content;
+              if (typeof delta === "string" && delta.length > 0) yield delta;
+            } catch {
+              /* ignore malformed SSE */
+            }
+          }
+        }
+      } finally {
+        clearTimeout(timer);
+        if (input.signal) input.signal.removeEventListener("abort", onAbort);
+      }
     }
   };
 }
@@ -455,6 +527,46 @@ export function createBailianCharacterInterviewClient(
         content,
         intent: "百炼角色扮演追问",
         ...(preSignals ? { preSignals } : {}),
+      };
+    },
+    async *createAssistantTurnStream(input) {
+      const messages = buildCharacterMessages(
+        input.session,
+        input.userText,
+        input.corrections ?? [],
+        input.strategyDecision,
+        input.boundaries ?? []
+      );
+      if (!chatClient.completeStream) {
+        const rawContent = await chatClient.complete({ messages, maxTokens: 800 });
+        const { content, preSignals } = extractPreSignals(rawContent.trim());
+        yield {
+          type: "done" as const,
+          result: {
+            providerId: "bailian-character" as const,
+            model,
+            content,
+            intent: "百炼角色扮演追问" as const,
+            ...(preSignals ? { preSignals } : {})
+          }
+        };
+        return;
+      }
+      let raw = "";
+      for await (const delta of chatClient.completeStream({ messages, maxTokens: 800, signal: input.signal })) {
+        raw += delta;
+        yield { type: "delta" as const, text: delta };
+      }
+      const { content, preSignals } = extractPreSignals(raw.trim());
+      yield {
+        type: "done" as const,
+        result: {
+          providerId: "bailian-character" as const,
+          model,
+          content,
+          intent: "百炼角色扮演追问" as const,
+          ...(preSignals ? { preSignals } : {})
+        }
       };
     }
   };
