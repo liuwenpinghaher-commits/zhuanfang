@@ -862,9 +862,10 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
 
 function buildRealtimeVoiceConfig(env: Record<string, string | undefined>): RealtimeVoiceConfig {
   const apiKeyConfigured = Boolean(env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY);
-  const webrtcEndpointConfigured = Boolean(env.BAILIAN_REALTIME_WEBRTC_ENDPOINT);
+  // Public DashScope WebRTC signaling is always available; env override is optional (no whitelist).
+  const webrtcEndpointConfigured = true;
   const transport = normalizeTransport(env.BAILIAN_REALTIME_TRANSPORT);
-  const configured = apiKeyConfigured && (transport === "websocket" || webrtcEndpointConfigured);
+  const configured = apiKeyConfigured;
   return {
     provider: "bailian",
     model: env.BAILIAN_REALTIME_MODEL ?? "qwen3.5-omni-plus-realtime",
@@ -938,9 +939,7 @@ function createRealtimeVoiceSession(
     ...config,
     status: config.configured
       ? "ready"
-      : config.apiKeyConfigured
-        ? (config.transport === "webrtc" ? "needs-webrtc-endpoint" : "ready")
-        : "not-configured",
+      : "not-configured",
     sessionId,
     signaling: {
       method: "POST",

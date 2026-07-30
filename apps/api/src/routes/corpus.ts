@@ -168,11 +168,13 @@ export async function registerCorpusRoutes(
         secretAccessKey: s3.secretAccessKey,
         sessionToken: s3.sessionToken,
         expiresInSec: 3600,
-        contentType
+        contentType,
+        endpoint: s3.endpoint,
+        forcePathStyle: s3.forcePathStyle
       });
       const publicUrl = s3.publicBaseUrl
         ? `${s3.publicBaseUrl.replace(/\/+$/, "")}/${key}`
-        : `https://${s3.bucket}.s3.${s3.region}.amazonaws.com/${key}`;
+        : (signed.url.split("?")[0] ?? `https://${s3.bucket}.s3.${s3.region}.amazonaws.com/${key}`);
       return {
         provider: "s3" as const,
         method: "PUT" as const,

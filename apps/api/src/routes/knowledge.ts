@@ -167,21 +167,39 @@ export async function reindexOnStateChange(
  * material 不在 diffIndexableSources 内（内容截断、不走 PUT 编辑路径），故由 import 显式补。
  * fire-and-forget 友好：整体 try/catch，绝不抛。
  */
+export type ReindexMaterialResult = {
+  chunkCount: number;
+  embeddedCount: number;
+  failed: boolean;
+  staleDiscarded: boolean;
+};
+
 export async function reindexMaterial(
   state: ProductState,
   sourceId: string,
   knowledgeRepo: KnowledgeIndexRepository,
   embeddingClient: BailianEmbeddingClient | undefined,
   budget: LlmBudget
-): Promise<void> {
+): Promise<ReindexMaterialResult> {
   try {
     const chunks = buildKnowledgeChunks(state, new Map()).filter(
       (c) => c.sourceType === "material" && c.sourceId === sourceId
     );
     const epochAtEmbed = await knowledgeRepo.epoch();   // R8-1
     const embedded = await embedChunks(chunks, embeddingClient, budget);
-    if (await knowledgeRepo.epoch() !== epochAtEmbed) return;   // 中途清空则丢弃
+    if (await knowledgeRepo.epoch() !== epochAtEmbed) {
+      return { chunkCount: chunks.length, embeddedCount: 0, failed: false, staleDiscarded: true };
+    }
     await knowledgeRepo.replaceSource("material", sourceId, embedded);
+    const embeddedCount = embedded.filter(
+      (c) => Array.isArray(c.embedding) && c.embedding.length > 0
+    ).length;
+    return {
+      chunkCount: chunks.length,
+      embeddedCount,
+      failed: false,
+      staleDiscarded: false
+    };
   } catch (err) {
     console.warn(
       JSON.stringify({
@@ -190,6 +208,7 @@ export async function reindexMaterial(
         error: err instanceof Error ? err.message : String(err)
       })
     );
+    return { chunkCount: 0, embeddedCount: 0, failed: true, staleDiscarded: false };
   }
 }
 

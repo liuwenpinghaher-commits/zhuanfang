@@ -374,7 +374,7 @@ expect(response.json()).toMatchObject({ ok: true, ready: true, service: "intervi
     await server.close();
   });
 
-  it("marks realtime voice as needing endpoint when the API key exists but WebRTC endpoint is missing", async () => {
+  it("marks realtime voice ready for webrtc with API key only (public signaling default, no whitelist)", async () => {
     const server = buildApiServer({
       env: {
         DASHSCOPE_API_KEY: "secret-dashscope-key",
@@ -387,9 +387,11 @@ expect(response.json()).toMatchObject({ ok: true, ready: true, service: "intervi
 
     expect(response.statusCode).toBe(200);
     expect(realtime).toMatchObject({
-      status: "needs-endpoint",
-      requiredEnv: ["DASHSCOPE_API_KEY", "BAILIAN_REALTIME_WEBRTC_ENDPOINT"]
+      status: "ready",
+      requiredEnv: ["DASHSCOPE_API_KEY"]
     });
+    // WebRTC no longer requires a whitelisted endpoint env; public DashScope default is used.
+    expect(String(realtime.detail ?? "")).toMatch(/WebRTC|signaling|webrtc/i);
   });
 
   it("returns the current product state", async () => {

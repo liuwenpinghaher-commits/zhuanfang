@@ -7,6 +7,8 @@ import { resolveRequestTimeoutMs } from "../request-timeout";
 
 export const BAILIAN_DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 export const BAILIAN_DEFAULT_AUDIO_BASE_URL = "https://dashscope.aliyuncs.com";
+/** Public DashScope WebRTC signaling URL (no workspace allowlist). Override with BAILIAN_REALTIME_WEBRTC_ENDPOINT. */
+export const BAILIAN_DEFAULT_WEBRTC_ENDPOINT = "https://dashscope.aliyuncs.com/api/v1/webrtc/realtime";
 export const BAILIAN_LATEST_PLUS_MODEL = "qwen3.7-plus";
 export const BAILIAN_ROLE_PLAY_MODEL = "qwen-plus-character";
 export const BAILIAN_PODCAST_TTS_MODEL = "cosyvoice-v3-plus";
@@ -636,7 +638,7 @@ function parseListEntry(raw: string | undefined, fallback: string[]): string[] {
 }
 
 export function createBailianRealtimeVoiceClient(options: BailianRealtimeVoiceClientOptions): BailianRealtimeVoiceClient {
-  const signalingUrl = normalizeWebrtcSignalingUrl(options.webrtcEndpoint);
+  const signalingUrl = normalizeWebrtcSignalingUrl(options.webrtcEndpoint?.trim() || BAILIAN_DEFAULT_WEBRTC_ENDPOINT);
   const fetchImpl = options.fetchImpl ?? fetch;
 
   return {
@@ -890,11 +892,13 @@ export function createBailianChatClientFromEnv(
 export function createBailianRealtimeVoiceClientFromEnv(
   env: Record<string, string | undefined> = process.env
 ): BailianRealtimeVoiceClient | undefined {
-  const apiKey = env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY;
-  const webrtcEndpoint = env.BAILIAN_REALTIME_WEBRTC_ENDPOINT;
-  if (!apiKey || !webrtcEndpoint) {
+  const apiKey = (env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY)?.trim();
+  if (!apiKey) {
     return undefined;
   }
+  // Endpoint is optional: default public DashScope signaling (no whitelist / workspace URL required).
+  const webrtcEndpoint =
+    (env.BAILIAN_REALTIME_WEBRTC_ENDPOINT ?? "").trim() || BAILIAN_DEFAULT_WEBRTC_ENDPOINT;
 
   return createBailianRealtimeVoiceClient({
     apiKey,

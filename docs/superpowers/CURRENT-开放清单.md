@@ -43,12 +43,13 @@
 - 主题图召回软匹配：`resolveThemeForPrefetch`（精确优先，保守包含/词重叠；禁止 appearances 回退污染）
 - 已闭合核对：R-P1-01 mid queryText、R-P1-05 includePending 配置+域消费、R-P2-01/02 relevance 地板、双通道 guide 优先
 
-## 仍 open / 后置
+## 后置收口（2026-07-30）
 
-- 真音频 e2e 分段 TTFA 生产级统计（`E2E_REAL=1` voice-cascade 已可跑通主路径）
-- OSS 兼容 / path-style / 非 AWS 端点适配
+- WebRTC：公网 DashScope signaling 默认，**无需白名单**；`BAILIAN_REALTIME_WEBRTC_ENDPOINT` 仅可选覆盖
+- OSS/S3：`CORPUS_S3_ENDPOINT` + `CORPUS_S3_FORCE_PATH_STYLE` path-style 预签名
+- 导入向量：await reindex，回传 `embeddedChunkCount` / `embeddingFailedCount` / warning
+- 真音频 e2e 分段 TTFA 生产级统计仍可增强（`E2E_REAL=1` 主路径已可跑）
 - 多设备 CRDT（非目标）
-- WebRTC 真网联调（依赖 `BAILIAN_REALTIME_WEBRTC_ENDPOINT` 白名单）
 
 ## 验收
 

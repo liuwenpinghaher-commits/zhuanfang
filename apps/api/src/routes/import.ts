@@ -74,33 +74,42 @@ export async function registerImportRoutes(
     const { sourceId, candidateCount, persisted } = options.writeGate
       ? await options.writeGate.runExclusive("import-documents", commitImport)
       : await commitImport();
-    // 知识索引补点：新 importSource 的 material 块（不在持久化边界 diff 内）。
-    // fire-and-forget——不 await、不阻塞响应、不抛回写路径。
+    // 知识索引补点：await 嵌入结果，把覆盖率诚实回传（R-P2-03）。
+    let reindex = { chunkCount: 0, embeddedCount: 0, failed: false, staleDiscarded: false };
     if (options.knowledgeIndexRepository) {
-      void reindexMaterial(persisted, sourceId, options.knowledgeIndexRepository, options.embeddingClient, budget);
+      reindex = await reindexMaterial(
+        persisted,
+        sourceId,
+        options.knowledgeIndexRepository,
+        options.embeddingClient,
+        budget
+      );
     }
-    // R-P2-03: structured vector readiness (not only server logs).
     const sourceChunks = persisted.ragChunks.filter((chunk) => chunk.sourceId === sourceId);
-    const embeddedChunkCount = sourceChunks.filter(
-      (chunk) => Array.isArray(chunk.embedding) && chunk.embedding.length > 0
-    ).length;
+    const chunkCount = reindex.chunkCount > 0 ? reindex.chunkCount : sourceChunks.length;
+    const embeddedChunkCount = reindex.embeddedCount;
     const embeddingReady = embeddedChunkCount > 0;
+    const warning = !options.embeddingClient
+      ? "资料已导入，但当前未配置嵌入模型：跨会话向量召回不可用，仅关键词/BM25 路径可命中。"
+      : reindex.failed
+        ? "资料已导入，但嵌入/索引失败：跨会话向量召回可能不可用。"
+      : reindex.staleDiscarded
+        ? "资料已导入，但索引在写入前被并发清空（stale epoch），请重试导入以重建向量。"
+      : !embeddingReady
+        ? "资料已导入，但本批片段未写入可用语义向量：跨会话向量召回可能不可用，仅关键词/BM25 路径可命中。"
+        : undefined;
     return {
       sourceId,
       candidateCount,
       state: persisted,
-      chunkCount: sourceChunks.length,
+      chunkCount,
       embeddedChunkCount,
+      embeddingFailedCount: Math.max(0, chunkCount - embeddedChunkCount),
       embeddingReady,
       vectorRecallAvailable: embeddingReady,
-      ...(embeddingReady
-        ? {}
-        : {
-            warning:
-              options.embeddingClient
-                ? "资料已导入，但本批片段未写入可用语义向量：跨会话向量召回可能不可用，仅关键词/BM25 路径可命中。"
-                : "资料已导入，但当前未配置嵌入模型：跨会话向量召回不可用，仅关键词/BM25 路径可命中。"
-          })
+      reindexFailed: reindex.failed,
+      reindexStaleDiscarded: reindex.staleDiscarded,
+      ...(warning ? { warning } : {})
     };
   });
 }

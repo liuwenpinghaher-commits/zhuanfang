@@ -405,7 +405,7 @@ export async function registerSystemRoutes(
     const anySearchKeyConfigured = Boolean(env.ANYSEARCH_API_KEY);
     const anySearchAnonymous = env.ANYSEARCH_ALLOW_ANONYMOUS === "true";
     const anySearchAvailability = options.anySearchClient?.getAvailability?.() ?? { status: "unknown" as const };
-    const realtimeEndpointConfigured = Boolean(env.BAILIAN_REALTIME_WEBRTC_ENDPOINT);
+    const realtimeEndpointConfigured = true; // default public DashScope WebRTC; BAILIAN_REALTIME_WEBRTC_ENDPOINT optional override
     const realtimeTransport = env.BAILIAN_REALTIME_TRANSPORT === "webrtc" ? "webrtc" : "websocket";
 
     const capabilities: SystemCapability[] = [
@@ -549,7 +549,7 @@ export async function registerSystemRoutes(
         active: true,
         detail: (env.CORPUS_S3_BUCKET ?? "").trim() && (env.AWS_ACCESS_KEY_ID ?? env.CORPUS_S3_ACCESS_KEY_ID ?? "").trim()
           ? `S3 预签名已启用（bucket=${(env.CORPUS_S3_BUCKET ?? "").trim()}）。POST /api/corpus/audio-files/presign → PUT uploadUrl。`
-          : "本地 Product API 预签名可用；配置 CORPUS_S3_BUCKET + AWS_ACCESS_KEY_ID/SECRET 可切换云 S3 PutObject 预签名。",
+          : "本地 Product API 预签名可用；配置 CORPUS_S3_BUCKET + 密钥可切换云 S3/OSS PutObject 预签名（支持 CORPUS_S3_ENDPOINT + path-style）。",
         requiredEnv: [],
         lastCheckedAt: generatedAt
       },
@@ -579,16 +579,10 @@ export async function registerSystemRoutes(
         id: "bailian-realtime",
         kind: "voice",
         label: "百炼 Qwen-Omni Realtime",
-        status: dashscopeKeyConfigured
-          ? (realtimeTransport === "websocket" || realtimeEndpointConfigured)
-            ? "ready"
-            : "needs-endpoint"
-          : "needs-key",
-        active: dashscopeKeyConfigured && (realtimeTransport === "websocket" || realtimeEndpointConfigured),
+        status: dashscopeKeyConfigured ? "ready" : "needs-key",
+        active: dashscopeKeyConfigured,
         detail: buildRealtimeDetail(dashscopeKeyConfigured, realtimeEndpointConfigured, realtimeTransport),
-        requiredEnv: realtimeTransport === "websocket"
-          ? ["DASHSCOPE_API_KEY"]
-          : ["DASHSCOPE_API_KEY", "BAILIAN_REALTIME_WEBRTC_ENDPOINT"],
+        requiredEnv: ["DASHSCOPE_API_KEY"],
         model: env.BAILIAN_REALTIME_MODEL ?? BAILIAN_REALTIME_MODEL,
         // Reuse the resolved transport (defaults to websocket) so the descriptor doesn't
         // claim "ready" on a websocket assumption while displaying "webrtc".
@@ -727,15 +721,12 @@ function maskSecretValue(value: string | undefined) {
   return "已配置（••••）";
 }
 
-function buildRealtimeDetail(keyConfigured: boolean, endpointConfigured: boolean, transport: string) {
+function buildRealtimeDetail(keyConfigured: boolean, _endpointConfigured: boolean, transport: string) {
   if (!keyConfigured) {
     return "缺少 DASHSCOPE_API_KEY 或 BAILIAN_API_KEY，实时语音不会连接百炼。";
   }
   if (transport === "websocket") {
     return "服务端已配置 WebSocket 代理；浏览器经 Product API 建立实时语音会话。cascade 路径默认优先。";
   }
-  if (!endpointConfigured) {
-    return "transport=webrtc 但缺少 BAILIAN_REALTIME_WEBRTC_ENDPOINT；客户端会尝试 WebRTC 后诚实回退 WebSocket。可设 BAILIAN_REALTIME_TRANSPORT=websocket。";
-  }
-  return "服务端已配置 WebRTC SDP 代理（POST .../webrtc/answer）；客户端优先 WebRTC，失败回退 WebSocket。";
+  return "WebRTC 使用公网 DashScope signaling（可 BAILIAN_REALTIME_WEBRTC_ENDPOINT 覆盖，无需白名单）；SDP 经 POST .../webrtc/answer 代理，失败诚实回退 WebSocket。";
 }
