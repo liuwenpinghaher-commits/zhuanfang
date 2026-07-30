@@ -436,6 +436,7 @@ React UI
 上线勾选清单：`docs/DEPLOYMENT-CHECKLIST.md`。  
 长期维护路线：`docs/MAINTENANCE-ROADMAP.md`。  
 成本/调用信封（D3.a）：`docs/COST-ENVELOPE.md`。  
+告警协议（D6.a）：`docs/runbooks/ALERTS.md`。  
 Wave D 分析：`docs/superpowers/2026-07-30-wave-d-analysis.md`。
 
 ## 验证状态

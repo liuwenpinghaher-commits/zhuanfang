@@ -198,4 +198,4 @@
 | `docs/MAINTENANCE-ROADMAP.md` | 下一队列项 |
 
 **D3.a 状态：closed（文档信封）**  
-**下一默认维护项：D6.a 告警草案（runbook 附录）。**
+**关联：D6.a 告警协议见 [`docs/runbooks/ALERTS.md`](./runbooks/ALERTS.md)。**

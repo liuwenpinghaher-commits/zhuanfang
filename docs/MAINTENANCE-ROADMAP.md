@@ -79,8 +79,8 @@
 ```text
 V1–V3（Full GO）· closed
   → D3.a 成本信封文档 · closed → docs/COST-ENVELOPE.md
-  → D6.a 告警草案（runbook 附录）· **next**
-  → D1.a 播客音频过期刷新 或 D2.a 搜索 URL 去重（选产品痛点）
+  → D6.a 告警草案 · closed → docs/runbooks/ALERTS.md
+  → D1.a 播客音频过期刷新 或 D2.a 搜索 URL 去重（选产品痛点）· **next**
   → D4.a 专访键盘路径（改 UI 时捆绑）
   → D5.a/b 适配层与换维 runbook（无第二厂商则停）
   → 其余 D*.b/c 仅在用户痛点或指标恶化时开启
@@ -156,6 +156,7 @@ PRODUCT_API_TOKEN=check docker compose config -q
 | --- | --- |
 | `docs/superpowers/2026-07-30-wave-d-analysis.md` | D1–D6 现状/缺口/切片 |
 | `docs/COST-ENVELOPE.md` | **D3.a 成本/调用信封（定稿）** |
+| `docs/runbooks/ALERTS.md` | **D6.a 告警协议（定稿）** |
 | `docs/DEPLOYMENT-CHECKLIST.md` | 上线勾选 |
 | `docs/ARCHIVE.md` | 健康检查 + 文档分类 |
 | `docs/runbooks/README.md` | 故障 |
@@ -163,4 +164,4 @@ PRODUCT_API_TOKEN=check docker compose config -q
 | `README.md` | 用户向运行与架构 |
 
 **维护路线图状态：定稿**  
-**下一步默认动作：D6.a 告警草案（runbook 附录）；D3.a 见 `docs/COST-ENVELOPE.md`。**
+**下一步默认动作：** 有痛点则 D1.a 或 D2.a；否则维持 Track M。D3.a/D6.a 已闭。

@@ -72,7 +72,8 @@
 | C2 rubric | closed | `docs/superpowers/eval/interview-rubric.md` |
 | C3 隐私 KPI | closed | `buildPrivacyReport().longitudinal` |
 | D3.a 成本信封 | closed | `docs/COST-ENVELOPE.md`（调用桶/场景上界；≠ USD） |
-| D1–D6 其余 | open（切片） | 分析见 `2026-07-30-wave-d-analysis.md`；下一默认 **D6.a** 告警草案；按 `docs/MAINTENANCE-ROADMAP.md` |
+| D6.a 告警草案 | closed | `docs/runbooks/ALERTS.md`（P0–P3 阈值/动作/降噪） |
+| D1–D6 其余 | open（切片） | 分析见 `2026-07-30-wave-d-analysis.md`；下一按痛点 **D1.a / D2.a**；见 `docs/MAINTENANCE-ROADMAP.md` |
 | 非目标 | n/a | 多租户、CRDT、完整 AWS SDK |
 | 维护路线 | 定稿 | `docs/MAINTENANCE-ROADMAP.md`（V 验证优先 → D 按需） |
 | V1 Playwright e2e | closed | 默认族 35/35 绿；端口隔离 13210/13220/13230，避免本机 3210 鉴权 API 被 reuse |

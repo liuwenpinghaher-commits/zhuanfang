@@ -218,7 +218,7 @@
 
 | 切片 | 验收 |
 | --- | --- |
-| D6.a 告警草案 | runbook 附录：阈值与阈值 |
+| D6.a 告警草案 | **closed 2026-07-30** · [`docs/runbooks/ALERTS.md`](../runbooks/ALERTS.md) |
 | D6.b session 属性 | 关键 span 白名单 `session.id` |
 | D6.c compose otel profile | 可选 profile 文档 |
 | D6.d （可选）metrics 导出 | Prometheus 文本或 OTLP metrics |

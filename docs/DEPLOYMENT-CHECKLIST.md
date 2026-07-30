@@ -30,6 +30,7 @@
 - [ ] `npx tsx scripts/voice-slo-smoke.ts` → `okP95` / `okBarge` 为 true
 - [ ] CI workflow 存在：`.github/workflows/ci.yml`
 - [ ] 已读 `docs/runbooks/README.md`（双开锁 / partial export / 5xx / persist / 429）
+- [ ] 已读 `docs/runbooks/ALERTS.md`（P0 ready/persist、TTFA、429 阈值）
 
 ---
 
