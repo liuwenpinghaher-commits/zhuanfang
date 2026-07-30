@@ -73,11 +73,19 @@
 | D1–D6 | open | 播客/搜索/成本/a11y/可移植/OTEL 增强按需 |
 | 非目标 | n/a | 多租户、CRDT、完整 AWS SDK |
 
+## 集成与部署态（2026-07-30）
+
+全量集成矩阵、架构、容量信封与上线清单见：
+[`docs/superpowers/2026-07-30-integration-and-deployment-state.md`](./2026-07-30-integration-and-deployment-state.md)
+
+摘要（`dafbba1f`）：typecheck + **1600 pass / 0 fail** + `npm run build` + voice-slo + capacity smoke + compose fail-closed → **Conditional GO**（建议补 Playwright e2e 与带 key 的 compose 演练）。
+
 ## 验收
 
 ```bash
 npm run typecheck
 env -u DASHSCOPE_API_KEY -u BAILIAN_API_KEY REAL_PROVIDER_SMOKE=off npm test -- --run
+npm run build
 node scripts/capacity-smoke.mjs
 npx tsx scripts/voice-slo-smoke.ts
 node scripts/backup-export-smoke.mjs
