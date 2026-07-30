@@ -25,6 +25,8 @@
 | 10 | 部署清单 | `docs/DEPLOYMENT-CHECKLIST.md` | **存在（定稿）** |
 | 11 | Playwright 默认 e2e | `npm run test:e2e` | **PASS 35/35**（V1 · 隔离端口） |
 | 12 | V2 真 key compose | checklist §7 | **PASS** · build+冒烟+卷持久 |
+| 13 | V3 live export | checklist §8 | **PASS** · completeness=complete |
+| — | Track V | V1–V3 | **验证轨 Full GO** |
 
 ### 1.1 测试边界（诚实）
 
@@ -37,10 +39,10 @@
 
 ### 1.2 健康结论
 
-**系统健康：绿（Conditional GO）**
+**系统健康：绿；验证轨 Full GO（V1–V3，2026-07-30）**
 
 - 类型、全量单元/API 集成、生产 build、compose 配置、语音 SLO、容量代理 smoke 均通过。  
-- 部署判定仍为 **Conditional GO**，直至 `DEPLOYMENT-CHECKLIST.md` §6–§8（浏览器 e2e、真实 key compose、live export）完成 → **Full GO**。
+- 部署验证轨 **Full GO**（§6 默认 e2e、§7 compose、§8 live export completeness）。可选加深：import 回灌、E2E_REAL 语音、产品签字 §10–§11。
 
 ---
 

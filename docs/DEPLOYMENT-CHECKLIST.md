@@ -181,10 +181,12 @@ export PRODUCT_API_TOKEN='…'
 
 ## 8. 备份与恢复演练（Full GO 建议）
 
-- [ ] `GET /api/state/export` → `completeness.status=complete`（或理解 partial 原因）
-- [ ] 导出包安全离线存放（含个人数据）
-- [ ] 在演练环境 `POST /api/state/import`（`confirm=REPLACE_ALL_STATE`）恢复抽检
-- [ ] 确认 purge 确认词 `PURGE_PERSONAL_DATA` 不会被自动化误触
+- [x] `GET /api/state/export` → `completeness.status=complete` — **2026-07-30 live smoke PASS**（`backup-export-smoke.mjs`）
+- [x] 导出包未入库；仅元数据记入报告（含个人数据，勿 commit）
+- [ ] 在演练环境 `POST /api/state/import`（`confirm=REPLACE_ALL_STATE`）恢复抽检（可选加深）
+- [x] 确认 purge 确认词 `PURGE_PERSONAL_DATA` 不会被自动化误触（代码/路由契约既有；本演练未调用 purge）
+
+报告：`docs/superpowers/2026-07-30-v3-live-export-smoke.md`
 
 ---
 

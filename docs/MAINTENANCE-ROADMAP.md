@@ -57,10 +57,10 @@
 | --- | --- | --- | --- |
 | V1 | Playwright 默认 e2e | **closed 2026-07-30** · 35/35 绿；e2e 端口 13210/13220/13230 | done |
 | V2 | 真 key compose 演练 | **closed 2026-07-30** · checklist §7；报告 `2026-07-30-v2-compose-exercise.md` | done |
-| V3 | Live export smoke | checklist §8 | 0.5d |
+| V3 | Live export smoke | **closed 2026-07-30** · export complete；`2026-07-30-v3-live-export-smoke.md` | done |
 | V4 | （可选）E2E_REAL 语音抽样 | 有 key 环境 | 1d |
 
-**V1–V3 完成后：部署判定可升为 Full GO。**
+**V1–V3 已完成（2026-07-30）：验证轨 Full GO。** 产品/运维书面签字仍走 `DEPLOYMENT-CHECKLIST.md` §10–§11。
 
 ### Track M — 维护杂项（持续）
 

@@ -75,6 +75,8 @@
 | 维护路线 | 定稿 | `docs/MAINTENANCE-ROADMAP.md`（V 验证优先 → D 按需） |
 | V1 Playwright e2e | closed | 默认族 35/35 绿；端口隔离 13210/13220/13230，避免本机 3210 鉴权 API 被 reuse |
 | V2 真 key compose | closed | `up --build` + 鉴权冒烟 12/12 + down 无 -v 卷保留；见 `2026-07-30-v2-compose-exercise.md` |
+| V3 live export smoke | closed | compose API export `completeness=complete`；见 `2026-07-30-v3-live-export-smoke.md` |
+| Track V Full GO（验证） | closed | V1+V2+V3 齐；产品签字仍见 DEPLOYMENT-CHECKLIST §10–11 |
 
 ## 集成与部署态（2026-07-30 · 定稿）
 
