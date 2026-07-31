@@ -1,6 +1,6 @@
 # UI 系统规范（控件 · 间距 · 层级）
 
-> **状态：** Wave A closed · Wave B 待开  
+> **状态：** Wave A/B closed · Wave C 待开  
 > **日期：** 2026-07-31  
 > **真源实现：** `src/styles.css` CSS variables + 全局控件选择器  
 > **验收主题：** 亮色优先，暗色同步
@@ -17,13 +17,21 @@
 - 视觉层级：页头 > 面板标题 > 字段标签 > 正文 > 辅助说明
 - 主操作一眼可辨；次操作不抢主 CTA
 
-### 1.2 Wave A 完成定义（本轮）
+### 1.2 Wave A 完成定义
+
 - [x] `--control-*` token 亮/暗齐全
 - [x] 全局表单控件样式统一（含 placeholder / hover / focus / disabled）
 - [x] `.field-stack` / `.form-card` / `.form-actions` 对齐
 - [x] 素材库去掉内联样式，成为参考页
 - [x] 视觉回归基线更新（实施后）
 - [x] Docker 生产镜像含新 CSS（实施后）
+
+
+### 1.3 Wave B 完成定义（页面对齐）
+- [x] 布局工具类：`stack` / `row` / `field-grid` / `chat-*` / `list-row`
+- [x] 主页面去内联布局样式（保留动态 width/color 数据态）
+- [x] 素材库 / 档案 / 对话 等参考结构对齐
+- [x] 视觉回归与 Docker 生产镜像更新
 
 ---
 

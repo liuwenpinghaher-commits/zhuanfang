@@ -248,14 +248,14 @@ export function RawMaterialViewer({
     return (
       <div className="panel" style={{ marginTop: "0.75rem", display: "flex", alignItems: "center", gap: "0.6rem" }}>
         <span className="spinner" aria-hidden="true" />
-        <span style={{ color: "var(--text-secondary)", fontSize: "0.875rem" }}>正在加载原始材料…</span>
+        <span className="text-sm text-secondary">正在加载原始材料…</span>
       </div>
     );
   }
 
   if (status === "empty") {
     return (
-      <div className="panel" style={{ marginTop: "0.75rem" }}>
+      <div className="panel mt-3">
         <p className="empty-hint">原始材料未找到 / 该会话尚未降冷。</p>
       </div>
     );
@@ -263,7 +263,7 @@ export function RawMaterialViewer({
 
   if (status === "error" || !material) {
     return (
-      <div className="panel" style={{ marginTop: "0.75rem" }}>
+      <div className="panel mt-3">
         <p className="empty-hint" style={{ color: "var(--action-danger)" }}>
           {errorMessage ?? "加载原始材料失败"}
         </p>
@@ -341,15 +341,15 @@ export function RawMaterialViewer({
             paddingBottom: "0.85rem",
             borderBottom: "1px solid var(--border-subtle, rgba(255,255,255,0.06))"
           }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-            <span className="field-label" style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
+>
+          <div className="row">
+            <span className="field-label row">
               <Headphones size={14} aria-hidden="true" />
               受访者录音
             </span>
-            {audioCaption && <span className="field-help" style={{ fontVariantNumeric: "tabular-nums" }}>{audioCaption}</span>}
+            {audioCaption && <span className="field-help tabular-nums">{audioCaption}</span>}
           </div>
-          <audio ref={audioRef} controls preload="metadata" src={playbackSrc} style={{ width: "100%" }} />
+          <audio ref={audioRef} controls preload="metadata" src={playbackSrc} className="w-full" />
         </section>
       )}
       {showHostAudio && hostAudioBlobUrl && (
@@ -360,16 +360,16 @@ export function RawMaterialViewer({
             paddingBottom: "0.85rem",
             borderBottom: "1px solid var(--border-subtle, rgba(255,255,255,0.06))"
           }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-            <span className="field-label" style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
+>
+          <div className="row">
+            <span className="field-label row">
               <Mic size={14} aria-hidden="true" />
               主持人录音
             </span>
-            {hostAudioCaption && <span className="field-help" style={{ fontVariantNumeric: "tabular-nums" }}>{hostAudioCaption}</span>}
+            {hostAudioCaption && <span className="field-help tabular-nums">{hostAudioCaption}</span>}
           </div>
           {/* 主持人音频无逐轮 seek：整段连续播放即可。 */}
-          <audio controls preload="metadata" src={hostAudioBlobUrl} style={{ width: "100%" }} />
+          <audio controls preload="metadata" src={hostAudioBlobUrl} className="w-full" />
         </section>
       )}
       {material.turns.map((turn, turnIndex) => {
@@ -432,13 +432,13 @@ export function RawMaterialViewer({
                   }
                 : { transition: "background 0.3s ease, box-shadow 0.3s ease" })
             }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-              <span className="field-label" style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
+>
+            <div className="row">
+              <span className="field-label row">
                 {turn.role === "assistant" ? <Bot size={14} aria-hidden="true" /> : <MessageSquare size={14} aria-hidden="true" />}
                 {turn.role === "assistant" ? "主持人" : "我"}
               </span>
-              <span className="field-help" style={{ fontVariantNumeric: "tabular-nums" }}>
+              <span className="field-help tabular-nums">
                 {new Date(turn.timestamp).toLocaleString("zh-CN")}
               </span>
               {(() => {
@@ -456,7 +456,7 @@ export function RawMaterialViewer({
                     title="播这一段"
                     onClick={() => playFromOffset(offsetSec)}
                     style={{ display: "inline-flex", alignItems: "center", gap: "0.25rem", marginLeft: "auto", fontSize: "0.78rem" }}
-                  >
+>
                     <Play size={13} aria-hidden="true" />
                     播这一段
                   </button>
@@ -474,17 +474,17 @@ export function RawMaterialViewer({
                   borderRadius: "0.5rem",
                   padding: "0.5rem 0.65rem"
                 }}
-              >
-                <strong style={{ color: "var(--text-primary)" }}>AI 为何这么问：</strong>
+>
+                <strong className="text-sm">AI 为何这么问：</strong>
                 {trace.label && <span>「{trace.label}」</span>}
                 {trace.reason && <span> {trace.reason}</span>}
               </div>
             )}
 
             {sources.length > 0 && (
-              <ul className="clean-list" style={{ margin: 0 }}>
+              <ul className="clean-list" >
                 {sources.map((sourceText, idx) => (
-                  <li key={turn.id + "-src-" + idx} className="field-help" style={{ paddingBottom: "0.25rem" }}>
+                  <li key={turn.id + "-src-" + idx} className="field-help mb-3">
                     → 由此产生：{sourceText}
                   </li>
                 ))}
@@ -492,12 +492,12 @@ export function RawMaterialViewer({
             )}
 
             {annotations.length > 0 && (
-              <ul className="clean-list" style={{ margin: 0 }}>
+              <ul className="clean-list" >
                 {annotations.map((annotation) => (
                   <li
                     key={annotation.id}
-                    style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.6rem" }}
-                  >
+                    className="row-between"
+>
                     <span style={{ fontSize: "0.875rem", display: "inline-flex", alignItems: "center", gap: "0.4rem" }}><PenLine size={13} /> {annotation.text}</span>
                     <button
                       className="icon-button"
@@ -505,7 +505,7 @@ export function RawMaterialViewer({
                       aria-label={"删除旁注：" + annotation.text}
                       onClick={() => onRemoveAnnotation(annotation.id)}
                       style={{ flexShrink: 0 }}
-                    >
+>
                       <Trash2 size={14} />
                     </button>
                   </li>
@@ -514,7 +514,7 @@ export function RawMaterialViewer({
             )}
 
             <div className="correction-row" style={{ gap: "0.5rem" }}>
-              <label className="field-stack" style={{ flex: 1 }}>
+              <label className="field-stack flex-1">
                 <input
                   value={draft}
                   maxLength={300}
@@ -525,15 +525,14 @@ export function RawMaterialViewer({
                       e.preventDefault();
                       submitAnnotation();
                     }
-                  }}
-                />
+                  }} />
               </label>
               <button
                 className="secondary-action"
                 type="button"
                 onClick={submitAnnotation}
                 disabled={!draft.trim()}
-              >
+>
                 加旁注
               </button>
             </div>

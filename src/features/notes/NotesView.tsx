@@ -54,8 +54,7 @@ export function NotesView({
         eyebrow="双轨笔记"
         title="从访谈沉淀认知资产"
         subtitle="每份档案都区分“我说了什么”和“我学到了什么”，并保留下次回访问题。"
-        action={<button className="secondary-action" type="button" onClick={() => onStart("daily")}><Play size={18} />再做一次复盘</button>}
-      />
+        action={<button className="secondary-action" type="button" onClick={() => onStart("daily")}><Play size={18} />再做一次复盘</button>} />
       <div className="record-list">
         {state.notes.length === 0 && (
           <section className="panel empty-module">
@@ -91,15 +90,14 @@ export function NotesView({
                 className="secondary-action"
                 type="button"
                 aria-expanded={openSessionId === note.sessionId}
-                onClick={() => setOpenSessionId((prev) => (prev === note.sessionId ? null : note.sessionId))}
-              >
+                onClick={() => setOpenSessionId((prev) => (prev === note.sessionId ? null : note.sessionId))}>
                 <FileSearch size={16} aria-hidden="true" />
                 {openSessionId === note.sessionId ? "收起原始材料" : "查看原始材料"}
               </button>
             </div>
             {openSessionId === note.sessionId && (
               // record-row 是两列网格；让原始材料查看器横跨两列用满宽度，否则会被挤在左列、右侧留大片空白。
-              <div style={{ gridColumn: "1 / -1" }}>
+              <div className="span-all">
                 <RawMaterialViewer
                   sessionId={note.sessionId}
                   state={state}
@@ -109,8 +107,7 @@ export function NotesView({
                   getRawMaterial={getRawMaterial}
                   getAudioMeta={getAudioMeta}
                   audioUrl={audioUrl}
-                  getAudioBlob={getAudioBlob}
-                />
+                  getAudioBlob={getAudioBlob} />
               </div>
             )}
           </article>
@@ -123,7 +120,7 @@ export function NotesView({
               <h2>原始材料</h2>
               <p>该会话尚无双轨笔记，以下为被引用的原始逐字稿。</p>
             </div>
-            <div style={{ gridColumn: "1 / -1" }}>
+            <div className="span-all">
               <RawMaterialViewer
                 sessionId={orphanFocusSessionId}
                 state={state}
@@ -133,8 +130,7 @@ export function NotesView({
                 getRawMaterial={getRawMaterial}
                 getAudioMeta={getAudioMeta}
                 audioUrl={audioUrl}
-                getAudioBlob={getAudioBlob}
-              />
+                getAudioBlob={getAudioBlob} />
             </div>
           </article>
         )}

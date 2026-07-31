@@ -43,8 +43,7 @@ function SensitiveIcon() {
     <ShieldAlert
       size={16}
       aria-label="敏感内容，默认不写入上下文"
-      style={{ display: "inline", verticalAlign: "text-bottom", marginRight: 3 }}
-    />
+      style={{ display: "inline", verticalAlign: "text-bottom", marginRight: 3 }} />
   );
 }
 
@@ -243,8 +242,7 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
       <HeaderBlock
         eyebrow="记忆治理"
         title="导入资料，审核长期记忆"
-        subtitle="导入的资料会抽取成候选记忆；只有你确认后才进入长期记忆。敏感内容默认不写入上下文。"
-      />
+        subtitle="导入的资料会抽取成候选记忆；只有你确认后才进入长期记忆。敏感内容默认不写入上下文。" />
 
       {/* Import card — 单列 form-card，修复 record-row 双列重叠问题 */}
       <div className="form-card">
@@ -255,8 +253,7 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
             type="text"
             value={title}
             placeholder="例如：我的产品笔记 / 一篇访谈稿"
-            onChange={(e) => setTitle(e.target.value)}
-          />
+            onChange={(e) => setTitle(e.target.value)} />
         </div>
         <div className="form-row">
           <label className="field-label" htmlFor="memory-import-content">
@@ -268,8 +265,7 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
             value={content}
             placeholder="把要导入的资料粘贴到这里…"
             onChange={(e) => handleContentChange(e.target.value)}
-            aria-describedby={contentError ? "import-content-error" : undefined}
-          />
+            aria-describedby={contentError ? "import-content-error" : undefined} />
           {content.length > 0 && (
             <span className="char-count">{content.length.toLocaleString()} / {MAX_IMPORT_CHARS.toLocaleString()} 字</span>
           )}
@@ -280,19 +276,18 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
           )}
         </div>
         <div className="form-actions">
-          <label className="secondary-action" style={{ cursor: "pointer" }}>
+          <label className="secondary-action file-button">
             <FileUp size={16} />选择 .txt/.md 文件
             <input
               type="file"
               accept=".txt,.md,.markdown,text/plain"
-              style={{ display: "none" }}
+              className="sr-only"
               onChange={(e) => {
                 const file = e.target.files?.[0];
                 if (!file) return;
                 if (!title.trim()) setTitle(file.name.replace(/\.[^.]+$/, ""));
                 file.text().then((text) => handleContentChange(text));
-              }}
-            />
+              }} />
           </label>
           <button
             className={`primary-action${importing ? " btn-loading" : ""}`}
@@ -300,7 +295,7 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
             disabled={importing || !content.trim() || content.length > MAX_IMPORT_CHARS}
             onClick={handleImport}
             aria-busy={importing}
-          >
+>
             {importing && <span className="spinner" aria-hidden="true" />}
             <FileUp size={16} />
             {importing ? "抽取中…" : "导入并抽取候选记忆"}
@@ -331,7 +326,7 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
               <article
                 className={`record-row${isEditing ? " edit-active" : ""}`}
                 key={candidate.id}
-              >
+>
                 <div className="record-main">
                   <span className="label">
                     评分 {candidate.reviewScore} &middot;{" "}
@@ -367,7 +362,7 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
                         lineHeight: 1.45,
                         color: "var(--text-secondary, #555)"
                       }}
-                    >
+>
                       <GitMerge size={14} aria-hidden="true" style={{ flexShrink: 0, marginTop: 2 }} />
                       <span>
                         似已有记忆：<span style={{ fontStyle: "italic" }}>{hint}</span> —— 可合并或仍新增。
@@ -380,7 +375,7 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
 
                   {/* Inline edit area */}
                   {isEditing && (
-                    <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                    <div className="stack-sm mt-3">
                       <label className="field-label" htmlFor={`edit-candidate-${candidate.id}`}>
                         修正内容（{draftText.length} / {MEMORY_TEXT_MAX_CHARS} 字）
                       </label>
@@ -391,8 +386,7 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
                         maxLength={MEMORY_TEXT_MAX_CHARS}
                         value={draftText}
                         onChange={(e) => setDraftText(e.target.value)}
-                        aria-label="修正候选记忆内容"
-                      />
+                        aria-label="修正候选记忆内容" />
                       <div className="note-actions">
                         <button
                           className={`primary-action${isSaving ? " btn-loading" : ""}`}
@@ -400,7 +394,7 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
                           disabled={isSaving || !draftText.trim()}
                           onClick={() => handleSave(candidate.id, candidate.text)}
                           aria-busy={isSaving}
-                        >
+>
                           {isSaving && <span className="spinner" aria-hidden="true" />}
                           <Check size={16} />保存修正
                         </button>
@@ -408,8 +402,7 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
                           className="secondary-action"
                           type="button"
                           disabled={isSaving}
-                          onClick={cancelEdit}
-                        >
+                          onClick={cancelEdit}>
                           <X size={16} />取消
                         </button>
                       </div>
@@ -426,7 +419,7 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
                       onClick={() => handleApprove(candidate.id, hint ? "merge" : "add")}
                       aria-busy={isApproving}
                       title={hint ? "合并到近重复的既有记忆（保留本条文案）" : "新增一条已确认记忆"}
-                    >
+>
                       {isApproving && <span className="spinner" aria-hidden="true" />}
                       <Check size={16} />{hint ? "合并记住" : "确认记住"}
                     </button>
@@ -437,7 +430,7 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
                         disabled={anyLoading}
                         onClick={() => handleApprove(candidate.id, "add")}
                         title="不合并，作为新的独立记忆写入"
-                      >
+>
                         <GitMerge size={16} />仍新增
                       </button>
                     )}
@@ -445,8 +438,7 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
                       className="secondary-action"
                       type="button"
                       disabled={anyLoading}
-                      onClick={() => startEdit(candidate.id, candidate.text)}
-                    >
+                      onClick={() => startEdit(candidate.id, candidate.text)}>
                       <Pencil size={16} />修正
                     </button>
                     <button
@@ -455,7 +447,7 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
                       disabled={anyLoading}
                       onClick={() => handleReject(candidate.id)}
                       aria-busy={isRejecting}
-                    >
+>
                       {isRejecting && <span className="spinner" aria-hidden="true" />}
                       <X size={16} />不要记
                     </button>
@@ -469,7 +461,7 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
 
       {/* Confirmed records — 真双列布局（左内容右操作），保留 record-row */}
       <div className="record-list">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div className="row-between">
           <h2>已确认的长期记忆（{confirmed.length}）</h2>
           {confirmed.length >= 2 && (
             <button
@@ -485,7 +477,7 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
                   setConsolidating(false);
                 }
               }}
-            >
+>
               {consolidating ? <span className="spinner" /> : <GitMerge size={16} aria-hidden="true" />}
               {consolidating ? "整理中…" : "整理记忆"}
             </button>
@@ -518,7 +510,7 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
 
                 {/* Inline edit area — 复用候选记忆同款 textarea + 保存/取消模式 */}
                 {isEditingRecord && (
-                  <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div className="stack-sm mt-3">
                     <label className="field-label" htmlFor={`edit-record-${record.id}`}>
                       修正内容（{draftRecordText.length} / {MEMORY_TEXT_MAX_CHARS} 字）
                     </label>
@@ -529,15 +521,13 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
                       maxLength={MEMORY_TEXT_MAX_CHARS}
                       value={draftRecordText}
                       onChange={(e) => setDraftRecordText(e.target.value)}
-                      aria-label="修正长期记忆内容"
-                    />
+                      aria-label="修正长期记忆内容" />
                     <div className="note-actions">
                       <button
                         className="primary-action"
                         type="button"
                         disabled={!draftRecordText.trim()}
-                        onClick={() => handleSaveRecord(record.id, record.text)}
-                      >
+                        onClick={() => handleSaveRecord(record.id, record.text)}>
                         <Check size={16} />保存修正
                       </button>
                       <button className="secondary-action" type="button" onClick={cancelEditRecord}>
@@ -558,7 +548,7 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
                         const anchor = record.evidenceAnchors![0];
                         setSourceOverlay({ sessionId: anchor.sessionId, turnId: anchor.turnId });
                       }}
-                    >
+>
                       <ExternalLink size={16} />查看原文出处
                     </button>
                   )}
@@ -597,7 +587,7 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
             padding: "5vh 1rem",
             overflowY: "auto"
           }}
-        >
+>
           <div
             onClick={(e) => e.stopPropagation()}
             style={{
@@ -607,15 +597,14 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
               padding: "1rem 1.1rem 1.4rem",
               boxShadow: "0 18px 48px rgba(0,0,0,0.5)"
             }}
-          >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "0.75rem" }}>
-              <h2 style={{ margin: 0, fontSize: "1.05rem" }}>原文出处</h2>
+>
+            <div className="row-between">
+              <h2 className="panel-subhead">原文出处</h2>
               <button
                 className="icon-button"
                 type="button"
                 aria-label="关闭原文出处"
-                onClick={() => setSourceOverlay(null)}
-              >
+                onClick={() => setSourceOverlay(null)}>
                 <X size={18} />
               </button>
             </div>
@@ -628,8 +617,7 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
               getRawMaterial={getRawMaterial}
               getAudioMeta={getAudioMeta}
               audioUrl={audioUrl}
-              getAudioBlob={getAudioBlob}
-            />
+              getAudioBlob={getAudioBlob} />
           </div>
         </div>
       )}

@@ -61,8 +61,7 @@ describe("HomeView 专访启动真值", () => {
           suggestedTopicHint="控制感"
           recommendedMode="long-term"
           recommendationReason="适合回访反复出现的问题"
-          onStart={onStart}
-        />
+          onStart={onStart} />
       );
     });
   }

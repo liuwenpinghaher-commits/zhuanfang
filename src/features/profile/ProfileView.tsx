@@ -245,27 +245,26 @@ export function ProfileView({
       <HeaderBlock
         eyebrow="个人档案与控制"
         title={state.profile.role + " · " + state.profile.industry}
-        subtitle="长期记忆必须可见、可修正、可删除。AI 推断不能直接等同于事实。"
-      />
+        subtitle="长期记忆必须可见、可修正、可删除。AI 推断不能直接等同于事实。" />
       <div className="dashboard-grid">
         <section className="panel">
           <div className="panel-title"><Settings size={18} /><h2>显性档案</h2></div>
-          <p className="field-help" style={{ marginBottom: "1rem" }}>
+          <p className="field-help mb-4">
             当前关注 / 长期目标 / 追问强度会直接影响每次专访的选题与提问方式。
           </p>
-          <div style={{ display: "flex", flexDirection: "column", gap: "0.85rem" }}>
+          <div className="stack">
             <label className="field-stack">
               <span className="field-label">称呼</span>
               <input value={form.name} maxLength={40} placeholder="你希望被怎么称呼"
                 onChange={(e) => { setForm({ ...form, name: e.target.value }); setProfileSaved(false); }} />
             </label>
-            <div style={{ display: "flex", gap: "0.75rem" }}>
-              <label className="field-stack" style={{ flex: 1 }}>
+            <div className="row">
+              <label className="field-stack flex-1">
                 <span className="field-label">身份</span>
                 <input value={form.role} maxLength={40} placeholder="如：产品负责人"
                   onChange={(e) => { setForm({ ...form, role: e.target.value }); setProfileSaved(false); }} />
               </label>
-              <label className="field-stack" style={{ flex: 1 }}>
+              <label className="field-stack flex-1">
                 <span className="field-label">行业</span>
                 <input value={form.industry} maxLength={40} placeholder="如：AI 产品 / 创业"
                   onChange={(e) => { setForm({ ...form, industry: e.target.value }); setProfileSaved(false); }} />
@@ -290,22 +289,22 @@ export function ProfileView({
                 <option value="sharp">犀利（sharp）</option>
               </select>
             </label>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+            <div className="row">
               <button className="primary-action" type="button" onClick={handleSaveProfile} disabled={profileSaving} aria-busy={profileSaving}>
                 {profileSaving ? "保存中…" : "保存档案"}
               </button>
-              {profileSaved && <span style={{ color: "var(--color-success, #22c55e)", fontSize: "0.875rem" }}>已保存</span>}
+              {profileSaved && <span className="field-status is-success">已保存</span>}
             </div>
             {profileSaveError && <p className="field-error" role="alert">{profileSaveError}</p>}
           </div>
         </section>
         <section className="panel">
           <div className="panel-title"><ShieldCheck size={18} /><h2>用户边界</h2></div>
-          <p className="field-help" style={{ marginBottom: "1rem" }}>
+          <p className="field-help mb-4">
             这里设定的边界是「绝不触碰」的硬约束，会写进每次专访的提问指令，主持人必须遵守。
           </p>
-          <div className="correction-row" style={{ marginBottom: state.profile.explicitBoundaries.length ? "1rem" : 0 }}>
-            <label className="field-stack" style={{ flex: 1 }}>
+          <div className={state.profile.explicitBoundaries.length ? "correction-row mb-4" : "correction-row"}>
+            <label className="field-stack flex-1">
               <input value={boundaryText} maxLength={120}
                 placeholder="例：不要追问家庭关系"
                 onChange={(e) => setBoundaryText(e.target.value)}
@@ -315,10 +314,10 @@ export function ProfileView({
           </div>
           <ul className="clean-list">
             {state.profile.explicitBoundaries.map((boundary, idx) => (
-              <li key={"boundary-" + idx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.75rem" }}>
+              <li key={"boundary-" + idx} className="row-between">
                 <span>{boundary}</span>
                 <button className="icon-button" type="button" aria-label={"删除边界：" + boundary}
-                  onClick={() => handleRemoveBoundary(boundary)} style={{ flexShrink: 0 }}>
+                  onClick={() => handleRemoveBoundary(boundary)}>
                   <Trash2 size={14} />
                 </button>
               </li>
@@ -333,21 +332,21 @@ export function ProfileView({
       {pendingSuggestions.length > 0 && (
         <section className="panel">
           <div className="panel-title"><PenLine size={18} /><h2>档案更新建议（{pendingSuggestions.length}）</h2></div>
-          <p className="field-help" style={{ marginBottom: "1rem" }}>
+          <p className="field-help mb-4">
             最近的专访显示你的关注/目标可能变了。AI 不会自动改你的档案——确认后才会生效。
           </p>
           <ul className="clean-list">
             {pendingSuggestions.map((s) => (
-              <li key={s.id} style={{ display: "flex", flexDirection: "column", gap: "0.5rem", paddingBottom: "0.85rem" }}>
+              <li key={s.id} className="stack-sm list-row">
                 <span className="field-label">{FIELD_LABEL[s.field] ?? s.field}</span>
-                <div style={{ fontSize: "0.9rem", lineHeight: 1.5 }}>
+                <div className="text-sm">
                   {s.currentValue
-                    ? <><span style={{ color: "var(--text-secondary)", textDecoration: "line-through" }}>{s.currentValue}</span>{" → "}<strong>{s.suggestedValue}</strong></>
-                    : <><span style={{ color: "var(--text-secondary)" }}>（原为空）→ </span><strong>{s.suggestedValue}</strong></>}
+                    ? <><span className="text-secondary" style={{ textDecoration: "line-through" }}>{s.currentValue}</span>{" → "}<strong>{s.suggestedValue}</strong></>
+                    : <><span className="text-secondary">（原为空）→ </span><strong>{s.suggestedValue}</strong></>}
                 </div>
                 {s.reason && <span className="field-help">理由：{s.reason}</span>}
-                {s.evidenceQuote && <span className="field-help" style={{ fontStyle: "italic" }}>原话：「{s.evidenceQuote}」</span>}
-                <div style={{ display: "flex", gap: "0.6rem", marginTop: "0.25rem" }}>
+                {s.evidenceQuote && <span className="field-help">原话：「{s.evidenceQuote}」</span>}
+                <div className="form-actions mt-2">
                   <button className="primary-action" type="button" onClick={() => handleApproveSuggestion(s.id)}>采纳</button>
                   <button className="secondary-action" type="button" onClick={() => handleRejectSuggestion(s.id)}>忽略</button>
                 </div>
@@ -391,8 +390,7 @@ export function ProfileView({
               value={correctionText}
               maxLength={500}
               onChange={(event) => onCorrectionText(event.target.value)}
-              placeholder="例：不要把我对项目的不满写成对团队成员的否定。"
-            />
+              placeholder="例：不要把我对项目的不满写成对团队成员的否定。" />
             <div className="field-row-foot">
               <span className="field-help">这会作为长期边界保留，不会直接覆盖用户确认记忆。</span>
               <span className="char-count">{correctionText.length}/500</span>
@@ -409,49 +407,48 @@ export function ProfileView({
 
       <section className="panel">
         <div className="panel-title"><FileText size={18} /><h2>数据治理</h2></div>
-        <p style={{ color: "var(--text-secondary)", marginBottom: "1.25rem", fontSize: "0.875rem" }}>
+        <p className="field-help mb-4">
           导出个人数据备份、查看隐私库存摘要，或彻底清空个人数据。
         </p>
-        <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+        <div className="stack">
 
           {/* Export */}
-          <div style={{ display: "flex", alignItems: "center", gap: "1rem", flexWrap: "wrap" }}>
+          <div className="row-wrap">
             <button
               className={"secondary-action" + (loadingAction === "export" ? " btn-loading" : "")}
               type="button"
               disabled={loadingAction !== null}
-              onClick={handleExport}
-            >
+              onClick={handleExport}>
               {loadingAction === "export" ? <span className="spinner" aria-hidden="true" /> : <Download size={16} />}
               导出数据
             </button>
             {exportSuccess && exportBundle?.completeness.complete && (
-              <span style={{ color: "var(--color-success, #22c55e)", fontSize: "0.875rem" }}>已下载完整 JSON 备份包</span>
+              <span className="field-status is-success">已下载完整 JSON 备份包</span>
             )}
             {exportSuccess && exportBundle && !exportBundle.completeness.complete && (
               /* C2#9:琥珀色走设计系统 token(--accent-amber),不再硬编码 #b45309。 */
-              <span style={{ color: "var(--accent-amber)", fontSize: "0.875rem" }}>已下载，但该备份不是完整恢复保障</span>
+              <span className="field-status text-warning">已下载，但该备份不是完整恢复保障</span>
             )}
-            {exportError && <span style={{ color: "var(--action-danger)", fontSize: "0.875rem" }}>{exportError}</span>}
-            {exportNotice && <span style={{ color: "var(--text-secondary)", fontSize: "0.875rem" }}>{exportNotice}</span>}
+            {exportError && <span className="field-status is-danger">{exportError}</span>}
+            {exportNotice && <span className="text-sm text-secondary">{exportNotice}</span>}
             <label
               className={"secondary-action" + (loadingAction === "import" ? " btn-loading" : "")}
               style={{ cursor: loadingAction !== null ? "default" : "pointer", opacity: loadingAction !== null && loadingAction !== "import" ? 0.6 : 1 }}
-            >
+>
               {loadingAction === "import" ? <span className="spinner" aria-hidden="true" /> : <Upload size={16} />}
               导入数据
               <input type="file" accept="application/json,.json" hidden disabled={loadingAction !== null} onChange={handleImportFile} />
             </label>
             {importSuccess && importReceipt && !importReceipt.partial && (
-              <span style={{ color: "var(--color-success, #22c55e)", fontSize: "0.875rem" }}>已完整恢复并核对清单</span>
+              <span className="field-status is-success">已完整恢复并核对清单</span>
             )}
             {importSuccess && (!importReceipt || importReceipt.partial) && (
               /* C2#9:同上,琥珀色统一引用 --accent-amber token。 */
-              <span style={{ color: "var(--accent-amber)", fontSize: "0.875rem" }}>
+              <span className="field-status text-warning">
                 {importReceipt ? "已部分恢复，请核对缺失项" : "已恢复，但服务端未返回完整性清单"}
               </span>
             )}
-            {importError && <span style={{ color: "var(--action-danger)", fontSize: "0.875rem" }}>{importError}</span>}
+            {importError && <span className="field-status is-danger">{importError}</span>}
           </div>
 
           <label className="backup-mode-control">
@@ -463,7 +460,7 @@ export function ProfileView({
               value={legacyColdLayerMode}
               disabled={loadingAction !== null}
               onChange={(event) => setLegacyColdLayerMode(event.target.value as ColdLayerMode)}
-            >
+>
               <option value="preserve-cold">保留现有逐字稿与录音</option>
               <option value="replace-all">同时清空现有逐字稿与录音</option>
             </select>
@@ -474,7 +471,7 @@ export function ProfileView({
               className={`backup-integrity-card ${exportBundle.completeness.status}`}
               aria-live="polite"
               aria-label="导出备份完整性"
-            >
+>
               <div className="backup-integrity-head">
                 <strong>
                   {exportBundle.completeness.status === "complete"
@@ -505,7 +502,7 @@ export function ProfileView({
               className={`backup-integrity-card ${importReceipt?.partial === false ? "complete" : "partial"}`}
               aria-live="polite"
               aria-label="导入恢复清单"
-            >
+>
               <div className="backup-integrity-head">
                 <strong>{importReceipt?.partial === false ? "恢复清单已核对" : "恢复清单需要处理"}</strong>
                 <span>{importReceipt ? (importReceipt.partial ? "部分恢复" : "完整恢复") : "完整性未知"}</span>
@@ -539,26 +536,25 @@ export function ProfileView({
               className={"secondary-action" + (loadingAction === "privacy" ? " btn-loading" : "")}
               type="button"
               disabled={loadingAction !== null}
-              onClick={handlePrivacyReport}
-            >
+              onClick={handlePrivacyReport}>
               {loadingAction === "privacy" ? <span className="spinner" aria-hidden="true" /> : <ShieldCheck size={16} />}
               隐私报告
             </button>
-            {privacyError && <span style={{ color: "var(--action-danger)", fontSize: "0.875rem" }}>{privacyError}</span>}
+            {privacyError && <span className="field-status is-danger">{privacyError}</span>}
           </div>
 
           {privacyReport && (
-            <div className="panel" style={{ marginTop: "0.25rem" }}>
+            <div className="panel mt-2">
               <p style={{ fontSize: "0.8125rem", color: "var(--text-secondary)", marginBottom: "0.75rem" }}>
                 共 {privacyReport.totalRecords} 条记录 &nbsp;&middot;&nbsp; {privacyReport.generatedAt.slice(0, 10)} 生成
               </p>
               {privacyReport.inventory.length === 0 ? (
                 <div className="empty-state"><p>暂无隐私库存数据。</p></div>
               ) : (
-                <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                <ul className="clean-list stack-sm">
                   {privacyReport.inventory.map((item) => (
                     <li key={item.id} style={{ display: "flex", justifyContent: "space-between", fontSize: "0.875rem", padding: "0.375rem 0", borderBottom: "1px solid var(--border-subtle, rgba(255,255,255,0.06))" }}>
-                      <span style={{ color: "var(--text-secondary)" }}>{item.label}</span>
+                      <span className="text-secondary">{item.label}</span>
                       <span style={{ fontVariantNumeric: "tabular-nums", color: "var(--text-primary)" }}>{item.count}</span>
                     </li>
                   ))}
@@ -568,18 +564,17 @@ export function ProfileView({
           )}
 
           {/* Purge */}
-          <div style={{ display: "flex", alignItems: "center", gap: "1rem", flexWrap: "wrap", marginTop: "0.5rem" }}>
+          <div className="row">
             <button
               className={"danger-button" + (loadingAction === "purge" ? " btn-loading" : "")}
               type="button"
               disabled={loadingAction !== null}
-              onClick={handlePurge}
-            >
+              onClick={handlePurge}>
               {loadingAction === "purge" ? <span className="spinner" aria-hidden="true" /> : <Trash2 size={16} />}
               清空个人数据
             </button>
-            {purgeSuccess && <span style={{ color: "var(--color-success, #22c55e)", fontSize: "0.875rem" }}>个人数据已彻底清空</span>}
-            {purgeError && <span style={{ color: "var(--action-danger)", fontSize: "0.875rem" }}>{purgeError}</span>}
+            {purgeSuccess && <span className="field-status is-success">个人数据已彻底清空</span>}
+            {purgeError && <span className="field-status is-danger">{purgeError}</span>}
           </div>
           <p style={{ fontSize: "0.8125rem", color: "var(--text-secondary)", marginTop: "-0.25rem" }}>
             将删除专访、笔记、资产、记忆等所有个人数据，且无法撤销。Provider 运行配置保留。

@@ -89,13 +89,11 @@ export function HomeView({
           <button
             className="primary-action"
             type="button"
-            onClick={() => onStart(recommendedMode, selectedTopic)}
-          >
+            onClick={() => onStart(recommendedMode, selectedTopic)}>
             <Play size={18} />
             一键开始 · {recommendedModeLabel}
           </button>
-        }
-      />
+        } />
 
       <section className="panel interview-topic-launch" aria-label="专访启动设置">
         <div className="panel-title">
@@ -112,8 +110,7 @@ export function HomeView({
             value={topicInput}
             maxLength={160}
             placeholder="输入具体专访主题，例如：企业如何进行 AI Native 转型"
-            onChange={(event) => setTopicInput(event.target.value)}
-          />
+            onChange={(event) => setTopicInput(event.target.value)} />
           <span className="field-help">留空则沿用当前推荐主题：{suggestedTopicHint}</span>
         </label>
       </section>
@@ -161,12 +158,11 @@ export function HomeView({
                       onOpenTrack?.(theme.id);
                     }
                   }}
-                >
+>
                   <span
                     className="track-chip-dot"
                     style={{ background: dotColor }}
-                    aria-hidden="true"
-                  />
+                    aria-hidden="true" />
                   <span className="track-chip-name">{theme.name}</span>
                   <span className="track-chip-badge">{theme.maturity}</span>
                   <span className="track-chip-count">{theme.appearances}次</span>
@@ -176,8 +172,7 @@ export function HomeView({
             <button
               className="track-chip track-chip-add"
               type="button"
-              onClick={() => onStart("long-term")}
-            >
+              onClick={() => onStart("long-term")}>
               <Plus size={16} />
               新建主题线
             </button>
@@ -197,12 +192,9 @@ export function HomeView({
             <BookOpen size={28} />
             <div>
               <p>开始第一次专访，你的记录会在这里形成时间轴。</p>
-              <button
-                className="primary-action compact-action"
+              <button className="primary-action compact-action mt-3"
                 type="button"
-                style={{ marginTop: "12px" }}
-                onClick={() => onStart()}
-              >
+                onClick={() => onStart()}>
                 <Play size={16} />
                 开始第一次专访
               </button>
@@ -219,13 +211,12 @@ export function HomeView({
                 <li
                   key={ev.id}
                   className={`timeline-item${isLast ? " timeline-item-last" : ""}`}
-                >
+>
                   <div className="timeline-spine">
                     <span
                       className="timeline-dot"
                       style={{ background: dotColor, boxShadow: `0 0 0 3px rgba(0,0,0,0.4), 0 0 6px ${dotColor}55` }}
-                      aria-hidden="true"
-                    />
+                      aria-hidden="true" />
                     {!isLast && <span className="timeline-line" aria-hidden="true" />}
                   </div>
                   <div
@@ -239,13 +230,13 @@ export function HomeView({
                         handleEventClick(ev);
                       }
                     }}
-                  >
+>
                     <div className="timeline-meta">
                       {dateStr && <span className="timeline-date">{dateStr}</span>}
                       <span
                         className="timeline-kind-badge"
                         style={{ background: `${dotColor}20`, color: dotColor }}
-                      >
+>
                         {kindLabel}
                       </span>
                     </div>
@@ -282,8 +273,7 @@ export function HomeView({
               className="mode-option"
               key={mode.id}
               type="button"
-              onClick={() => onStart(mode.id, selectedTopic)}
-            >
+              onClick={() => onStart(mode.id, selectedTopic)}>
               <strong>{mode.label}</strong>
               <span>{mode.detail}</span>
             </button>

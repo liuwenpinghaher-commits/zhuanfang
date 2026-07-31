@@ -23,8 +23,7 @@ export function ThemesView({ state, review, yearlyReview, radar, reviewsError, o
         eyebrow="长期追踪"
         title="看见反复主题和观点变化"
         subtitle="长期价值来自下次更精准的回访，而不是更漂亮的统计图。"
-        action={<button className="secondary-action" type="button" onClick={() => onStart("long-term")}><TimerReset size={18} />继续主题</button>}
-      />
+        action={<button className="secondary-action" type="button" onClick={() => onStart("long-term")}><TimerReset size={18} />继续主题</button>} />
       <section className="panel">
         <div className="panel-title"><Brain size={18} /><h2>本月回顾</h2></div>
         {review ? (
@@ -84,7 +83,7 @@ export function ThemesView({ state, review, yearlyReview, radar, reviewsError, o
             onKeyDown={onOpenTrack ? (e) => {
               if (e.key === "Enter" || e.key === " ") onOpenTrack(theme.id);
             } : undefined}
-          >
+>
             <div>
               <span className="status-pill">{theme.maturity}</span>
               <h2>{theme.name}</h2>

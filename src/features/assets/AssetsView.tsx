@@ -55,8 +55,7 @@ export function AssetsView({
       <HeaderBlock
         eyebrow="资产库"
         title="观点、问题、决策和知识债"
-        subtitle="用筛选、列表和详情面板管理认知资产，避免在多个卡片列之间来回跳。"
-      />
+        subtitle="用筛选、列表和详情面板管理认知资产，避免在多个卡片列之间来回跳。" />
       <section className="panel search-panel">
         <Search size={18} />
         <label htmlFor="asset-search">
@@ -72,8 +71,7 @@ export function AssetsView({
               className={filter === option.id ? "asset-filter active" : "asset-filter"}
               type="button"
               key={option.id}
-              onClick={() => onFilter(option.id)}
-            >
+              onClick={() => onFilter(option.id)}>
               <span>{option.label}</span>
               <strong>{counts[option.id]}</strong>
               <small>{option.description}</small>
@@ -92,8 +90,7 @@ export function AssetsView({
               className={selectedAsset?.key === asset.key ? "asset-row active" : "asset-row"}
               type="button"
               key={asset.key}
-              onClick={() => onSelectAsset(asset.key)}
-            >
+              onClick={() => onSelectAsset(asset.key)}>
               <span className="status-pill">{asset.typeLabel} · {asset.status}</span>
               <strong>{asset.title}</strong>
               <p>{asset.summary}</p>
@@ -110,8 +107,7 @@ export function AssetsView({
               onDebtStatus={onDebtStatus}
               onDecisionStatus={onDecisionStatus}
               onDecisionConfirm={onDecisionConfirm}
-              confirmingDecisionId={confirmingDecisionId}
-            />
+              confirmingDecisionId={confirmingDecisionId} />
           ) : (
             <div className="empty-module">
               <Archive size={18} />
@@ -242,32 +238,28 @@ function AssetDetail({ asset, onToggleImportant, onPointStatus, onQuestionStatus
           label="复盘状态"
           options={["待复盘", "已复盘"]}
           active={asset.status}
-          onSelect={(status) => onDecisionStatus(asset.id, status as DecisionAsset["status"])}
-        />
+          onSelect={(status) => onDecisionStatus(asset.id, status as DecisionAsset["status"])} />
       )}
       {asset.type === "points" && (
         <StatusButtons
           label="观点状态"
           options={["稳定观点", "被挑战中", "已修正", "已放弃"]}
           active={asset.status}
-          onSelect={(status) => onPointStatus(asset.id, status as Extract<AssetStatus, "临时想法" | "稳定观点" | "被挑战中" | "已修正" | "已放弃">)}
-        />
+          onSelect={(status) => onPointStatus(asset.id, status as Extract<AssetStatus, "临时想法" | "稳定观点" | "被挑战中" | "已修正" | "已放弃">)} />
       )}
       {asset.type === "questions" && (
         <StatusButtons
           label="问题状态"
           options={["开放", "反复出现", "正在聚焦", "阶段性回答"]}
           active={asset.status}
-          onSelect={(status) => onQuestionStatus(asset.id, status as Extract<AssetStatus, "开放" | "反复出现" | "正在聚焦" | "阶段性回答">)}
-        />
+          onSelect={(status) => onQuestionStatus(asset.id, status as Extract<AssetStatus, "开放" | "反复出现" | "正在聚焦" | "阶段性回答">)} />
       )}
       {asset.type === "debts" && (
         <StatusButtons
           label="知识债状态"
           options={["待了解", "能复述", "已应用", "不相关"]}
           active={asset.status}
-          onSelect={(status) => onDebtStatus(asset.id, status as Extract<AssetStatus, "待了解" | "能复述" | "已应用" | "不相关">)}
-        />
+          onSelect={(status) => onDebtStatus(asset.id, status as Extract<AssetStatus, "待了解" | "能复述" | "已应用" | "不相关">)} />
       )}
     </article>
   );

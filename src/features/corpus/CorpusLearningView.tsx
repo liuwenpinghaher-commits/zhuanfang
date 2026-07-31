@@ -106,8 +106,7 @@ export function CorpusLearningView({
       <HeaderBlock
         eyebrow="语料学习"
         title="从外部专访中学习提问逻辑"
-        subtitle="导入文本或转写稿后，系统分析追问动作、节奏控制和可应用的 PlaybookPatch。"
-      />
+        subtitle="导入文本或转写稿后，系统分析追问动作、节奏控制和可应用的 PlaybookPatch。" />
 
       {/* 分析方法透明化 — 可折叠披露区 */}
       <section className="panel corpus-method-panel">
@@ -115,8 +114,7 @@ export function CorpusLearningView({
           className="corpus-method-toggle"
           type="button"
           aria-expanded={methodOpen}
-          onClick={() => setMethodOpen((prev) => !prev)}
-        >
+          onClick={() => setMethodOpen((prev) => !prev)}>
           <span className="corpus-method-toggle-label">
             <Info size={16} />
             分析方法：它如何读你的样本
@@ -188,7 +186,7 @@ export function CorpusLearningView({
               id="corpus-media-type"
               value={mediaType}
               onChange={(event) => onMediaType(event.target.value === "audio" ? "audio" : "text")}
-            >
+>
               <option value="text">文本 / 转写稿</option>
               <option value="audio">音频 / 转写稿</option>
             </select>
@@ -208,8 +206,7 @@ export function CorpusLearningView({
                   id="corpus-source-url"
                   value={sourceUrl}
                   onChange={(event) => onSourceUrl(event.target.value)}
-                  placeholder="https://example.com/interview-audio.mp3"
-                />
+                  placeholder="https://example.com/interview-audio.mp3" />
                 <span className="field-help">公网音频 URL 可由百炼 SenseVoice 自动转写为转写稿。</span>
               </div>
 
@@ -223,8 +220,7 @@ export function CorpusLearningView({
                   type="file"
                   accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.flac"
                   aria-label="选择本地音频文件"
-                  onChange={(event) => handleFileChange(event.target.files?.[0] ?? null)}
-                />
+                  onChange={(event) => handleFileChange(event.target.files?.[0] ?? null)} />
                 {audioFileName && (
                   <div className="corpus-audio-file-chip">
                     <FileAudio2 size={14} />
@@ -236,7 +232,7 @@ export function CorpusLearningView({
                       onClick={clearSelectedFile}
                       aria-label="清除已选音频文件"
                       title="清除已选音频文件"
-                    >
+>
                       <X size={14} />
                     </button>
                   </div>
@@ -252,7 +248,7 @@ export function CorpusLearningView({
                 type="button"
                 onClick={onTranscribeAudio}
                 disabled={(!sourceUrl.trim() && !audioFileName) || transcribing}
-              >
+>
                 {transcribing ? <LoaderCircle size={16} /> : <FileAudio2 size={16} />}
                 {transcribing ? "正在转写…" : "生成转写稿"}
               </button>
@@ -276,8 +272,7 @@ export function CorpusLearningView({
               value={focus}
               maxLength={FOCUS_MAX}
               onChange={(event) => onFocus(event.target.value)}
-              placeholder="例如：重点学习如何追问失败经历 / 如何做机制反转"
-            />
+              placeholder="例如：重点学习如何追问失败经历 / 如何做机制反转" />
             <div className="field-row-foot">
               <span className="field-help">填写后，AI 分析会优先关注你指定的提问技法；留空则做全面分析。</span>
               <span className="char-count">{focus.length}/{FOCUS_MAX}</span>
@@ -288,7 +283,7 @@ export function CorpusLearningView({
             type="button"
             onClick={onAnalyze}
             disabled={analyzing || transcribing}
-          >
+>
             {analyzing ? <span className="spinner" /> : <Sparkles size={18} />}
             {analyzing ? "分析中…" : "分析并生成建议"}
           </button>
@@ -411,15 +406,14 @@ function EditablePatchCard({ patch, onApprovePatch, onRevertPatch }: EditablePat
                 value={rule}
                 onChange={(event) => updateRule(ruleIdx, event.target.value)}
                 placeholder="一条可执行的追问规则"
-                aria-label={`规则 ${ruleIdx + 1}`}
-              />
+                aria-label={`规则 ${ruleIdx + 1}`} />
               <button
                 className="icon-button"
                 type="button"
                 onClick={() => removeRule(ruleIdx)}
                 aria-label="删除这条规则"
                 title="删除这条规则"
-              >
+>
                 <X size={14} />
               </button>
             </div>
@@ -433,7 +427,7 @@ function EditablePatchCard({ patch, onApprovePatch, onRevertPatch }: EditablePat
             type="button"
             onClick={() => onApprovePatch(patch.id, cleanedRules)}
             disabled={!canApply}
-          >
+>
             <CheckCircle2 size={16} />确认影响引擎
           </button>
         </div>

@@ -96,8 +96,7 @@ export function SearchIntelligenceView({
       <HeaderBlock
         eyebrow="外部调研"
         title="主动搜集热点、素材和可讨论主题"
-        subtitle="外部调研结果可标记为「持续追踪」并随时刷新；研究成果可带入专访作为外部参照。"
-      />
+        subtitle="外部调研结果可标记为「持续追踪」并随时刷新；研究成果可带入专访作为外部参照。" />
 
       {/* Auto-watch primary action */}
       {onAutoRun && (
@@ -109,14 +108,14 @@ export function SearchIntelligenceView({
           <p style={{ margin: "0 0 12px", color: "var(--text-muted)", fontSize: "0.875rem", lineHeight: 1.6 }}>
             一键扫描主题和知识债，自动采集情报并刷新已过期的持续追踪简报。
           </p>
-          <div style={{ display: "flex", gap: "12px", alignItems: "flex-start", flexWrap: "wrap", flexDirection: "column" }}>
+          <div className="row-wrap">
             <button
               className={autoRunning ? "primary-action btn-loading" : "primary-action"}
               type="button"
               onClick={handleAutoRun}
               disabled={autoRunning}
               aria-busy={autoRunning}
-            >
+>
               {autoRunning ? (
                 <>
                   <span className="spinner" aria-hidden="true" />
@@ -133,14 +132,8 @@ export function SearchIntelligenceView({
               <div
                 role="status"
                 aria-live="polite"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "8px",
-                  fontSize: "0.875rem",
-                  color: autoRunError ? "var(--status-failed)" : "var(--status-success, #22c55e)"
-                }}
-              >
+                className="row"
+>
                 {autoRunError ? (
                   <>
                     <AlertTriangle size={16} />
@@ -149,8 +142,7 @@ export function SearchIntelligenceView({
                       type="button"
                       className="primary-action"
                       style={{ padding: "2px 12px", fontSize: "0.8rem" }}
-                      onClick={handleAutoRun}
-                    >
+                      onClick={handleAutoRun}>
                       重试
                     </button>
                   </>
@@ -164,8 +156,7 @@ export function SearchIntelligenceView({
                       type="button"
                       aria-label="关闭提示"
                       style={{ background: "none", border: "none", cursor: "pointer", padding: "2px", color: "inherit", opacity: 0.6, lineHeight: 1 }}
-                      onClick={() => setAutoRunDismissed(true)}
-                    >
+                      onClick={() => setAutoRunDismissed(true)}>
                       <X size={16} />
                     </button>
                   </>
@@ -194,7 +185,7 @@ export function SearchIntelligenceView({
               value={selectedProvider}
               onChange={(event) => setSelectedProvider(event.target.value as SearchProviderId)}
               disabled={isRunning}
-            >
+>
               {searchProviderIds.map((provider) => (
                 <option key={provider} value={provider}>
                   {searchProviderLabels[provider]}
@@ -211,7 +202,7 @@ export function SearchIntelligenceView({
               onClick={() => onCreate(selectedProvider)}
               disabled={isRunning}
               aria-busy={isRunning}
-            >
+>
               {isRunning ? (
                 <>
                   <span className="spinner" aria-hidden="true" />
@@ -230,7 +221,7 @@ export function SearchIntelligenceView({
               title={isSelectedDefault ? "该 provider 已是默认" : `把「${searchProviderLabels[selectedProvider]}」设为默认 provider`}
               onClick={() => onSetDefaultProvider(selectedProvider)}
               disabled={isSelectedDefault}
-            >
+>
               <Star size={16} />
               设为默认
             </button>
@@ -249,7 +240,7 @@ export function SearchIntelligenceView({
             type="button"
             onClick={() => onAutoBrief()}
             disabled={isRunning}
-          >
+>
             <Wand2 size={16} />自动生成
           </button>
           {state.themes.length > 0 && (
@@ -258,7 +249,7 @@ export function SearchIntelligenceView({
               type="button"
               onClick={() => onAutoBrief(state.themes[0].id, undefined)}
               disabled={isRunning}
-            >
+>
               <Wand2 size={16} />从主题：{state.themes[0].name}
             </button>
           )}
@@ -268,7 +259,7 @@ export function SearchIntelligenceView({
               type="button"
               onClick={() => onAutoBrief(undefined, state.debts[0].id)}
               disabled={isRunning}
-            >
+>
               <Wand2 size={16} />从知识债：{state.debts[0].concept}
             </button>
           )}
@@ -303,7 +294,7 @@ export function SearchIntelligenceView({
                   type="button"
                   onClick={handleAutoRun}
                   disabled={autoRunning}
-                >
+>
                   {autoRunning ? (
                     <>
                       <span className="spinner" aria-hidden="true" />
@@ -335,16 +326,16 @@ export function SearchIntelligenceView({
                 aria-pressed={isActive}
                 onClick={() => onUseBrief(brief.id)}
                 onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onUseBrief(brief.id); } }}
-              >
+>
                 <div>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginBottom: "4px" }}>
+                  <div className="row">
                     <span className="status-pill">{brief.provider} · {brief.status === "ready" ? "可用" : "需复核"}</span>
                     {isStale && (
                       <span
                         className="status-pill"
                         style={{ borderColor: "var(--accent-amber)", color: "var(--accent-amber)", display: "inline-flex", alignItems: "center", gap: "4px" }}
                         title="该简报超过 14 天未刷新，建议重新调研"
-                      >
+>
                         <AlertTriangle size={12} aria-hidden="true" />
                         已过期·建议刷新
                       </span>
@@ -353,7 +344,7 @@ export function SearchIntelligenceView({
                       <span
                         className="status-pill"
                         style={{ borderColor: "var(--action-primary)", color: "var(--action-primary)" }}
-                      >
+>
                         持续追踪中
                       </span>
                     )}
@@ -373,8 +364,7 @@ export function SearchIntelligenceView({
                     <button
                       className="secondary-action"
                       type="button"
-                      onClick={() => onUseBrief(brief.id)}
-                    >
+                      onClick={() => onUseBrief(brief.id)}>
                       <Mic size={16} />
                       带入专访
                     </button>
@@ -384,8 +374,7 @@ export function SearchIntelligenceView({
                         type="button"
                         title={brief.tracked ? "已标记为持续追踪，点击取消" : "标记为持续追踪"}
                         disabled={isTracking}
-                        onClick={() => onTrackBrief(brief.id, !brief.tracked)}
-                      >
+                        onClick={() => onTrackBrief(brief.id, !brief.tracked)}>
                         {isTracking ? (
                           <span className="spinner" aria-hidden="true" />
                         ) : brief.tracked ? (
@@ -402,8 +391,7 @@ export function SearchIntelligenceView({
                         type="button"
                         title="重新调研该主题并刷新内容"
                         disabled={isRefreshing}
-                        onClick={() => onRefreshBrief(brief.id)}
-                      >
+                        onClick={() => onRefreshBrief(brief.id)}>
                         {isRefreshing ? <span className="spinner" aria-hidden="true" /> : <RefreshCw size={16} />}
                         重新调研
                       </button>
@@ -413,8 +401,7 @@ export function SearchIntelligenceView({
                         className="secondary-action"
                         type="button"
                         title="把这份调研转成一条待验证知识债，进入资产库"
-                        onClick={() => onConvertToDebt(brief.id)}
-                      >
+                        onClick={() => onConvertToDebt(brief.id)}>
                         <BookOpen size={16} />转知识债
                       </button>
                     )}
@@ -423,8 +410,7 @@ export function SearchIntelligenceView({
                         className="secondary-action"
                         type="button"
                         title="把这份调研转成一条观点草稿，进入资产库"
-                        onClick={() => onConvertToPoint(brief.id)}
-                      >
+                        onClick={() => onConvertToPoint(brief.id)}>
                         <Lightbulb size={16} />转观点
                       </button>
                     )}
@@ -433,8 +419,7 @@ export function SearchIntelligenceView({
                         className="secondary-action"
                         type="button"
                         title="把这份调研转成一条专访问题，可带入下一次专访"
-                        onClick={() => onConvertToQuestion(brief.id)}
-                      >
+                        onClick={() => onConvertToQuestion(brief.id)}>
                         <HelpCircle size={16} />转问题
                       </button>
                     )}
@@ -446,7 +431,7 @@ export function SearchIntelligenceView({
                           onDeleteBrief(brief.id);
                         }
                       }}
-                    >
+>
                       <Trash2 size={16} />删除简报
                     </button>
                   </div>
@@ -460,8 +445,7 @@ export function SearchIntelligenceView({
                       key={source.id}
                       target="_blank"
                       rel="noreferrer"
-                      onClick={(e) => e.stopPropagation()}
-                    >
+                      onClick={(e) => e.stopPropagation()}>
                       <strong>{source.title}</strong>
                       <span>{source.publisher} · 相关度 {Math.round(source.relevanceScore * 100)}%</span>
                       <p>{source.snippet}</p>

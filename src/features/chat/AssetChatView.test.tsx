@@ -40,8 +40,7 @@ describe("AssetChatView citations", () => {
     act(() => {
       root?.render(<AssetChatView
         state={state} onSend={vi.fn()} onNewChat={vi.fn()} onDeleteChat={vi.fn()} onSelectChat={vi.fn()}
-        selectedSessionId="chat-1" onCitationClick={vi.fn()}
-      />);
+        selectedSessionId="chat-1" onCitationClick={vi.fn()} />);
     });
 
     const text = container.textContent ?? "";

@@ -30,8 +30,7 @@ describe("empty-state render guards", () => {
         <HomeView
           state={s}
           card={buildInterviewCard(s)}
-          onStart={() => {}}
-        />
+          onStart={() => {}} />
       )
     ).not.toThrow();
   });
@@ -42,8 +41,7 @@ describe("empty-state render guards", () => {
       <HomeView
         state={s}
         card={buildInterviewCard(s)}
-        onStart={() => {}}
-      />
+        onStart={() => {}} />
     );
     expect(html).toContain("开始第一次专访");
     expect(html).toContain("你的记录会在这里形成时间轴");
@@ -55,8 +53,7 @@ describe("empty-state render guards", () => {
       <HomeView
         state={s}
         card={buildInterviewCard(s)}
-        onStart={() => {}}
-      />
+        onStart={() => {}} />
     );
     expect(html).toContain("还没有主题线");
     expect(html).toContain("完成专访后会自动浮现");
@@ -71,8 +68,7 @@ describe("empty-state render guards", () => {
           card={buildInterviewCard(s)}
           onStart={() => {}}
           onOpenTrack={() => {}}
-          onNavigate={() => {}}
-        />
+          onNavigate={() => {}} />
       )
     ).not.toThrow();
   });
@@ -93,8 +89,7 @@ describe("empty-state render guards", () => {
           onUseBrief={() => {}}
           onDeleteBrief={() => {}}
           onSetDefaultProvider={() => {}}
-          onAutoBrief={() => {}}
-        />
+          onAutoBrief={() => {}} />
       )
     ).not.toThrow();
   });
@@ -118,8 +113,7 @@ describe("empty-state render guards", () => {
           onGenerateScript={() => {}}
           onSynthesizeSpeech={() => {}}
           onDeleteEpisode={() => {}}
-          onSaveDefaultVoice={() => {}}
-        />
+          onSaveDefaultVoice={() => {}} />
       )
     ).not.toThrow();
   });
@@ -133,8 +127,7 @@ describe("empty-state render guards", () => {
         onSaveQuestion={() => {}}
         onAddAnnotation={() => {}}
         onRemoveAnnotation={() => {}}
-        getRawMaterial={async () => null}
-      />
+        getRawMaterial={async () => null} />
     );
     expect(html).toContain("还没有专访笔记");
   });
@@ -147,8 +140,7 @@ describe("empty-state render guards", () => {
         review={buildMonthlyReview(s)}
         yearlyReview={buildYearlyReview(s)}
         radar={buildCognitiveRadar(s)}
-        onStart={() => {}}
-      />
+        onStart={() => {}} />
     );
     expect(html).toContain("还没有主题线");
   });

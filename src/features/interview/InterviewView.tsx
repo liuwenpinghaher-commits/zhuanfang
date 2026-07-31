@@ -136,8 +136,7 @@ export function InterviewView({
         title={session.title}
         subtitle={voiceTransport
           ? `${voiceTransport === "websocket" ? "WebSocket 实时语音" : voiceTransport === "livekit" ? "LiveKit 级联语音" : "实时语音"} · 语音回合与文本写入同一份专访记录`
-          : "文本追问已接入策略引擎；点击语音按钮开始实时对话。"}
-      />
+          : "文本追问已接入策略引擎；点击语音按钮开始实时对话。"} />
 
       <section className="interview-layout">
         <div className="conversation-panel">
@@ -157,7 +156,7 @@ export function InterviewView({
                 type="button"
                 onClick={onToggleRecording}
                 aria-label={recording ? "停止录音" : "开始录音"}
-              >
+>
                 <span className="record-icon">
                   {recording ? <MicOff size={18} /> : <Mic size={18} />}
                 </span>
@@ -184,8 +183,7 @@ export function InterviewView({
                         height: voiceStatus === "idle"
                           ? "4px"
                           : `${4 + audioLevel * 36 * (0.4 + 0.6 * Math.sin((i / 16) * Math.PI))}px`
-                      }}
-                    />
+                      }} />
                   ))}
                 </div>
                 <div className="voice-status-label">
@@ -214,8 +212,7 @@ export function InterviewView({
               <textarea
                 aria-label="等待确认的语音转写"
                 value={voiceReviewItem.text}
-                onChange={(event) => onVoiceReviewText?.(event.target.value)}
-              />
+                onChange={(event) => onVoiceReviewText?.(event.target.value)} />
               <small>{voiceReviewItem.reason}</small>
               <div className="voice-review-actions">
                 <button type="button" data-action="discard" onClick={onDiscardVoiceReview}>丢弃</button>
@@ -319,8 +316,7 @@ export function InterviewView({
                 id="interview-input"
                 value={input}
                 onChange={(event) => onInput(event.target.value)}
-                placeholder="把你现在想说的直接写下来。例：我不想每次都替团队兜底，但又怕放手之后项目失控。"
-              />
+                placeholder="把你现在想说的直接写下来。例：我不想每次都替团队兜底，但又怕放手之后项目失控。" />
               <span className="field-help">可以先写片段，系统会保留停顿，并围绕表达里的锚点继续追问。</span>
             </label>
             <div className="composer-actions">

@@ -113,16 +113,14 @@ export function ConfigView({
       <HeaderBlock
         eyebrow="系统配置"
         title="实时能力状态与运行参数"
-        subtitle="两套配置边界：服务端 env（密钥/模型/端点，PATCH /api/system/config）≠ 产品策略 systemConfig（搜索/语音/访谈默认，写入 ProductState）。状态页展示能力健康。"
-      />
+        subtitle="两套配置边界：服务端 env（密钥/模型/端点，PATCH /api/system/config）≠ 产品策略 systemConfig（搜索/语音/访谈默认，写入 ProductState）。状态页展示能力健康。" />
       <section className="panel config-tabs" aria-label="系统配置分段">
         {configSectionOptions.map((option) => (
           <button
             className={section === option.id ? "config-tab active" : "config-tab"}
             type="button"
             key={option.id}
-            onClick={() => onSection(option.id)}
-          >
+            onClick={() => onSection(option.id)}>
             <strong>{option.label}</strong>
             <span>{option.description}</span>
           </button>
@@ -290,8 +288,7 @@ export function ConfigView({
                             key={setting.key}
                             setting={setting}
                             value={runtimeDraft[setting.key] ?? ""}
-                            onChange={(value) => updateRuntimeSetting(setting, value)}
-                          />
+                            onChange={(value) => updateRuntimeSetting(setting, value)} />
                         ))}
                       </div>
                     </section>
@@ -304,7 +301,7 @@ export function ConfigView({
                     data-testid="save-runtime-config"
                     onClick={saveRuntimeConfig}
                     disabled={runtimeConfigSaving || runtimeDirtyCount === 0}
-                  >
+>
                     <ShieldCheck size={16} />{runtimeConfigSaving ? "保存中" : "保存服务端配置"}
                   </button>
                 </div>
@@ -318,8 +315,7 @@ export function ConfigView({
             voices={voices}
             loading={voicesLoading}
             onUpload={onUploadVoice}
-            onDelete={onDeleteVoice}
-          />
+            onDelete={onDeleteVoice} />
 
           <section className="panel">
             <div className="panel-title"><Sliders size={18} /><h2>产品策略</h2></div>
@@ -341,7 +337,7 @@ export function ConfigView({
                           search: { ...config.search, activeProvider: nextValue }
                         }));
                       }}
-                    >
+>
                       {searchProviderIds.map((provider) => (
                         <option value={provider} key={provider}>{searchProviderLabels[provider]}</option>
                       ))}
@@ -380,8 +376,7 @@ export function ConfigView({
                           ...config,
                           search: { ...config.search, recencyDays: nextValue }
                         }));
-                      }}
-                    />
+                      }} />
                     <span className="field-help">创建搜索简报时传给 provider 的 recencyDays。</span>
                   </label>
                   <label className="field-stack runtime-setting-field" htmlFor="product-search-max-sources">
@@ -399,8 +394,7 @@ export function ConfigView({
                           ...config,
                           search: { ...config.search, maxSources: nextValue }
                         }));
-                      }}
-                    />
+                      }} />
                     <span className="field-help">控制每份联网素材保留的来源数量。</span>
                   </label>
                   <label className="field-stack runtime-setting-field" htmlFor="product-search-web-context">
@@ -416,7 +410,7 @@ export function ConfigView({
                           search: { ...config.search, allowWebInInterview: nextValue }
                         }));
                       }}
-                    >
+>
                       <option value="true">开启</option>
                       <option value="false">关闭</option>
                     </select>
@@ -441,7 +435,7 @@ export function ConfigView({
                           research: { ...config.research, autoScheduleEnabled: nextValue }
                         }));
                       }}
-                    >
+>
                       <option value="true">开启</option>
                       <option value="false">关闭</option>
                     </select>
@@ -462,8 +456,7 @@ export function ConfigView({
                           ...config,
                           research: { ...config.research, scheduleIntervalMin: nextValue }
                         }));
-                      }}
-                    />
+                      }} />
                     <span className="field-help">默认 1440（24 小时）。最短 15 分钟。非常驻部署可改用「外部调研 → 自动盯梢」手动触发。</span>
                   </label>
                 </div>
@@ -485,7 +478,7 @@ export function ConfigView({
                           memory: { ...config.memory, includePendingCandidatesInContext: nextValue }
                         }));
                       }}
-                    >
+>
                       <option value="false">关闭（默认·须 HITL 确认后才跨会话召回）</option>
                       <option value="true">开启（仅本场 guide 可引用重叠待审文案）</option>
                     </select>
@@ -506,7 +499,7 @@ export function ConfigView({
                           memory: { ...config.memory, includeSensitiveMemoriesInContext: nextValue }
                         }));
                       }}
-                    >
+>
                       <option value="false">关闭（默认）</option>
                       <option value="true">开启</option>
                     </select>
@@ -531,7 +524,7 @@ export function ConfigView({
                           voice: { ...config.voice, defaultVoice: nextValue }
                         }));
                       }}
-                    >
+>
                       {voices.map((v) => (
                         <option key={v.voice} value={v.voice}>{v.name} ({v.voice})</option>
                       ))}
@@ -551,7 +544,7 @@ export function ConfigView({
                           voice: { ...config.voice, podcastVoice: nextValue }
                         }));
                       }}
-                    >
+>
                       {voices.map((v) => (
                         <option key={v.voice} value={v.voice}>{v.name} ({v.voice})</option>
                       ))}
@@ -571,7 +564,7 @@ export function ConfigView({
                           voice: { ...config.voice, ttsProvider: nextValue }
                         }));
                       }}
-                    >
+>
                       <option value="local-demo">Local Demo</option>
                       <option value="bailian">百炼 CosyVoice</option>
                       <option value="openai">OpenAI</option>
@@ -592,7 +585,7 @@ export function ConfigView({
                           voice: { ...config.voice, realtimeMode: nextValue }
                         }));
                       }}
-                    >
+>
                       <option value="cascade">级联 (ASR→分析→TTS)</option>
                       <option value="bailian">百炼 S2S (直通 omni)</option>
                       <option value="livekit">LiveKit (外接 Python agent)</option>
@@ -614,8 +607,7 @@ export function ConfigView({
                           ...config,
                           interview: { ...config.interview, silenceHoldMs: nextValue }
                         }));
-                      }}
-                    />
+                      }} />
                     <span className="field-help">决定系统等待用户继续表达的最低毫秒数。</span>
                   </label>
                   <label className="field-stack runtime-setting-field" htmlFor="product-follow-up-depth">
@@ -633,8 +625,7 @@ export function ConfigView({
                           ...config,
                           interview: { ...config.interview, maxFollowUpDepth: nextValue }
                         }));
-                      }}
-                    />
+                      }} />
                     <span className="field-help">用于控制同一主题最多连续推进的追问层级。</span>
                   </label>
                   <label className="field-stack runtime-setting-field" htmlFor="product-guidance-enabled">
@@ -648,7 +639,7 @@ export function ConfigView({
                           interview: { ...config.interview, guidanceEnabled: event.target.value === "on" }
                         }));
                       }}
-                    >
+>
                       <option value="on">启用</option>
                       <option value="off">关闭</option>
                     </select>
@@ -665,7 +656,7 @@ export function ConfigView({
                           interview: { ...config.interview, guidanceFrequency: event.target.value as "low" | "medium" | "high" }
                         }));
                       }}
-                    >
+>
                       <option value="low">低 — 仅在明显模糊或矛盾时介入</option>
                       <option value="medium">中 — 在关键锚点和情感信号处介入</option>
                       <option value="high">高 — 积极介入，发现锚点即追问</option>
@@ -682,7 +673,7 @@ export function ConfigView({
                 data-testid="save-product-config"
                 onClick={saveProductConfig}
                 disabled={!productDirty}
-              >
+>
                 <ShieldCheck size={16} />保存产品策略
               </button>
             </div>
@@ -749,8 +740,7 @@ function RuntimeSettingField({
           type={setting.secret ? "password" : setting.valueKind === "number" ? "number" : "text"}
           value={value}
           placeholder={setting.secret ? setting.maskedValue ?? "未配置" : setting.defaultValue}
-          onInput={(event) => onChange(event.currentTarget.value)}
-        />
+          onInput={(event) => onChange(event.currentTarget.value)} />
       )}
       <span className="field-help">
         {helpText}
@@ -818,21 +808,18 @@ function VoiceCloningPanel({
           ref={fileRef}
           type="file"
           accept="audio/wav,audio/mp3,audio/m4a,.wav,.mp3,.m4a"
-          onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)}
-        />
+          onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)} />
         <input
           type="text"
           placeholder="音色名称（可选）"
           value={voiceName}
           onChange={(e) => setVoiceName(e.target.value)}
-          className="voice-name-input"
-        />
+          className="voice-name-input" />
         <button
           type="button"
           className="primary-action"
           disabled={!selectedFile || uploading}
-          onClick={handleUpload}
-        >
+          onClick={handleUpload}>
           {uploading ? "创建中…" : "创建音色"}
         </button>
       </div>
@@ -849,8 +836,7 @@ function VoiceCloningPanel({
               <button
                 type="button"
                 className="text-button danger-button"
-                onClick={() => onDelete(v.voice)}
-              >
+                onClick={() => onDelete(v.voice)}>
                 删除
               </button>
             </div>

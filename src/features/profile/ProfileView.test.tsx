@@ -69,8 +69,7 @@ describe("ProfileView 显性档案保存", () => {
           onPrivacyReport={vi.fn()}
           onPurge={vi.fn()}
           onSetProductState={vi.fn()}
-          onSaveProfile={onSaveProfile}
-        />
+          onSaveProfile={onSaveProfile} />
       );
     });
   }

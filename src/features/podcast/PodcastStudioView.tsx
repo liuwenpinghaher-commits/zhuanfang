@@ -72,8 +72,7 @@ export function PodcastStudioView({
       <HeaderBlock
         eyebrow="播客工作台"
         title="把一次专访生成可收听的语音节目"
-        subtitle="Product API 会生成脚本、shownotes 和音频；配置百炼 CosyVoice 后渲染真实音频，未配置时保留本地占位。"
-      />
+        subtitle="Product API 会生成脚本、shownotes 和音频；配置百炼 CosyVoice 后渲染真实音频，未配置时保留本地占位。" />
 
       <section className="podcast-workbench">
         <section className="panel podcast-setup-panel">
@@ -93,7 +92,7 @@ export function PodcastStudioView({
                 id="podcast-source-type"
                 value={sourceType}
                 onChange={(event) => onSourceType(event.target.value as PodcastSourceType)}
-              >
+>
                 {sourceOptions.map((option) => (
                   <option value={option.value} key={option.value}>{option.label}</option>
                 ))}
@@ -110,7 +109,7 @@ export function PodcastStudioView({
                   }
                   onSourceId(event.target.value);
                 }}
-              >
+>
                 {sourceItems.map((item) => (
                   <option value={item.id} key={item.id}>{item.label}</option>
                 ))}
@@ -141,8 +140,7 @@ export function PodcastStudioView({
                 value={editingScript}
                 onChange={(event) => onEditingScript(event.target.value)}
                 rows={12}
-                placeholder="编辑或确认播客脚本..."
-              />
+                placeholder="编辑或确认播客脚本..." />
               <button
                 className="primary-action"
                 type="button"
@@ -153,7 +151,7 @@ export function PodcastStudioView({
                   }
                 }}
                 disabled={!editingScript.trim()}
-              >
+>
                 <Volume2 size={18} />合成语音
               </button>
             </div>

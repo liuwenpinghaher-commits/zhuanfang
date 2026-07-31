@@ -103,8 +103,7 @@ describe("SSR render guard", () => {
           onConsolidate={noop}
           onAddAnnotation={noop}
           onRemoveAnnotation={noop}
-          getRawMaterial={async () => null}
-        />
+          getRawMaterial={async () => null} />
       )
     ).not.toThrow();
   });
@@ -129,8 +128,7 @@ describe("SSR render guard", () => {
           onConsolidate={noop}
           onAddAnnotation={noop}
           onRemoveAnnotation={noop}
-          getRawMaterial={async () => null}
-        />
+          getRawMaterial={async () => null} />
       )
     ).not.toThrow();
   });
@@ -154,8 +152,7 @@ describe("empty states", () => {
         onConsolidate={noop}
         onAddAnnotation={noop}
         onRemoveAnnotation={noop}
-        getRawMaterial={async () => null}
-      />
+        getRawMaterial={async () => null} />
     );
     const emptyStates = container.querySelectorAll(".empty-state");
     expect(emptyStates.length).toBeGreaterThanOrEqual(1);
@@ -177,8 +174,7 @@ describe("empty states", () => {
         onConsolidate={noop}
         onAddAnnotation={noop}
         onRemoveAnnotation={noop}
-        getRawMaterial={async () => null}
-      />
+        getRawMaterial={async () => null} />
     );
     expect(container.textContent).toContain("暂无待审候选");
   });
@@ -199,8 +195,7 @@ describe("empty states", () => {
         onConsolidate={noop}
         onAddAnnotation={noop}
         onRemoveAnnotation={noop}
-        getRawMaterial={async () => null}
-      />
+        getRawMaterial={async () => null} />
     );
     expect(container.textContent).toContain("还没有确认的长期记忆");
   });
@@ -226,8 +221,7 @@ describe("sensitive icon", () => {
         onConsolidate={noop}
         onAddAnnotation={noop}
         onRemoveAnnotation={noop}
-        getRawMaterial={async () => null}
-      />
+        getRawMaterial={async () => null} />
     );
     expect(html).not.toContain("🔒"); // 🔒 unicode
     expect(html).not.toContain("🔒");
@@ -251,8 +245,7 @@ describe("sensitive icon", () => {
         onConsolidate={noop}
         onAddAnnotation={noop}
         onRemoveAnnotation={noop}
-        getRawMaterial={async () => null}
-      />
+        getRawMaterial={async () => null} />
     );
     expect(html).toContain("<svg");
   });
@@ -275,8 +268,7 @@ describe("sensitive icon", () => {
         onConsolidate={noop}
         onAddAnnotation={noop}
         onRemoveAnnotation={noop}
-        getRawMaterial={async () => null}
-      />
+        getRawMaterial={async () => null} />
     );
     expect(html).toContain("敏感");
     // aria-label attribute present on the svg
@@ -301,8 +293,7 @@ describe("sensitive icon", () => {
         onConsolidate={noop}
         onAddAnnotation={noop}
         onRemoveAnnotation={noop}
-        getRawMaterial={async () => null}
-      />
+        getRawMaterial={async () => null} />
     );
     expect(html).not.toContain("🔒");
   });
@@ -328,8 +319,7 @@ describe("inline edit", () => {
         onConsolidate={noop}
         onAddAnnotation={noop}
         onRemoveAnnotation={noop}
-        getRawMaterial={async () => null}
-      />
+        getRawMaterial={async () => null} />
     );
 
     const editBtn = Array.from(container.querySelectorAll("button")).find(
@@ -369,8 +359,7 @@ describe("inline edit", () => {
         onConsolidate={noop}
         onAddAnnotation={noop}
         onRemoveAnnotation={noop}
-        getRawMaterial={async () => null}
-      />
+        getRawMaterial={async () => null} />
     );
 
     // Open edit
@@ -421,8 +410,7 @@ describe("inline edit", () => {
         onConsolidate={noop}
         onAddAnnotation={noop}
         onRemoveAnnotation={noop}
-        getRawMaterial={async () => null}
-      />
+        getRawMaterial={async () => null} />
     );
 
     // Open edit
@@ -478,8 +466,7 @@ describe("inline edit", () => {
         onConsolidate={noop}
         onAddAnnotation={noop}
         onRemoveAnnotation={noop}
-        getRawMaterial={async () => null}
-      />
+        getRawMaterial={async () => null} />
     );
 
     const editBtn = Array.from(container.querySelectorAll("button")).find(
@@ -522,8 +509,7 @@ describe("approval actions", () => {
         onConsolidate={noop}
         onAddAnnotation={noop}
         onRemoveAnnotation={noop}
-        getRawMaterial={async () => null}
-      />
+        getRawMaterial={async () => null} />
     );
 
     const approveBtn = Array.from(container.querySelectorAll("button")).find(
@@ -555,8 +541,7 @@ describe("approval actions", () => {
         onConsolidate={noop}
         onAddAnnotation={noop}
         onRemoveAnnotation={noop}
-        getRawMaterial={async () => null}
-      />
+        getRawMaterial={async () => null} />
     );
 
     const rejectBtn = Array.from(container.querySelectorAll("button")).find(
@@ -592,8 +577,7 @@ describe("import content length guard", () => {
         onConsolidate={noop}
         onAddAnnotation={noop}
         onRemoveAnnotation={noop}
-        getRawMaterial={async () => null}
-      />
+        getRawMaterial={async () => null} />
     );
 
     // Find the content textarea
@@ -631,8 +615,7 @@ describe("import content length guard", () => {
         onConsolidate={noop}
         onAddAnnotation={noop}
         onRemoveAnnotation={noop}
-        getRawMaterial={async () => null}
-      />
+        getRawMaterial={async () => null} />
     );
 
     const importBtn = Array.from(container.querySelectorAll("button")).find(
@@ -658,8 +641,7 @@ describe("import content length guard", () => {
         onConsolidate={noop}
         onAddAnnotation={noop}
         onRemoveAnnotation={noop}
-        getRawMaterial={async () => null}
-      />
+        getRawMaterial={async () => null} />
     );
 
     const loadingBtn = container.querySelector(".btn-loading");

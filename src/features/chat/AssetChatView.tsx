@@ -83,144 +83,78 @@ export function AssetChatView({
         subtitle="基于已沉淀的笔记、记忆、主题与素材回答问题，并给出可点击跳源的引用。"
         action={
           <button className="secondary-action" type="button" onClick={onNewChat}>
-            <Plus size={16} style={{ marginRight: "0.4rem" }} />
+            <Plus size={16} className="icon-inline" />
             新对话
           </button>
-        }
-      />
+        } />
 
-      <div className="asset-chat-grid">
-        {/* 左列：会话列表 */}
-        <section className="panel" style={{ minWidth: 0 }}>
+      <div className="chat-layout">
+        <section className="panel">
           <div className="panel-title">
-            <MessagesSquare size={18} />
+            <MessagesSquare size={18} aria-hidden />
             <h2>会话（{sessions.length}）</h2>
           </div>
           {sessions.length === 0 ? (
             <p className="field-help">还没有对话。点右上角「新对话」，问点关于你认知资产的问题。</p>
           ) : (
-            <ul className="clean-list">
+            <div className="session-list">
               {sessions.map((session) => {
                 const selected = session.id === activeSession?.id;
                 return (
-                  <li
-                    key={session.id}
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      gap: "0.5rem",
-                      borderRadius: "0.5rem",
-                      padding: "0.35rem 0.5rem",
-                      background: selected ? "var(--color-surface-active, rgba(99,102,241,0.12))" : "transparent"
-                    }}
-                  >
+                  <div key={session.id} className="row">
                     <button
                       type="button"
+                      className={selected ? "session-list-item is-active flex-1" : "session-list-item flex-1"}
                       onClick={() => onSelectChat(session.id)}
                       aria-current={selected ? "true" : undefined}
-                      style={{
-                        flex: 1,
-                        minWidth: 0,
-                        textAlign: "left",
-                        background: "transparent",
-                        border: "none",
-                        cursor: "pointer",
-                        padding: 0,
-                        color: "inherit",
-                        fontWeight: selected ? 600 : 400,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap"
-                      }}
-                    >
-                      {session.title || "未命名对话"}
+>
+                      <strong>{session.title || "未命名对话"}</strong>
                     </button>
                     <button
                       className="icon-button"
                       type="button"
                       aria-label={"删除对话：" + (session.title || "未命名对话")}
-                      onClick={() => onDeleteChat(session.id)}
-                    >
-                      <Trash2 size={16} />
+                      onClick={() => onDeleteChat(session.id)}>
+                      <Trash2 size={16} aria-hidden />
                     </button>
-                  </li>
+                  </div>
                 );
               })}
-            </ul>
+            </div>
           )}
         </section>
 
-        {/* 右列：消息流 + 输入 */}
-        <section className="panel" style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: "0.85rem" }}>
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: "0.75rem",
-              maxHeight: "60vh",
-              overflowY: "auto"
-            }}
-          >
+        <section className="panel stack">
+          <div className="chat-thread">
             {!activeSession || activeSession.messages.length === 0 ? (
               <p className="field-help">问点什么吧——比如「我对 X 的判断有哪些」「最近一次专访留下了哪些问题」。</p>
             ) : (
               activeSession.messages.map((msg) => {
                 const isUser = msg.role === "user";
                 return (
-                  <div
-                    key={msg.id}
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      alignItems: isUser ? "flex-end" : "flex-start",
-                      gap: "0.4rem"
-                    }}
-                  >
-                    <div
-                      style={{
-                        maxWidth: "80%",
-                        borderRadius: "0.85rem",
-                        padding: "0.6rem 0.85rem",
-                        whiteSpace: "pre-wrap",
-                        wordBreak: "break-word",
-                        background: isUser
-                          ? "var(--color-accent, #6366f1)"
-                          : "var(--color-surface-muted, rgba(148,163,184,0.16))",
-                        color: isUser ? "var(--color-on-accent, #fff)" : "inherit"
-                      }}
-                    >
-                      {msg.content}
+                  <div key={msg.id} className={isUser ? "chat-msg is-user" : "chat-msg is-assistant"}>
+                    <div className="stack-xs">
+                      <div className={isUser ? "chat-bubble is-user" : "chat-bubble"}>{msg.content}</div>
+                      {!isUser && msg.citations && msg.citations.length > 0 && (
+                        <ul className="clean-list stack-xs">
+                          {msg.citations.map((citation, index) => (
+                            <li key={citation.sourceType + ":" + citation.sourceId + ":" + index}>
+                              <button
+                                type="button"
+                                className="secondary-action compact-action"
+                                onClick={() => onCitationClick(citation)}
+                                title={citation.snippet}
+>
+                                <Quote size={14} aria-hidden />
+                                <span>
+                                  [{citation.number ?? "?"}] ({citation.sourceLabel ?? "来源类型待确认"}) {citation.title}
+                                </span>
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
                     </div>
-                    {!isUser && msg.citations && msg.citations.length > 0 && (
-                      <ul
-                        className="clean-list"
-                        style={{ maxWidth: "80%", display: "flex", flexDirection: "column", gap: "0.3rem" }}
-                      >
-                        {msg.citations.map((citation, index) => (
-                          <li key={citation.sourceType + ":" + citation.sourceId + ":" + index}>
-                            <button
-                              type="button"
-                              className="secondary-action"
-                              onClick={() => onCitationClick(citation)}
-                              title={citation.snippet}
-                              style={{
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: "0.35rem",
-                                fontSize: "0.8rem",
-                                maxWidth: "100%"
-                              }}
-                            >
-                              <Quote size={14} />
-                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                [{citation.number ?? "?"}] ({citation.sourceLabel ?? "来源类型待确认"}) {citation.title}
-                              </span>
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
                   </div>
                 );
               })
@@ -228,24 +162,24 @@ export function AssetChatView({
             <div ref={messagesEndRef} />
           </div>
 
-          <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-            <label className="field-stack">
+          <div className="stack-sm">
+            <label className="field-stack" htmlFor="asset-chat-draft">
               <span className="field-label">提问</span>
               <textarea
+                id="asset-chat-draft"
                 value={draft}
                 rows={3}
                 placeholder="向你的认知资产提问…（Enter 发送，Shift+Enter 换行）"
                 disabled={sending}
                 onChange={(event) => setDraft(event.target.value)}
-                onKeyDown={handleKeyDown}
-              />
+                onKeyDown={handleKeyDown} />
             </label>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
-              <button className="primary-action" type="button" onClick={handleSend} disabled={!canSend}>
-                <SendHorizontal size={16} style={{ marginRight: "0.4rem" }} />
+            <div className="form-actions">
+              <button className="primary-action" type="button" onClick={handleSend} disabled={!canSend} aria-busy={sending}>
+                <SendHorizontal size={16} aria-hidden />
                 {sending ? "发送中…" : "发送"}
               </button>
-              {error && <span style={{ color: "var(--color-danger, #ef4444)", fontSize: "0.85rem" }}>{error}</span>}
+              {error && <span className="field-status is-danger">{error}</span>}
             </div>
           </div>
         </section>

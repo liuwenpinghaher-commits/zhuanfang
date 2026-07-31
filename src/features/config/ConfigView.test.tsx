@@ -252,8 +252,7 @@ describe("ConfigView", () => {
           voicesLoading={false}
           onUploadVoice={vi.fn()}
           onDeleteVoice={vi.fn()}
-          {...overrides}
-        />
+          {...overrides} />
       );
     });
   }

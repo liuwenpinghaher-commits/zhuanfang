@@ -103,15 +103,14 @@ export function MaterialLibraryView({
               onClick={handleRebuild}
               disabled={rebuilding}
               aria-busy={rebuilding}
-            >
+>
               <RefreshCw size={16} aria-hidden />
               {rebuilding ? "重建中…" : "重建知识索引"}
             </button>
             {rebuildHint && <span className="field-status is-success">{rebuildHint}</span>}
             {rebuildError && <span className="field-status is-danger">{rebuildError}</span>}
           </div>
-        }
-      />
+        } />
 
       <section className="panel">
         <div className="panel-title">
@@ -129,8 +128,7 @@ export function MaterialLibraryView({
               value={title}
               maxLength={120}
               placeholder="如：某篇文章 / 一段访谈逐字稿"
-              onChange={(e) => setTitle(e.target.value)}
-            />
+              onChange={(e) => setTitle(e.target.value)} />
           </label>
           <label className="field-stack" htmlFor="material-import-body">
             <span className="field-label">正文</span>
@@ -139,8 +137,7 @@ export function MaterialLibraryView({
               value={content}
               rows={8}
               placeholder="在此粘贴资料正文…"
-              onChange={(e) => setContent(e.target.value)}
-            />
+              onChange={(e) => setContent(e.target.value)} />
           </label>
           <div className="form-actions">
             <label className="secondary-action file-button">
@@ -154,7 +151,7 @@ export function MaterialLibraryView({
               onClick={handleImport}
               disabled={!canImport}
               aria-busy={importing}
-            >
+>
               {importing ? "导入中…" : "导入"}
             </button>
             {importHint && <span className="field-status is-success">{importHint}</span>}
@@ -188,8 +185,7 @@ export function MaterialLibraryView({
                   className="icon-button"
                   type="button"
                   aria-label={"删除素材：" + source.title}
-                  onClick={() => onDeleteSource(source.id)}
-                >
+                  onClick={() => onDeleteSource(source.id)}>
                   <Trash2 size={16} aria-hidden />
                 </button>
               </li>

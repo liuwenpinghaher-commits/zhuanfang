@@ -64,8 +64,7 @@ describe("SearchIntelligenceView — auto-watch button", () => {
       <SearchIntelligenceView
         {...baseProps}
         state={s}
-        onAutoRun={async () => null}
-      />
+        onAutoRun={async () => null} />
     );
     expect(html).toContain("自动盯梢");
   });
@@ -75,8 +74,7 @@ describe("SearchIntelligenceView — auto-watch button", () => {
     const html = renderToString(
       <SearchIntelligenceView
         {...baseProps}
-        state={s}
-      />
+        state={s} />
     );
     expect(html).not.toContain("一键扫描主题和知识债");
   });
@@ -87,8 +85,7 @@ describe("SearchIntelligenceView — auto-watch button", () => {
       <SearchIntelligenceView
         {...baseProps}
         state={s}
-        onAutoRun={async () => null}
-      />
+        onAutoRun={async () => null} />
     );
     // The double-icon bug rendered a literal "▶" alongside the lucide <Play> svg.
     expect(html).not.toContain("▶");
@@ -104,8 +101,7 @@ describe("SearchIntelligenceView — consolidated provider control", () => {
     const html = renderToString(
       <SearchIntelligenceView
         {...baseProps}
-        state={s}
-      />
+        state={s} />
     );
     // exactly one <select id="search-provider">
     expect(html).toContain('id="search-provider"');
@@ -122,8 +118,7 @@ describe("SearchIntelligenceView — consolidated provider control", () => {
     const html = renderToString(
       <SearchIntelligenceView
         {...baseProps}
-        state={s}
-      />
+        state={s} />
     );
     const setDefaultCount = html.split("设为默认").length - 1;
     expect(setDefaultCount).toBe(1);
@@ -136,8 +131,7 @@ describe("SearchIntelligenceView — consolidated provider control", () => {
     const html = renderToString(
       <SearchIntelligenceView
         {...baseProps}
-        state={s}
-      />
+        state={s} />
     );
     expect(html).toContain("生成简报");
   });
@@ -147,8 +141,7 @@ describe("SearchIntelligenceView — consolidated provider control", () => {
     const html = renderToString(
       <SearchIntelligenceView
         {...baseProps}
-        state={s}
-      />
+        state={s} />
     );
     expect(html).not.toContain("provider-action-group");
     expect(html).not.toContain("provider-default-actions");
@@ -162,8 +155,7 @@ describe("SearchIntelligenceView — consolidated provider control", () => {
     const html = renderToString(
       <SearchIntelligenceView
         {...baseProps}
-        state={s}
-      />
+        state={s} />
     );
     expect(html).toContain("config-hint");
     expect(html).toContain("当前默认 provider");
@@ -179,8 +171,7 @@ describe("SearchIntelligenceView — empty state", () => {
       <SearchIntelligenceView
         {...baseProps}
         state={s}
-        onAutoRun={async () => null}
-      />
+        onAutoRun={async () => null} />
     );
     expect(html).toContain("empty-state");
     expect(html).toContain("从你的主题和知识债自动采集情报");
@@ -191,8 +182,7 @@ describe("SearchIntelligenceView — empty state", () => {
     const html = renderToString(
       <SearchIntelligenceView
         {...baseProps}
-        state={s}
-      />
+        state={s} />
     );
     expect(html).toContain("empty-state");
     expect(html).not.toContain("empty-cta");
@@ -208,8 +198,7 @@ describe("SearchIntelligenceView — staleness badge", () => {
     const html = renderToString(
       <SearchIntelligenceView
         {...baseProps}
-        state={s}
-      />
+        state={s} />
     );
     expect(html).toContain("已过期·建议刷新");
   });
@@ -222,8 +211,7 @@ describe("SearchIntelligenceView — staleness badge", () => {
     const html = renderToString(
       <SearchIntelligenceView
         {...baseProps}
-        state={s}
-      />
+        state={s} />
     );
     expect(html).not.toContain("已过期·建议刷新");
   });
@@ -240,8 +228,7 @@ describe("SearchIntelligenceView — per-brief loading states", () => {
         {...baseProps}
         state={s}
         onRefreshBrief={() => {}}
-        refreshingBriefId="brief-1"
-      />
+        refreshingBriefId="brief-1" />
     );
     expect(html).toContain("btn-loading");
     expect(html).toContain("spinner");
@@ -257,8 +244,7 @@ describe("SearchIntelligenceView — per-brief loading states", () => {
         {...baseProps}
         state={s}
         onTrackBrief={() => {}}
-        trackingBriefId="brief-1"
-      />
+        trackingBriefId="brief-1" />
     );
     expect(html).toContain("处理中");
   });
@@ -274,8 +260,7 @@ describe("SearchIntelligenceView — per-brief loading states", () => {
         {...baseProps}
         state={s}
         onRefreshBrief={() => {}}
-        refreshingBriefId="brief-1"
-      />
+        refreshingBriefId="brief-1" />
     );
     expect(html).toContain("另一个主题");
   });

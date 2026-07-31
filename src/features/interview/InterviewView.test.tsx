@@ -46,8 +46,7 @@ describe("InterviewView", () => {
           onControl={vi.fn()}
           onToggleRecording={vi.fn()}
           onInterrupt={vi.fn()}
-          retryAvailable
-        />
+          retryAvailable />
       );
     });
 
@@ -83,8 +82,7 @@ describe("InterviewView", () => {
         card={session.card} session={session} pendingMode="organization" input="" recording={false}
         realtimeState={null} audioLevel={0} voiceStatus="idle" liveUserTranscript="" voiceTransport={null}
         onInput={vi.fn()} onStart={vi.fn()} onSubmit={vi.fn()} onFinish={vi.fn()} onControl={vi.fn()}
-        onToggleRecording={vi.fn()} onInterrupt={vi.fn()}
-      />);
+        onToggleRecording={vi.fn()} onInterrupt={vi.fn()} />);
     });
 
     const turnText = container.querySelector(".turn.assistant")?.textContent ?? "";
@@ -108,8 +106,7 @@ describe("InterviewView", () => {
         card={session.card} session={session} pendingMode="organization" input="" recording={false}
         realtimeState={null} audioLevel={0} voiceStatus="idle" liveUserTranscript="" voiceTransport={null}
         onInput={vi.fn()} onStart={vi.fn()} onSubmit={vi.fn()} onFinish={vi.fn()} onControl={vi.fn()}
-        onToggleRecording={vi.fn()} onInterrupt={vi.fn()}
-      />);
+        onToggleRecording={vi.fn()} onInterrupt={vi.fn()} />);
     });
 
     const turnText = container.querySelector(".turn.assistant")?.textContent ?? "";
@@ -134,8 +131,7 @@ describe("InterviewView", () => {
         onVoiceReviewText={onVoiceReviewText} onConfirmVoiceReview={onConfirmVoiceReview}
         onDiscardVoiceReview={onDiscardVoiceReview}
         onInput={vi.fn()} onStart={vi.fn()} onSubmit={vi.fn()} onFinish={vi.fn()} onControl={vi.fn()}
-        onToggleRecording={vi.fn()} onInterrupt={vi.fn()}
-      />);
+        onToggleRecording={vi.fn()} onInterrupt={vi.fn()} />);
     });
 
     const review = container.querySelector("[data-testid='voice-review']");

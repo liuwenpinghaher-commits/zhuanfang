@@ -97,7 +97,7 @@ export function TrackWorkspaceView({
                 const anchor = theme.representativeQuoteAnchor!;
                 setSourceOverlay({ sessionId: anchor.sessionId, turnId: anchor.turnId });
               }}
-            >
+>
               <ExternalLink size={16} />查看原文出处
             </button>
           )}
@@ -271,7 +271,7 @@ export function TrackWorkspaceView({
             padding: "5vh 1rem",
             overflowY: "auto"
           }}
-        >
+>
           <div
             onClick={(e) => e.stopPropagation()}
             style={{
@@ -281,15 +281,14 @@ export function TrackWorkspaceView({
               padding: "1rem 1.1rem 1.4rem",
               boxShadow: "0 18px 48px rgba(0,0,0,0.5)"
             }}
-          >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "0.75rem" }}>
-              <h2 style={{ margin: 0, fontSize: "1.05rem" }}>原文出处</h2>
+>
+            <div className="row-between">
+              <h2 className="panel-subhead">原文出处</h2>
               <button
                 className="icon-button"
                 type="button"
                 aria-label="关闭原文出处"
-                onClick={() => setSourceOverlay(null)}
-              >
+                onClick={() => setSourceOverlay(null)}>
                 <X size={18} />
               </button>
             </div>
@@ -302,8 +301,7 @@ export function TrackWorkspaceView({
               getRawMaterial={getRawMaterial}
               getAudioMeta={getAudioMeta}
               audioUrl={audioUrl}
-              getAudioBlob={getAudioBlob}
-            />
+              getAudioBlob={getAudioBlob} />
           </div>
         </div>
       )}
