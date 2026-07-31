@@ -5,6 +5,8 @@ ARG NODE_IMAGE=node:25-slim
 FROM ${NODE_IMAGE} AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
+# postinstall runs copy:vad-assets — script must exist before npm ci
+COPY scripts/copy-vad-assets.mjs ./scripts/
 RUN npm ci
 
 FROM deps AS build
@@ -23,7 +25,9 @@ ENV NODE_ENV=production \
     CORPUS_UPLOAD_DIR=/app/.data/corpus-audio
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+# Runtime serves SPA from dist/ (VAD assets already baked by build). Skip lifecycle
+# scripts so install does not require browser asset copy tooling.
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY apps ./apps
 COPY packages ./packages
