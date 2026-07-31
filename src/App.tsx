@@ -2744,7 +2744,7 @@ export default function App() {
           {groupedNavigation.map((group) => (
             <section className="nav-group" key={group.label} aria-label={`${group.label}导航`}>
               <span className="nav-group-label">{group.label}</span>
-              <div className="nav-group-items" role="list">
+              <div className="nav-group-items">
                 {group.items.map((item) => {
                   const Icon = navIconByView[item.id];
                   const active = view === item.id;
@@ -2753,7 +2753,6 @@ export default function App() {
                       key={item.id}
                       className={active ? "nav-item active" : "nav-item"}
                       type="button"
-                      role="listitem"
                       aria-current={active ? "page" : undefined}
                       onClick={() => setView(item.id)}
                     >
