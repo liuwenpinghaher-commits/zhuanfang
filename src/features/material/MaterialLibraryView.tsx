@@ -53,7 +53,6 @@ export function MaterialLibraryView({
     if (!title.trim()) {
       setTitle(file.name.replace(/\.[^.]+$/, ""));
     }
-    // Allow re-selecting the same file later.
     event.target.value = "";
   }
 
@@ -97,78 +96,90 @@ export function MaterialLibraryView({
         title="导入资料与知识索引"
         subtitle="粘贴或上传文本资料，抽取为可在专访中召回的素材。重建索引后即可用于检索接地。"
         action={
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "0.4rem" }}>
-            <button className="secondary-action" type="button" onClick={handleRebuild} disabled={rebuilding}>
-              <RefreshCw size={16} style={{ marginRight: "0.4rem" }} />
+          <div className="header-actions">
+            <button
+              className="secondary-action"
+              type="button"
+              onClick={handleRebuild}
+              disabled={rebuilding}
+              aria-busy={rebuilding}
+            >
+              <RefreshCw size={16} aria-hidden />
               {rebuilding ? "重建中…" : "重建知识索引"}
             </button>
-            {rebuildHint && (
-              <span style={{ color: "var(--color-success, #22c55e)", fontSize: "0.8rem" }}>{rebuildHint}</span>
-            )}
-            {rebuildError && <span style={{ color: "var(--color-danger, #ef4444)", fontSize: "0.8rem" }}>{rebuildError}</span>}
+            {rebuildHint && <span className="field-status is-success">{rebuildHint}</span>}
+            {rebuildError && <span className="field-status is-danger">{rebuildError}</span>}
           </div>
         }
       />
 
       <section className="panel">
         <div className="panel-title">
-          <Upload size={18} />
+          <Upload size={18} aria-hidden />
           <h2>导入资料</h2>
         </div>
-        <p className="field-help" style={{ marginBottom: "1rem" }}>
+        <p className="field-help">
           可直接粘贴正文，或上传 .txt / .md 文件。导入后会抽取候选记忆，请在「记忆」中审核。
         </p>
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.85rem" }}>
-          <label className="field-stack">
+        <div className="field-grid">
+          <label className="field-stack" htmlFor="material-import-title">
             <span className="field-label">标题</span>
             <input
+              id="material-import-title"
               value={title}
               maxLength={120}
               placeholder="如：某篇文章 / 一段访谈逐字稿"
               onChange={(e) => setTitle(e.target.value)}
             />
           </label>
-          <label className="field-stack">
+          <label className="field-stack" htmlFor="material-import-body">
             <span className="field-label">正文</span>
             <textarea
+              id="material-import-body"
               value={content}
               rows={8}
               placeholder="在此粘贴资料正文…"
               onChange={(e) => setContent(e.target.value)}
             />
           </label>
-          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
-            <label className="secondary-action" style={{ cursor: "pointer", display: "inline-flex", alignItems: "center" }}>
-              <FileText size={16} style={{ marginRight: "0.4rem" }} />
+          <div className="form-actions">
+            <label className="secondary-action file-button">
+              <FileText size={16} aria-hidden />
               选择文件
-              <input type="file" accept=".txt,.md" style={{ display: "none" }} onChange={handleFile} />
+              <input type="file" accept=".txt,.md" onChange={handleFile} />
             </label>
-            <button className="primary-action" type="button" onClick={handleImport} disabled={!canImport}>
+            <button
+              className="primary-action"
+              type="button"
+              onClick={handleImport}
+              disabled={!canImport}
+              aria-busy={importing}
+            >
               {importing ? "导入中…" : "导入"}
             </button>
-            {importHint && <span style={{ color: "var(--color-success, #22c55e)", fontSize: "0.875rem" }}>{importHint}</span>}
-            {importError && <span style={{ color: "var(--color-danger, #ef4444)", fontSize: "0.875rem" }}>{importError}</span>}
+            {importHint && <span className="field-status is-success">{importHint}</span>}
+            {importError && <span className="field-status is-danger">{importError}</span>}
           </div>
         </div>
       </section>
 
       <section className="panel">
         <div className="panel-title">
-          <Database size={18} />
+          <Database size={18} aria-hidden />
           <h2>素材列表（{sources.length}）</h2>
         </div>
         {sources.length === 0 ? (
-          <p className="field-help">还没有导入任何素材。从上方导入第一份资料，它会成为专访可调用的认知素材。</p>
+          <div className="empty-module">
+            <Upload size={28} aria-hidden />
+            <p className="empty-hint">还没有导入任何素材。从上方导入第一份资料，它会成为专访可调用的认知素材。</p>
+          </div>
         ) : (
           <ul className="clean-list">
             {sources.map((source) => (
-              <li
-                key={source.id}
-                style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "0.75rem" }}
-              >
-                <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem", minWidth: 0 }}>
-                  <strong style={{ wordBreak: "break-word" }}>{source.title}</strong>
-                  <span className="field-help" style={{ fontSize: "0.8rem" }}>
+              <li key={source.id} className="list-row">
+                <div className="list-row-main">
+                  <strong>{source.title}</strong>
+                  <span className="list-row-meta">
                     {SOURCE_TYPE_LABEL[source.sourceType]} · {source.chunkIds.length} 块 ·{" "}
                     {SENSITIVITY_LABEL[source.sensitivity]} · {formatDate(source.createdAt)}
                   </span>
@@ -179,7 +190,7 @@ export function MaterialLibraryView({
                   aria-label={"删除素材：" + source.title}
                   onClick={() => onDeleteSource(source.id)}
                 >
-                  <Trash2 size={16} />
+                  <Trash2 size={16} aria-hidden />
                 </button>
               </li>
             ))}
