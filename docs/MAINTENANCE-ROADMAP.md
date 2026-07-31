@@ -81,6 +81,7 @@ V1–V3（Full GO）· closed
   → D3.a 成本信封文档 · closed → docs/COST-ENVELOPE.md
   → D6.a 告警草案 · closed → docs/runbooks/ALERTS.md
   → UX-UI 亮色主题与壳层交互 · closed → docs/superpowers/2026-07-30-ui-light-theme.md
+  → UX-UI 全站视觉重做 · closed → docs/superpowers/2026-07-30-ui-visual-redesign.md
   → D4.a 专访键盘路径深化 / D1.a 或 D2.a（选产品痛点）· **next**
   → D5.a/b 适配层与换维 runbook（无第二厂商则停）
   → 其余 D*.b/c 仅在用户痛点或指标恶化时开启
