@@ -5077,6 +5077,44 @@ html[data-theme="light"] .sidebar {
   outline-offset: 2px;
 }
 
+.config-risk-strip,
+.config-draft-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.config-sticky-save {
+  position: sticky;
+  bottom: 12px;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface-raised, var(--surface-muted)) 92%, transparent);
+  box-shadow: 0 8px 28px color-mix(in srgb, var(--text-primary) 12%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+.config-field-focus,
+.runtime-setting-field:has(.config-field-focus),
+label:has(> .config-field-focus) {
+  outline: 2px solid color-mix(in srgb, var(--action-primary) 55%, transparent);
+  outline-offset: 3px;
+  border-radius: var(--radius-sm);
+}
+
+.provider-card.is-actionable {
+  border-color: color-mix(in srgb, var(--action-primary) 35%, var(--border-default));
+}
+
 @media (max-width: 760px) {
   .chat-layout {
     grid-template-columns: 1fr;

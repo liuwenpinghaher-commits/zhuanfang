@@ -224,12 +224,16 @@ export interface SystemCapability {
 export interface SystemCapabilitiesResponse {
   generatedAt: string;
   configVersion: string;
+  /** 权威库档位透出（与 runtime.stateStore 对齐时可省略）。 */
+  productStore?: string;
   runtime: {
     service: string;
     // R7:持久档从 sqlite 换成 surreal(唯一持久档);memory 为不持久档。
     stateStore: "memory" | "surreal";
   };
   capabilities: SystemCapability[];
+  /** 运行时语音/召回/接地指标（与 /api/health metrics 同源快照）。 */
+  metrics?: RuntimeMetricsLite;
 }
 
 export type SystemConfigSectionId = "secrets" | "models" | "search" | "voice" | "storage";

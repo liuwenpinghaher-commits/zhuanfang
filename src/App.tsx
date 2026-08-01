@@ -224,6 +224,11 @@ export default function App() {
   const [selectedAssetKey, setSelectedAssetKey] = useState<string | undefined>(undefined);
   const [confirmingDecisionId, setConfirmingDecisionId] = useState<string | undefined>(undefined);
   const [configSection, setConfigSection] = useState<ConfigSection>("status");
+  /** 系统配置深链：滚到 env key 或产品字段 name。 */
+  const [configFocusKey, setConfigFocusKey] = useState<string | null>(null);
+  const [configStatusLoading, setConfigStatusLoading] = useState(false);
+  const [configStatusError, setConfigStatusError] = useState<string | null>(null);
+  const [configRefreshNonce, setConfigRefreshNonce] = useState(0);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   /** 从双轨笔记「打开专访档案」跳入我的资产时高亮对应场次。 */
   const [archiveFocusSessionId, setArchiveFocusSessionId] = useState<string | null>(null);
@@ -335,6 +340,14 @@ export default function App() {
         } else if (chat) {
           setChatSessionId(chat);
         }
+      } else if (v === "config") {
+        setView("config");
+        const sec = params.get("section");
+        if (sec === "status" || sec === "settings") {
+          setConfigSection(sec);
+        }
+        const focus = params.get("focus");
+        if (focus) setConfigFocusKey(focus);
       } else if (v === "home") {
         setView("home");
       }
@@ -361,11 +374,15 @@ export default function App() {
       params.set("important", assetImportantOnly ? "1" : "0");
       params.set("sort", assetSortMode);
       params.delete("chat");
+      params.delete("section");
+      params.delete("focus");
     } else if (view === "asset-chat") {
       params.set("view", "asset-chat");
       params.delete("filter");
       params.delete("important");
       params.delete("sort");
+      params.delete("section");
+      params.delete("focus");
       if (chatSessionId && chatSessionId !== ASSET_CHAT_DRAFT_ID) {
         params.set("chat", chatSessionId);
       } else if (chatSessionId === ASSET_CHAT_DRAFT_ID) {
@@ -373,6 +390,15 @@ export default function App() {
       } else {
         params.delete("chat");
       }
+    } else if (view === "config") {
+      params.set("view", "config");
+      params.set("section", configSection);
+      params.delete("filter");
+      params.delete("important");
+      params.delete("sort");
+      params.delete("chat");
+      if (configFocusKey) params.set("focus", configFocusKey);
+      else params.delete("focus");
     } else {
       // Prevent sticky my-assets query from hijacking refresh while on 素材库 etc.
       params.set("view", view);
@@ -380,13 +406,15 @@ export default function App() {
       params.delete("important");
       params.delete("sort");
       params.delete("chat");
+      params.delete("section");
+      params.delete("focus");
     }
     const next = `${window.location.pathname}?${params.toString()}`;
     const cur = `${window.location.pathname}${window.location.search}`;
     if (next !== cur) {
       window.history.replaceState(null, "", next);
     }
-  }, [view, assetFilter, assetImportantOnly, assetSortMode, chatSessionId]);
+  }, [view, assetFilter, assetImportantOnly, assetSortMode, chatSessionId, configSection, configFocusKey]);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
@@ -849,35 +877,43 @@ export default function App() {
     }
 
     let cancelled = false;
-    productApiClient
-      .getSystemCapabilities()
-      .then((capabilities) => {
-        if (!cancelled) {
-          setSystemCapabilities(capabilities);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setSystemCapabilities(null);
-        }
-      });
-    productApiClient
-      .getSystemConfig()
-      .then((config) => {
-        if (!cancelled) {
-          setRuntimeConfig(config);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setRuntimeConfig(null);
-        }
-      });
+    setConfigStatusLoading(true);
+    setConfigStatusError(null);
+    Promise.all([
+      productApiClient.getSystemCapabilities().then(
+        (capabilities) => ({ ok: true as const, capabilities }),
+        (err: unknown) => ({ ok: false as const, err })
+      ),
+      productApiClient.getSystemConfig().then(
+        (config) => ({ ok: true as const, config }),
+        (err: unknown) => ({ ok: false as const, err })
+      )
+    ]).then(([capRes, cfgRes]) => {
+      if (cancelled) return;
+      if (capRes.ok) setSystemCapabilities(capRes.capabilities);
+      else setSystemCapabilities(null);
+      if (cfgRes.ok) setRuntimeConfig(cfgRes.config);
+      else setRuntimeConfig(null);
+      if (!capRes.ok && !cfgRes.ok) {
+        const msg =
+          capRes.err instanceof Error && capRes.err.message
+            ? capRes.err.message
+            : "无法加载系统能力与运行配置。";
+        setConfigStatusError(msg);
+      } else if (!capRes.ok) {
+        setConfigStatusError("能力状态暂不可用；运行配置已加载。");
+      } else if (!cfgRes.ok) {
+        setConfigStatusError("运行配置暂不可用；能力状态已加载。");
+      } else {
+        setConfigStatusError(null);
+      }
+      setConfigStatusLoading(false);
+    });
 
     return () => {
       cancelled = true;
     };
-  }, [view]);
+  }, [view, configRefreshNonce]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2086,18 +2122,19 @@ export default function App() {
   }
 
   function cleanupGeneratedArtifacts() {
-    const result = dedupeGeneratedArtifacts(productState);
-    const removedTotal = result.removed.searchBriefs + result.removed.podcastEpisodes + result.removed.corpusInsights;
-    setProductState(result.nextState);
-    setNotice(
-      removedTotal > 0
-        ? buildNotice(
-            "warning",
-            "重复生成物已清理",
-            `删除 ${result.removed.searchBriefs} 份搜索简报、${result.removed.podcastEpisodes} 条播客、${result.removed.corpusInsights} 次语料分析。`
-          )
-        : buildNotice("info", "没有发现重复生成物", "搜索简报、播客和语料分析都已保持唯一。")
-    );
+    const preview = dedupeGeneratedArtifacts(productState);
+    const removedTotal =
+      preview.removed.searchBriefs + preview.removed.podcastEpisodes + preview.removed.corpusInsights;
+    if (removedTotal === 0) {
+      setNotice(buildNotice("info", "没有发现重复生成物", "搜索简报、播客和语料分析都已保持唯一。"));
+      return;
+    }
+    const detail = `将删除 ${preview.removed.searchBriefs} 份搜索简报、${preview.removed.podcastEpisodes} 条播客、${preview.removed.corpusInsights} 次语料分析。此操作不可撤销。`;
+    if (typeof window !== "undefined" && !window.confirm(`确定清理重复生成物？\n${detail}`)) {
+      return;
+    }
+    setProductState(preview.nextState);
+    setNotice(buildNotice("warning", "重复生成物已清理", detail));
   }
 
   async function saveRuntimeConfig(updates: SystemConfigUpdateRequest) {
@@ -2107,7 +2144,21 @@ export default function App() {
       const capabilities = await productApiClient.getSystemCapabilities();
       setRuntimeConfig(result.config);
       setSystemCapabilities(capabilities);
-      setNotice(buildNotice("success", "运行配置已保存", `已更新 ${result.settingsUpdated.length} 项服务端配置。`));
+      const restartKeys = result.settingsUpdated.filter((key) => {
+        const setting = result.config.sections.flatMap((s) => s.settings).find((item) => item.key === key);
+        return Boolean(setting?.restartRequired);
+      });
+      const restartHint =
+        restartKeys.length > 0
+          ? ` 其中 ${restartKeys.length} 项需重启 API 完全生效（docker compose --env-file .env.production.local up -d --build）。`
+          : "";
+      setNotice(
+        buildNotice(
+          "success",
+          "运行配置已保存",
+          `已更新 ${result.settingsUpdated.length} 项服务端配置。${restartHint}`
+        )
+      );
     } catch (err) {
       // P3-07:422 是服务端校验拒绝,body.error 带具体中文原因(如某项配置非法);此前一律吞成
       // "env 文件可写"误导排查方向。有服务端原因就如实透出,只有网络/未知才回退到通用提示。
@@ -2133,6 +2184,18 @@ export default function App() {
     };
     setProductState(nextState);
     setPodcastVoice(nextConfig.voice.podcastVoice);
+    if (!apiPersistenceEnabled || offlineOutboxRef.current) {
+      setNotice(
+        buildNotice(
+          "warning",
+          "产品策略已写入本地",
+          apiPersistenceEnabled
+            ? "仍有离线改动等待同步；恢复后会自动合并到服务器。"
+            : "后端当前不可达；策略已保存在本地，恢复连接后会自动同步。"
+        )
+      );
+      return;
+    }
     setNotice(buildNotice("success", "产品策略已保存", "搜索、语音和访谈策略会影响后续生成流程。"));
   }
 
@@ -3558,6 +3621,15 @@ export default function App() {
             runtimeConfigSaving={runtimeConfigSaving}
             section={configSection}
             onSection={setConfigSection}
+            focusKey={configFocusKey}
+            onFocusConsumed={() => setConfigFocusKey(null)}
+            statusLoading={configStatusLoading}
+            statusError={configStatusError}
+            onRetryStatus={() => setConfigRefreshNonce((n) => n + 1)}
+            onOpenSettingsFocus={(key) => {
+              setConfigSection("settings");
+              setConfigFocusKey(key);
+            }}
             onCleanupGeneratedArtifacts={cleanupGeneratedArtifacts}
             onSaveRuntimeConfig={saveRuntimeConfig}
             onSaveProductConfig={saveProductConfig}

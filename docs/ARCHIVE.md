@@ -132,6 +132,19 @@
 
 **§0.11 任务状态：关闭 · 已部署 · 生产冒烟 PASS**
 
+### 0.12 系统配置经营台（同日续）
+
+| 项 | 状态 |
+| --- | --- |
+| URL config/section + sticky 清除 | **closed** |
+| 脏草稿隔离 / 保存诚实 | **closed** |
+| 风险摘要 + 可行动能力卡 | **closed** |
+| 生产冒烟 | **PASS** · `scripts/config-workflow-smoke.mjs` |
+| 报告 | `2026-08-01-config-optimization-report.md` |
+
+**§0.12 任务状态：关闭 · 已部署 · 冒烟 PASS**
+
+
 
 ---
 ## 1. 最终系统健康检查（2026-07-30）

@@ -120,6 +120,7 @@
 | 素材库端到端业务质量验证 | **closed · archived · PASS** · `f31f6d4a` · `2026-08-01-material-library-final-audit.md` + `scripts/material-workflow-smoke.mjs` · 生产已部署 |
 | 2026-08-01 页面经营台会话收口（主题线+笔记+素材库） | **closed · archived** · tip `93e855b2` · 见 `2026-08-01-session-final-report.md` · ARCHIVE §0.10 |
 | 资产对话经营台（真新对话/跳源/grounding/预填/开专访） | **closed · archived · PASS** · `8806ce12` · 见 optimization-report + `2026-08-01-asset-chat-workflow-smoke.md` |
+| 系统配置经营台（URL/脏草稿/风险摘要/诚实保存） | **closed · PASS** · 见 `2026-08-01-config-optimization-report.md` |
 
 ## 验收
 
