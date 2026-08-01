@@ -227,6 +227,8 @@ export default function App() {
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   /** 从双轨笔记「打开专访档案」跳入我的资产时高亮对应场次。 */
   const [archiveFocusSessionId, setArchiveFocusSessionId] = useState<string | null>(null);
+  /** 从素材库「去审核」跳入记忆时，优先展示该 import source 的候选。 */
+  const [memoryFocusSourceId, setMemoryFocusSourceId] = useState<string | null>(null);
   const [recording, setRecording] = useState(false);
   const [realtimeVoiceSession, setRealtimeVoiceSession] = useState<RealtimeVoiceSessionResponse | null>(null);
   const [realtimeVoiceConnection, setRealtimeVoiceConnection] = useState<BailianRealtimeWebrtcConnection | BailianRealtimeWebsocketConnection | LivekitVoiceSession | null>(null);
@@ -303,7 +305,7 @@ export default function App() {
     writeStoredThemePreference(themePreference);
   }, [themePreference]);
 
-  // my-assets URL state: ?view=my-assets&filter=&important=&sort=
+  // URL state: my-assets keeps filter/sort; material/other views write ?view= to avoid sticky my-assets.
   useEffect(() => {
     if (typeof window === "undefined") return;
     const applyFromUrl = () => {
@@ -311,6 +313,16 @@ export default function App() {
       const v = params.get("view");
       if (v === "my-assets" || v === "assets") {
         setView("my-assets");
+      } else if (v === "material") {
+        setView("material");
+      } else if (v === "memory") {
+        setView("memory");
+      } else if (v === "notes") {
+        setView("notes");
+      } else if (v === "themes") {
+        setView("themes");
+      } else if (v === "home") {
+        setView("home");
       }
       const f = params.get("filter");
       if (f === "all" || f === "points" || f === "questions" || f === "decisions" || f === "debts") {
@@ -328,12 +340,19 @@ export default function App() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (view !== "my-assets") return;
     const params = new URLSearchParams(window.location.search);
-    params.set("view", "my-assets");
-    params.set("filter", assetFilter);
-    params.set("important", assetImportantOnly ? "1" : "0");
-    params.set("sort", assetSortMode);
+    if (view === "my-assets") {
+      params.set("view", "my-assets");
+      params.set("filter", assetFilter);
+      params.set("important", assetImportantOnly ? "1" : "0");
+      params.set("sort", assetSortMode);
+    } else {
+      // Prevent sticky my-assets query from hijacking refresh while on 素材库 etc.
+      params.set("view", view);
+      params.delete("filter");
+      params.delete("important");
+      params.delete("sort");
+    }
     const next = `${window.location.pathname}?${params.toString()}`;
     const cur = `${window.location.pathname}${window.location.search}`;
     if (next !== cur) {
@@ -1181,12 +1200,35 @@ export default function App() {
             "导入完成",
             `抽取了 ${result.candidateCount} 条候选记忆${
               typeof result.embeddedChunkCount === "number" ? `，向量 ${result.embeddedChunkCount} 段` : ""
-            }，请在下方审核。`
+            }。可在素材库点「去审核」，或前往「记忆」。`
           )
         );
       }
-    } catch {
-      setNotice(buildNotice("warning", "导入失败", "需要后端在线且配置 DASHSCOPE_API_KEY 才能抽取候选记忆。"));
+      return {
+        sourceId: result.sourceId,
+        candidateCount: result.candidateCount,
+        chunkCount: result.chunkCount,
+        embeddedChunkCount: result.embeddedChunkCount,
+        embeddingReady: result.embeddingReady,
+        warning: result.warning
+      };
+    } catch (err) {
+      const detail =
+        err instanceof ApiError
+          ? (() => {
+              const body = err.body as { error?: unknown } | undefined;
+              if (body && typeof body.error === "string" && body.error.trim()) return body.error.trim();
+              if (err.status === 503) return "复盘/导入 LLM 未配置或不可用（常见于缺少 DASHSCOPE_API_KEY）。";
+              if (err.status === 429) return "本时段导入 LLM 预算已用尽，请稍后重试。";
+              if (err.status === 422) return "正文为空或超过上限，请检查后重试。";
+              if (err.status >= 500) return `服务端导入失败（${err.status}）。`;
+              return err.message;
+            })()
+          : err instanceof Error && err.message
+            ? err.message
+            : "需要后端在线才能导入并抽取候选记忆。";
+      setNotice(buildNotice("warning", "导入失败", detail));
+      throw err instanceof Error ? err : new Error(detail);
     } finally {
       setImporting(false);
     }
@@ -3262,7 +3304,17 @@ export default function App() {
                 return;
               }
               setProductState(deleteImportSource(productState, id));
+              setNotice(buildNotice("info", "素材已删除", "列表已更新；知识索引将随同步重建。"));
             }}
+            onReviewMemory={(sourceId) => {
+              setMemoryFocusSourceId(sourceId ?? null);
+              setView("memory");
+            }}
+            onStartInterview={(mode, topicHint, relatedThemeIds) =>
+              void launchInterview(mode, activeSearchBriefId, topicHint, relatedThemeIds)
+            }
+            onOpenAssetChat={() => setView("asset-chat")}
+            onOpenTrack={openTrack}
           />
         )}
         {view === "asset-chat" && (
@@ -3393,7 +3445,12 @@ export default function App() {
           <MemoryGovernanceView
             state={productState}
             importing={importing}
-            onImport={importMemoryDocument}
+            focusSourceId={memoryFocusSourceId}
+            onImport={(title, content) => {
+              void importMemoryDocument(title, content).catch(() => {
+                /* notice already set */
+              });
+            }}
             onApprove={approveCandidate}
             onReject={rejectCandidate}
             onEditCandidate={editCandidate}

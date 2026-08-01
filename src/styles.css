@@ -5636,6 +5636,59 @@ p.field-error {
   display: grid;
   gap: 0.65rem;
 }
+
+/* Material library workshop */
+.material-index-health .field-help {
+  margin: 0.25rem 0 0.5rem;
+}
+.material-import-result {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.75rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--action-primary) 28%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--action-primary) 8%, transparent);
+}
+.material-import-result p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+.material-search-field {
+  max-width: 420px;
+  margin-bottom: 0.75rem;
+}
+.material-source-row {
+  align-items: flex-start;
+}
+.material-theme-chips {
+  margin-top: 0.4rem;
+}
+.material-theme-chip {
+  border: 0;
+  font: inherit;
+  cursor: pointer;
+}
+.material-theme-chip:disabled {
+  cursor: default;
+}
+.material-source-preview {
+  margin-top: 0.5rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+  line-height: 1.55;
+}
+.material-source-preview p {
+  margin: 0;
+}
+.material-row-actions {
+  margin-top: 0.55rem;
+}
+.field-help.is-danger {
+  color: var(--status-danger-fg, #b91c1c);
+}
 @media (max-width: 760px) {
   .interview-layout {
     display: flex;

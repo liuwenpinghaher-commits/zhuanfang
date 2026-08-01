@@ -21,6 +21,7 @@ import { NotesView } from "./notes/NotesView";
 import { PodcastStudioView } from "./podcast/PodcastStudioView";
 import { SearchIntelligenceView } from "./search/SearchIntelligenceView";
 import { ThemesView } from "./themes/ThemesView";
+import { MaterialLibraryView } from "./material/MaterialLibraryView";
 
 describe("empty-state render guards", () => {
   it("HomeView renders on empty state without throwing", () => {
@@ -178,6 +179,20 @@ describe("empty-state render guards", () => {
     expect(html).toContain("保存到资产库");
     expect(html).toContain("轻量记录");
     expect(html).toContain("矛盾具体卡在哪？");
+  });
+
+  it("MaterialLibraryView renders empty workshop copy", () => {
+    const s = createEmptyProductState();
+    const html = renderToString(
+      <MaterialLibraryView
+        state={s}
+        onImport={async () => ({ sourceId: "x", candidateCount: 0 })}
+        onRebuildIndex={async () => ({ chunkCount: 0 })}
+        onDeleteSource={() => {}} />
+    );
+    expect(html).toContain("还没有导入任何素材");
+    expect(html).toContain("原料车间");
+    expect(html).toContain("重建知识索引");
   });
 
   it("ThemesView renders empty state copy when themes array is empty (P1-6)", () => {

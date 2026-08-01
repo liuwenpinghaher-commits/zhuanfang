@@ -20,6 +20,8 @@ import type { SessionAudioMeta } from "../../api/productApi";
 interface MemoryGovernanceViewProps {
   state: ProductState;
   importing: boolean;
+  /** 从素材库跳入时，优先展示该 import source 的待审候选。 */
+  focusSourceId?: string | null;
   onImport: (title: string, content: string) => void;
   onApprove: (candidateId: string, mode?: "merge" | "add") => void;
   onReject: (candidateId: string) => void;
@@ -60,6 +62,7 @@ function SensitiveIcon() {
 export function MemoryGovernanceView({
   state,
   importing,
+  focusSourceId = null,
   onImport,
   onApprove,
   onReject,
@@ -114,7 +117,14 @@ export function MemoryGovernanceView({
     return () => clearTimeout(t);
   }, [savedId]);
 
-  const pending = state.memoryCandidates.filter((c) => c.status === "pending");
+  const allPending = state.memoryCandidates.filter((c) => c.status === "pending");
+  const focusedPending =
+    focusSourceId
+      ? allPending.filter((c) => c.sourceType === "import_source" && c.sourceId === focusSourceId)
+      : [];
+  // 有焦点源且命中候选时置顶展示；否则展示全部待审。
+  const pending = focusedPending.length > 0 ? focusedPending : allPending;
+  const focusFilterActive = Boolean(focusSourceId && focusedPending.length > 0);
   const confirmed = state.memoryRecords.filter((r) => r.status === "confirmed");
   const sensitiveCount =
     pending.filter((c) => c.sensitivity === "sensitive").length +
@@ -270,7 +280,11 @@ export function MemoryGovernanceView({
       <HeaderBlock
         eyebrow="记忆治理"
         title="导入资料，审核长期记忆"
-        subtitle="导入或专访后产生候选；你确认后才进入长期记忆。敏感内容默认不写入上下文。"
+        subtitle={
+          focusFilterActive
+            ? `正在查看素材导入的 ${pending.length} 条待审候选；确认后才进入长期记忆。`
+            : "导入或专访后产生候选；你确认后才进入长期记忆。敏感内容默认不写入上下文。"
+        }
       />
 
       <div className="config-hint memory-stats" aria-label="记忆库存">
