@@ -69,14 +69,17 @@ describe("SearchIntelligenceView — auto-watch button", () => {
     expect(html).toContain("自动盯梢");
   });
 
-  it("does not render auto-watch panel when onAutoRun is not provided", () => {
+  it("does not render auto-watch button when onAutoRun is not provided", () => {
     const s = createEmptyProductState();
     const html = renderToString(
       <SearchIntelligenceView
         {...baseProps}
         state={s} />
     );
-    expect(html).not.toContain("一键扫描主题和知识债");
+    // Prose may still mention the feature name; the actionable control must be absent.
+    expect(html).not.toContain('title="一键扫描主题和知识债');
+    expect(html).not.toContain("empty-cta");
+    expect(html).not.toMatch(/<button[^>]*>[^<]*自动盯梢/);
   });
 
   it("renders a single Play icon without a literal triangle glyph", () => {
@@ -92,6 +95,24 @@ describe("SearchIntelligenceView — auto-watch button", () => {
     expect(html).not.toContain("▷");
     // lucide-react renders an inline <svg> for the Play icon.
     expect(html).toContain("<svg");
+  });
+});
+
+
+describe("SearchIntelligenceView — layout hierarchy", () => {
+  it("puts auto-watch in page header action and uses a single composer panel", () => {
+    const s = createEmptyProductState();
+    const html = renderToString(
+      <SearchIntelligenceView
+        {...baseProps}
+        state={s}
+        onAutoRun={async () => null} />
+    );
+    expect(html).toContain("page-header");
+    expect(html).toContain("search-composer");
+    expect(html).toContain("search-composer-grid");
+    expect(html).not.toContain(">自动盯梢</h2>");
+    expect(html).toContain("快捷选题");
   });
 });
 
@@ -174,7 +195,11 @@ describe("SearchIntelligenceView — empty state", () => {
         onAutoRun={async () => null} />
     );
     expect(html).toContain("empty-state");
-    expect(html).toContain("从你的主题和知识债自动采集情报");
+    expect(html).toContain("search-empty");
+    expect(html).toContain("还没有搜索简报");
+    expect(html).toContain("empty-cta");
+    // header CTA + empty CTA both present
+    expect(html.split("自动盯梢").length - 1).toBeGreaterThanOrEqual(2);
   });
 
   it("shows empty-state without CTA when onAutoRun is not provided", () => {

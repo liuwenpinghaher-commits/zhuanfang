@@ -75,7 +75,7 @@ test("外部调研：空状态 CTA 可见（无简报时提示使用自动盯梢
   await openView(page, "外部调研", "主动搜集热点、素材和可讨论主题");
 
   // 空状态提示文案
-  await expect(page.getByText("还没有搜索简报。点「自动盯梢」，从你的主题和知识债自动采集情报。")).toBeVisible();
+  await expect(page.getByText(/还没有搜索简报/)).toBeVisible();
 
   // 空状态内的"自动盯梢"CTA 按钮可见
   await expect(page.getByRole("button", { name: "自动盯梢" }).first()).toBeVisible();

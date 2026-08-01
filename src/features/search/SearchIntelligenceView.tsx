@@ -1,5 +1,22 @@
 import { useState } from "react";
-import { Database, Mic, RefreshCw, Search, Trash2, Wand2, Bookmark, BookmarkCheck, Play, X, AlertTriangle, Star, BookOpen, Lightbulb, HelpCircle } from "lucide-react";
+import {
+  Database,
+  Mic,
+  RefreshCw,
+  Search,
+  Trash2,
+  Wand2,
+  Bookmark,
+  BookmarkCheck,
+  Play,
+  X,
+  AlertTriangle,
+  Star,
+  BookOpen,
+  Lightbulb,
+  HelpCircle,
+  Sparkles
+} from "lucide-react";
 import { searchProviderIds, searchProviderLabels } from "../../capabilities/contracts";
 import type { CapabilityTask } from "../../capabilities/task";
 import { HeaderBlock } from "../../components/HeaderBlock";
@@ -58,16 +75,14 @@ export function SearchIntelligenceView({
 }: SearchIntelligenceViewProps) {
   const isRunning = task.status === "running";
   const now = new Date().toISOString();
-
   const activeProvider = state.systemConfig.search.activeProvider;
+  const briefCount = state.searchBriefs.length;
+  const trackedCount = state.searchBriefs.filter((b) => b.tracked).length;
+  const staleCount = state.searchBriefs.filter((b) => isSearchBriefStale(b, now)).length;
 
-  // Locally selected provider for this run. Defaults to the configured default.
-  // The dropdown picks "which provider to use"; the actions below either generate
-  // with it (onCreate) or commit it as the new default (onSetDefaultProvider).
   const [selectedProvider, setSelectedProvider] = useState<SearchProviderId>(activeProvider);
   const isSelectedDefault = selectedProvider === activeProvider;
 
-  // Auto-run state (local to view)
   const [autoRunning, setAutoRunning] = useState(false);
   const [autoRunResult, setAutoRunResult] = useState<AutoRunSummary | null>(null);
   const [autoRunError, setAutoRunError] = useState<string | null>(null);
@@ -90,140 +105,160 @@ export function SearchIntelligenceView({
   }
 
   const showAutoRunFeedback = !autoRunDismissed && (autoRunResult !== null || autoRunError !== null);
+  const canCreate = topic.trim().length > 0 && !isRunning;
+
+  const autoWatchButton = onAutoRun ? (
+    <button
+      className={autoRunning ? "primary-action btn-loading" : "primary-action"}
+      type="button"
+      onClick={handleAutoRun}
+      disabled={autoRunning}
+      aria-busy={autoRunning}
+      title="一键扫描主题和知识债，自动采集情报并刷新已过期的持续追踪简报"
+    >
+      {autoRunning ? (
+        <>
+          <span className="spinner" aria-hidden="true" />
+          检查中…
+        </>
+      ) : (
+        <>
+          <Play size={16} />
+          自动盯梢
+        </>
+      )}
+    </button>
+  ) : null;
 
   return (
-    <section className="view-stack">
+    <section className="view-stack search-view">
       <HeaderBlock
         eyebrow="外部调研"
         title="主动搜集热点、素材和可讨论主题"
-        subtitle="外部调研结果可标记为「持续追踪」并随时刷新；研究成果可带入专访作为外部参照。" />
+        subtitle="先自动盯梢补情报，或手工生成一份简报；结果可带入专访、转成资产，并标记持续追踪。"
+        action={autoWatchButton}
+      />
 
-      {/* Auto-watch primary action */}
-      {onAutoRun && (
-        <section className={`panel action-panel${autoRunning ? " is-active" : ""}`}>
-          <div className="panel-title">
-            <Play size={18} />
-            <h2>自动盯梢</h2>
-          </div>
-          <p className="field-help mb-3">
-            一键扫描主题和知识债，自动采集情报并刷新已过期的持续追踪简报。
-          </p>
-          <div className="row-wrap">
-            <button
-              className={autoRunning ? "primary-action btn-loading" : "primary-action"}
-              type="button"
-              onClick={handleAutoRun}
-              disabled={autoRunning}
-              aria-busy={autoRunning}
->
-              {autoRunning ? (
-                <>
-                  <span className="spinner" aria-hidden="true" />
-                  检查中…
-                </>
-              ) : (
-                <>
-                  <Play size={16} />
-                  自动盯梢
-                </>
-              )}
-            </button>
-            {showAutoRunFeedback && (
-              <div
-                role="status"
-                aria-live="polite"
-                className="row"
->
-                {autoRunError ? (
-                  <>
-                    <AlertTriangle size={16} />
-                    <span>{autoRunError}</span>
-                    <button
-                      type="button"
-                      className="primary-action compact-retry"
-                      onClick={handleAutoRun}>
-                      重试
-                    </button>
-                  </>
-                ) : autoRunResult !== null ? (
-                  <>
-                    <span>
-                      本次新增 {autoRunResult.generated} 条 · 刷新 {autoRunResult.refreshed} 条
-                      {autoRunResult.dedupedSources > 0 ? ` · 去重 ${autoRunResult.dedupedSources} 来源` : ""}
-                    </span>
-                    <button
-                      type="button"
-                      className="ghost-icon-button"
-                      aria-label="关闭提示"
-                      onClick={() => setAutoRunDismissed(true)}>
-                      <X size={16} />
-                    </button>
-                  </>
-                ) : null}
-              </div>
-            )}
-          </div>
-        </section>
+      {showAutoRunFeedback && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`search-feedback${autoRunError ? " is-error" : " is-success"}`}
+        >
+          {autoRunError ? (
+            <>
+              <AlertTriangle size={16} aria-hidden="true" />
+              <span className="flex-1">{autoRunError}</span>
+              <button type="button" className="primary-action compact-retry" onClick={handleAutoRun}>
+                重试
+              </button>
+            </>
+          ) : autoRunResult !== null ? (
+            <>
+              <Sparkles size={16} aria-hidden="true" />
+              <span className="flex-1">
+                本次新增 {autoRunResult.generated} 条 · 刷新 {autoRunResult.refreshed} 条
+                {autoRunResult.dedupedSources > 0 ? ` · 去重 ${autoRunResult.dedupedSources} 来源` : ""}
+              </span>
+              <button
+                type="button"
+                className="ghost-icon-button"
+                aria-label="关闭提示"
+                onClick={() => setAutoRunDismissed(true)}
+              >
+                <X size={16} />
+              </button>
+            </>
+          ) : null}
+        </div>
       )}
 
-      <section className="panel action-panel">
-        <div className="panel-title"><Search size={18} /><h2>生成搜索简报</h2></div>
-        <div className="input-row">
-          <label className="field-stack" htmlFor="search-topic">
-            <span className="field-label">追踪主题</span>
-            <input id="search-topic" value={topic} onChange={(event) => onTopic(event.target.value)} placeholder="输入想追踪的热点或主题" />
-            <span className="field-help">用于生成素材来源、讨论主题和会中引用摘要。</span>
-          </label>
+      <section className="panel search-composer">
+        <div className="panel-title row-between">
+          <div className="row">
+            <Search size={18} aria-hidden="true" />
+            <h2>生成搜索简报</h2>
+          </div>
+          {briefCount > 0 && (
+            <div className="config-hint" aria-label="简报库存">
+              <span>共 {briefCount} 份</span>
+              {trackedCount > 0 && <span>追踪 {trackedCount}</span>}
+              {staleCount > 0 && <span className="is-warning">待刷新 {staleCount}</span>}
+            </div>
+          )}
         </div>
 
-        <div className="provider-control">
-          <label className="field-stack" htmlFor="search-provider">
-            <span className="field-label">搜索提供商</span>
-            <select
-              id="search-provider"
-              value={selectedProvider}
-              onChange={(event) => setSelectedProvider(event.target.value as SearchProviderId)}
-              disabled={isRunning}
->
-              {searchProviderIds.map((provider) => (
-                <option key={provider} value={provider}>
-                  {searchProviderLabels[provider]}
-                  {provider === activeProvider ? "（默认）" : ""}
-                </option>
-              ))}
-            </select>
-            <span className="field-help">选择本次生成所用的搜索 provider。</span>
+        <div className="search-composer-grid">
+          <label className="field-stack" htmlFor="search-topic">
+            <span className="field-label">追踪主题</span>
+            <input
+              id="search-topic"
+              value={topic}
+              onChange={(event) => onTopic(event.target.value)}
+              placeholder="例如：AI 产品商业化热点"
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && canCreate) {
+                  event.preventDefault();
+                  void onCreate(selectedProvider);
+                }
+              }}
+            />
+            <span className="field-help">生成素材来源、讨论主题和会中引用摘要。</span>
           </label>
-          <div className="provider-control-actions">
-            <button
-              className={isRunning ? "primary-action btn-loading" : "primary-action"}
-              type="button"
-              onClick={() => onCreate(selectedProvider)}
-              disabled={isRunning}
-              aria-busy={isRunning}
->
-              {isRunning ? (
-                <>
-                  <span className="spinner" aria-hidden="true" />
-                  搜集中…
-                </>
-              ) : (
-                <>
-                  <Search size={16} />
-                  生成简报
-                </>
-              )}
-            </button>
-            <button
-              className="secondary-action"
-              type="button"
-              title={isSelectedDefault ? "该 provider 已是默认" : `把「${searchProviderLabels[selectedProvider]}」设为默认 provider`}
-              onClick={() => onSetDefaultProvider(selectedProvider)}
-              disabled={isSelectedDefault}
->
-              <Star size={16} />
-              设为默认
-            </button>
+
+          <div className="search-composer-controls">
+            <label className="field-stack" htmlFor="search-provider">
+              <span className="field-label">搜索提供商</span>
+              <select
+                id="search-provider"
+                value={selectedProvider}
+                onChange={(event) => setSelectedProvider(event.target.value as SearchProviderId)}
+                disabled={isRunning}
+              >
+                {searchProviderIds.map((provider) => (
+                  <option key={provider} value={provider}>
+                    {searchProviderLabels[provider]}
+                    {provider === activeProvider ? "（默认）" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <div className="provider-control-actions">
+              <button
+                className={isRunning ? "primary-action btn-loading" : "primary-action"}
+                type="button"
+                onClick={() => onCreate(selectedProvider)}
+                disabled={!canCreate}
+                aria-busy={isRunning}
+              >
+                {isRunning ? (
+                  <>
+                    <span className="spinner" aria-hidden="true" />
+                    搜集中…
+                  </>
+                ) : (
+                  <>
+                    <Search size={16} />
+                    生成简报
+                  </>
+                )}
+              </button>
+              <button
+                className="secondary-action"
+                type="button"
+                title={
+                  isSelectedDefault
+                    ? "该 provider 已是默认"
+                    : `把「${searchProviderLabels[selectedProvider]}」设为默认 provider`
+                }
+                onClick={() => onSetDefaultProvider(selectedProvider)}
+                disabled={isSelectedDefault}
+              >
+                <Star size={16} />
+                设为默认
+              </button>
+            </div>
           </div>
         </div>
 
@@ -233,41 +268,51 @@ export function SearchIntelligenceView({
           <span>最大来源：{state.systemConfig.search.maxSources}</span>
         </div>
 
-        <div className="auto-brief-actions">
-          <button
-            className="secondary-action"
-            type="button"
-            onClick={() => onAutoBrief()}
-            disabled={isRunning}
->
-            <Wand2 size={16} />自动生成
-          </button>
-          {state.themes.length > 0 && (
+        <div className="search-shortcuts">
+          <span className="search-shortcuts-label">快捷选题</span>
+          <div className="auto-brief-actions">
             <button
               className="secondary-action"
               type="button"
-              onClick={() => onAutoBrief(state.themes[0].id, undefined)}
+              onClick={() => onAutoBrief()}
               disabled={isRunning}
->
-              <Wand2 size={16} />从主题：{state.themes[0].name}
+            >
+              <Wand2 size={16} />
+              自动选题
             </button>
-          )}
-          {state.debts.length > 0 && (
-            <button
-              className="secondary-action"
-              type="button"
-              onClick={() => onAutoBrief(undefined, state.debts[0].id)}
-              disabled={isRunning}
->
-              <Wand2 size={16} />从知识债：{state.debts[0].concept}
-            </button>
-          )}
+            {state.themes.length > 0 && (
+              <button
+                className="secondary-action"
+                type="button"
+                onClick={() => onAutoBrief(state.themes[0].id, undefined)}
+                disabled={isRunning}
+                title={`从主题「${state.themes[0].name}」生成简报`}
+              >
+                <Wand2 size={16} />
+                主题：{state.themes[0].name}
+              </button>
+            )}
+            {state.debts.length > 0 && (
+              <button
+                className="secondary-action"
+                type="button"
+                onClick={() => onAutoBrief(undefined, state.debts[0].id)}
+                disabled={isRunning}
+                title={`从知识债「${state.debts[0].concept}」生成简报`}
+              >
+                <Wand2 size={16} />
+                知识债：{state.debts[0].concept}
+              </button>
+            )}
+          </div>
         </div>
 
         {task.status !== "idle" && (
           <div className={`task-status ${task.status}`} aria-live="polite">
             <div>
-              <strong>{task.label} · {formatCapabilityTaskStatus(task.status)}</strong>
+              <strong>
+                {task.label} · {formatCapabilityTaskStatus(task.status)}
+              </strong>
               <span>{task.providerId ? `Provider：${task.providerId}` : "等待选择 provider"}</span>
             </div>
             {task.degradedReason && <p>{task.degradedReason}</p>}
@@ -283,9 +328,12 @@ export function SearchIntelligenceView({
 
       <div className="record-list">
         {state.searchBriefs.length === 0 ? (
-          <section className="panel empty-state">
-            <Database size={32} className="empty-icon" aria-hidden="true" />
-            <p>还没有搜索简报。点「自动盯梢」，从你的主题和知识债自动采集情报。</p>
+          <section className="panel empty-state search-empty">
+            <div className="search-empty-icon" aria-hidden="true">
+              <Database size={28} />
+            </div>
+            <h3 className="search-empty-title">还没有搜索简报</h3>
+            <p>点「自动盯梢」，从你的主题和知识债自动采集情报；或在上方输入主题后生成第一份简报。</p>
             {onAutoRun && (
               <div className="empty-cta">
                 <button
@@ -293,7 +341,8 @@ export function SearchIntelligenceView({
                   type="button"
                   onClick={handleAutoRun}
                   disabled={autoRunning}
->
+                  aria-busy={autoRunning}
+                >
                   {autoRunning ? (
                     <>
                       <span className="spinner" aria-hidden="true" />
@@ -324,25 +373,28 @@ export function SearchIntelligenceView({
                 role="button"
                 aria-pressed={isActive}
                 onClick={() => onUseBrief(brief.id)}
-                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onUseBrief(brief.id); } }}
->
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onUseBrief(brief.id);
+                  }
+                }}
+              >
                 <div>
                   <div className="row">
-                    <span className="status-pill">{brief.provider} · {brief.status === "ready" ? "可用" : "需复核"}</span>
+                    <span className="status-pill">
+                      {brief.provider} · {brief.status === "ready" ? "可用" : "需复核"}
+                    </span>
                     {isStale && (
                       <span
                         className="status-pill is-stale"
                         title="该简报超过 14 天未刷新，建议重新调研"
->
+                      >
                         <AlertTriangle size={12} aria-hidden="true" />
                         已过期·建议刷新
                       </span>
                     )}
-                    {brief.tracked && (
-                      <span className="status-pill is-tracked">
-                        持续追踪中
-                      </span>
-                    )}
+                    {brief.tracked && <span className="status-pill is-tracked">持续追踪中</span>}
                   </div>
                   <h2>{brief.topic}</h2>
                   <p>{brief.summary}</p>
@@ -353,23 +405,34 @@ export function SearchIntelligenceView({
                     <MaterialList title="专访角度" items={brief.interviewAngles} />
                   </div>
                   <div className="topic-list">
-                    {brief.discussionTopics.map((item, topicIdx) => <span key={`${brief.id}-topic-${topicIdx}`}>{item}</span>)}
+                    {brief.discussionTopics.map((item, topicIdx) => (
+                      <span key={`${brief.id}-topic-${topicIdx}`}>{item}</span>
+                    ))}
                   </div>
-                  <div className="record-actions" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()} role="presentation">
-                    <button
-                      className="secondary-action"
-                      type="button"
-                      onClick={() => onUseBrief(brief.id)}>
+                  <div
+                    className="record-actions"
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                    role="presentation"
+                  >
+                    <button className="secondary-action" type="button" onClick={() => onUseBrief(brief.id)}>
                       <Mic size={16} />
                       带入专访
                     </button>
                     {onTrackBrief && (
                       <button
-                        className={isTracking ? "secondary-action btn-loading" : brief.tracked ? "primary-action" : "secondary-action"}
+                        className={
+                          isTracking
+                            ? "secondary-action btn-loading"
+                            : brief.tracked
+                              ? "primary-action"
+                              : "secondary-action"
+                        }
                         type="button"
                         title={brief.tracked ? "已标记为持续追踪，点击取消" : "标记为持续追踪"}
                         disabled={isTracking}
-                        onClick={() => onTrackBrief(brief.id, !brief.tracked)}>
+                        onClick={() => onTrackBrief(brief.id, !brief.tracked)}
+                      >
                         {isTracking ? (
                           <span className="spinner" aria-hidden="true" />
                         ) : brief.tracked ? (
@@ -386,7 +449,8 @@ export function SearchIntelligenceView({
                         type="button"
                         title="重新调研该主题并刷新内容"
                         disabled={isRefreshing}
-                        onClick={() => onRefreshBrief(brief.id)}>
+                        onClick={() => onRefreshBrief(brief.id)}
+                      >
                         {isRefreshing ? <span className="spinner" aria-hidden="true" /> : <RefreshCw size={16} />}
                         重新调研
                       </button>
@@ -396,8 +460,10 @@ export function SearchIntelligenceView({
                         className="secondary-action"
                         type="button"
                         title="把这份调研转成一条待验证知识债，进入资产库"
-                        onClick={() => onConvertToDebt(brief.id)}>
-                        <BookOpen size={16} />转知识债
+                        onClick={() => onConvertToDebt(brief.id)}
+                      >
+                        <BookOpen size={16} />
+                        转知识债
                       </button>
                     )}
                     {onConvertToPoint && (
@@ -405,8 +471,10 @@ export function SearchIntelligenceView({
                         className="secondary-action"
                         type="button"
                         title="把这份调研转成一条观点草稿，进入资产库"
-                        onClick={() => onConvertToPoint(brief.id)}>
-                        <Lightbulb size={16} />转观点
+                        onClick={() => onConvertToPoint(brief.id)}
+                      >
+                        <Lightbulb size={16} />
+                        转观点
                       </button>
                     )}
                     {onConvertToQuestion && (
@@ -414,8 +482,10 @@ export function SearchIntelligenceView({
                         className="secondary-action"
                         type="button"
                         title="把这份调研转成一条专访问题，可带入下一次专访"
-                        onClick={() => onConvertToQuestion(brief.id)}>
-                        <HelpCircle size={16} />转问题
+                        onClick={() => onConvertToQuestion(brief.id)}
+                      >
+                        <HelpCircle size={16} />
+                        转问题
                       </button>
                     )}
                     <button
@@ -426,23 +496,25 @@ export function SearchIntelligenceView({
                           onDeleteBrief(brief.id);
                         }
                       }}
->
-                      <Trash2 size={16} />删除简报
+                    >
+                      <Trash2 size={16} />
+                      删除简报
                     </button>
                   </div>
                 </div>
                 <div className="source-list">
                   {brief.sources.slice(0, 4).map((source) => (
                     <a
-                      // source.url 来自联网搜索结果（不可信外部数据）：只放行 http/https，
-                      // 拦掉 javascript: 等危险 scheme（点击即执行的 XSS 注入面）。
                       href={/^https?:\/\//i.test(source.url) ? source.url : undefined}
                       key={source.id}
                       target="_blank"
                       rel="noreferrer"
-                      onClick={(e) => e.stopPropagation()}>
+                      onClick={(e) => e.stopPropagation()}
+                    >
                       <strong>{source.title}</strong>
-                      <span>{source.publisher} · 相关度 {Math.round(source.relevanceScore * 100)}%</span>
+                      <span>
+                        {source.publisher} · 相关度 {Math.round(source.relevanceScore * 100)}%
+                      </span>
                       <p>{source.snippet}</p>
                     </a>
                   ))}

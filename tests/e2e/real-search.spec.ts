@@ -169,7 +169,7 @@ test.describe("真实业务·外部调研/搜索（UI→真后端 3210，无 moc
 
     // 空状态提示文案 + 空状态内的「自动盯梢」CTA 按钮（首帧渲染，先于 auto-run 往返）。
     await expect(
-      page.getByText("还没有搜索简报。点「自动盯梢」，从你的主题和知识债自动采集情报。")
+      page.getByText(/还没有搜索简报/)
     ).toBeVisible();
     await expect(page.getByRole("button", { name: "自动盯梢" }).first()).toBeVisible();
   });
