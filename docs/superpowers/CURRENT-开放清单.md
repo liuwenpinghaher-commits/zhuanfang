@@ -115,7 +115,7 @@
 | 上场摘要回流 + 结束确认 + Esc 停录 + 移动端 | **closed** |
 | 主题线 / Track 端到端（resume 空场、复盘 SWR、继续绑定 themeId、Track 回流钻取、雷达诚实） | **closed** · 见 `2026-08-01-themes-track-optimization-report.md` |
 | 双轨笔记阅读室（回访开场、保存留页、轻量 pill、主题/播客/原文、档案高亮） | **closed** · 见 `2026-08-01-notes-reading-room-optimization-report.md` |
-| 双轨笔记工作流生产冒烟 | **closed** · PASS · `2026-08-01-notes-workflow-smoke.md` + `scripts/notes-workflow-smoke.mjs` |
+| 双轨笔记工作流生产冒烟 | **closed · archived** · PASS · `2026-08-01-notes-workflow-smoke.md` + `scripts/notes-workflow-smoke.mjs` |
 
 ## 验收
 

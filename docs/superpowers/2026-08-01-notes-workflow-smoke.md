@@ -1,9 +1,10 @@
 # 双轨笔记新工作流最终冒烟（2026-08-01）
 
-> 环境：生产 compose `http://127.0.0.1:3210` · tip `main` @ `744e5a23`  
+> 环境：生产 compose `http://127.0.0.1:3210` · tip `main` @ `744e5a23`（文档归档 commit 见 `14cc5f5e`+）  
 > 脚本：`scripts/notes-workflow-smoke.mjs`  
-> 结果文件：`/tmp/notes-workflow-smoke.json`  
-> **总结果：PASS**
+> 原始结果：`/tmp/notes-workflow-smoke.json`（本地临时，不入库）  
+> **总结果：PASS**  
+> **归档状态：已关闭（CURRENT + ARCHIVE §0.8）**
 
 ## 1. 范围
 

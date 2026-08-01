@@ -1,6 +1,6 @@
 # 项目文档归档与最终健康检查
 
-> **最近归档：** 2026-08-01 · tip `main`（主题线 S1/S2 收口见 §0.7）  
+> **最近归档：** 2026-08-01 · tip `main` @ `14cc5f5e`（双轨笔记阅读室 + 生产冒烟已关闭，见 §0.8）  
 > **基线归档：** 2026-07-30 · tip `14304554`  
 > **远程：** `origin/main` 同步 · 工作区干净（归档时）  
 > **运行时：** Node ≥22.5 · macOS · Docker Compose `:3210`
@@ -82,6 +82,10 @@
 | 主题 chip · 播客 · 原文 · 档案高亮 | **closed** |
 | 报告 | `2026-08-01-notes-reading-room-optimization-report.md` |
 | 生产工作流冒烟 | **PASS** · `2026-08-01-notes-workflow-smoke.md` |
+| 可复现脚本 | `scripts/notes-workflow-smoke.mjs` |
+| 任务状态 | **关闭 · 可归档**（`14cc5f5e`） |
+
+**§0.8 任务状态：关闭 · 已归档**
 
 ---
 ## 1. 最终系统健康检查（2026-07-30）
@@ -138,6 +142,7 @@
 | 3c | [`docs/superpowers/2026-08-01-interview-ux-optimization-report.md`](./superpowers/2026-08-01-interview-ux-optimization-report.md) | 2026-08-01 实时专访 UX 最终报告 |
 | 3d | [`docs/superpowers/2026-08-01-themes-track-optimization-report.md`](./superpowers/2026-08-01-themes-track-optimization-report.md) | 2026-08-01 主题线/Track 端到端优化 |
 | 3e | [`docs/superpowers/2026-08-01-notes-reading-room-optimization-report.md`](./superpowers/2026-08-01-notes-reading-room-optimization-report.md) | 2026-08-01 双轨笔记阅读室 |
+| 3f | [`docs/superpowers/2026-08-01-notes-workflow-smoke.md`](./superpowers/2026-08-01-notes-workflow-smoke.md) | 2026-08-01 双轨笔记生产工作流冒烟（PASS） |
 | 4 | [`docs/superpowers/2026-07-30-integration-and-deployment-state.md`](./superpowers/2026-07-30-integration-and-deployment-state.md) | 集成矩阵、架构、容量信封 |
 | 5 | [`docs/runbooks/README.md`](./runbooks/README.md) | 故障手册（双开锁 / export / 5xx / persist / 429） |
 | 6 | [`docs/superpowers/eval/interview-rubric.md`](./superpowers/eval/interview-rubric.md) | 追问质量抽检 rubric |
