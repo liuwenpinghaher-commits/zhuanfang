@@ -105,7 +105,7 @@ import { ThemesView } from "./features/themes/ThemesView";
 import { TrackWorkspaceView } from "./features/track/TrackWorkspaceView";
 import { MemoryGovernanceView } from "./features/memory/MemoryGovernanceView";
 import { MaterialLibraryView } from "./features/material/MaterialLibraryView";
-import { AssetChatView } from "./features/chat/AssetChatView";
+import { AssetChatView, ASSET_CHAT_DRAFT_ID } from "./features/chat/AssetChatView";
 import { deleteChatSession } from "./domain/knowledge";
 import { buildTrackWorkspace } from "./domain/timeline";
 import {
@@ -229,6 +229,12 @@ export default function App() {
   const [archiveFocusSessionId, setArchiveFocusSessionId] = useState<string | null>(null);
   /** 从素材库「去审核」跳入记忆时，优先展示该 import source 的候选。 */
   const [memoryFocusSourceId, setMemoryFocusSourceId] = useState<string | null>(null);
+  /** 从资产对话 citation 跳入记忆时高亮已确认记忆。 */
+  const [memoryFocusRecordId, setMemoryFocusRecordId] = useState<string | null>(null);
+  /** 从资产对话 citation 跳入素材库时展开对应素材。 */
+  const [materialFocusSourceId, setMaterialFocusSourceId] = useState<string | null>(null);
+  /** 跨模块带入资产对话的预填问句。 */
+  const [assetChatPrefill, setAssetChatPrefill] = useState<string | null>(null);
   const [recording, setRecording] = useState(false);
   const [realtimeVoiceSession, setRealtimeVoiceSession] = useState<RealtimeVoiceSessionResponse | null>(null);
   const [realtimeVoiceConnection, setRealtimeVoiceConnection] = useState<BailianRealtimeWebrtcConnection | BailianRealtimeWebsocketConnection | LivekitVoiceSession | null>(null);
@@ -321,6 +327,14 @@ export default function App() {
         setView("notes");
       } else if (v === "themes") {
         setView("themes");
+      } else if (v === "asset-chat") {
+        setView("asset-chat");
+        const chat = params.get("chat");
+        if (chat === ASSET_CHAT_DRAFT_ID || chat === "new") {
+          setChatSessionId(ASSET_CHAT_DRAFT_ID);
+        } else if (chat) {
+          setChatSessionId(chat);
+        }
       } else if (v === "home") {
         setView("home");
       }
@@ -346,19 +360,33 @@ export default function App() {
       params.set("filter", assetFilter);
       params.set("important", assetImportantOnly ? "1" : "0");
       params.set("sort", assetSortMode);
+      params.delete("chat");
+    } else if (view === "asset-chat") {
+      params.set("view", "asset-chat");
+      params.delete("filter");
+      params.delete("important");
+      params.delete("sort");
+      if (chatSessionId && chatSessionId !== ASSET_CHAT_DRAFT_ID) {
+        params.set("chat", chatSessionId);
+      } else if (chatSessionId === ASSET_CHAT_DRAFT_ID) {
+        params.set("chat", "new");
+      } else {
+        params.delete("chat");
+      }
     } else {
       // Prevent sticky my-assets query from hijacking refresh while on 素材库 etc.
       params.set("view", view);
       params.delete("filter");
       params.delete("important");
       params.delete("sort");
+      params.delete("chat");
     }
     const next = `${window.location.pathname}?${params.toString()}`;
     const cur = `${window.location.pathname}${window.location.search}`;
     if (next !== cur) {
       window.history.replaceState(null, "", next);
     }
-  }, [view, assetFilter, assetImportantOnly, assetSortMode]);
+  }, [view, assetFilter, assetImportantOnly, assetSortMode, chatSessionId]);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
@@ -1149,29 +1177,57 @@ export default function App() {
     setSession((prev) => (prev ? receiveUserTurn(prev, text) : prev));
   }
 
-  // 引用跳源（最小实现）：切到该来源类型对应的视图，并用通知给出定位提示。
-  // 不强求精确滚动高亮——把用户带到正确的视图，提示来源标题即可。
+  // 引用跳源：切到对应视图并尽量精确 focus（笔记场次 / 记忆 id / 素材 / 资产 key / 主题 Track）。
   function handleCitationClick(citation: ChatCitation) {
-    const targetByType: Partial<Record<ChatCitation["sourceType"], View>> = {
-      note: "notes",
-      transcript: "notes",
-      memory: "memory",
-      material: "material",
-      theme: "themes",
-      point: "my-assets",
-      decision: "my-assets",
-      debt: "my-assets"
-    };
-    const target = targetByType[citation.sourceType] ?? "my-assets";
-    // 逐字稿引用:解析 sourceId(形如 sessionId#turnId),在双轨笔记里展开该会话并滚动高亮该轮。
+    const label = citation.sourceLabel ?? citation.sourceType;
     if (citation.sourceType === "transcript") {
       const [sessionId, turnId] = citation.sourceId.split("#");
       if (sessionId) {
         setNotesFocus((prev) => ({ sessionId, ...(turnId ? { turnId } : {}), nonce: (prev?.nonce ?? 0) + 1 }));
       }
+      setView("notes");
+    } else if (citation.sourceType === "note") {
+      const note = productState.notes.find((n) => n.id === citation.sourceId);
+      const sessionId = note?.sessionId;
+      if (sessionId) {
+        setNotesFocus((prev) => ({ sessionId, nonce: (prev?.nonce ?? 0) + 1 }));
+      }
+      setView("notes");
+    } else if (citation.sourceType === "memory") {
+      setMemoryFocusRecordId(citation.sourceId);
+      setMemoryFocusSourceId(null);
+      setView("memory");
+    } else if (citation.sourceType === "material") {
+      setMaterialFocusSourceId(citation.sourceId);
+      setView("material");
+    } else if (citation.sourceType === "theme") {
+      openTrack(citation.sourceId);
+      setNotice(buildNotice("info", "已定位来源", `${citation.title}（${label}）`));
+      return;
+    } else if (citation.sourceType === "point") {
+      setSelectedAssetKey(`points:${citation.sourceId}`);
+      setAssetFilter("points");
+      setView("my-assets");
+    } else if (citation.sourceType === "decision") {
+      setSelectedAssetKey(`decisions:${citation.sourceId}`);
+      setAssetFilter("decisions");
+      setView("my-assets");
+    } else if (citation.sourceType === "debt") {
+      setSelectedAssetKey(`debts:${citation.sourceId}`);
+      setAssetFilter("debts");
+      setView("my-assets");
+    } else {
+      setView("my-assets");
     }
-    setView(target);
-    setNotice(buildNotice("info", "已定位来源", `${citation.title}（${citation.sourceType}）`));
+    setNotice(buildNotice("info", "已定位来源", `${citation.title}（${label}）`));
+  }
+
+  function openAssetChat(opts?: { prefill?: string }) {
+    setChatSessionId(ASSET_CHAT_DRAFT_ID);
+    if (opts?.prefill?.trim()) {
+      setAssetChatPrefill(opts.prefill.trim());
+    }
+    setView("asset-chat");
   }
 
   async function importMemoryDocument(title: string, content: string) {
@@ -3313,7 +3369,14 @@ export default function App() {
             onStartInterview={(mode, topicHint, relatedThemeIds) =>
               void launchInterview(mode, activeSearchBriefId, topicHint, relatedThemeIds)
             }
-            onOpenAssetChat={() => setView("asset-chat")}
+            focusSourceId={materialFocusSourceId}
+            onOpenAssetChat={(title) =>
+              openAssetChat({
+                prefill: title?.trim()
+                  ? `关于《${title.trim()}》这份素材，有哪些值得记住的判断或问题？`
+                  : undefined
+              })
+            }
             onOpenTrack={openTrack}
           />
         )}
@@ -3322,12 +3385,25 @@ export default function App() {
             state={productState}
             selectedSessionId={chatSessionId}
             onSelectChat={setChatSessionId}
-            onNewChat={() => setChatSessionId(null)}
+            onNewChat={() => setChatSessionId(ASSET_CHAT_DRAFT_ID)}
+            prefill={assetChatPrefill}
+            onPrefillConsumed={() => setAssetChatPrefill(null)}
+            onOpenMaterial={() => setView("material")}
+            onStartInterview={(topicHint) => void launchInterview("decision", activeSearchBriefId, topicHint)}
             onSend={async (sid, msg) => {
-              const result = await productApiClient.sendChatMessage(sid, msg);
-              adoptServerState(result.state);
-              setApiPersistenceEnabled(true);
-              setChatSessionId(result.sessionId);
+              try {
+                const result = await productApiClient.sendChatMessage(sid, msg);
+                adoptServerState(result.state);
+                setApiPersistenceEnabled(true);
+                setChatSessionId(result.sessionId);
+              } catch (err) {
+                // 让 AssetChatView 展示 formatChatSendError；网络错误时同步持久化标志。
+                if (isNetworkError(err)) {
+                  setApiPersistenceEnabled(false);
+                  scheduleReconnectProbe();
+                }
+                throw err;
+              }
             }}
             onDeleteChat={(id) => {
               // 删除整条对话历史不可撤销 → 二次确认(与全站删除约定一致)。
@@ -3336,7 +3412,8 @@ export default function App() {
               }
               setProductState(deleteChatSession(productState, id));
               if (chatSessionId === id) {
-                setChatSessionId(null);
+                const rest = productState.chatSessions.filter((s) => s.id !== id);
+                setChatSessionId(rest[0]?.id ?? ASSET_CHAT_DRAFT_ID);
               }
             }}
             onCitationClick={handleCitationClick}
@@ -3369,6 +3446,11 @@ export default function App() {
               setNotice(buildNotice("info", "已带入下一次专访", asset.summary.slice(0, 120)));
               void launchInterview("decision", "", hint);
             }}
+            onAskAsset={(asset) =>
+              openAssetChat({
+                prefill: `关于我的${asset.type}「${asset.title}」：${asset.summary.slice(0, 120)}。请结合我的资料说明含义与未决问题。`
+              })
+            }
             onGeneratePodcast={(noteId) => {
               setPodcastNoteId(noteId);
               setPodcastSourceType("note");
@@ -3446,6 +3528,7 @@ export default function App() {
             state={productState}
             importing={importing}
             focusSourceId={memoryFocusSourceId}
+            focusRecordId={memoryFocusRecordId}
             onImport={(title, content) => {
               void importMemoryDocument(title, content).catch(() => {
                 /* notice already set */

@@ -22,6 +22,8 @@ interface MemoryGovernanceViewProps {
   importing: boolean;
   /** 从素材库跳入时，优先展示该 import source 的待审候选。 */
   focusSourceId?: string | null;
+  /** 从资产对话 citation 跳入时高亮已确认记忆。 */
+  focusRecordId?: string | null;
   onImport: (title: string, content: string) => void;
   onApprove: (candidateId: string, mode?: "merge" | "add") => void;
   onReject: (candidateId: string) => void;
@@ -63,6 +65,7 @@ export function MemoryGovernanceView({
   state,
   importing,
   focusSourceId = null,
+  focusRecordId = null,
   onImport,
   onApprove,
   onReject,
@@ -116,6 +119,15 @@ export function MemoryGovernanceView({
     const t = setTimeout(() => setSavedId(null), 1500);
     return () => clearTimeout(t);
   }, [savedId]);
+
+  useEffect(() => {
+    if (!focusRecordId) return;
+    requestAnimationFrame(() => {
+      document
+        .querySelector(`[data-memory-record="${focusRecordId}"]`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }, [focusRecordId]);
 
   const allPending = state.memoryCandidates.filter((c) => c.status === "pending");
   const focusedPending =
@@ -583,10 +595,12 @@ export function MemoryGovernanceView({
               <div className="memory-card-list">
                 {confirmed.map((record) => {
                   const isEditingRecord = editingRecordId === record.id;
+                  const isFocus = focusRecordId === record.id;
                   return (
                     <article
-                      className={`memory-card record-row${isEditingRecord ? " edit-active" : ""}`}
+                      className={`memory-card record-row${isEditingRecord ? " edit-active" : ""}${isFocus ? " is-highlight" : ""}`}
                       key={record.id}
+                      data-memory-record={record.id}
                     >
                       <div className="record-main memory-card-main">
                         <div className="memory-card-meta">

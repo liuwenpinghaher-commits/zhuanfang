@@ -119,6 +119,19 @@
 
 **§0.10 会话状态：关闭 · 已归档**
 
+### 0.11 资产对话经营台（同日续）
+
+| 项 | 状态 |
+| --- | --- |
+| 真草稿新对话 / grounding / 真实错误 | **closed** |
+| 引用精确跳源 + URL asset-chat | **closed** |
+| 首问自动标题（API） | **closed** |
+| 跨模块预填 + 开专访 CTA | **closed** |
+| 报告 | `2026-08-01-asset-chat-optimization-report.md` |
+
+**§0.11 任务状态：实现完成 · 待部署/归档提交**
+
+
 ---
 ## 1. 最终系统健康检查（2026-07-30）
 
@@ -179,6 +192,7 @@
 | 3h | [`docs/superpowers/2026-08-01-material-library-final-audit.md`](./superpowers/2026-08-01-material-library-final-audit.md) | 2026-08-01 素材库最终 E2E 审查（PASS） |
 | 3i | [`docs/superpowers/2026-08-01-material-library-deploy-notice.md`](./superpowers/2026-08-01-material-library-deploy-notice.md) | 2026-08-01 素材库部署通知 |
 | 3j | [`docs/superpowers/2026-08-01-session-final-report.md`](./superpowers/2026-08-01-session-final-report.md) | 2026-08-01 项目会话最终报告 |
+| 3k | [`docs/superpowers/2026-08-01-asset-chat-optimization-report.md`](./superpowers/2026-08-01-asset-chat-optimization-report.md) | 2026-08-01 资产对话经营台 |
 | 4 | [`docs/superpowers/2026-07-30-integration-and-deployment-state.md`](./superpowers/2026-07-30-integration-and-deployment-state.md) | 集成矩阵、架构、容量信封 |
 | 5 | [`docs/runbooks/README.md`](./runbooks/README.md) | 故障手册（双开锁 / export / 5xx / persist / 429） |
 | 6 | [`docs/superpowers/eval/interview-rubric.md`](./superpowers/eval/interview-rubric.md) | 追问质量抽检 rubric |

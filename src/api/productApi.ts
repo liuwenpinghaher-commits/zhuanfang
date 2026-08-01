@@ -62,7 +62,13 @@ export interface ProductApiClient {
   sendChatMessage(
     sessionId: string | null,
     message: string
-  ): Promise<{ state: ProductState; sessionId: string; answer: string; citations: ChatCitation[] }>;
+  ): Promise<{
+    state: ProductState;
+    sessionId: string;
+    answer: string;
+    citations: ChatCitation[];
+    groundingMode?: "grounded" | "partial" | "refused";
+  }>;
   confirmDecision(id: string): Promise<ProductState>;
   /** Apply a proposed PlaybookPatch (optionally with user-edited rules). Server is authoritative
    *  (CAS-guarded state machine); returns the persisted state. Throws on 404/409. */
@@ -956,7 +962,13 @@ export function createProductApiClient(
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ ...(sessionId ? { sessionId } : {}), message })
-      })) as { state: ProductState; sessionId: string; answer: string; citations: ChatCitation[] };
+      })) as {
+        state: ProductState;
+        sessionId: string;
+        answer: string;
+        citations: ChatCitation[];
+        groundingMode?: "grounded" | "partial" | "refused";
+      };
       return { ...response, state: normalizeProductState(response.state) };
     },
     async confirmDecision(id) {

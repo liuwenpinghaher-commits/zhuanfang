@@ -119,6 +119,7 @@
 | 素材库原料车间（URL 同步、导入结果/审核闭环、列表经营、真实错误） | **closed · archived** · `38199901` · 见 `2026-08-01-material-library-optimization-report.md` |
 | 素材库端到端业务质量验证 | **closed · archived · PASS** · `f31f6d4a` · `2026-08-01-material-library-final-audit.md` + `scripts/material-workflow-smoke.mjs` · 生产已部署 |
 | 2026-08-01 页面经营台会话收口（主题线+笔记+素材库） | **closed · archived** · tip `93e855b2` · 见 `2026-08-01-session-final-report.md` · ARCHIVE §0.10 |
+| 资产对话经营台（真新对话/跳源/grounding/预填/开专访） | **closed** · 见 `2026-08-01-asset-chat-optimization-report.md` |
 
 ## 验收
 
