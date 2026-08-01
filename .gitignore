@@ -25,3 +25,7 @@ agent/*.pyc
 /zhuanfang/
 # 受访者隐私资料(本地真实数据,禁止入库)
 /张小珺专访资料/
+
+# macOS
+.DS_Store
+**/.DS_Store
