@@ -4,6 +4,7 @@ import { INTERVIEWER_CRAFT_RULES } from "../../../../src/domain/interviewer-craf
 import { buildAppliedPlaybookRulesBlock, buildBoundariesBlock, buildCorrectionsBlock } from "../../../../src/domain/voice-instructions";
 import { sanitizeExternalMaterialList } from "../../../../src/domain/utils";
 import { resolveRequestTimeoutMs } from "../request-timeout";
+import { normalizeCosyVoiceId } from "../voice-presets";
 
 export const BAILIAN_DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 export const BAILIAN_DEFAULT_AUDIO_BASE_URL = "https://dashscope.aliyuncs.com";
@@ -676,8 +677,12 @@ export function createBailianPodcastAudioClient(options: BailianPodcastAudioClie
 
   return {
     async synthesize(input) {
-      const voice = input.voice?.trim() || defaultVoice;
+      // Only verified CosyVoice-v3 ids; longyuan_v3 etc. map away (provider 400/418).
+      const voice = normalizeCosyVoiceId(input.voice?.trim() || defaultVoice, normalizeCosyVoiceId(defaultVoice));
       const format = input.format ?? defaultFormat;
+      const text = (input.text ?? "").trim();
+      // Long scripts need more than 60s wall clock; scale softly with length, cap 180s.
+      const timeoutMs = Math.min(180_000, Math.max(60_000, 45_000 + Math.ceil(text.length / 4) * 1000));
       const response = await fetchImpl(`${audioBaseUrl}/api/v1/services/audio/tts/SpeechSynthesizer`, {
         method: "POST",
         headers: {
@@ -687,7 +692,7 @@ export function createBailianPodcastAudioClient(options: BailianPodcastAudioClie
         body: JSON.stringify({
           model,
           input: {
-            text: input.text,
+            text,
             voice,
             format,
             sample_rate: sampleRate,
@@ -696,7 +701,7 @@ export function createBailianPodcastAudioClient(options: BailianPodcastAudioClie
             enable_aigc_tag: enableAigcTag
           }
         }),
-        signal: AbortSignal.timeout(60000)
+        signal: AbortSignal.timeout(timeoutMs)
       });
 
       if (!response.ok) {

@@ -620,7 +620,7 @@ expect(response.json()).toMatchObject({ ok: true, ready: true, service: "intervi
       episode: {
         noteId,
         format: "solo",
-        voice: "calm-host",
+        voice: "longanyang",
         status: "draft",
         audioRenderStatus: "pending"
       },
@@ -633,7 +633,7 @@ expect(response.json()).toMatchObject({ ok: true, ready: true, service: "intervi
     const persistedStateResponse = await server.inject({ method: "GET", url: "/api/state" });
     expect(persistedStateResponse.json().podcastEpisodes[0]).toMatchObject({
       noteId,
-      voice: "calm-host"
+      voice: "longanyang"
     });
   });
 
@@ -987,11 +987,12 @@ it("renders podcast audio through Bailian CosyVoice when the audio client is con
       bailianPodcastAudioClient: {
         async synthesize(input) {
           expect(input.text).toContain("播客脚本正文");
-          expect(input.voice).toBeUndefined();
+          // calm-host is normalized to verified CosyVoice preset longanyang
+          expect(input.voice).toBe("longanyang");
           return {
             providerId: "bailian-cosyvoice",
             model: "cosyvoice-v3-plus",
-            voice: "longyuan_v3",
+            voice: "longanyang",
             audioUrl: "https://dashscope-result.example.com/podcast.mp3",
             expiresAt: 1791705600
           };
@@ -1027,7 +1028,7 @@ it("renders podcast audio through Bailian CosyVoice when the audio client is con
       expect(synthResponse.json()).toMatchObject({
         episode: {
           noteId,
-          voice: "longyuan_v3",
+          voice: "longanyang",
           audioUrl: "https://dashscope-result.example.com/podcast.mp3"
         }
       });
@@ -1035,7 +1036,7 @@ it("renders podcast audio through Bailian CosyVoice when the audio client is con
       const persistedStateResponse = await server.inject({ method: "GET", url: "/api/state" });
       expect(persistedStateResponse.json().podcastEpisodes[0]).toMatchObject({
         noteId,
-        voice: "longyuan_v3",
+        voice: "longanyang",
         audioUrl: "https://dashscope-result.example.com/podcast.mp3"
       });
     } finally {

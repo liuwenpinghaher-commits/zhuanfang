@@ -27,6 +27,11 @@ interface MyAssetsViewProps {
   onDecisionStatus: (assetId: string, status: DecisionAsset["status"]) => void;
   onDecisionConfirm: (assetId: string) => void;
   confirmingDecisionId?: string;
+  importantOnly?: boolean;
+  sortMode?: "updated-desc" | "important-first";
+  onImportantOnly?: (value: boolean) => void;
+  onSortMode?: (value: "updated-desc" | "important-first") => void;
+  onBringIntoInterview?: (asset: { type: string; title: string; summary: string }) => void;
   onGeneratePodcast: (noteId: string) => void;
   onOpenNote?: (sessionId: string) => void;
 }
@@ -48,6 +53,11 @@ export function MyAssetsView({
   onDecisionStatus,
   onDecisionConfirm,
   confirmingDecisionId,
+  importantOnly = false,
+  sortMode = "updated-desc",
+  onImportantOnly,
+  onSortMode,
+  onBringIntoInterview,
   onGeneratePodcast,
   onOpenNote
 }: MyAssetsViewProps) {
@@ -247,6 +257,11 @@ export function MyAssetsView({
           onDecisionStatus={onDecisionStatus}
           onDecisionConfirm={onDecisionConfirm}
           confirmingDecisionId={confirmingDecisionId}
+          importantOnly={importantOnly}
+          sortMode={sortMode}
+          onImportantOnly={onImportantOnly}
+          onSortMode={onSortMode}
+          onBringIntoInterview={onBringIntoInterview}
         />
       )}
     </section>

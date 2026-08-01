@@ -209,6 +209,8 @@ export default function App() {
   const [correctionText, setCorrectionText] = useState("");
   const [assetQuery, setAssetQuery] = useState("");
   const [assetFilter, setAssetFilter] = useState<AssetFilter>("all");
+  const [assetImportantOnly, setAssetImportantOnly] = useState(false);
+  const [assetSortMode, setAssetSortMode] = useState<"updated-desc" | "important-first">("updated-desc");
   const [selectedAssetKey, setSelectedAssetKey] = useState<string | undefined>(undefined);
   const [confirmingDecisionId, setConfirmingDecisionId] = useState<string | undefined>(undefined);
   const [configSection, setConfigSection] = useState<ConfigSection>("status");
@@ -288,6 +290,44 @@ export default function App() {
   useEffect(() => {
     writeStoredThemePreference(themePreference);
   }, [themePreference]);
+
+  // my-assets URL state: ?view=my-assets&filter=&important=&sort=
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const applyFromUrl = () => {
+      const params = new URLSearchParams(window.location.search);
+      const v = params.get("view");
+      if (v === "my-assets" || v === "assets") {
+        setView("my-assets");
+      }
+      const f = params.get("filter");
+      if (f === "all" || f === "points" || f === "questions" || f === "decisions" || f === "debts") {
+        setAssetFilter(f);
+      }
+      if (params.get("important") === "1") setAssetImportantOnly(true);
+      if (params.get("important") === "0") setAssetImportantOnly(false);
+      const s = params.get("sort");
+      if (s === "updated-desc" || s === "important-first") setAssetSortMode(s);
+    };
+    applyFromUrl();
+    window.addEventListener("popstate", applyFromUrl);
+    return () => window.removeEventListener("popstate", applyFromUrl);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (view !== "my-assets") return;
+    const params = new URLSearchParams(window.location.search);
+    params.set("view", "my-assets");
+    params.set("filter", assetFilter);
+    params.set("important", assetImportantOnly ? "1" : "0");
+    params.set("sort", assetSortMode);
+    const next = `${window.location.pathname}?${params.toString()}`;
+    const cur = `${window.location.pathname}${window.location.search}`;
+    if (next !== cur) {
+      window.history.replaceState(null, "", next);
+    }
+  }, [view, assetFilter, assetImportantOnly, assetSortMode]);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
@@ -3110,16 +3150,25 @@ export default function App() {
             results={assetResults}
             filter={assetFilter}
             selectedAssetKey={selectedAssetKey}
+            importantOnly={assetImportantOnly}
+            sortMode={assetSortMode}
             onQuery={setAssetQuery}
             onFilter={setAssetFilter}
+            onImportantOnly={setAssetImportantOnly}
+            onSortMode={setAssetSortMode}
             onSelectAsset={setSelectedAssetKey}
             onToggleImportant={(assetId) => setProductState(toggleAssetImportance(productState, assetId))}
             onPointStatus={(assetId, status) => setProductState(updatePointStatus(productState, assetId, status))}
             onQuestionStatus={(assetId, status) => setProductState(updateQuestionStatus(productState, assetId, status))}
             onDebtStatus={(assetId, status) => setProductState(updateKnowledgeDebtStatus(productState, assetId, status))}
             onDecisionStatus={(assetId, status) => setProductState(updateDecisionStatus(productState, assetId, status))}
-onDecisionConfirm={confirmDecision}
+            onDecisionConfirm={confirmDecision}
             confirmingDecisionId={confirmingDecisionId}
+            onBringIntoInterview={(asset) => {
+              const hint = `${asset.type}：${asset.title}`.slice(0, 80);
+              setNotice(buildNotice("info", "已带入下一次专访", asset.summary.slice(0, 120)));
+              void launchInterview("decision", "", hint);
+            }}
             onGeneratePodcast={(noteId) => {
               setPodcastNoteId(noteId);
               setPodcastSourceType("note");

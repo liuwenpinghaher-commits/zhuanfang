@@ -12,6 +12,7 @@ import type { BailianChatClient, BailianPodcastAudioClient } from "../providers/
 import type { ProductStateRepository } from "../product-state-repository"
 import { replaceStateDurable } from "../product-state-repository";
 import { generatePodcastScriptFromSource } from "../intelligence/podcast-script-llm";
+import { normalizeCosyVoiceId } from "../voice-presets";
 
 interface PodcastEpisodeRequestPayload {
   noteId?: unknown;
@@ -84,10 +85,11 @@ export async function registerPodcastRoutes(
     const sourceId = typeof payload.sourceId === "string" && payload.sourceId ? payload.sourceId : undefined;
     const noteId = typeof payload.noteId === "string" && payload.noteId ? payload.noteId : state.notes[0]?.id;
     const format = normalizeFormat(payload.format);
-    const voice =
+    const voice = normalizeCosyVoiceId(
       typeof payload.voice === "string" && payload.voice.trim()
         ? payload.voice.trim()
-        : state.systemConfig.voice.podcastVoice;
+        : state.systemConfig.voice.podcastVoice
+    );
 
     let episode: PodcastEpisode;
     let nextState: ReturnType<typeof repository.getState>;
@@ -290,5 +292,5 @@ function normalizeFormat(value: unknown): PodcastEpisode["format"] {
 }
 
 function normalizeProviderVoice(voice: string) {
-  return voice === "calm-host" || voice === "warm-interviewer" ? undefined : voice;
+  return normalizeCosyVoiceId(voice);
 }

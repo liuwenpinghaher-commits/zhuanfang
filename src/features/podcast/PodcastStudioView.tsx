@@ -199,7 +199,7 @@ export function PodcastStudioView({
                 </option>
               ))}
             </datalist>
-            <span className="field-help">可从系统音色建议中选择，或填写自定义 CosyVoice id。</span>
+            <span className="field-help">推荐使用已验证音色 longanhuan / longanyang；其它 id 会在服务端归一或可能合成失败。</span>
           </label>
         </div>
 
@@ -432,13 +432,16 @@ export function PodcastStudioView({
 function PodcastAudioPreview({ episode }: { episode: PodcastEpisode }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const playable = isPlayableAudioUrl(episode.audioUrl);
+  const expired = isAudioExpired(episode);
 
   return (
     <div className="audio-preview" aria-label={`音频预览：${episode.title}`}>
       <Volume2 size={18} />
       <div>
-        <strong>{playable ? "可播放音频" : formatAudioPlaceholder(episode)}</strong>
-        {playable ? (
+        <strong>
+          {playable ? (expired ? "音频链接可能已过期" : "可播放音频") : formatAudioPlaceholder(episode)}
+        </strong>
+        {playable && !expired ? (
           <audio
             ref={audioRef}
             id={`podcast-audio-${episode.id}`}
@@ -449,13 +452,15 @@ function PodcastAudioPreview({ episode }: { episode: PodcastEpisode }) {
           </audio>
         ) : (
           <p>
-            {episode.audioRenderMessage ||
-              (episode.audioRenderStatus === "pending"
-                ? "脚本待确认，确认后才会渲染音频。"
-                : "服务端未配置真实 TTS 时会保留占位地址。")}
+            {expired
+              ? "播放链接已过期，请点击「重新合成」生成新音频（脚本仍保留）。"
+              : episode.audioRenderMessage ||
+                (episode.audioRenderStatus === "pending"
+                  ? "脚本待确认，确认后才会渲染音频。"
+                  : "服务端未配置真实 TTS 时会保留占位地址。")}
           </p>
         )}
-        {playable && <code className="audio-url">{episode.audioUrl}</code>}
+        {playable && !expired && <code className="audio-url">{episode.audioUrl}</code>}
       </div>
     </div>
   );
@@ -470,9 +475,15 @@ function seekEpisodeAudio(episodeId: string, startsAtSec: number) {
   });
 }
 
+function isAudioExpired(episode: PodcastEpisode): boolean {
+  if (!episode.audioExpiresAt) return false;
+  const ts = Date.parse(episode.audioExpiresAt);
+  return Number.isFinite(ts) && ts <= Date.now();
+}
+
 function formatEpisodeStatus(episode: PodcastEpisode): string {
   if (episode.audioRenderStatus === "rendered" && isPlayableAudioUrl(episode.audioUrl)) {
-    return "可播放";
+    return isAudioExpired(episode) ? "音频已过期" : "可播放";
   }
   if (episode.audioRenderStatus === "failed") {
     return "渲染失败";
@@ -490,6 +501,7 @@ function formatEpisodeStatus(episode: PodcastEpisode): string {
 }
 
 function statusPillClass(episode: PodcastEpisode): string {
+  if (episode.audioRenderStatus === "rendered" && isAudioExpired(episode)) return "is-stale";
   if (episode.audioRenderStatus === "rendered") return "is-tracked";
   if (episode.audioRenderStatus === "failed") return "is-stale";
   return "";

@@ -106,7 +106,10 @@
 | typecheck + Vitest 1618 + e2e 38/38 | **closed** |
 | Compose 生产 redeploy + health/surreal | **closed** |
 | 生产 note/theme/debt 脚本冒烟 | **closed** |
-| TTS 默认音色 `longanhuan` 短/中脚本 | **closed**（`longyuan_v3` / 超长脚本为已知边界） |
+| TTS 默认音色 `longanhuan` 短/中脚本 | **closed** |
+| CosyVoice 音色归一（`longyuan_v3`→预设）+ 动态超时 | **closed** |
+| 播客音频过期提示 + 重新合成引导 | **closed** |
+| 我的资产 P1：仅重要/排序/URL state/带入专访 | **closed** |
 
 ## 验收
 

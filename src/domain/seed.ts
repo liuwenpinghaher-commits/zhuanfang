@@ -167,7 +167,7 @@ export const initialProductState: ProductState = {
         label: "百炼 CosyVoice",
         status: "needs-key",
         active: true,
-        description: "使用 cosyvoice-v3-plus 和默认 longyuan_v3 把播客脚本渲染为真实音频；Qwen-TTS 作为短文本声音设计备选。",
+        description: "使用 cosyvoice-v3-plus 与已验证音色（longanhuan / longanyang）把播客脚本渲染为真实音频；无效 voice id 会归一到预设。",
         lastCheckedAt: "2026-06-10T00:00:00.000Z"
       },
       {

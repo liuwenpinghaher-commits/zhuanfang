@@ -14,11 +14,18 @@ interface AssetsViewProps {
   embedded?: boolean;
   /** Limit list to assets from one interview session. */
   sessionScopeId?: string | null;
+  /** Show only important points/questions (and confirmed decisions). */
+  importantOnly?: boolean;
+  /** List sort mode. */
+  sortMode?: "updated-desc" | "important-first";
   onQuery: (query: string) => void;
   onFilter: (filter: AssetFilter) => void;
+  onImportantOnly?: (value: boolean) => void;
+  onSortMode?: (value: "updated-desc" | "important-first") => void;
   onSelectAsset: (key: string) => void;
   onClearSessionScope?: () => void;
   onOpenSourceSession?: (sessionId: string) => void;
+  onBringIntoInterview?: (asset: { type: string; title: string; summary: string }) => void;
   onToggleImportant: (assetId: string) => void;
   onPointStatus: (assetId: string, status: Extract<AssetStatus, "临时想法" | "稳定观点" | "被挑战中" | "已修正" | "已放弃">) => void;
   onQuestionStatus: (assetId: string, status: Extract<AssetStatus, "开放" | "反复出现" | "正在聚焦" | "阶段性回答">) => void;
@@ -35,11 +42,16 @@ export function AssetsView({
   selectedAssetKey,
   embedded = false,
   sessionScopeId = null,
+  importantOnly = false,
+  sortMode = "updated-desc",
   onQuery,
   onFilter,
+  onImportantOnly,
+  onSortMode,
   onSelectAsset,
   onClearSessionScope,
   onOpenSourceSession,
+  onBringIntoInterview,
   onToggleImportant,
   onPointStatus,
   onQuestionStatus,
@@ -49,11 +61,25 @@ export function AssetsView({
   confirmingDecisionId
 }: AssetsViewProps) {
   const scopedResults = applySessionScope(results, sessionScopeId);
-  const allAssets = buildUnifiedAssets(scopedResults);
-  const assets = allAssets.filter((asset) => filter === "all" || asset.type === filter);
+  const allAssets = sortUnifiedAssets(
+    buildUnifiedAssets(scopedResults).filter((asset) => {
+      if (filter !== "all" && asset.type !== filter) return false;
+      if (!importantOnly) return true;
+      if (asset.type === "points" || asset.type === "questions") return asset.important;
+      if (asset.type === "decisions") return asset.confirmationStatus === "用户确认";
+      return false;
+    }),
+    sortMode
+  );
+  const assets = allAssets;
   const selectedAsset = assets.find((asset) => asset.key === selectedAssetKey) ?? assets[0];
+  // Tab counts stay session-scoped but ignore important-only so users can switch types.
   const counts: Record<AssetFilter, number> = {
-    all: allAssets.length,
+    all:
+      scopedResults.points.length +
+      scopedResults.questions.length +
+      scopedResults.decisions.length +
+      scopedResults.debts.length,
     points: scopedResults.points.length,
     questions: scopedResults.questions.length,
     decisions: scopedResults.decisions.length,
@@ -94,6 +120,28 @@ export function AssetsView({
         </div>
       )}
 
+      <div className="form-actions row-wrap asset-toolbar" aria-label="列表选项">
+        <label className="field-inline">
+          <input
+            type="checkbox"
+            checked={importantOnly}
+            onChange={(e) => onImportantOnly?.(e.target.checked)}
+          />
+          <span>仅重要 / 已确认</span>
+        </label>
+        <label className="field-inline" htmlFor="asset-sort">
+          <span className="field-label">排序</span>
+          <select
+            id="asset-sort"
+            value={sortMode}
+            onChange={(e) => onSortMode?.((e.target.value as "updated-desc" | "important-first") || "updated-desc")}
+          >
+            <option value="updated-desc">最近更新</option>
+            <option value="important-first">重要优先</option>
+          </select>
+        </label>
+      </div>
+
       <div className="asset-workbench">
         <aside className="asset-filter-panel" aria-label="资产筛选">
           {assetFilterOptions.map((option) => (
@@ -129,6 +177,8 @@ export function AssetsView({
             >
               <span className="status-pill">
                 {asset.typeLabel} · {asset.status}
+                {asset.important ? " · 重要" : ""}
+                {asset.type === "decisions" && asset.confirmationStatus === "用户确认" ? " · 已确认" : ""}
               </span>
               <strong>{asset.title}</strong>
               <p>{asset.summary}</p>
@@ -146,6 +196,7 @@ export function AssetsView({
               onDecisionStatus={onDecisionStatus}
               onDecisionConfirm={onDecisionConfirm}
               onOpenSourceSession={onOpenSourceSession}
+              onBringIntoInterview={onBringIntoInterview}
               confirmingDecisionId={confirmingDecisionId}
             />
           ) : (
@@ -173,7 +224,28 @@ type UnifiedAsset = {
   evidence: string[];
   confirmationStatus?: string;
   sourceSessionId?: string;
+  updatedAt?: string;
 };
+
+function sortUnifiedAssets(
+  items: UnifiedAsset[],
+  mode: "updated-desc" | "important-first"
+): UnifiedAsset[] {
+  const rankImportant = (a: UnifiedAsset) => {
+    if (a.important) return 2;
+    if (a.type === "decisions" && a.confirmationStatus === "用户确认") return 1;
+    return 0;
+  };
+  return [...items].sort((a, b) => {
+    if (mode === "important-first") {
+      const d = rankImportant(b) - rankImportant(a);
+      if (d !== 0) return d;
+    }
+    const ta = Date.parse(a.updatedAt ?? "") || 0;
+    const tb = Date.parse(b.updatedAt ?? "") || 0;
+    return tb - ta;
+  });
+}
 
 function applySessionScope(
   results: ReturnType<typeof searchProductAssets>,
@@ -213,7 +285,8 @@ function buildUnifiedAssets(results: ReturnType<typeof searchProductAssets>): Un
         status: point.status,
         important: point.important,
         evidence: point.evidence,
-        sourceSessionId: point.sourceSessionId
+        sourceSessionId: point.sourceSessionId,
+        updatedAt: point.updatedAt
       })
     ),
     ...results.questions.map(
@@ -228,7 +301,8 @@ function buildUnifiedAssets(results: ReturnType<typeof searchProductAssets>): Un
         status: question.status,
         important: question.important,
         evidence: [`出现次数：${question.appearances}`],
-        sourceSessionId: question.sourceSessionId
+        sourceSessionId: question.sourceSessionId,
+        updatedAt: question.updatedAt
       })
     ),
     ...results.decisions.map(
@@ -244,7 +318,8 @@ function buildUnifiedAssets(results: ReturnType<typeof searchProductAssets>): Un
         important: false,
         evidence: [`复盘时间：${decision.reviewAt}`],
         confirmationStatus: decision.confirmationStatus,
-        sourceSessionId: decision.sourceSessionId
+        sourceSessionId: decision.sourceSessionId,
+        updatedAt: decision.updatedAt
       })
     ),
     ...results.debts.map(
@@ -259,7 +334,8 @@ function buildUnifiedAssets(results: ReturnType<typeof searchProductAssets>): Un
         status: debt.status,
         important: false,
         evidence: [debt.nextQuestion],
-        sourceSessionId: debt.sourceSessionId
+        sourceSessionId: debt.sourceSessionId,
+        updatedAt: debt.updatedAt
       })
     )
   ];
@@ -274,6 +350,7 @@ interface AssetDetailProps {
   onDecisionStatus: (assetId: string, status: DecisionAsset["status"]) => void;
   onDecisionConfirm: (assetId: string) => void;
   onOpenSourceSession?: (sessionId: string) => void;
+  onBringIntoInterview?: (asset: { type: string; title: string; summary: string }) => void;
   confirmingDecisionId?: string;
 }
 
@@ -286,6 +363,7 @@ function AssetDetail({
   onDecisionStatus,
   onDecisionConfirm,
   onOpenSourceSession,
+  onBringIntoInterview,
   confirmingDecisionId
 }: AssetDetailProps) {
   const isConfirming = confirmingDecisionId === asset.id;
@@ -341,6 +419,22 @@ function AssetDetail({
           >
             <ExternalLink size={16} />
             查看来源场次
+          </button>
+        )}
+        {onBringIntoInterview && (
+          <button
+            className="secondary-action"
+            type="button"
+            onClick={() =>
+              onBringIntoInterview({
+                type: asset.typeLabel,
+                title: asset.title,
+                summary: asset.summary
+              })
+            }
+          >
+            <Flag size={16} />
+            带入专访
           </button>
         )}
       </div>

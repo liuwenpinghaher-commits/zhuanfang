@@ -81,7 +81,8 @@ test("transcribes an audio source before corpus analysis", async ({ page }) => {
 });
 
 test("generates and deletes a podcast episode from the first note", async ({ page }) => {
-  const voice = `narrator-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
+  // Must use a CosyVoice-v3 verified preset; unknown ids are normalized server-side.
+  const voice = "longanhuan";
   await resetDemoState(page);
   // R2: 播客工作台已移出顶层导航，通过"我的资产"档案卡"生成播客"按钮进入。
   await openView(page, "我的资产", "专访档案与认知资产库");
@@ -96,7 +97,7 @@ test("generates and deletes a podcast episode from the first note", async ({ pag
   await expect(page.getByText("语音合成")).toBeVisible({ timeout: 15000 });
   const podcastEpisode = page.locator("article.podcast-episode").filter({ hasText: voice });
   await expect(podcastEpisode).toHaveCount(1, { timeout: 10000 });
-await expect(podcastEpisode.getByText(voice, { exact: false }).first()).toBeVisible();
+  await expect(podcastEpisode.getByText(voice, { exact: false }).first()).toBeVisible();
   await expect(podcastEpisode.getByText("可播放", { exact: true })).toBeVisible();
   // 真实性重构：假 CosyVoice TTS 真渲染成功 → 音频为可播放 URL，不再有"本地占位"降级出口；
   // 脚本正文来自 canned LLM 产物。
