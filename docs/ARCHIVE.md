@@ -1,6 +1,6 @@
 # 项目文档归档与最终健康检查
 
-> **最近归档：** 2026-08-01 · tip `main` @ `14cc5f5e`（双轨笔记阅读室 + 生产冒烟已关闭，见 §0.8）  
+> **最近归档：** 2026-08-01 · tip `main` @ `f31f6d4a`（素材库原料车间 + E2E PASS 已关闭，见 §0.9）  
 > **基线归档：** 2026-07-30 · tip `14304554`  
 > **远程：** `origin/main` 同步 · 工作区干净（归档时）  
 > **运行时：** Node ≥22.5 · macOS · Docker Compose `:3210`
@@ -96,10 +96,13 @@
 | 索引概览 / 列表预览搜索主题 / 开场与对话 | **closed** |
 | 记忆 focusSourceId 过滤 | **closed** |
 | 报告 | `2026-08-01-material-library-optimization-report.md` |
+| 实现 commit | `38199901` |
+| 最终审查 commit | `f31f6d4a` |
 | 最终审查 / 生产 E2E | **PASS** · `2026-08-01-material-library-final-audit.md` |
 | 冒烟脚本 | `scripts/material-workflow-smoke.mjs` |
+| 生产部署 | compose `:3210` 已 rebuild · health ok/ready |
 
-**§0.9 任务状态：关闭 · 业务质量验证 PASS**
+**§0.9 任务状态：关闭 · 已归档 · 业务质量验证 PASS · 已部署**
 
 ---
 ## 1. 最终系统健康检查（2026-07-30）
