@@ -28,13 +28,11 @@ test("my-assets: switches to assets tab and back", async ({ page }) => {
   await resetDemoState(page);
   await openView(page, "我的资产", "专访档案与认知资产库");
 
-  // 切换到资产库 tab
+  // 切换到资产库 tab（embedded：不再嵌套第二套页头）
   await page.getByRole("button", { name: "资产库" }).click();
 
-  // AssetsView renders h1 "观点、问题、决策和知识债" (use heading role to avoid subtitle collision)
-  await expect(page.getByRole("heading", { name: "观点、问题、决策和知识债" })).toBeVisible();
-  // 搜索框可见
   await expect(page.getByPlaceholder(/输入关键词/)).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "资产筛选" })).toBeVisible();
 
   await expectNoHorizontalOverflow(page);
 

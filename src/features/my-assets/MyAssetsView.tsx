@@ -1,5 +1,5 @@
-import { FileText, Headphones, Mic } from "lucide-react";
-import { useState } from "react";
+import { BookOpen, FileText, Headphones, Mic } from "lucide-react";
+import { useEffect, useState } from "react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import { buildSessionArchive } from "../../domain/session-archive";
 import type { ProductState } from "../../domain/types";
@@ -13,7 +13,6 @@ type Tab = "archive" | "assets";
 interface MyAssetsViewProps {
   state: ProductState;
   initialTab?: Tab;
-  // AssetsView props
   query: string;
   results: ReturnType<typeof searchProductAssets>;
   filter: AssetFilter;
@@ -29,6 +28,7 @@ interface MyAssetsViewProps {
   onDecisionConfirm: (assetId: string) => void;
   confirmingDecisionId?: string;
   onGeneratePodcast: (noteId: string) => void;
+  onOpenNote?: (sessionId: string) => void;
 }
 
 export function MyAssetsView({
@@ -48,31 +48,57 @@ export function MyAssetsView({
   onDecisionStatus,
   onDecisionConfirm,
   confirmingDecisionId,
-  onGeneratePodcast
+  onGeneratePodcast,
+  onOpenNote
 }: MyAssetsViewProps) {
   const [activeTab, setActiveTab] = useState<Tab>(initialTab);
+  const [sessionScopeId, setSessionScopeId] = useState<string | null>(null);
+  const [highlightSessionId, setHighlightSessionId] = useState<string | null>(null);
   const entries = buildSessionArchive(state);
   const totalAssets =
-    results.points.length +
-    results.questions.length +
-    results.decisions.length +
-    results.debts.length;
+    results.points.length + results.questions.length + results.decisions.length + results.debts.length;
+
+  useEffect(() => {
+    if (!highlightSessionId) return;
+    const t = window.setTimeout(() => setHighlightSessionId(null), 3500);
+    return () => window.clearTimeout(t);
+  }, [highlightSessionId]);
+
+  function openArchiveAssets(
+    sessionId: string,
+    nextFilter: AssetFilter = "all"
+  ) {
+    setSessionScopeId(sessionId);
+    onFilter(nextFilter);
+    setActiveTab("assets");
+  }
+
+  function openSourceSession(sessionId: string) {
+    setActiveTab("archive");
+    setSessionScopeId(null);
+    setHighlightSessionId(sessionId);
+    // Scroll after paint
+    requestAnimationFrame(() => {
+      const el = document.querySelector(`[data-archive-session="${sessionId}"]`);
+      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }
 
   return (
     <section className="view-stack">
       <HeaderBlock
         eyebrow="我的资产"
         title="专访档案与认知资产库"
-        subtitle="档案按场次归档每次专访的产出；资产库跨场次搜索全部观点、问题、决策和知识债。" />
+        subtitle="档案按场次归档每次专访的产出；点产出徽章可进入本场资产库审核观点、问题、决策和知识债。"
+      />
 
-      {/* Tab nav — uses reusable .seg-tabs / .seg-tab / .seg-tab-count */}
       <nav className="seg-tabs" aria-label="视图切换">
         <button
           type="button"
           className={activeTab === "archive" ? "seg-tab active" : "seg-tab"}
           onClick={() => setActiveTab("archive")}
           aria-current={activeTab === "archive" ? "true" : undefined}
->
+        >
           <FileText size={16} aria-hidden="true" />
           <span>专访档案</span>
           <span className="seg-tab-count">{entries.length}</span>
@@ -82,7 +108,7 @@ export function MyAssetsView({
           className={activeTab === "assets" ? "seg-tab active" : "seg-tab"}
           onClick={() => setActiveTab("assets")}
           aria-current={activeTab === "assets" ? "true" : undefined}
->
+        >
           <Mic size={16} aria-hidden="true" />
           <span>资产库</span>
           <span className="seg-tab-count">{totalAssets}</span>
@@ -100,34 +126,32 @@ export function MyAssetsView({
             entries.map((entry) => {
               const title = entry.session?.title ?? entry.note.title;
               const dateStr = new Date(entry.note.createdAt).toLocaleDateString("zh-CN");
-              const badgeItems = [
-                { label: "观点", count: entry.points.length },
-                { label: "问题", count: entry.questions.length },
-                { label: "决策", count: entry.decisions.length },
-                { label: "债", count: entry.debts.length }
+              const sessionId = entry.note.sessionId;
+              const isHighlight = highlightSessionId === sessionId;
+              const badgeItems: Array<{ label: string; count: number; filter: AssetFilter }> = [
+                { label: "观点", count: entry.points.length, filter: "points" },
+                { label: "问题", count: entry.questions.length, filter: "questions" },
+                { label: "决策", count: entry.decisions.length, filter: "decisions" },
+                { label: "债", count: entry.debts.length, filter: "debts" }
               ];
+              const linkedTotal = badgeItems.reduce((n, b) => n + b.count, 0);
+
               return (
                 <article
-                  className="record-row archive-card row-clickable"
+                  className={`record-row archive-card${isHighlight ? " is-highlight" : ""}`}
                   key={entry.note.id}
-                  tabIndex={0}
-                  role="group"
+                  data-archive-session={sessionId}
                   aria-label={title}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      onGeneratePodcast(entry.note.id);
-                    }
-                  }}
->
+                >
                   <div className="record-main">
                     <span className="label">{dateStr}</span>
                     <h2>{title}</h2>
-                    {entry.note.summary && (
-                      <p className="archive-summary">{entry.note.summary}</p>
-                    )}
-                    {entry.note.keyQuote && (
-                      <div className="quote-line">"{entry.note.keyQuote}"</div>
+                    {entry.note.summary && <p className="archive-summary">{entry.note.summary}</p>}
+                    {entry.note.keyQuote && <div className="quote-line">&quot;{entry.note.keyQuote}&quot;</div>}
+                    {linkedTotal === 0 && (
+                      <p className="field-help archive-zero-hint">
+                        本场尚未关联观点/问题/决策/知识债（双轨摘要仍来自笔记）。可稍后在资产库查看全局，或完成抽取后再回来。
+                      </p>
                     )}
                   </div>
 
@@ -157,31 +181,44 @@ export function MyAssetsView({
                   )}
 
                   <div className="archive-card-footer">
-                    <div className="archive-output-badges">
+                    <div className="archive-output-badges" role="group" aria-label="本场产出">
                       {badgeItems.map((b) => (
-                        <span
+                        <button
                           key={b.label}
+                          type="button"
                           className={
                             b.count > 0
-                              ? "output-badge output-badge--active"
-                              : "output-badge"
+                              ? "output-badge output-badge--active output-badge--button"
+                              : "output-badge output-badge--button"
                           }
->
+                          disabled={b.count === 0}
+                          title={b.count > 0 ? `查看本场${b.label}` : `本场暂无${b.label}`}
+                          onClick={() => openArchiveAssets(sessionId, b.filter)}
+                        >
                           {b.count} {b.label}
-                        </span>
+                        </button>
                       ))}
                     </div>
-                    <button
-                      type="button"
-                      className="secondary-action"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onGeneratePodcast(entry.note.id);
-                      }}
->
-                      <Headphones size={16} aria-hidden="true" />
-                      生成播客
-                    </button>
+                    <div className="archive-card-actions">
+                      {onOpenNote && (
+                        <button
+                          type="button"
+                          className="secondary-action"
+                          onClick={() => onOpenNote(sessionId)}
+                        >
+                          <BookOpen size={16} aria-hidden="true" />
+                          打开笔记
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="secondary-action"
+                        onClick={() => onGeneratePodcast(entry.note.id)}
+                      >
+                        <Headphones size={16} aria-hidden="true" />
+                        生成播客
+                      </button>
+                    </div>
                   </div>
                 </article>
               );
@@ -192,20 +229,25 @@ export function MyAssetsView({
 
       {activeTab === "assets" && (
         <AssetsView
+          embedded
           query={query}
           results={results}
           filter={filter}
           selectedAssetKey={selectedAssetKey}
+          sessionScopeId={sessionScopeId}
           onQuery={onQuery}
           onFilter={onFilter}
           onSelectAsset={onSelectAsset}
+          onClearSessionScope={() => setSessionScopeId(null)}
+          onOpenSourceSession={openSourceSession}
           onToggleImportant={onToggleImportant}
           onPointStatus={onPointStatus}
           onQuestionStatus={onQuestionStatus}
           onDebtStatus={onDebtStatus}
           onDecisionStatus={onDecisionStatus}
           onDecisionConfirm={onDecisionConfirm}
-          confirmingDecisionId={confirmingDecisionId} />
+          confirmingDecisionId={confirmingDecisionId}
+        />
       )}
     </section>
   );

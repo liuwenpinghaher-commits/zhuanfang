@@ -5360,3 +5360,57 @@ p.field-error {
     grid-template-columns: 1fr;
   }
 }
+
+/* ── My assets P0 closed-loop ─────────────────────────────────── */
+.assets-embedded {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.archive-card.is-highlight {
+  border-color: color-mix(in srgb, var(--action-primary) 40%, var(--border-default));
+  box-shadow: 0 0 0 3px var(--primary-a20);
+}
+
+.output-badge--button {
+  border: 1px solid transparent;
+  cursor: pointer;
+  font: inherit;
+}
+
+.output-badge--button:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.output-badge--button.output-badge--active:hover {
+  border-color: var(--action-primary);
+  transform: translateY(-1px);
+}
+
+.archive-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+.archive-zero-hint {
+  margin: var(--space-2) 0 0;
+}
+
+.asset-detail-actions {
+  margin: var(--space-3) 0;
+  justify-content: flex-start;
+}
+
+@media (max-width: 760px) {
+  .archive-card-actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+  .archive-card-actions .secondary-action {
+    flex: 1 1 auto;
+  }
+}

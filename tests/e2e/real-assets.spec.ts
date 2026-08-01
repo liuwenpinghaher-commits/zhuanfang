@@ -182,9 +182,9 @@ async function openMyAssets(page: Page): Promise<void> {
 /** 切到「资产库」tab 并按类型筛选,等目标资产行出现。 */
 async function openAssetsTab(page: Page): Promise<void> {
   await page.getByRole("button", { name: "资产库" }).click();
-  await expect(
-    page.getByRole("heading", { name: "观点、问题、决策和知识债" })
-  ).toBeVisible();
+  // Embedded AssetsView: search + filter landmark (no nested page H1).
+  await expect(page.getByPlaceholder(/输入关键词/)).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "资产筛选" })).toBeVisible();
 }
 
 /**

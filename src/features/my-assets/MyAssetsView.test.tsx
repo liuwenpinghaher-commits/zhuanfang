@@ -111,12 +111,55 @@ describe("MyAssetsView", () => {
     expect(html).toContain("学到了P");
   });
 
-  it("assets tab renders AssetsView content (search panel)", () => {
+it("assets tab renders AssetsView content (search panel) without nested page title", () => {
     const s = createEmptyProductState();
     const html = renderToString(
       <MyAssetsView {...makeAssetsProps(s)} initialTab="assets" />
     );
-    expect(html).toContain("观点、问题、决策和知识债");
+    // Embedded AssetsView keeps search, hides duplicate HeaderBlock title.
+    expect(html).toContain("asset-search");
+    expect(html).toContain("搜索原话、观点、问题、决策或知识债");
+    expect(html).not.toContain("用筛选、列表和详情面板管理认知资产");
+  });
+
+  it("archive badges are buttons and card is not keyboard-bound to podcast", () => {
+    const s = createEmptyProductState();
+    const note = {
+      id: "note-test-001",
+      sessionId: "sess-001",
+      title: "测试专访标题",
+      summary: "这是摘要内容",
+      keyQuote: "核心金句在此",
+      saidTrack: ["说了内容A"],
+      learnedTrack: ["学到X"],
+      nextQuestions: [],
+      createdAt: "2024-01-15T10:00:00Z"
+    };
+    const stateWithNote: ProductState = {
+      ...s,
+      notes: [note],
+      points: [
+        {
+          id: "p1",
+          sourceSessionId: "sess-001",
+          title: "观点一",
+          content: "内容",
+          confidence: "AI 推断",
+          status: "临时想法",
+          important: false,
+          evidence: [],
+          relatedThemeIds: [],
+          updatedAt: "2024-01-15T10:00:00Z"
+        }
+      ]
+    };
+    const html = renderToString(
+      <MyAssetsView {...makeAssetsProps(stateWithNote)} initialTab="archive" onOpenNote={vi.fn()} />
+    );
+    expect(html).toContain("output-badge--button");
+    expect(html).toContain('data-archive-session="sess-001"');
+    expect(html).not.toContain("row-clickable");
+    expect(html).toContain("打开笔记");
   });
 
   it("renders both tabs in navigation", () => {

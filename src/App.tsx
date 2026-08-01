@@ -3118,13 +3118,20 @@ export default function App() {
             onQuestionStatus={(assetId, status) => setProductState(updateQuestionStatus(productState, assetId, status))}
             onDebtStatus={(assetId, status) => setProductState(updateKnowledgeDebtStatus(productState, assetId, status))}
             onDecisionStatus={(assetId, status) => setProductState(updateDecisionStatus(productState, assetId, status))}
-            onDecisionConfirm={confirmDecision}
+onDecisionConfirm={confirmDecision}
             confirmingDecisionId={confirmingDecisionId}
             onGeneratePodcast={(noteId) => {
               setPodcastNoteId(noteId);
               setPodcastSourceType("note");
               setPodcastSourceId("");
               setView("podcast");
+            }}
+            onOpenNote={(sessionId) => {
+              setNotesFocus((prev) => ({
+                sessionId,
+                nonce: (prev?.nonce ?? 0) + 1
+              }));
+              setView("notes");
             }}
           />
         )}
