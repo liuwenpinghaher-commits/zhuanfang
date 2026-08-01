@@ -32,6 +32,7 @@ interface MyAssetsViewProps {
   onImportantOnly?: (value: boolean) => void;
   onSortMode?: (value: "updated-desc" | "important-first") => void;
   onBringIntoInterview?: (asset: { type: string; title: string; summary: string }) => void;
+  onAskAsset?: (asset: { type: string; title: string; summary: string }) => void;
   onGeneratePodcast: (noteId: string) => void;
   onOpenNote?: (sessionId: string) => void;
   /** 外部跳入时高亮并滚到对应专访档案。 */
@@ -60,6 +61,7 @@ export function MyAssetsView({
   onImportantOnly,
   onSortMode,
   onBringIntoInterview,
+  onAskAsset,
   onGeneratePodcast,
   onOpenNote,
   focusSessionId = null
@@ -282,6 +284,7 @@ export function MyAssetsView({
           onImportantOnly={onImportantOnly}
           onSortMode={onSortMode}
           onBringIntoInterview={onBringIntoInterview}
+          onAskAsset={onAskAsset}
         />
       )}
     </section>

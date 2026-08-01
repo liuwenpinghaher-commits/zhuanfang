@@ -176,7 +176,15 @@ export interface ChatCitation {
   title: string;
   snippet: string;
 }
-export interface ChatMessage { id: string; role: "user" | "assistant"; content: string; citations?: ChatCitation[]; createdAt: string; }
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  citations?: ChatCitation[];
+  /** 仅 assistant：本轮回答接地模式（服务端 decideGroundingMode）。旧数据可缺省。 */
+  groundingMode?: "grounded" | "partial" | "refused";
+  createdAt: string;
+}
 export interface ChatSession { id: string; title: string; messages: ChatMessage[]; createdAt: string; updatedAt: string; }
 
 export type ProfileSuggestionStatus = "pending" | "approved" | "rejected";

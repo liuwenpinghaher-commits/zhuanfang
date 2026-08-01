@@ -57,6 +57,9 @@ describe("POST /api/chat", () => {
     expect(session.messages[0].role).toBe("user");
     expect(session.messages[1].role).toBe("assistant");
     expect(session.messages[1].citations.length).toBeGreaterThan(0);
+    expect(session.title).toBe("我担心什么?");
+    expect(session.messages[1].groundingMode).toBe("grounded");
+    expect(body.groundingMode).toBe("grounded");
 
     await server.close();
   });

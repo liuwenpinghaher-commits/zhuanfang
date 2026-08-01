@@ -6,6 +6,7 @@ import {
   createChatSession,
   getKnowledgeSourceLabel,
   rankKnowledgeChunks,
+  renameChatSession,
   retrieveAndRankKnowledge
 } from "../../../../src/domain/knowledge";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
@@ -210,6 +211,7 @@ export async function registerChatRoutes(
     const commitChat = async () => {
       let latest = productRepo.getState();
       let durableSessionId = sessionId;
+      let createdFresh = false;
       if (!latest.chatSessions.some((s) => s.id === durableSessionId)) {
         if (requestedSessionId && latest.chatSessions.some((s) => s.id === requestedSessionId)) {
           durableSessionId = requestedSessionId;
@@ -217,10 +219,21 @@ export async function registerChatRoutes(
           const created = createChatSession(latest);
           latest = created.state;
           durableSessionId = created.sessionId;
+          createdFresh = true;
         }
       }
+      const existing = latest.chatSessions.find((s) => s.id === durableSessionId);
+      const isFirstUserTurn = createdFresh || (existing?.messages.length ?? 0) === 0;
       latest = appendChatMessage(latest, durableSessionId, "user", message);
-      latest = appendChatMessage(latest, durableSessionId, "assistant", answer, citations);
+      latest = appendChatMessage(latest, durableSessionId, "assistant", answer, citations, {
+        groundingMode
+      });
+      // 首条用户消息：默认「新对话」→ 用首问截断作标题，便于会话列表经营。
+      const after = latest.chatSessions.find((s) => s.id === durableSessionId);
+      if (isFirstUserTurn && after && (!after.title.trim() || after.title === "新对话")) {
+        const title = message.length > 36 ? `${message.slice(0, 36)}…` : message;
+        latest = renameChatSession(latest, durableSessionId, title);
+      }
       const nextState = /*durable*/await replaceStateDurable(productRepo, latest);
       return { state: nextState, sessionId: durableSessionId };
     };

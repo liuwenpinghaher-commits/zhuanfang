@@ -287,7 +287,8 @@ export function appendChatMessage(
   sessionId: string,
   role: "user" | "assistant",
   content: string,
-  citations?: ChatCitation[]
+  citations?: ChatCitation[],
+  opts?: { groundingMode?: ChatMessage["groundingMode"] }
 ): ProductState {
   if (!state.chatSessions.some((item) => item.id === sessionId)) {
     return state;
@@ -299,6 +300,7 @@ export function appendChatMessage(
     role,
     content: content.trim(),
     ...(citations && citations.length ? { citations } : {}),
+    ...(role === "assistant" && opts?.groundingMode ? { groundingMode: opts.groundingMode } : {}),
     createdAt: now
   };
 

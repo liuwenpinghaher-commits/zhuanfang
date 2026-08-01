@@ -8,7 +8,7 @@ import {
   Trash2,
   Upload
 } from "lucide-react";
-import { useMemo, useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useState, type ChangeEvent } from "react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { ImportSource, InterviewMode, ProductState } from "../../domain/types";
 
@@ -28,8 +28,10 @@ interface MaterialLibraryViewProps {
   onDeleteSource: (sourceId: string) => void;
   onReviewMemory?: (sourceId?: string) => void;
   onStartInterview?: (mode?: InterviewMode, topicHint?: string, relatedThemeIds?: string[]) => void;
-  onOpenAssetChat?: () => void;
+  onOpenAssetChat?: (sourceTitle?: string) => void;
   onOpenTrack?: (themeId: string) => void;
+  /** 从资产对话 citation 跳入时展开对应素材。 */
+  focusSourceId?: string | null;
 }
 
 const SOURCE_TYPE_LABEL: Record<ImportSource["sourceType"], string> = {
@@ -62,7 +64,8 @@ export function MaterialLibraryView({
   onReviewMemory,
   onStartInterview,
   onOpenAssetChat,
-  onOpenTrack
+  onOpenTrack,
+  focusSourceId = null
 }: MaterialLibraryViewProps) {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
@@ -76,6 +79,16 @@ export function MaterialLibraryView({
   const [query, setQuery] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [deleteHint, setDeleteHint] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!focusSourceId) return;
+    setExpandedId(focusSourceId);
+    requestAnimationFrame(() => {
+      document
+        .querySelector(`[data-material-source="${focusSourceId}"]`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }, [focusSourceId]);
 
   const sources = useMemo(
     () => [...state.importSources].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
@@ -340,7 +353,7 @@ export function MaterialLibraryView({
               const expanded = expandedId === source.id;
               const preview = source.content.trim().slice(0, 280);
               return (
-                <li key={source.id} className="list-row material-source-row">
+                <li key={source.id} className="list-row material-source-row" data-material-source={source.id}>
                   <div className="list-row-main">
                     <strong>{source.title}</strong>
                     <span className="list-row-meta">
@@ -388,7 +401,11 @@ export function MaterialLibraryView({
                         </button>
                       )}
                       {onOpenAssetChat && (
-                        <button className="secondary-action" type="button" onClick={onOpenAssetChat}>
+                        <button
+                          className="secondary-action"
+                          type="button"
+                          onClick={() => onOpenAssetChat(source.title)}
+                        >
                           <MessageSquare size={14} />
                           去资产对话
                         </button>

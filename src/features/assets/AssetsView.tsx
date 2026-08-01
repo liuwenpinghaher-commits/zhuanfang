@@ -26,6 +26,7 @@ interface AssetsViewProps {
   onClearSessionScope?: () => void;
   onOpenSourceSession?: (sessionId: string) => void;
   onBringIntoInterview?: (asset: { type: string; title: string; summary: string }) => void;
+  onAskAsset?: (asset: { type: string; title: string; summary: string }) => void;
   onToggleImportant: (assetId: string) => void;
   onPointStatus: (assetId: string, status: Extract<AssetStatus, "临时想法" | "稳定观点" | "被挑战中" | "已修正" | "已放弃">) => void;
   onQuestionStatus: (assetId: string, status: Extract<AssetStatus, "开放" | "反复出现" | "正在聚焦" | "阶段性回答">) => void;
@@ -52,6 +53,7 @@ export function AssetsView({
   onClearSessionScope,
   onOpenSourceSession,
   onBringIntoInterview,
+  onAskAsset,
   onToggleImportant,
   onPointStatus,
   onQuestionStatus,
@@ -197,6 +199,7 @@ export function AssetsView({
               onDecisionConfirm={onDecisionConfirm}
               onOpenSourceSession={onOpenSourceSession}
               onBringIntoInterview={onBringIntoInterview}
+              onAskAsset={onAskAsset}
               confirmingDecisionId={confirmingDecisionId}
             />
           ) : (
@@ -351,6 +354,7 @@ interface AssetDetailProps {
   onDecisionConfirm: (assetId: string) => void;
   onOpenSourceSession?: (sessionId: string) => void;
   onBringIntoInterview?: (asset: { type: string; title: string; summary: string }) => void;
+  onAskAsset?: (asset: { type: string; title: string; summary: string }) => void;
   confirmingDecisionId?: string;
 }
 
@@ -364,6 +368,7 @@ function AssetDetail({
   onDecisionConfirm,
   onOpenSourceSession,
   onBringIntoInterview,
+  onAskAsset,
   confirmingDecisionId
 }: AssetDetailProps) {
   const isConfirming = confirmingDecisionId === asset.id;
@@ -435,6 +440,22 @@ function AssetDetail({
           >
             <Flag size={16} />
             带入专访
+          </button>
+        )}
+        {onAskAsset && (
+          <button
+            className="secondary-action"
+            type="button"
+            onClick={() =>
+              onAskAsset({
+                type: asset.typeLabel,
+                title: asset.title,
+                summary: asset.summary
+              })
+            }
+          >
+            <Search size={16} />
+            问资产
           </button>
         )}
       </div>
