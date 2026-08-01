@@ -1,6 +1,6 @@
 # 项目文档归档与最终健康检查
 
-> **最近归档：** 2026-08-01 · tip `main` @ `f31f6d4a`（素材库原料车间 + E2E PASS 已关闭，见 §0.9）  
+> **最近归档：** 2026-08-01 · tip `main` @ `1ae921a6`（会话收口见 §0.10 · 素材库 §0.9）  
 > **基线归档：** 2026-07-30 · tip `14304554`  
 > **远程：** `origin/main` 同步 · 工作区干净（归档时）  
 > **运行时：** Node ≥22.5 · macOS · Docker Compose `:3210`
@@ -104,6 +104,21 @@
 
 **§0.9 任务状态：关闭 · 已归档 · 业务质量验证 PASS · 已部署**
 
+### 0.10 项目会话收口（2026-08-01）
+
+| 项 | 状态 |
+| --- | --- |
+| 主题线 / Track | **closed** · §0.7 · `49f4f0b4` |
+| 双轨笔记阅读室 + 冒烟 | **closed** · §0.8 · `744e5a23`…`8bf3d36f` |
+| 素材库 + E2E + 部署通知 | **closed** · §0.9 · `38199901`…`1ae921a6` |
+| GitHub Issue #7 | **CLOSED** |
+| Milestone #1 素材库原料车间 | **CLOSED** |
+| 本地临时/test-results 清理 | **done** |
+| 会话最终报告 | `2026-08-01-session-final-report.md` |
+| tip | `1ae921a6` · `main` == `origin/main` · 工作区干净 |
+
+**§0.10 会话状态：关闭 · 已归档**
+
 ---
 ## 1. 最终系统健康检查（2026-07-30）
 
@@ -162,6 +177,8 @@
 | 3f | [`docs/superpowers/2026-08-01-notes-workflow-smoke.md`](./superpowers/2026-08-01-notes-workflow-smoke.md) | 2026-08-01 双轨笔记生产工作流冒烟（PASS） |
 | 3g | [`docs/superpowers/2026-08-01-material-library-optimization-report.md`](./superpowers/2026-08-01-material-library-optimization-report.md) | 2026-08-01 素材库原料车间 |
 | 3h | [`docs/superpowers/2026-08-01-material-library-final-audit.md`](./superpowers/2026-08-01-material-library-final-audit.md) | 2026-08-01 素材库最终 E2E 审查（PASS） |
+| 3i | [`docs/superpowers/2026-08-01-material-library-deploy-notice.md`](./superpowers/2026-08-01-material-library-deploy-notice.md) | 2026-08-01 素材库部署通知 |
+| 3j | [`docs/superpowers/2026-08-01-session-final-report.md`](./superpowers/2026-08-01-session-final-report.md) | 2026-08-01 项目会话最终报告 |
 | 4 | [`docs/superpowers/2026-07-30-integration-and-deployment-state.md`](./superpowers/2026-07-30-integration-and-deployment-state.md) | 集成矩阵、架构、容量信封 |
 | 5 | [`docs/runbooks/README.md`](./runbooks/README.md) | 故障手册（双开锁 / export / 5xx / persist / 429） |
 | 6 | [`docs/superpowers/eval/interview-rubric.md`](./superpowers/eval/interview-rubric.md) | 追问质量抽检 rubric |
