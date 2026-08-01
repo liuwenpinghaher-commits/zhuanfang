@@ -147,5 +147,23 @@ describe("empty-state render guards", () => {
         onStart={() => {}} />
     );
     expect(html).toContain("还没有主题线");
+    expect(html).toContain("去完成一场专访");
+  });
+
+  it("ThemesView shows retry when reviews error and no review payload", () => {
+    const s = createEmptyProductState();
+    const html = renderToString(
+      <ThemesView
+        state={s}
+        review={null}
+        yearlyReview={null}
+        radar={buildCognitiveRadar(s)}
+        reviewsError="复盘 LLM 未配置"
+        onRetryReviews={() => {}}
+        onStart={() => {}} />
+    );
+    expect(html).toContain("复盘不可用");
+    expect(html).toContain("复盘 LLM 未配置");
+    expect(html).toContain("重试");
   });
 });

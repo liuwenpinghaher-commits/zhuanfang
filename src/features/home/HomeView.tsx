@@ -62,7 +62,7 @@ interface HomeViewProps {
     doNotSave: boolean;
     finishedAt: string;
   };
-  onStart: (mode?: InterviewMode, topicHint?: string) => void;
+  onStart: (mode?: InterviewMode, topicHint?: string, relatedThemeIds?: string[]) => void;
   onContinue?: (sessionId: string) => void;
   onDiscardEmpty?: (sessionId: string) => void;
   onClearBrief?: () => void;
@@ -334,7 +334,7 @@ export function HomeView({
                     className="text-button"
                     type="button"
                     disabled={starting}
-                    onClick={() => onStart("long-term", theme.name)}
+                    onClick={() => onStart("long-term", theme.nextQuestion?.trim() || theme.name, [theme.id])}
                   >
                     用此主题开始
                   </button>

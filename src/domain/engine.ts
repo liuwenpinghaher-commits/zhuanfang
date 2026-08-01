@@ -478,6 +478,7 @@ function buildWorkflowOutputSummary(workflow: WorkflowRun["workflow"]) {
 export interface CreateSessionOptions {
   searchBriefId?: string;
   topicHint?: string;
+  relatedThemeIds?: string[];
 }
 
 export function createInitialProductState(): ProductState {

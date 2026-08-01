@@ -74,6 +74,11 @@ export function MyAssetsView({
     return () => window.clearTimeout(t);
   }, [highlightSessionId]);
 
+  // 从主题线 Track 钻取资产时自动切到资产库页签。
+  useEffect(() => {
+    if (selectedAssetKey) setActiveTab("assets");
+  }, [selectedAssetKey]);
+
   function openArchiveAssets(
     sessionId: string,
     nextFilter: AssetFilter = "all"

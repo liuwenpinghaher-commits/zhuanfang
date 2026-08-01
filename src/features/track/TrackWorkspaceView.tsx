@@ -9,6 +9,12 @@ interface TrackWorkspaceViewProps {
   workspace: TrackWorkspace;
   onBack: () => void;
   onContinue: () => void;
+  /** 历次专访 → 双轨笔记（按 session）。 */
+  onOpenSession?: (sessionId: string) => void;
+  /** 沉淀产出 → 我的资产详情。 */
+  onOpenAsset?: (key: string) => void;
+  /** 资料来源 → 素材库。 */
+  onOpenSource?: (sourceId: string) => void;
   // 透传给 RawMaterialViewer 的原文出处能力（Task 12 扩展：主题代表性引文 → 原文跳转）。
   state: ProductState;
   onAddAnnotation: (sessionId: string, turnId: string, text: string) => void;
@@ -32,6 +38,9 @@ export function TrackWorkspaceView({
   workspace,
   onBack,
   onContinue,
+  onOpenSession,
+  onOpenAsset,
+  onOpenSource,
   state,
   onAddAnnotation,
   onRemoveAnnotation,
@@ -130,9 +139,16 @@ export function TrackWorkspaceView({
           ) : (
             <ul className="track-item-list">
               {sources.map((s) => (
-                <li key={s.id} className="track-item">
-                  <span className="track-item-title">{s.title}</span>
-                  <span className="label">{s.sourceType}</span>
+                <li key={s.id}>
+                  <button
+                    type="button"
+                    className={`track-item track-item-button${onOpenSource ? " is-clickable" : ""}`}
+                    onClick={onOpenSource ? () => onOpenSource(s.id) : undefined}
+                    disabled={!onOpenSource}
+                  >
+                    <span className="track-item-title">{s.title}</span>
+                    <span className="label">{s.sourceType}</span>
+                  </button>
                 </li>
               ))}
             </ul>
@@ -152,22 +168,34 @@ export function TrackWorkspaceView({
             <div className="empty-module">
               <Milestone size={18} />
               <p>这条线还没有专访</p>
+              <button className="secondary-action" type="button" onClick={onContinue}>
+                <Play size={14} />
+                继续这条线
+              </button>
             </div>
           ) : (
             <ul className="track-item-list">
               {sessions.map((s) => (
-                <li key={s.id} className="track-item track-session-item">
-                  <div className="track-item-title">{s.title || "(无标题)"}</div>
-                  <div className="track-session-meta">
-                    <span className="status-pill track-mode-pill">{s.mode}</span>
-                    <span className="label">
-                      {new Date(s.startedAt).toLocaleDateString("zh-CN", {
-                        year: "numeric",
-                        month: "short",
-                        day: "numeric",
-                      })}
-                    </span>
-                  </div>
+                <li key={s.id}>
+                  <button
+                    type="button"
+                    className={`track-item track-session-item track-item-button${onOpenSession ? " is-clickable" : ""}`}
+                    onClick={onOpenSession ? () => onOpenSession(s.id) : undefined}
+                    disabled={!onOpenSession}
+                  >
+                    <div className="track-item-title">{s.title || "(无标题)"}</div>
+                    <div className="track-session-meta">
+                      <span className="status-pill track-mode-pill">{s.mode}</span>
+                      <span className="label">
+                        {new Date(s.startedAt).toLocaleDateString("zh-CN", {
+                          year: "numeric",
+                          month: "short",
+                          day: "numeric",
+                        })}
+                      </span>
+                      {s.status === "active" && <span className="status-pill">进行中</span>}
+                    </div>
+                  </button>
                 </li>
               ))}
             </ul>
@@ -192,7 +220,7 @@ export function TrackWorkspaceView({
             outputs.debts.length === 0 ? (
             <div className="empty-module">
               <Lightbulb size={18} />
-              <p>还没有沉淀产出</p>
+              <p>还没有沉淀产出。结束专访后会把观点、问题、决策和知识债归到这条线。</p>
             </div>
           ) : (
             <div className="track-outputs">
@@ -204,7 +232,16 @@ export function TrackWorkspaceView({
                   </div>
                   <ul className="track-item-list">
                     {outputs.points.map((p) => (
-                      <li key={p.id} className="track-item">{p.title}</li>
+                      <li key={p.id}>
+                        <button
+                          type="button"
+                          className={`track-item track-item-button${onOpenAsset ? " is-clickable" : ""}`}
+                          onClick={onOpenAsset ? () => onOpenAsset(`points:${p.id}`) : undefined}
+                          disabled={!onOpenAsset}
+                        >
+                          {p.title}
+                        </button>
+                      </li>
                     ))}
                   </ul>
                 </div>
@@ -217,7 +254,16 @@ export function TrackWorkspaceView({
                   </div>
                   <ul className="track-item-list">
                     {outputs.questions.map((q) => (
-                      <li key={q.id} className="track-item">{q.question}</li>
+                      <li key={q.id}>
+                        <button
+                          type="button"
+                          className={`track-item track-item-button${onOpenAsset ? " is-clickable" : ""}`}
+                          onClick={onOpenAsset ? () => onOpenAsset(`questions:${q.id}`) : undefined}
+                          disabled={!onOpenAsset}
+                        >
+                          {q.question}
+                        </button>
+                      </li>
                     ))}
                   </ul>
                 </div>
@@ -230,7 +276,16 @@ export function TrackWorkspaceView({
                   </div>
                   <ul className="track-item-list">
                     {outputs.decisions.map((d) => (
-                      <li key={d.id} className="track-item">{d.title}</li>
+                      <li key={d.id}>
+                        <button
+                          type="button"
+                          className={`track-item track-item-button${onOpenAsset ? " is-clickable" : ""}`}
+                          onClick={onOpenAsset ? () => onOpenAsset(`decisions:${d.id}`) : undefined}
+                          disabled={!onOpenAsset}
+                        >
+                          {d.title}
+                        </button>
+                      </li>
                     ))}
                   </ul>
                 </div>
@@ -243,7 +298,16 @@ export function TrackWorkspaceView({
                   </div>
                   <ul className="track-item-list">
                     {outputs.debts.map((d) => (
-                      <li key={d.id} className="track-item">{d.concept}</li>
+                      <li key={d.id}>
+                        <button
+                          type="button"
+                          className={`track-item track-item-button${onOpenAsset ? " is-clickable" : ""}`}
+                          onClick={onOpenAsset ? () => onOpenAsset(`debts:${d.id}`) : undefined}
+                          disabled={!onOpenAsset}
+                        >
+                          {d.concept}
+                        </button>
+                      </li>
                     ))}
                   </ul>
                 </div>

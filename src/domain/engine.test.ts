@@ -171,6 +171,19 @@ describe("interview business engine", () => {
     expect(yearly.nextYearFocus).toContain("继续追");
   });
 
+  it("createSessionDraft attaches valid relatedThemeIds at create time", () => {
+    const state = createInitialProductState();
+    const themeId = state.themes[0]?.id;
+    expect(themeId).toBeTruthy();
+
+    const session = createSessionDraft(state, "long-term", "standard", {
+      topicHint: state.themes[0].nextQuestion || state.themes[0].name,
+      relatedThemeIds: [themeId!, "theme-does-not-exist"]
+    });
+
+    expect(session.relatedThemeIds).toEqual([themeId]);
+  });
+
   it("creates a web search brief and injects source context into an interview", () => {
     const state = createInitialProductState();
 

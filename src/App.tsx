@@ -169,6 +169,9 @@ export default function App() {
   // P3-08:LLM 复盘取不到时静默退回确定性本地复盘——旅程8失败此前零信号。用此标记让复盘视图
   // 如实标注"本地生成(LLM 复盘暂不可用)",而不是让用户误以为看的是 LLM 综述。
   const [reviewsError, setReviewsError] = useState<string | null>(null);
+  const [reviewsLoading, setReviewsLoading] = useState(false);
+  /** 手动重试复盘（不依赖资产签名变化）。 */
+  const [reviewsNonce, setReviewsNonce] = useState(0);
   const [importing, setImporting] = useState(false);
   const [runtimeConfig, setRuntimeConfig] = useState<SystemConfigResponse | null>(null);
   const [runtimeConfigSaving, setRuntimeConfigSaving] = useState(false);
@@ -929,7 +932,8 @@ export default function App() {
 
   // Re-fetch LLM reviews only when the asset set actually changes (not on every
   // turn), so an interview in progress doesn't trigger repeated review calls.
-  const reviewSignatureRef = useRef<string>("");
+  // SWR：签名变化时保留旧结果直到新结果返回，避免「生成中」假死闪烁。
+  const reviewRequestKeyRef = useRef<string>("");
   useEffect(() => {
     const signature = [
       productState.notes.length,
@@ -939,12 +943,13 @@ export default function App() {
       productState.debts.length,
       productState.themes.length
     ].join(":");
-    if (signature === reviewSignatureRef.current) {
+    const requestKey = `${signature}#${reviewsNonce}`;
+    if (requestKey === reviewRequestKeyRef.current) {
       return;
     }
-    reviewSignatureRef.current = signature;
-    setServerReviews(null);
+    reviewRequestKeyRef.current = requestKey;
     setReviewsError(null);
+    setReviewsLoading(true);
     let cancelled = false;
     productApiClient
       .getReviews()
@@ -956,12 +961,16 @@ export default function App() {
       })
       .catch((err) => {
         // LLM 综述失败：如实把服务端原因暴露给用户，绝不用本地模板叙事顶替。
+        // SWR：失败时保留 stale serverReviews（若有）。
         if (!cancelled) setReviewsError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setReviewsLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [productState]);
+  }, [productState, reviewsNonce]);
 
   // Adopt an authoritative state returned by a fine-grained route. Records it as
   // "already saved" so the debounce effect doesn't echo the whole state back in a
@@ -1504,7 +1513,8 @@ export default function App() {
   async function launchInterview(
     mode: InterviewMode = recommendedLaunch.mode,
     searchBriefId = activeSearchBriefId,
-    topicHint?: string
+    topicHint?: string,
+    relatedThemeIds?: string[]
   ) {
     const activeSessions = productState.sessions.filter((item) => item.status === "active");
     if (activeSessions.length > 0) {
@@ -1519,19 +1529,26 @@ export default function App() {
     setPendingMode(mode);
     setActiveSearchBriefId(searchBriefId);
     setSession(null);
-    await startInterview(mode, searchBriefId, topicHint);
+    await startInterview(mode, searchBriefId, topicHint, relatedThemeIds);
   }
 
   async function startInterview(
     mode: InterviewMode = pendingMode,
     searchBriefId = activeSearchBriefId,
-    topicHint?: string
+    topicHint?: string,
+    relatedThemeIds?: string[]
   ) {
     if (startingRef.current) return; // 已在创建中 → 跳过,避免双触发产生多个空 session
     startingRef.current = true;
     setStartingInterview(true);
     const normalizedTopicHint = topicHint?.trim() || resolveInterviewTopicHint(productState, searchBriefId ? { searchBriefId } : {});
-    const createSignature = JSON.stringify({ mode, searchBriefId: searchBriefId || "", topicHint: normalizedTopicHint });
+    const normalizedThemeIds = Array.from(new Set((relatedThemeIds ?? []).filter(Boolean)));
+    const createSignature = JSON.stringify({
+      mode,
+      searchBriefId: searchBriefId || "",
+      topicHint: normalizedTopicHint,
+      relatedThemeIds: normalizedThemeIds
+    });
     if (pendingSessionCreateRef.current?.signature !== createSignature) {
       pendingSessionCreateRef.current = { id: makeId("session-create"), signature: createSignature };
     }
@@ -1542,6 +1559,7 @@ export default function App() {
         strength: productState.profile.preferredStrength,
         ...(searchBriefId ? { searchBriefId } : {}),
         topicHint: normalizedTopicHint,
+        ...(normalizedThemeIds.length > 0 ? { relatedThemeIds: normalizedThemeIds } : {}),
         clientRequestId
       });
       pendingSessionCreateRef.current = null;
@@ -3007,18 +3025,40 @@ export default function App() {
             <div className="resume-banner-main">
               <span className="resume-banner-eyebrow">未完成的专访 · 共 {resumeCards.length} 场</span>
               <strong>选择要继续的专访</strong>
+              <p className="field-help">空场可直接移除，避免占满主题线等页面。</p>
               <div className="resume-session-list">
-                {resumeCards.map((card) => (
-                  <button
-                    className="resume-session-option"
-                    type="button"
-                    key={card.sessionId}
-                    onClick={() => continueInterview(card.sessionId)}
-                  >
-                    <span>{card.title} · {card.turnCount} 轮</span>
-                    <small>{card.pendingQuestion}</small>
-                  </button>
-                ))}
+                {resumeCards.map((card) => {
+                  const empty = card.turnCount === 0;
+                  return (
+                    <article className="resume-session-option is-static" key={card.sessionId}>
+                      <div>
+                        <strong>
+                          {card.title}
+                          {empty ? " · 尚未开始对话" : ` · ${card.turnCount} 轮`}
+                        </strong>
+                        <small>{card.pendingQuestion}</small>
+                      </div>
+                      <div className="form-actions">
+                        <button
+                          className="primary-action"
+                          type="button"
+                          onClick={() => continueInterview(card.sessionId)}
+                        >
+                          继续
+                        </button>
+                        {empty && (
+                          <button
+                            className="secondary-action"
+                            type="button"
+                            onClick={() => void discardEmptyInterview(card.sessionId)}
+                          >
+                            移除空场
+                          </button>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
             </div>
           </section>
@@ -3034,7 +3074,9 @@ export default function App() {
             activeBriefId={activeSearchBriefId}
             starting={startingInterview}
             lastInterviewSummary={lastInterviewSummary}
-            onStart={(mode, topicHint) => launchInterview(mode, activeSearchBriefId, topicHint)}
+            onStart={(mode, topicHint, relatedThemeIds) =>
+              void launchInterview(mode, activeSearchBriefId, topicHint, relatedThemeIds)
+            }
             onContinue={continueInterview}
             onDiscardEmpty={(id) => void discardEmptyInterview(id)}
             onClearBrief={() => setActiveSearchBriefId(undefined)}
@@ -3260,15 +3302,54 @@ export default function App() {
             }}
           />
         )}
-        {view === "themes" && <ThemesView state={productState} review={monthlyReview} yearlyReview={yearlyReview} radar={radar} reviewsError={reviewsError} onStart={launchInterview} onOpenTrack={openTrack} />}
+        {view === "themes" && (
+          <ThemesView
+            state={productState}
+            review={monthlyReview}
+            yearlyReview={yearlyReview}
+            radar={radar}
+            reviewsError={reviewsError}
+            reviewsLoading={reviewsLoading}
+            onRetryReviews={() => setReviewsNonce((n) => n + 1)}
+            onStart={(mode, topicHint, relatedThemeIds) =>
+              void launchInterview(mode, activeSearchBriefId, topicHint, relatedThemeIds)
+            }
+            onOpenTrack={openTrack}
+          />
+        )}
         {view === "track" && (
           <TrackWorkspaceView
             workspace={buildTrackWorkspace(productState, selectedTrackId ?? "")}
-            onBack={() => setView("home")}
+            onBack={() => setView("themes")}
             onContinue={() => {
               const track = buildTrackWorkspace(productState, selectedTrackId ?? "");
-              void launchInterview("long-term", "", track.theme?.name);
+              const theme = track.theme;
+              const hint = theme?.nextQuestion?.trim() || theme?.name;
+              void launchInterview("long-term", activeSearchBriefId, hint, theme?.id ? [theme.id] : undefined);
             }}
+            onOpenSession={(sessionId) => {
+              setNotesFocus((prev) => ({
+                sessionId,
+                nonce: (prev?.nonce ?? 0) + 1
+              }));
+              setView("notes");
+            }}
+            onOpenAsset={(key) => {
+              setSelectedAssetKey(key);
+              setAssetFilter(
+                key.startsWith("points:")
+                  ? "points"
+                  : key.startsWith("questions:")
+                    ? "questions"
+                    : key.startsWith("decisions:")
+                      ? "decisions"
+                      : key.startsWith("debts:")
+                        ? "debts"
+                        : "all"
+              );
+              setView("my-assets");
+            }}
+            onOpenSource={() => setView("material")}
             state={productState}
             onAddAnnotation={addInterviewAnnotation}
             onRemoveAnnotation={removeInterviewAnnotation}

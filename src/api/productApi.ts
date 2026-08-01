@@ -342,6 +342,8 @@ export interface CreateInterviewSessionRequest {
   searchBriefId?: string;
   /** Theme/track revisit: create-time topic for prefetch & guide (AS-P0-01). */
   topicHint?: string;
+  /** 创建时软归属主题线，使 Track 在结束前也能聚合进行中会话。 */
+  relatedThemeIds?: string[];
   /** Client-generated id for create retries; server dedupes by this key. */
   clientRequestId?: string;
 }

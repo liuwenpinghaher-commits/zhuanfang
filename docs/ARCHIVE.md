@@ -1,6 +1,6 @@
 # 项目文档归档与最终健康检查
 
-> **最近归档：** 2026-08-01 · tip `main` @ `080308b0`  
+> **最近归档：** 2026-08-01 · tip `main`（主题线 S1/S2 收口见 §0.7）  
 > **基线归档：** 2026-07-30 · tip `14304554`  
 > **远程：** `origin/main` 同步 · 工作区干净（归档时）  
 > **运行时：** Node ≥22.5 · macOS · Docker Compose `:3210`
@@ -61,6 +61,17 @@
 
 **本轮任务状态：关闭 · 可归档**
 
+### 0.7 主题线 / Track 端到端（同日续）
+
+| 项 | 状态 |
+| --- | --- |
+| 非 Home resume 空场 discard | **closed** |
+| 复盘 SWR + 重试 + 三分态 | **closed** |
+| 继续绑定 topicHint + relatedThemeIds | **closed** |
+| Track 返回 themes + 三列钻取 | **closed** |
+| 雷达真实零值 | **closed** |
+| 报告 | `2026-08-01-themes-track-optimization-report.md` |
+
 ---
 ## 1. 最终系统健康检查（2026-07-30）
 
@@ -114,6 +125,7 @@
 | 3 | [`docs/superpowers/CURRENT-开放清单.md`](./superpowers/CURRENT-开放清单.md) | 开放/已闭项与 Wave 进度 |
 | 3b | [`docs/superpowers/2026-08-01-podcast-multisource-llm-deploy-verification.md`](./superpowers/2026-08-01-podcast-multisource-llm-deploy-verification.md) | 2026-08-01 播客多源 LLM 生产验证 |
 | 3c | [`docs/superpowers/2026-08-01-interview-ux-optimization-report.md`](./superpowers/2026-08-01-interview-ux-optimization-report.md) | 2026-08-01 实时专访 UX 最终报告 |
+| 3d | [`docs/superpowers/2026-08-01-themes-track-optimization-report.md`](./superpowers/2026-08-01-themes-track-optimization-report.md) | 2026-08-01 主题线/Track 端到端优化 |
 | 4 | [`docs/superpowers/2026-07-30-integration-and-deployment-state.md`](./superpowers/2026-07-30-integration-and-deployment-state.md) | 集成矩阵、架构、容量信封 |
 | 5 | [`docs/runbooks/README.md`](./runbooks/README.md) | 故障手册（双开锁 / export / 5xx / persist / 429） |
 | 6 | [`docs/superpowers/eval/interview-rubric.md`](./superpowers/eval/interview-rubric.md) | 追问质量抽检 rubric |

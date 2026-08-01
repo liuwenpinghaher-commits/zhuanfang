@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildMonthlyReview, buildYearlyReview } from "./review";
+import { buildCognitiveRadar, buildMonthlyReview, buildYearlyReview } from "./review";
 import { createInitialProductState } from "./engine";
 import type { PointAsset, ProductState } from "./types";
 
@@ -96,6 +96,22 @@ describe("buildMonthlyReview.changedView", () => {
     const review = buildMonthlyReview(state);
 
     expect(review.changedView).toBe("本月共记录 2 条观点，尚未触发修正或挑战。");
+  });
+});
+
+describe("buildCognitiveRadar honesty", () => {
+  it("allows zero depth signals instead of fake floor values", () => {
+    const state = createInitialProductState();
+    state.notes = [];
+    state.points = [];
+    state.questions = [];
+    state.themes = [];
+    state.decisions = [];
+    state.debts = [];
+
+    const radar = buildCognitiveRadar(state);
+    expect(radar.depth.every((item) => item.value === 0)).toBe(true);
+    expect(radar.perspectives.find((item) => item.label === "系统论")?.value).toBe(0);
   });
 });
 

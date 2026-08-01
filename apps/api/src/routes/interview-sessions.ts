@@ -53,6 +53,7 @@ interface CreateSessionPayload {
   strength?: unknown;
   searchBriefId?: unknown;
   topicHint?: unknown;
+  relatedThemeIds?: unknown;
 }
 
 interface TurnPayload {
@@ -154,6 +155,7 @@ export async function registerInterviewSessionRoutes(
     const payload = normalizeObject<CreateSessionPayload>(request.body);
     const topicHint = normalizeOptionalString(payload.topicHint);
     const searchBriefId = payload.searchBriefId != null ? normalizeOptionalString(payload.searchBriefId) : undefined;
+    const relatedThemeIds = normalizeRelatedThemeIds(payload.relatedThemeIds, state);
     // M3c: embed the topic that drives memory recall so the new session's guide ranks
     // confirmed memories by cosine instead of substring. P2b: resolveInterviewTopicHint 与域内
     // topicHint 对齐;surreal 权威时预召回原生图遍历/HNSW/溯源,作为纯数据喂给同步 createSessionDraft。
@@ -182,6 +184,7 @@ export async function registerInterviewSessionRoutes(
     const session = createSessionDraft(state, normalizeMode(payload.mode), normalizeStrength(payload.strength, state), {
       ...(searchBriefId ? { searchBriefId } : {}),
       ...(topicHint ? { topicHint } : {}),
+      ...(relatedThemeIds.length > 0 ? { relatedThemeIds } : {}),
       ...(queryEmbedding ? { queryEmbedding } : {}),
       ...(recall ? { recall } : {})
     });
@@ -1109,6 +1112,19 @@ function normalizeControlAction(value: unknown): InterviewControlAction | undefi
 
 function normalizeOptionalString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function normalizeRelatedThemeIds(value: unknown, state: ProductState): string[] {
+  if (!Array.isArray(value)) return [];
+  const valid = new Set(state.themes.map((theme) => theme.id));
+  return Array.from(
+    new Set(
+      value
+        .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+        .map((item) => item.trim())
+        .filter((id) => valid.has(id))
+    )
+  );
 }
 
 function getSessionId(params: unknown) {

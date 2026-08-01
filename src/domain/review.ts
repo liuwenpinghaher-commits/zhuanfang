@@ -19,14 +19,15 @@ export function buildCognitiveRadar(state: ProductState): CognitiveRadar {
 
   return {
     depth: [
-      { label: "事实", value: Math.max(1, countSignal(["发生", "事件", "项目"])), max },
-      { label: "机制", value: Math.max(1, countSignal(["机制", "系统", "奖励"])), max },
-      { label: "感受", value: Math.max(1, countSignal(["担心", "不想", "怕"])), max },
-      { label: "意义", value: Math.max(1, countSignal(["意味着", "边界", "长期"])), max },
-      { label: "验证", value: Math.max(1, countSignal(["验证", "复盘", "测试"])), max }
+      // 真实计数：允许 0，避免空库时雷达“假繁荣”。
+      { label: "事实", value: countSignal(["发生", "事件", "项目"]), max },
+      { label: "机制", value: countSignal(["机制", "系统", "奖励"]), max },
+      { label: "感受", value: countSignal(["担心", "不想", "怕"]), max },
+      { label: "意义", value: countSignal(["意味着", "边界", "长期"]), max },
+      { label: "验证", value: countSignal(["验证", "复盘", "测试"]), max }
     ],
     perspectives: [
-      { label: "系统论", value: state.themes.filter((theme) => theme.summary.includes("机制") || theme.summary.includes("系统")).length + 1, max },
+      { label: "系统论", value: state.themes.filter((theme) => theme.summary.includes("机制") || theme.summary.includes("系统")).length, max },
       { label: "心理学", value: countSignal(["担心", "信任", "控制感"]), max },
       { label: "形式科学", value: state.questions.length, max },
       { label: "叙事", value: state.notes.length, max }
