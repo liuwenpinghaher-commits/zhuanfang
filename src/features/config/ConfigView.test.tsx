@@ -204,6 +204,100 @@ describe("ConfigView", () => {
     );
   });
 
+  it("keeps product draft when systemConfig updates while dirty", () => {
+    const state = createInitialProductState();
+    const onSaveProductConfig = vi.fn();
+
+    renderView(state, emptyCapabilities(), {
+      section: "settings",
+      onSaveProductConfig,
+      voices: [
+        { voice: "longanyang", name: "龙安洋·阳光男声", description: "" },
+        { voice: "longanhuan", name: "龙安欢·元气女声", description: "" }
+      ]
+    });
+
+    const silenceInput = container?.querySelector<HTMLInputElement>('input[name="interview.silenceHoldMs"]');
+    act(() => {
+      silenceInput!.value = "1800";
+      silenceInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(silenceInput?.value).toBe("1800");
+
+    const nextState = {
+      ...state,
+      systemConfig: {
+        ...state.systemConfig,
+        interview: { ...state.systemConfig.interview, silenceHoldMs: 900 }
+      }
+    };
+    act(() => {
+      root?.render(
+        <ConfigView
+          state={nextState}
+          status={buildSystemStatus(nextState)}
+          systemCapabilities={emptyCapabilities()}
+          runtimeConfig={null}
+          runtimeConfigSaving={false}
+          section="settings"
+          onSection={vi.fn()}
+          onCleanupGeneratedArtifacts={vi.fn()}
+          onSaveRuntimeConfig={vi.fn()}
+          onSaveProductConfig={onSaveProductConfig}
+          voices={[
+            { voice: "longanyang", name: "龙安洋·阳光男声", description: "" },
+            { voice: "longanhuan", name: "龙安欢·元气女声", description: "" }
+          ]}
+          voicesLoading={false}
+          onUploadVoice={vi.fn()}
+          onDeleteVoice={vi.fn()}
+        />
+      );
+    });
+
+    const silenceAfter = container?.querySelector<HTMLInputElement>('input[name="interview.silenceHoldMs"]');
+    expect(silenceAfter?.value).toBe("1800");
+    expect(container?.textContent).toContain("未保存");
+  });
+
+  it("renders risk strip and actionable needs-key fix CTA", () => {
+    const state = createInitialProductState();
+    const onOpenSettingsFocus = vi.fn();
+    const caps: SystemCapabilitiesResponse = {
+      generatedAt: "2026-06-10T00:00:00.000Z",
+      configVersion: "base-v1",
+      runtime: { service: "interview-product-api", stateStore: "surreal" },
+      capabilities: [
+        {
+          id: "anysearch",
+          kind: "search",
+          label: "AnySearch",
+          status: "needs-key",
+          active: false,
+          detail: "缺少 key",
+          requiredEnv: ["ANYSEARCH_API_KEY"],
+          lastCheckedAt: "2026-06-10T00:00:00.000Z"
+        }
+      ],
+      metrics: { voice: { sampleCount: 0 }, recall: { eventCount: 0, hit: 0, empty: 0, low_score: 0 } }
+    };
+
+    renderView(state, caps, {
+      section: "status",
+      onOpenSettingsFocus,
+      statusLoading: false
+    });
+
+    expect(container?.textContent).toContain("需关注");
+    expect(container?.textContent).toContain("去填写密钥");
+    act(() => {
+      container?.querySelectorAll("button").forEach((btn) => {
+        if (btn.textContent?.includes("去填写密钥")) btn.click();
+      });
+    });
+    expect(onOpenSettingsFocus).toHaveBeenCalledWith("ANYSEARCH_API_KEY");
+  });
+
   it("provider select options match the single-source searchProviderLabels exactly", () => {
     const state = createInitialProductState();
 

@@ -16,6 +16,13 @@ interface ConfigViewProps {
   runtimeConfigSaving: boolean;
   section: ConfigSection;
   onSection: (section: ConfigSection) => void;
+  /** 深链字段：env key 或产品 input/select name。 */
+  focusKey?: string | null;
+  onFocusConsumed?: () => void;
+  statusLoading?: boolean;
+  statusError?: string | null;
+  onRetryStatus?: () => void;
+  onOpenSettingsFocus?: (focusKey: string) => void;
   onCleanupGeneratedArtifacts: () => void;
   onSaveRuntimeConfig: (updates: SystemConfigUpdateRequest) => void;
   onSaveProductConfig: (config: SystemConfig) => void;
@@ -33,6 +40,12 @@ export function ConfigView({
   runtimeConfigSaving,
   section,
   onSection,
+  focusKey = null,
+  onFocusConsumed,
+  statusLoading = false,
+  statusError = null,
+  onRetryStatus,
+  onOpenSettingsFocus,
   onCleanupGeneratedArtifacts,
   onSaveRuntimeConfig,
   onSaveProductConfig,
@@ -45,6 +58,9 @@ export function ConfigView({
   const [runtimeDirty, setRuntimeDirty] = useState<Record<string, boolean>>({});
   const [productDraft, setProductDraft] = useState<SystemConfig>(() => state.systemConfig);
   const [productDirty, setProductDirty] = useState(false);
+  const [remoteConfigStale, setRemoteConfigStale] = useState(false);
+  const productDirtyRef = useRef(productDirty);
+  productDirtyRef.current = productDirty;
 
   useEffect(() => {
     if (!runtimeConfig) {
@@ -57,16 +73,82 @@ export function ConfigView({
     setRuntimeDirty({});
   }, [runtimeConfig]);
 
+  // 仅非 dirty 时同步远端/本地 systemConfig，避免未保存草稿被冲掉。
   useEffect(() => {
+    if (productDirtyRef.current) {
+      setRemoteConfigStale(true);
+      return;
+    }
     setProductDraft(state.systemConfig);
     setProductDirty(false);
+    setRemoteConfigStale(false);
   }, [state.systemConfig]);
+
+  useEffect(() => {
+    if (!focusKey) return;
+    const timer = window.setTimeout(() => {
+      const byName = document.querySelector<HTMLElement>(`[name="${CSS.escape(focusKey)}"]`);
+      const byId =
+        document.getElementById(`runtime-setting-${focusKey}`) ||
+        document.getElementById(focusKey) ||
+        document.getElementById(`product-${focusKey}`);
+      const el = byName || byId;
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.add("config-field-focus");
+        if ("focus" in el && typeof (el as HTMLElement).focus === "function") {
+          (el as HTMLElement).focus();
+        }
+        window.setTimeout(() => el.classList.remove("config-field-focus"), 2200);
+      }
+      onFocusConsumed?.();
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [focusKey, section, onFocusConsumed]);
 
   const runtimeDirtyCount = useMemo(() => Object.values(runtimeDirty).filter(Boolean).length, [runtimeDirty]);
   const appliedPatchCount = useMemo(
     () => state.playbookPatches.filter((patch) => patch.status === "applied").length,
     [state.playbookPatches]
   );
+  const riskSummary = useMemo(() => buildCapabilityRiskSummary(systemCapabilities), [systemCapabilities]);
+
+  function discardProductDraft() {
+    setProductDraft(state.systemConfig);
+    setProductDirty(false);
+    setRemoteConfigStale(false);
+  }
+
+  function handleSectionChange(next: ConfigSection) {
+    if (next !== section && (productDirty || runtimeDirtyCount > 0)) {
+      if (
+        typeof window !== "undefined" &&
+        !window.confirm("有未保存的配置更改。切换分段不会自动保存，是否继续？")
+      ) {
+        return;
+      }
+    }
+    onSection(next);
+  }
+
+  function fixCapability(capability: SystemCapabilitiesResponse["capabilities"][number]) {
+    if (!onOpenSettingsFocus) return;
+    if (capability.status === "needs-key" || capability.status === "needs-endpoint") {
+      const key = capability.requiredEnv[0];
+      if (key) onOpenSettingsFocus(key);
+      else handleSectionChange("settings");
+      return;
+    }
+    if (capability.kind === "search") {
+      onOpenSettingsFocus("search.activeProvider");
+      return;
+    }
+    if (capability.kind === "voice") {
+      onOpenSettingsFocus("voice.realtimeMode");
+      return;
+    }
+    handleSectionChange("settings");
+  }
 
   function updateRuntimeSetting(setting: SystemConfigSetting, value: string) {
     setRuntimeDraft((current) => ({ ...current, [setting.key]: value }));
@@ -105,6 +187,8 @@ export function ConfigView({
   function saveProductConfig() {
     if (productDirty) {
       onSaveProductConfig(productDraft);
+      setProductDirty(false);
+      setRemoteConfigStale(false);
     }
   }
 
@@ -120,7 +204,7 @@ export function ConfigView({
             className={section === option.id ? "config-tab active" : "config-tab"}
             type="button"
             key={option.id}
-            onClick={() => onSection(option.id)}>
+            onClick={() => handleSectionChange(option.id)}>
             <strong>{option.label}</strong>
             <span>{option.description}</span>
           </button>
@@ -129,8 +213,48 @@ export function ConfigView({
 
       {section === "status" && (
         <div className="view-stack">
+          {(statusLoading || statusError || riskSummary) && (
+            <div
+              className={`hint-banner config-risk-strip${statusError ? "" : riskSummary?.level === "warn" ? "" : " is-info"}`}
+              role="status"
+              data-testid="config-risk-strip"
+            >
+              <div className="stack-xs">
+                {statusLoading && <span>正在刷新能力与运行配置…</span>}
+                {statusError && <span className="field-status is-danger">{statusError}</span>}
+                {!statusLoading && riskSummary && <span>{riskSummary.text}</span>}
+              </div>
+              <div className="inline-actions">
+                {onRetryStatus && (
+                  <button className="secondary-action compact-action" type="button" onClick={onRetryStatus} disabled={statusLoading}>
+                    <RefreshCcw size={14} aria-hidden />
+                    刷新状态
+                  </button>
+                )}
+                {riskSummary?.primaryFocus && onOpenSettingsFocus && (
+                  <button
+                    className="primary-action compact-action"
+                    type="button"
+                    onClick={() => onOpenSettingsFocus(riskSummary.primaryFocus!)}
+                  >
+                    去处理
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
           <section className="panel">
-            <div className="panel-title"><ShieldCheck size={18} /><h2>Product API 实时状态</h2></div>
+            <div className="panel-title row-between">
+              <div className="row">
+                <ShieldCheck size={18} />
+                <h2>Product API 实时状态</h2>
+              </div>
+              {onRetryStatus && (
+                <button className="text-button" type="button" onClick={onRetryStatus} disabled={statusLoading}>
+                  <RefreshCcw size={14} aria-hidden /> 刷新
+                </button>
+              )}
+            </div>
             {systemCapabilities ? (
               <>
                 <div className="config-hint">
@@ -139,27 +263,30 @@ export function ConfigView({
                   <span>引擎版本：{systemCapabilities.configVersion}</span>
                   <span>检查时间：{new Date(systemCapabilities.generatedAt).toLocaleString("zh-CN")}</span>
                 </div>
-                {(systemCapabilities as { metrics?: { voice?: { ttfaP50Ms?: number; ttfaP95Ms?: number; sampleCount?: number; interruptCount?: number; bargeInSuccessRate?: number; interruptRecoveryRate?: number; budgetHint?: { ttfaP95TargetMs?: number } }; recall?: { empty?: number; low_score?: number; hit?: number }; grounding?: { grounded?: number; refused?: number; citationPresentRate?: number } } }).metrics && (
+                {systemCapabilities.metrics && (
                   <div className="config-hint" data-testid="runtime-metrics-strip">
                     <span>
                       语音 TTFA p50/p95：
-                      {(systemCapabilities as any).metrics?.voice?.ttfaP50Ms ?? "—"}
+                      {formatMetricMs(systemCapabilities.metrics.voice?.ttfaP50Ms)}
                       {" / "}
-                      {(systemCapabilities as any).metrics?.voice?.ttfaP95Ms ?? "—"}
-                      ms
-                      {typeof (systemCapabilities as any).metrics?.voice?.ttfaP95Ms === "number" &&
-                      (systemCapabilities as any).metrics.voice.ttfaP95Ms >
-                        ((systemCapabilities as any).metrics?.voice?.budgetHint?.ttfaP95TargetMs ?? 1200)
+                      {formatMetricMs(systemCapabilities.metrics.voice?.ttfaP95Ms)}
+                      {typeof systemCapabilities.metrics.voice?.sampleCount === "number" &&
+                      systemCapabilities.metrics.voice.sampleCount === 0
+                        ? "（尚未采集语音样本）"
+                        : ""}
+                      {typeof systemCapabilities.metrics.voice?.ttfaP95Ms === "number" &&
+                      systemCapabilities.metrics.voice.ttfaP95Ms >
+                        (systemCapabilities.metrics.voice?.budgetHint?.ttfaP95TargetMs ?? 1200)
                         ? " ⚠ 高于 mouth-to-ear p95 预算"
-                        : typeof (systemCapabilities as any).metrics?.voice?.ttfaP95Ms === "number" &&
-                            (systemCapabilities as any).metrics.voice.ttfaP95Ms > 700
+                        : typeof systemCapabilities.metrics.voice?.ttfaP95Ms === "number" &&
+                            systemCapabilities.metrics.voice.ttfaP95Ms > 700
                           ? " ⚠ 高于 700ms 人感参考"
                           : ""}
                     </span>
                     <span data-testid="voice-ttfa-segments">
                       分段 p50：
                       {(() => {
-                        const seg = (systemCapabilities as any).metrics?.voice?.segments;
+                        const seg = systemCapabilities.metrics?.voice?.segments;
                         const fmt = (s?: { p50Ms?: number }) =>
                           typeof s?.p50Ms === "number" ? `${Math.round(s.p50Ms)}` : "—";
                         return `VAD→STT ${fmt(seg?.vadEndToStt)} / STT→应答 ${fmt(seg?.sttToLlm)} / LLM TTFT ${fmt(seg?.llmTtft)} / TTS TTFB ${fmt(seg?.ttsTtfb)} ms`;
@@ -167,47 +294,85 @@ export function ConfigView({
                     </span>
                     <span>
                       召回 hit/empty/low：
-                      {(systemCapabilities as any).metrics?.recall?.hit ?? 0}/
-                      {(systemCapabilities as any).metrics?.recall?.empty ?? 0}/
-                      {(systemCapabilities as any).metrics?.recall?.low_score ?? 0}
+                      {systemCapabilities.metrics.recall?.hit ?? 0}/
+                      {systemCapabilities.metrics.recall?.empty ?? 0}/
+                      {systemCapabilities.metrics.recall?.low_score ?? 0}
+                      {typeof systemCapabilities.metrics.recall?.eventCount === "number" &&
+                      systemCapabilities.metrics.recall.eventCount === 0
+                        ? "（尚无召回事件）"
+                        : ""}
                     </span>
-                    <span>打断样本：{(systemCapabilities as any).metrics?.voice?.interruptCount ?? 0}</span>
+                    <span>打断样本：{systemCapabilities.metrics.voice?.interruptCount ?? 0}</span>
                     <span>
                       barge-in 成功率：
-                      {typeof (systemCapabilities as any).metrics?.voice?.bargeInSuccessRate === "number"
-                        ? `${Math.round((systemCapabilities as any).metrics.voice.bargeInSuccessRate * 100)}%`
+                      {typeof systemCapabilities.metrics.voice?.bargeInSuccessRate === "number"
+                        ? `${Math.round(systemCapabilities.metrics.voice.bargeInSuccessRate * 100)}%`
                         : "—"}
                     </span>
                     <span>
                       引用/拒召：
-                      {(systemCapabilities as any).metrics?.grounding?.grounded ?? 0}/
-                      {(systemCapabilities as any).metrics?.grounding?.refused ?? 0}
-                      {typeof (systemCapabilities as any).metrics?.grounding?.citationPresentRate === "number"
-                        ? ` · cite ${Math.round((systemCapabilities as any).metrics.grounding.citationPresentRate * 100)}%`
+                      {systemCapabilities.metrics.grounding?.grounded ?? 0}/
+                      {systemCapabilities.metrics.grounding?.refused ?? 0}
+                      {typeof systemCapabilities.metrics.grounding?.citationPresentRate === "number"
+                        ? ` · cite ${Math.round(systemCapabilities.metrics.grounding.citationPresentRate * 100)}%`
                         : ""}
                     </span>
                   </div>
                 )}
                 <div className="provider-grid">
-                  {systemCapabilities.capabilities.map((capability) => (
-                    <article className="provider-card live-provider-card" key={capability.id}>
-                      <span className="status-pill">{capability.kind} · {formatCapabilityHealth(capability.status)}</span>
-                      <h3>{capability.label}</h3>
-                      <p>{capability.detail}</p>
-                      <small>{capability.active ? "当前启用" : "未启用"} · {new Date(capability.lastCheckedAt).toLocaleDateString("zh-CN")}</small>
-                      {(capability.model || capability.transport || capability.requiredEnv.length > 0) && (
-                        <div className="provider-meta-list">
-                          {capability.model && <span>模型：{capability.model}</span>}
-                          {capability.transport && <span>传输：{capability.transport}</span>}
-                          {capability.requiredEnv.length > 0 && <span>Env：{capability.requiredEnv.join(" / ")}</span>}
-                        </div>
-                      )}
-                    </article>
-                  ))}
+                  {systemCapabilities.capabilities.map((capability) => {
+                    const actionable =
+                      capability.status === "needs-key" ||
+                      capability.status === "needs-endpoint" ||
+                      capability.status === "degraded";
+                    return (
+                      <article
+                        className={`provider-card live-provider-card${actionable ? " is-actionable" : ""}`}
+                        key={capability.id}
+                        data-capability-id={capability.id}
+                      >
+                        <span className="status-pill">
+                          {capability.kind} · {formatCapabilityHealth(capability.status)}
+                        </span>
+                        <h3>{capability.label}</h3>
+                        <p>{capability.detail}</p>
+                        <small>
+                          {capability.active ? "当前启用" : "未启用"} ·{" "}
+                          {new Date(capability.lastCheckedAt).toLocaleDateString("zh-CN")}
+                        </small>
+                        {(capability.model || capability.transport || capability.requiredEnv.length > 0) && (
+                          <div className="provider-meta-list">
+                            {capability.model && <span>模型：{capability.model}</span>}
+                            {capability.transport && <span>传输：{capability.transport}</span>}
+                            {capability.requiredEnv.length > 0 && (
+                              <span>Env：{capability.requiredEnv.join(" / ")}</span>
+                            )}
+                          </div>
+                        )}
+                        {actionable && onOpenSettingsFocus && (
+                          <div className="form-actions">
+                            <button
+                              type="button"
+                              className="secondary-action compact-action"
+                              onClick={() => fixCapability(capability)}
+                            >
+                              {capability.status === "needs-key"
+                                ? "去填写密钥"
+                                : capability.status === "needs-endpoint"
+                                  ? "去配置端点"
+                                  : "去检查参数"}
+                            </button>
+                          </div>
+                        )}
+                      </article>
+                    );
+                  })}
                 </div>
               </>
+            ) : statusLoading ? (
+              <p className="muted-copy">正在加载 Product API 实时状态…</p>
             ) : (
-              <p className="muted-copy">Product API 实时状态暂不可用。请确认 API 服务已启动，再回到本页查看能力健康。</p>
+              <p className="muted-copy">Product API 实时状态暂不可用。请确认 API 服务已启动，再点击「刷新状态」。</p>
             )}
           </section>
 
@@ -317,9 +482,22 @@ export function ConfigView({
             onUpload={onUploadVoice}
             onDelete={onDeleteVoice} />
 
-          <section className="panel">
+          <section className="panel" id="product-strategy-panel">
             <div className="panel-title"><Sliders size={18} /><h2>产品策略</h2></div>
             <p className="muted-copy">产品策略（ProductState.systemConfig）：搜索默认 provider、语音/访谈节奏、记忆召回开关等。写入产品状态并走 autosave，不包含 API 密钥。</p>
+            {(productDirty || remoteConfigStale) && (
+              <div className="hint-banner is-info config-draft-banner" role="status">
+                <span>
+                  {productDirty ? "有未保存的产品策略更改。" : ""}
+                  {remoteConfigStale ? "后台策略已更新；你的草稿仍保留。" : ""}
+                </span>
+                {productDirty && (
+                  <button className="text-button" type="button" onClick={discardProductDraft}>
+                    放弃草稿
+                  </button>
+                )}
+              </div>
+            )}
             <div className="runtime-config-sections">
               <section className="runtime-config-section">
                 <h3>联网素材</h3>
@@ -678,6 +856,34 @@ export function ConfigView({
               </button>
             </div>
           </section>
+
+          {(productDirty || runtimeDirtyCount > 0) && (
+            <div className="config-sticky-save" role="region" aria-label="未保存更改">
+              <span>
+                未保存：
+                {runtimeDirtyCount > 0 ? `服务端 ${runtimeDirtyCount} 项` : ""}
+                {runtimeDirtyCount > 0 && productDirty ? " · " : ""}
+                {productDirty ? "产品策略" : ""}
+              </span>
+              <div className="inline-actions">
+                {runtimeDirtyCount > 0 && (
+                  <button
+                    className="primary-action compact-action"
+                    type="button"
+                    onClick={saveRuntimeConfig}
+                    disabled={runtimeConfigSaving}
+                  >
+                    保存服务端配置
+                  </button>
+                )}
+                {productDirty && (
+                  <button className="primary-action compact-action" type="button" onClick={saveProductConfig}>
+                    保存产品策略
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </section>
@@ -858,4 +1064,39 @@ function formatCapabilityHealth(status: SystemCapabilitiesResponse["capabilities
     disabled: "未启用"
   };
   return labels[status];
+}
+
+function formatMetricMs(value: number | undefined): string {
+  return typeof value === "number" && Number.isFinite(value) ? String(Math.round(value)) : "—";
+}
+
+function buildCapabilityRiskSummary(
+  systemCapabilities: SystemCapabilitiesResponse | null
+): { text: string; level: "info" | "warn"; primaryFocus?: string } | null {
+  if (!systemCapabilities) return null;
+  const caps = systemCapabilities.capabilities;
+  const needsKey = caps.filter((c) => c.status === "needs-key");
+  const needsEndpoint = caps.filter((c) => c.status === "needs-endpoint");
+  const degraded = caps.filter((c) => c.status === "degraded");
+  const voiceSamples = systemCapabilities.metrics?.voice?.sampleCount ?? 0;
+  const recallEvents = systemCapabilities.metrics?.recall?.eventCount ?? 0;
+  const parts: string[] = [];
+  if (needsKey.length) parts.push(`${needsKey.length} 项缺少 key`);
+  if (needsEndpoint.length) parts.push(`${needsEndpoint.length} 项缺少 endpoint`);
+  if (degraded.length) parts.push(`${degraded.length} 项降级`);
+  if (voiceSamples === 0) parts.push("语音指标尚未采样");
+  if (recallEvents === 0) parts.push("召回指标尚未采样");
+  if (parts.length === 0) {
+    return { text: `全部 ${caps.length} 项能力可用；运行指标正常采集中。`, level: "info" };
+  }
+  const primary =
+    needsKey[0]?.requiredEnv[0] ||
+    needsEndpoint[0]?.requiredEnv[0] ||
+    (degraded[0]?.kind === "search" ? "search.activeProvider" : undefined) ||
+    (degraded[0]?.kind === "voice" ? "voice.realtimeMode" : undefined);
+  return {
+    text: `需关注：${parts.join(" · ")}。`,
+    level: needsKey.length || needsEndpoint.length || degraded.length ? "warn" : "info",
+    ...(primary ? { primaryFocus: primary } : {})
+  };
 }
