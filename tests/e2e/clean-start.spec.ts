@@ -53,8 +53,9 @@ test("清空示例 clears demo data and leaves app usable", async ({ page }) => 
 
   // ── Step 5: 我的资产 → 资产 tab — empty state, no crash ─────────────────
   await page.getByRole("button", { name: "资产库" }).click();
-  // AssetsView renders h1 "观点、问题、决策和知识债" (use heading role to avoid subtitle collision)
-  await expect(page.getByRole("heading", { name: "观点、问题、决策和知识债" })).toBeVisible();
+  // Embedded AssetsView: no nested page H1; search + filter landmarks confirm the tab.
+  await expect(page.getByPlaceholder(/输入关键词/)).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "资产筛选" })).toBeVisible();
   // AssetsView shows "当前筛选下没有资产" when empty.
   await expect(page.getByText("当前筛选下没有资产。")).toBeVisible();
 

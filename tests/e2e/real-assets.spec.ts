@@ -18,7 +18,7 @@ import { resetServerState } from "./helpers";
  *    ProductState,再经 300ms 去抖 PUT /api/state(带 revision 乐观锁)落库。后端 status 字段随之变。
  *  - 前端挂载时 GET /api/state 采用远端状态并开启持久化(apiPersistenceEnabled),
  *    所以先 PUT 种子、再 page.goto,UI 会加载到种子且本地改动会被 PUT 回后端。
- *  - 导航按钮「我的资产」(ui.ts);资产库 tab 标题 h1「观点、问题、决策和知识债」;
+ *  - 导航按钮「我的资产」(ui.ts);资产库 tab 为 embedded（搜索框 + 资产筛选，无嵌套页头 h1）；
  *    决策确认按钮「确认决策」,确认后显示状态药丸「已用户确认」。
  */
 
