@@ -153,17 +153,16 @@ test.describe("真实业务·记忆治理（UI→真后端 3210，无 mock）", 
     test.setTimeout(60_000);
     await bootMemoryView(page); // 无种子 —— 干净起点
 
-    // 待审候选区：标题计数为 0 + 空状态文案（MemoryGovernanceView pending 分支）。
-    await expect(page.getByText(/待审候选记忆（0）/)).toBeVisible();
+    // 全空时合并为一个引导空状态（不再重复渲染两个 0 分区标题）。
+    await expect(page.getByText("还没有记忆可治理")).toBeVisible();
     await expect(
       page.getByText("暂无待审候选。导入资料或完成一次专访后会产生候选记忆。")
     ).toBeVisible();
-
-    // 已确认长期记忆区：同样空。
-    await expect(page.getByText(/已确认的长期记忆（0）/)).toBeVisible();
     await expect(
       page.getByText("还没有确认的长期记忆。审批候选记忆后，它们会出现在这里。")
     ).toBeVisible();
+    await expect(page.getByRole("button", { name: "去导入资料" })).toBeVisible();
+    await expect(page.getByText(/待审 0/)).toBeVisible();
 
     // 后端真实副作用：确实零候选零记忆。
     const st = await getState(page);
@@ -233,8 +232,9 @@ test.describe("真实业务·记忆治理（UI→真后端 3210，无 mock）", 
     // 不应误转为长期记忆。
     expect((await confirmedRecords(page)).length).toBe(0);
 
-    // UI 同步：待审计数回到 0 + 空状态。
-    await expect(page.getByText(/待审候选记忆（0）/)).toBeVisible({ timeout: 8000 });
+    // UI 同步：回到全空引导态（待审/已确认均为 0）。
+    await expect(page.getByText("还没有记忆可治理")).toBeVisible({ timeout: 8000 });
+    await expect(page.getByText(/待审 0/)).toBeVisible();
   });
 
   test("内联修正候选文本（修正→textarea→改→保存修正）→ 后端候选文本更新", async ({ page }) => {

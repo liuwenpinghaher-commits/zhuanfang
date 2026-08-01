@@ -136,10 +136,10 @@ test("记忆治理：无待审候选时显示空状态提示", async ({ page }) 
   await resetDemoState(page);
   await openView(page, "记忆", "导入资料，审核长期记忆");
 
-  // 确认"待审候选记忆（0）"标题可见
-  await expect(page.getByText(/待审候选记忆（0）/)).toBeVisible();
-  // 空状态提示
+  // 全空时合并为一个引导空状态（不再重复渲染两个 0 分区标题）
+  await expect(page.getByText("还没有记忆可治理")).toBeVisible();
   await expect(page.getByText("暂无待审候选。导入资料或完成一次专访后会产生候选记忆。")).toBeVisible();
+  await expect(page.getByRole("button", { name: "去导入资料" })).toBeVisible();
 
   await expectNoHorizontalOverflow(page);
 });

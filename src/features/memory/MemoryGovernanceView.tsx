@@ -1,5 +1,17 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ExternalLink, FileUp, GitMerge, Inbox, Lock, Pencil, ShieldAlert, Trash2, X } from "lucide-react";
+import {
+  Check,
+  ExternalLink,
+  FileUp,
+  GitMerge,
+  Inbox,
+  Lock,
+  Pencil,
+  ShieldAlert,
+  Sparkles,
+  Trash2,
+  X
+} from "lucide-react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import { RawMaterialViewer } from "../notes/RawMaterialViewer";
 import type { InterviewRawMaterial, ProductState } from "../../domain/types";
@@ -9,14 +21,13 @@ interface MemoryGovernanceViewProps {
   state: ProductState;
   importing: boolean;
   onImport: (title: string, content: string) => void;
-onApprove: (candidateId: string, mode?: "merge" | "add") => void;
+  onApprove: (candidateId: string, mode?: "merge" | "add") => void;
   onReject: (candidateId: string) => void;
   onEditCandidate: (candidateId: string, text: string) => void;
   onDeprecate: (recordId: string) => void;
   onDeleteRecord: (recordId: string) => void;
   onEditRecord: (recordId: string, text: string) => void;
   onConsolidate: () => void | Promise<void>;
-  // 透传给 RawMaterialViewer 的原文出处能力（Task 12 跳转）。
   onAddAnnotation: (sessionId: string, turnId: string, text: string) => void;
   onRemoveAnnotation: (id: string) => void;
   getRawMaterial: (sessionId: string) => Promise<InterviewRawMaterial | null>;
@@ -34,8 +45,6 @@ interface CandidateOp {
 }
 
 const MAX_IMPORT_CHARS = 20000;
-// 回归审查 R7-F2:对齐后端 memory-records MEMORY_TEXT_MAX_CHARS(16KB)。前端 textarea 硬限 maxLength +
-// 字数提示,避免用户写超长文本、提交后才被后端 422 拒(白写一大段)。
 const MEMORY_TEXT_MAX_CHARS = 16 * 1024;
 
 function SensitiveIcon() {
@@ -43,7 +52,8 @@ function SensitiveIcon() {
     <ShieldAlert
       size={16}
       aria-label="敏感内容，默认不写入上下文"
-      className="icon-sensitive" />
+      className="icon-sensitive"
+    />
   );
 }
 
@@ -69,38 +79,27 @@ export function MemoryGovernanceView({
   const [content, setContent] = useState("");
   const [contentError, setContentError] = useState("");
   const [consolidating, setConsolidating] = useState(false);
-
-  // per-candidate inline edit: id -> draft text (null = not editing)
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftText, setDraftText] = useState("");
-
-  // per-record inline edit (confirmed long-term memory): id -> draft text (null = not editing)
   const [editingRecordId, setEditingRecordId] = useState<string | null>(null);
   const [draftRecordText, setDraftRecordText] = useState("");
-
-  // brief "已保存" feedback after save
   const [savedId, setSavedId] = useState<string | null>(null);
-
-  // per-candidate action states
   const [candidateOps, setCandidateOps] = useState<Record<string, CandidateOp>>({});
-
-  // Task 12: "查看原文出处" overlay — 渲染 RawMaterialViewer 并定位到锚点轮。
   const [sourceOverlay, setSourceOverlay] = useState<{ sessionId: string; turnId: string } | null>(null);
+  const [importExpanded, setImportExpanded] = useState(true);
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const recordTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const importSectionRef = useRef<HTMLElement | null>(null);
 
-  // Auto-focus textarea when entering edit mode
   useEffect(() => {
     if (editingId && textareaRef.current) {
       textareaRef.current.focus();
-      // place cursor at end
       const len = textareaRef.current.value.length;
       textareaRef.current.setSelectionRange(len, len);
     }
   }, [editingId]);
 
-  // Auto-focus record textarea when entering record edit mode
   useEffect(() => {
     if (editingRecordId && recordTextareaRef.current) {
       recordTextareaRef.current.focus();
@@ -109,7 +108,6 @@ export function MemoryGovernanceView({
     }
   }, [editingRecordId]);
 
-  // Auto-clear "已保存" feedback after 1.5s
   useEffect(() => {
     if (!savedId) return;
     const t = setTimeout(() => setSavedId(null), 1500);
@@ -118,9 +116,12 @@ export function MemoryGovernanceView({
 
   const pending = state.memoryCandidates.filter((c) => c.status === "pending");
   const confirmed = state.memoryRecords.filter((r) => r.status === "confirmed");
+  const sensitiveCount =
+    pending.filter((c) => c.sensitivity === "sensitive").length +
+    confirmed.filter((r) => r.sensitivity === "sensitive").length;
+  const bothEmpty = pending.length === 0 && confirmed.length === 0;
+  const canImport = Boolean(content.trim()) && content.length <= MAX_IMPORT_CHARS && !importing;
 
-  // M2 (Task 6): resolve a candidate's dedup hint to the confirmed record it
-  // resembles, so the reviewer can decide to merge or still add it as new.
   const recordTextById = new Map(confirmed.map((r) => [r.id, r.text] as const));
   function dedupHint(candidate: (typeof pending)[number]): string | null {
     if (candidate.suggestedUpdate !== "update" || !candidate.similarToRecordId) return null;
@@ -138,6 +139,15 @@ export function MemoryGovernanceView({
       ...prev,
       [id]: { ...getOp(id), ...patch }
     }));
+  }
+
+  function focusImport() {
+    setImportExpanded(true);
+    requestAnimationFrame(() => {
+      importSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      const el = document.getElementById("memory-import-content") as HTMLTextAreaElement | null;
+      el?.focus();
+    });
   }
 
   function handleImport() {
@@ -185,7 +195,6 @@ export function MemoryGovernanceView({
     } catch {
       setOp(candidateId, { save: "error" });
     } finally {
-      // Always close edit mode regardless of outcome
       setEditingId(null);
       setDraftText("");
     }
@@ -207,8 +216,6 @@ export function MemoryGovernanceView({
       cancelEditRecord();
       return;
     }
-    // 回归审查 R7-F3:await 保存并吞掉 rejection(onEditRecord 在 App 层已 surface 成败 notice),
-    // 避免未处理的 promise rejection;无论成败都关闭编辑态(对齐 handleSave 的 try/finally)。
     try {
       await Promise.resolve(onEditRecord(recordId, next));
     } finally {
@@ -217,7 +224,7 @@ export function MemoryGovernanceView({
     }
   }
 
-async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge") {
+  async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge") {
     setOp(candidateId, { approve: "loading" });
     try {
       await Promise.resolve(onApprove(candidateId, mode));
@@ -237,325 +244,425 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
     }
   }
 
+  const consolidateButton =
+    confirmed.length >= 2 ? (
+      <button
+        type="button"
+        className={consolidating ? "secondary-action btn-loading" : "secondary-action"}
+        disabled={consolidating}
+        title="合并近重复的记忆，保留更重要的一条"
+        onClick={async () => {
+          setConsolidating(true);
+          try {
+            await onConsolidate();
+          } finally {
+            setConsolidating(false);
+          }
+        }}
+      >
+        {consolidating ? <span className="spinner" aria-hidden="true" /> : <GitMerge size={16} aria-hidden="true" />}
+        {consolidating ? "整理中…" : "整理记忆"}
+      </button>
+    ) : null;
+
   return (
-    <section className="view-stack">
+    <section className="view-stack memory-view">
       <HeaderBlock
         eyebrow="记忆治理"
         title="导入资料，审核长期记忆"
-        subtitle="导入的资料会抽取成候选记忆；只有你确认后才进入长期记忆。敏感内容默认不写入上下文。" />
+        subtitle="导入或专访后产生候选；你确认后才进入长期记忆。敏感内容默认不写入上下文。"
+      />
 
-      {/* Import card — 单列 form-card，修复 record-row 双列重叠问题 */}
-      <div className="form-card">
-        <div className="form-row">
-          <label className="field-label" htmlFor="memory-import-title">资料标题</label>
-          <input
-            id="memory-import-title"
-            type="text"
-            value={title}
-            placeholder="例如：我的产品笔记 / 一篇访谈稿"
-            onChange={(e) => setTitle(e.target.value)} />
-        </div>
-        <div className="form-row">
-          <label className="field-label" htmlFor="memory-import-content">
-            资料内容（粘贴文本，或读取 .txt/.md 文件）
-          </label>
-          <textarea
-            id="memory-import-content"
-            rows={6}
-            value={content}
-            placeholder="把要导入的资料粘贴到这里…"
-            onChange={(e) => handleContentChange(e.target.value)}
-            aria-describedby={contentError ? "import-content-error" : undefined} />
-          {content.length > 0 && (
-            <span className="char-count">{content.length.toLocaleString()} / {MAX_IMPORT_CHARS.toLocaleString()} 字</span>
-          )}
-          {contentError && (
-            <p id="import-content-error" className="form-error">
-              {contentError}
-            </p>
-          )}
-        </div>
-        <div className="form-actions">
-          <label className="secondary-action file-button">
-            <FileUp size={16} />选择 .txt/.md 文件
-            <input
-              type="file"
-              accept=".txt,.md,.markdown,text/plain"
-              className="sr-only"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (!file) return;
-                if (!title.trim()) setTitle(file.name.replace(/\.[^.]+$/, ""));
-                file.text().then((text) => handleContentChange(text));
-              }} />
-          </label>
+      <div className="config-hint memory-stats" aria-label="记忆库存">
+        <span className={pending.length > 0 ? "is-emphasis" : undefined}>待审 {pending.length}</span>
+        <span>已确认 {confirmed.length}</span>
+        {sensitiveCount > 0 && <span className="is-warning">敏感 {sensitiveCount}</span>}
+      </div>
+
+      <section
+        ref={importSectionRef}
+        className={`panel memory-import${importExpanded ? " is-open" : ""}`}
+      >
+        <div className="panel-title row-between">
+          <div className="row">
+            <FileUp size={18} aria-hidden="true" />
+            <h2>导入资料</h2>
+          </div>
           <button
-            className={`primary-action${importing ? " btn-loading" : ""}`}
             type="button"
-            disabled={importing || !content.trim() || content.length > MAX_IMPORT_CHARS}
-            onClick={handleImport}
-            aria-busy={importing}
->
-            {importing && <span className="spinner" aria-hidden="true" />}
-            <FileUp size={16} />
-            {importing ? "抽取中…" : "导入并抽取候选记忆"}
+            className="text-button"
+            onClick={() => setImportExpanded((v) => !v)}
+            aria-expanded={importExpanded}
+          >
+            {importExpanded ? "收起" : "展开"}
           </button>
         </div>
-      </div>
 
-      {/* Pending candidates */}
-      <div className="record-list">
-        <h2>待审候选记忆（{pending.length}）</h2>
-        {pending.length === 0 ? (
-          <div className="empty-state">
-            <span className="empty-icon"><Inbox size={32} /></span>
-            <p>暂无待审候选。导入资料或完成一次专访后会产生候选记忆。</p>
-          </div>
-        ) : (
-          pending.map((candidate) => {
-            const op = getOp(candidate.id);
-            const isEditing = editingId === candidate.id;
-            const isApproving = op.approve === "loading";
-            const isRejecting = op.reject === "loading";
-            const isSaving = op.save === "loading";
-            const anyLoading = isApproving || isRejecting || isSaving;
-            const justSaved = savedId === candidate.id;
-            const hint = dedupHint(candidate);
-
-            return (
-              <article
-                className={`record-row${isEditing ? " edit-active" : ""}`}
-                key={candidate.id}
->
-                <div className="record-main">
-                  <span className="label">
-                    评分 {candidate.reviewScore} &middot;{" "}
-                    {candidate.sensitivity === "sensitive" ? (
-                      <>
-                        <SensitiveIcon />
-                        敏感（默认不入上下文）
-                      </>
-                    ) : (
-                      "普通"
-                    )}
-                    {" "}&middot; 来源 {candidate.sourceType}
-                  </span>
-                  <p>{candidate.text}</p>
-                  {candidate.evidenceQuote && (
-                    <div className="quote-line">"{candidate.evidenceQuote}"</div>
-                  )}
-                  {candidate.reviewSignals?.length > 0 && (
-                    <span className="label">{candidate.reviewSignals.join(" · ")}</span>
-                  )}
-                  {hint && (
-                    <div className="dedup-hint">
-                      <GitMerge size={14} aria-hidden="true" className="icon-inline" />
-                      <span>
-                        似已有记忆：<em>{hint}</em> —— 可合并或仍新增。
-                      </span>
-                    </div>
-                  )}
-                  {justSaved && (
-                    <span className="label hint-saved">已保存</span>
-                  )}
-
-                  {/* Inline edit area */}
-                  {isEditing && (
-                    <div className="stack-sm mt-3">
-                      <label className="field-label" htmlFor={`edit-candidate-${candidate.id}`}>
-                        修正内容（{draftText.length} / {MEMORY_TEXT_MAX_CHARS} 字）
-                      </label>
-                      <textarea
-                        id={`edit-candidate-${candidate.id}`}
-                        ref={textareaRef}
-                        rows={4}
-                        maxLength={MEMORY_TEXT_MAX_CHARS}
-                        value={draftText}
-                        onChange={(e) => setDraftText(e.target.value)}
-                        aria-label="修正候选记忆内容" />
-                      <div className="note-actions">
-                        <button
-                          className={`primary-action${isSaving ? " btn-loading" : ""}`}
-                          type="button"
-                          disabled={isSaving || !draftText.trim()}
-                          onClick={() => handleSave(candidate.id, candidate.text)}
-                          aria-busy={isSaving}
->
-                          {isSaving && <span className="spinner" aria-hidden="true" />}
-                          <Check size={16} />保存修正
-                        </button>
-                        <button
-                          className="secondary-action"
-                          type="button"
-                          disabled={isSaving}
-                          onClick={cancelEdit}>
-                          <X size={16} />取消
-                        </button>
-                      </div>
-                    </div>
+        {importExpanded && (
+          <div className="memory-import-body">
+            <p className="field-help mb-3">
+              粘贴笔记、访谈稿或上传 .txt/.md。系统会抽取候选记忆，供你逐条审核。
+            </p>
+            <div className="memory-import-grid">
+              <label className="field-stack" htmlFor="memory-import-title">
+                <span className="field-label">资料标题</span>
+                <input
+                  id="memory-import-title"
+                  type="text"
+                  value={title}
+                  placeholder="例如：我的产品笔记 / 一篇访谈稿"
+                  onChange={(e) => setTitle(e.target.value)}
+                />
+              </label>
+              <label className="field-stack span-all" htmlFor="memory-import-content">
+                <span className="field-label">资料内容</span>
+                <textarea
+                  id="memory-import-content"
+                  rows={7}
+                  value={content}
+                  placeholder="把要导入的资料粘贴到这里…"
+                  onChange={(e) => handleContentChange(e.target.value)}
+                  aria-describedby={contentError ? "import-content-error" : undefined}
+                />
+                <div className="row-between">
+                  <span className="field-help">支持粘贴文本，或读取 .txt / .md 文件</span>
+                  {content.length > 0 && (
+                    <span className={`char-count${content.length > MAX_IMPORT_CHARS ? " is-danger" : ""}`}>
+                      {content.length.toLocaleString()} / {MAX_IMPORT_CHARS.toLocaleString()} 字
+                    </span>
                   )}
                 </div>
-
-{!isEditing && (
-                  <div className="note-actions">
-                    <button
-                      className={`primary-action${isApproving ? " btn-loading" : ""}`}
-                      type="button"
-                      disabled={anyLoading}
-                      onClick={() => handleApprove(candidate.id, hint ? "merge" : "add")}
-                      aria-busy={isApproving}
-                      title={hint ? "合并到近重复的既有记忆（保留本条文案）" : "新增一条已确认记忆"}
->
-                      {isApproving && <span className="spinner" aria-hidden="true" />}
-                      <Check size={16} />{hint ? "合并记住" : "确认记住"}
-                    </button>
-                    {hint && (
-                      <button
-                        className="secondary-action"
-                        type="button"
-                        disabled={anyLoading}
-                        onClick={() => handleApprove(candidate.id, "add")}
-                        title="不合并，作为新的独立记忆写入"
->
-                        <GitMerge size={16} />仍新增
-                      </button>
-                    )}
-                    <button
-                      className="secondary-action"
-                      type="button"
-                      disabled={anyLoading}
-                      onClick={() => startEdit(candidate.id, candidate.text)}>
-                      <Pencil size={16} />修正
-                    </button>
-                    <button
-                      className={`secondary-action${isRejecting ? " btn-loading" : ""}`}
-                      type="button"
-                      disabled={anyLoading}
-                      onClick={() => handleReject(candidate.id)}
-                      aria-busy={isRejecting}
->
-                      {isRejecting && <span className="spinner" aria-hidden="true" />}
-                      <X size={16} />不要记
-                    </button>
-                  </div>
+                {contentError && (
+                  <p id="import-content-error" className="form-error field-error">
+                    {contentError}
+                  </p>
                 )}
-              </article>
-            );
-          })
+              </label>
+            </div>
+            <div className="form-actions">
+              <label className="secondary-action file-button">
+                <FileUp size={16} />
+                选择 .txt/.md 文件
+                <input
+                  type="file"
+                  accept=".txt,.md,.markdown,text/plain"
+                  className="sr-only"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    if (!title.trim()) setTitle(file.name.replace(/\.[^.]+$/, ""));
+                    file.text().then((text) => handleContentChange(text));
+                  }}
+                />
+              </label>
+              <button
+                className={`primary-action${importing ? " btn-loading" : ""}`}
+                type="button"
+                disabled={!canImport}
+                onClick={handleImport}
+                aria-busy={importing}
+              >
+                {importing && <span className="spinner" aria-hidden="true" />}
+                <Sparkles size={16} />
+                {importing ? "抽取中…" : "导入并抽取候选记忆"}
+              </button>
+            </div>
+          </div>
         )}
-      </div>
+      </section>
 
-      {/* Confirmed records — 真双列布局（左内容右操作），保留 record-row */}
-      <div className="record-list">
-        <div className="row-between">
-          <h2>已确认的长期记忆（{confirmed.length}）</h2>
-          {confirmed.length >= 2 && (
-            <button
-              type="button"
-              className={consolidating ? "secondary-action btn-loading" : "secondary-action"}
-              disabled={consolidating}
-              title="合并近重复的记忆，保留更重要的一条"
-              onClick={async () => {
-                setConsolidating(true);
-                try {
-                  await onConsolidate();
-                } finally {
-                  setConsolidating(false);
-                }
-              }}
->
-              {consolidating ? <span className="spinner" /> : <GitMerge size={16} aria-hidden="true" />}
-              {consolidating ? "整理中…" : "整理记忆"}
+      {bothEmpty ? (
+        <section className="panel empty-state memory-empty">
+          <div className="memory-empty-icon" aria-hidden="true">
+            <Inbox size={28} />
+          </div>
+          <h3 className="memory-empty-title">还没有记忆可治理</h3>
+          <p>暂无待审候选。导入资料或完成一次专访后会产生候选记忆。</p>
+          <p>还没有确认的长期记忆。审批候选记忆后，它们会出现在这里。</p>
+          <div className="empty-cta">
+            <button type="button" className="primary-action" onClick={focusImport}>
+              <FileUp size={16} />
+              去导入资料
             </button>
-          )}
-        </div>
-        {confirmed.length === 0 ? (
-          <div className="empty-state">
-            <span className="empty-icon"><Lock size={32} /></span>
-            <p>还没有确认的长期记忆。审批候选记忆后，它们会出现在这里。</p>
           </div>
-        ) : (
-          confirmed.map((record) => {
-            const isEditingRecord = editingRecordId === record.id;
-            return (
-            <article className={`record-row${isEditingRecord ? " edit-active" : ""}`} key={record.id}>
-              <div className="record-main">
-                <span className="label">
-                  {record.sensitivity === "sensitive" && (
-                    <>
-                      <SensitiveIcon />
-                      敏感 &middot;{" "}
-                    </>
-                  )}
-                  来源 {record.sourceType}
-                </span>
-                <p>{record.text}</p>
-                {record.evidenceQuote && (
-                  <div className="quote-line">"{record.evidenceQuote}"</div>
-                )}
-
-                {/* Inline edit area — 复用候选记忆同款 textarea + 保存/取消模式 */}
-                {isEditingRecord && (
-                  <div className="stack-sm mt-3">
-                    <label className="field-label" htmlFor={`edit-record-${record.id}`}>
-                      修正内容（{draftRecordText.length} / {MEMORY_TEXT_MAX_CHARS} 字）
-                    </label>
-                    <textarea
-                      id={`edit-record-${record.id}`}
-                      ref={recordTextareaRef}
-                      rows={4}
-                      maxLength={MEMORY_TEXT_MAX_CHARS}
-                      value={draftRecordText}
-                      onChange={(e) => setDraftRecordText(e.target.value)}
-                      aria-label="修正长期记忆内容" />
-                    <div className="note-actions">
-                      <button
-                        className="primary-action"
-                        type="button"
-                        disabled={!draftRecordText.trim()}
-                        onClick={() => handleSaveRecord(record.id, record.text)}>
-                        <Check size={16} />保存修正
-                      </button>
-                      <button className="secondary-action" type="button" onClick={cancelEditRecord}>
-                        <X size={16} />取消
-                      </button>
-                    </div>
-                  </div>
-                )}
+          <p className="field-help">也可以先去做一场实时专访，结束后回来审核候选。</p>
+        </section>
+      ) : (
+        <>
+          <section className="memory-section">
+            <div className="memory-section-head">
+              <div>
+                <h2>待审候选记忆（{pending.length}）</h2>
+                <p className="field-help">优先处理这里。确认后进入长期记忆；不要记则丢弃。</p>
               </div>
-              {!isEditingRecord && (
-                <div className="note-actions">
-                  {record.evidenceAnchors && record.evidenceAnchors.length > 0 && (
-                    <button
-                      className="secondary-action"
-                      type="button"
-                      title="打开这条记忆所依据的原始对话"
-                      onClick={() => {
-                        const anchor = record.evidenceAnchors![0];
-                        setSourceOverlay({ sessionId: anchor.sessionId, turnId: anchor.turnId });
-                      }}
->
-                      <ExternalLink size={16} />查看原文出处
-                    </button>
-                  )}
-                  <button className="secondary-action" type="button" onClick={() => startEditRecord(record.id, record.text)}>
-                    <Pencil size={16} />编辑
-                  </button>
-                  <button className="secondary-action" type="button" onClick={() => onDeprecate(record.id)}>
-                    撤销（停止引用）
-                  </button>
-                  <button className="secondary-action" type="button" onClick={() => onDeleteRecord(record.id)}>
-                    <Trash2 size={16} />删除
-                  </button>
-                </div>
+              {pending.length > 0 && (
+                <span className="status-pill is-tracked">需处理 {pending.length}</span>
               )}
-            </article>
-            );
-          })
-        )}
-      </div>
+            </div>
 
-      {/* Task 12: 原文出处弹层 */}
+            {pending.length === 0 ? (
+              <div className="panel empty-state memory-empty is-compact">
+                <span className="empty-icon" aria-hidden="true">
+                  <Inbox size={28} />
+                </span>
+                <p>暂无待审候选。导入资料或完成一次专访后会产生候选记忆。</p>
+              </div>
+            ) : (
+              <div className="memory-card-list">
+                {pending.map((candidate) => {
+                  const op = getOp(candidate.id);
+                  const isEditing = editingId === candidate.id;
+                  const isApproving = op.approve === "loading";
+                  const isRejecting = op.reject === "loading";
+                  const isSaving = op.save === "loading";
+                  const anyLoading = isApproving || isRejecting || isSaving;
+                  const justSaved = savedId === candidate.id;
+                  const hint = dedupHint(candidate);
+
+                  return (
+                    <article
+                      className={`memory-card record-row${isEditing ? " edit-active" : ""}`}
+                      key={candidate.id}
+                    >
+                      <div className="record-main memory-card-main">
+                        <div className="memory-card-meta">
+                          <span className="status-pill">评分 {candidate.reviewScore}</span>
+                          {candidate.sensitivity === "sensitive" ? (
+                            <span className="status-pill is-stale">
+                              <SensitiveIcon />
+                              敏感 · 默认不入上下文
+                            </span>
+                          ) : (
+                            <span className="status-pill">普通</span>
+                          )}
+                          <span className="status-pill">来源 {candidate.sourceType}</span>
+                          {justSaved && <span className="label hint-saved">已保存</span>}
+                        </div>
+                        <p className="memory-card-text">{candidate.text}</p>
+                        {candidate.evidenceQuote && (
+                          <div className="quote-line">&quot;{candidate.evidenceQuote}&quot;</div>
+                        )}
+                        {candidate.reviewSignals?.length > 0 && (
+                          <span className="label">{candidate.reviewSignals.join(" · ")}</span>
+                        )}
+                        {hint && (
+                          <div className="dedup-hint">
+                            <GitMerge size={14} aria-hidden="true" className="icon-inline" />
+                            <span>
+                              似已有记忆：<em>{hint}</em> —— 可合并或仍新增。
+                            </span>
+                          </div>
+                        )}
+
+                        {isEditing && (
+                          <div className="stack-sm mt-3 memory-edit-box">
+                            <label className="field-label" htmlFor={`edit-candidate-${candidate.id}`}>
+                              修正内容（{draftText.length} / {MEMORY_TEXT_MAX_CHARS} 字）
+                            </label>
+                            <textarea
+                              id={`edit-candidate-${candidate.id}`}
+                              ref={textareaRef}
+                              rows={4}
+                              maxLength={MEMORY_TEXT_MAX_CHARS}
+                              value={draftText}
+                              onChange={(e) => setDraftText(e.target.value)}
+                              aria-label="修正候选记忆内容"
+                            />
+                            <div className="note-actions">
+                              <button
+                                className={`primary-action${isSaving ? " btn-loading" : ""}`}
+                                type="button"
+                                disabled={isSaving || !draftText.trim()}
+                                onClick={() => handleSave(candidate.id, candidate.text)}
+                                aria-busy={isSaving}
+                              >
+                                {isSaving && <span className="spinner" aria-hidden="true" />}
+                                <Check size={16} />
+                                保存修正
+                              </button>
+                              <button
+                                className="secondary-action"
+                                type="button"
+                                disabled={isSaving}
+                                onClick={cancelEdit}
+                              >
+                                <X size={16} />
+                                取消
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {!isEditing && (
+                        <div className="note-actions memory-card-actions">
+                          <button
+                            className={`primary-action${isApproving ? " btn-loading" : ""}`}
+                            type="button"
+                            disabled={anyLoading}
+                            onClick={() => handleApprove(candidate.id, hint ? "merge" : "add")}
+                            aria-busy={isApproving}
+                            title={hint ? "合并到近重复的既有记忆（保留本条文案）" : "新增一条已确认记忆"}
+                          >
+                            {isApproving && <span className="spinner" aria-hidden="true" />}
+                            <Check size={16} />
+                            {hint ? "合并记住" : "确认记住"}
+                          </button>
+                          {hint && (
+                            <button
+                              className="secondary-action"
+                              type="button"
+                              disabled={anyLoading}
+                              onClick={() => handleApprove(candidate.id, "add")}
+                              title="不合并，作为新的独立记忆写入"
+                            >
+                              <GitMerge size={16} />
+                              仍新增
+                            </button>
+                          )}
+                          <button
+                            className="secondary-action"
+                            type="button"
+                            disabled={anyLoading}
+                            onClick={() => startEdit(candidate.id, candidate.text)}
+                          >
+                            <Pencil size={16} />
+                            修正
+                          </button>
+                          <button
+                            className={`secondary-action${isRejecting ? " btn-loading" : ""}`}
+                            type="button"
+                            disabled={anyLoading}
+                            onClick={() => handleReject(candidate.id)}
+                            aria-busy={isRejecting}
+                          >
+                            {isRejecting && <span className="spinner" aria-hidden="true" />}
+                            <X size={16} />
+                            不要记
+                          </button>
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          <section className="memory-section">
+            <div className="memory-section-head">
+              <div>
+                <h2>已确认的长期记忆（{confirmed.length}）</h2>
+                <p className="field-help">写入后可被专访召回。可编辑、撤销引用或删除。</p>
+              </div>
+              {consolidateButton}
+            </div>
+
+            {confirmed.length === 0 ? (
+              <div className="panel empty-state memory-empty is-compact">
+                <span className="empty-icon" aria-hidden="true">
+                  <Lock size={28} />
+                </span>
+                <p>还没有确认的长期记忆。审批候选记忆后，它们会出现在这里。</p>
+              </div>
+            ) : (
+              <div className="memory-card-list">
+                {confirmed.map((record) => {
+                  const isEditingRecord = editingRecordId === record.id;
+                  return (
+                    <article
+                      className={`memory-card record-row${isEditingRecord ? " edit-active" : ""}`}
+                      key={record.id}
+                    >
+                      <div className="record-main memory-card-main">
+                        <div className="memory-card-meta">
+                          {record.sensitivity === "sensitive" && (
+                            <span className="status-pill is-stale">
+                              <SensitiveIcon />
+                              敏感
+                            </span>
+                          )}
+                          <span className="status-pill">来源 {record.sourceType}</span>
+                        </div>
+                        <p className="memory-card-text">{record.text}</p>
+                        {record.evidenceQuote && (
+                          <div className="quote-line">&quot;{record.evidenceQuote}&quot;</div>
+                        )}
+
+                        {isEditingRecord && (
+                          <div className="stack-sm mt-3 memory-edit-box">
+                            <label className="field-label" htmlFor={`edit-record-${record.id}`}>
+                              修正内容（{draftRecordText.length} / {MEMORY_TEXT_MAX_CHARS} 字）
+                            </label>
+                            <textarea
+                              id={`edit-record-${record.id}`}
+                              ref={recordTextareaRef}
+                              rows={4}
+                              maxLength={MEMORY_TEXT_MAX_CHARS}
+                              value={draftRecordText}
+                              onChange={(e) => setDraftRecordText(e.target.value)}
+                              aria-label="修正长期记忆内容"
+                            />
+                            <div className="note-actions">
+                              <button
+                                className="primary-action"
+                                type="button"
+                                disabled={!draftRecordText.trim()}
+                                onClick={() => handleSaveRecord(record.id, record.text)}
+                              >
+                                <Check size={16} />
+                                保存修正
+                              </button>
+                              <button className="secondary-action" type="button" onClick={cancelEditRecord}>
+                                <X size={16} />
+                                取消
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                      {!isEditingRecord && (
+                        <div className="note-actions memory-card-actions">
+                          {record.evidenceAnchors && record.evidenceAnchors.length > 0 && (
+                            <button
+                              className="secondary-action"
+                              type="button"
+                              title="打开这条记忆所依据的原始对话"
+                              onClick={() => {
+                                const anchor = record.evidenceAnchors![0];
+                                setSourceOverlay({ sessionId: anchor.sessionId, turnId: anchor.turnId });
+                              }}
+                            >
+                              <ExternalLink size={16} />
+                              查看原文出处
+                            </button>
+                          )}
+                          <button
+                            className="secondary-action"
+                            type="button"
+                            onClick={() => startEditRecord(record.id, record.text)}
+                          >
+                            <Pencil size={16} />
+                            编辑
+                          </button>
+                          <button className="secondary-action" type="button" onClick={() => onDeprecate(record.id)}>
+                            撤销（停止引用）
+                          </button>
+                          <button className="secondary-action" type="button" onClick={() => onDeleteRecord(record.id)}>
+                            <Trash2 size={16} />
+                            删除
+                          </button>
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        </>
+      )}
+
       {sourceOverlay && (
         <div
           role="dialog"
@@ -563,7 +670,7 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
           aria-label="原文出处"
           className="modal-overlay"
           onClick={() => setSourceOverlay(null)}
->
+        >
           <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
             <div className="row-between">
               <h2 className="panel-subhead">原文出处</h2>
@@ -571,7 +678,8 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
                 className="icon-button"
                 type="button"
                 aria-label="关闭原文出处"
-                onClick={() => setSourceOverlay(null)}>
+                onClick={() => setSourceOverlay(null)}
+              >
                 <X size={18} />
               </button>
             </div>
@@ -584,7 +692,8 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
               getRawMaterial={getRawMaterial}
               getAudioMeta={getAudioMeta}
               audioUrl={audioUrl}
-              getAudioBlob={getAudioBlob} />
+              getAudioBlob={getAudioBlob}
+            />
           </div>
         </div>
       )}

@@ -4510,6 +4510,184 @@ html[data-theme="light"] .sidebar {
 }
 
 
+/* ── Memory governance page ───────────────────────────────────── */
+.memory-view .page-header {
+  align-items: flex-end;
+}
+
+.memory-stats {
+  margin-top: calc(var(--space-2) * -1);
+}
+
+.memory-stats .is-emphasis {
+  background: var(--primary-a12);
+  color: var(--action-primary);
+}
+
+.config-hint span.is-emphasis {
+  background: var(--primary-a12);
+  color: var(--action-primary);
+}
+
+.memory-import {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.memory-import > .panel-title {
+  margin-bottom: 0;
+}
+
+.memory-import-body {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.memory-import-grid {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.memory-import-grid .span-all {
+  grid-column: 1 / -1;
+}
+
+.memory-import .form-actions {
+  justify-content: flex-start;
+}
+
+.memory-section {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.memory-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.memory-section-head h2 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-title);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+}
+
+.memory-section-head .field-help {
+  margin: 0;
+  max-width: 52ch;
+}
+
+.memory-card-list {
+  display: grid;
+  gap: var(--space-3);
+}
+
+/* Memory cards: content stack + actions footer (override generic record-row 2-col) */
+.memory-card.record-row {
+  grid-template-columns: 1fr;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.memory-card.record-row:hover {
+  border-color: color-mix(in srgb, var(--action-primary) 28%, var(--border-default));
+  box-shadow: var(--shadow-panel);
+}
+
+.memory-card-main {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  min-width: 0;
+}
+
+.memory-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.memory-card-text {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 1rem;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.memory-card-actions.note-actions {
+  grid-column: auto;
+  margin: 0;
+  padding: var(--space-3) var(--space-5);
+  border-top: 1px solid var(--border-default);
+  background: var(--surface-muted);
+}
+
+.memory-edit-box {
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  background: var(--surface-muted);
+}
+
+.memory-empty {
+  min-height: 220px;
+  gap: var(--space-3);
+  border-style: dashed;
+  background:
+    radial-gradient(circle at top, var(--primary-a08), transparent 55%),
+    var(--surface-panel);
+}
+
+.memory-empty.is-compact {
+  min-height: 140px;
+}
+
+.memory-empty-icon {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 16px;
+  background: var(--primary-a10);
+  color: var(--action-primary);
+  border: 1px solid var(--primary-a20);
+}
+
+.memory-empty-title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.memory-empty p {
+  max-width: 44ch;
+}
+
+.char-count.is-danger {
+  color: var(--status-danger-fg);
+  font-weight: 700;
+}
+
+@media (max-width: 760px) {
+  .memory-section-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .memory-card-actions.note-actions {
+    padding: var(--space-3);
+  }
+}
+
 /* ── Search intelligence page ─────────────────────────────────── */
 .search-view .page-header .primary-action {
   flex: 0 0 auto;
