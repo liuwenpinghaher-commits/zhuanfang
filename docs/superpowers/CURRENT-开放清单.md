@@ -118,7 +118,7 @@
 | 双轨笔记工作流生产冒烟 | **closed · archived** · PASS · `2026-08-01-notes-workflow-smoke.md` + `scripts/notes-workflow-smoke.mjs` |
 | 素材库原料车间（URL 同步、导入结果/审核闭环、列表经营、真实错误） | **closed · archived** · `38199901` · 见 `2026-08-01-material-library-optimization-report.md` |
 | 素材库端到端业务质量验证 | **closed · archived · PASS** · `f31f6d4a` · `2026-08-01-material-library-final-audit.md` + `scripts/material-workflow-smoke.mjs` · 生产已部署 |
-| 2026-08-01 页面经营台会话收口（主题线+笔记+素材库） | **closed · archived** · tip `1ae921a6` · 见 `2026-08-01-session-final-report.md` · ARCHIVE §0.10 |
+| 2026-08-01 页面经营台会话收口（主题线+笔记+素材库） | **closed · archived** · tip `93e855b2` · 见 `2026-08-01-session-final-report.md` · ARCHIVE §0.10 |
 
 ## 验收
 

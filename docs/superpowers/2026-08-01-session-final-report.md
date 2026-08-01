@@ -1,6 +1,7 @@
 # 项目会话最终报告（2026-08-01）
 
-> **会话收口 tip：** `main` @ `1ae921a6`（== `origin/main`）  
+> **会话收口 tip：** `main` @ `93e855b2`（会话正文归档）  
+> **后续：** 文档 SHA 漂移已校正（历史素材归档 `4ca1b16b` 已恢复；见 commit 时间线）  
 > **基线起点（本会话前）：** `53968623` home/interview residual closeout  
 > **生产：** `http://127.0.0.1:3210` · docker compose · health ok/ready  
 > **工作区：** 干净 · 本地冒烟临时文件已清 · open issues/milestones = 0  
@@ -47,7 +48,7 @@
 | --- | --- |
 | 功能 Commit | `38199901` feat: close material library workshop loops |
 | 审查 Commit | `f31f6d4a` final E2E audit PASS |
-| 归档/通知 | `1ae921a6` archive §0.9 + deploy notice |
+| 归档/通知 | `4ca1b16b` archive §0.9 + deploy notice |
 | 核心 | `?view=material` 同步；导入结果条+真实错误；去审核；记忆 focusSourceId；列表经营与开场 |
 | 报告 | optimization + **final-audit** + deploy-notice |
 | 冒烟 | `scripts/material-workflow-smoke.mjs` **PASS**（API 导入 200 + UI E2E） |
@@ -66,7 +67,9 @@
 8bf3d36f  archive notes §0.8
 38199901  material library workshop loops
 f31f6d4a  material final E2E audit PASS
-1ae921a6  archive material §0.9 + deploy notice  ← HEAD
+4ca1b16b  archive material §0.9 + deploy notice
+93e855b2  session final report + ARCHIVE §0.10  ← 会话 tip
+…         docs: correct tip/historical SHAs after amend
 ```
 
 ---
