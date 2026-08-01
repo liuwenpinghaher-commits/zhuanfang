@@ -128,8 +128,9 @@
 | 首问自动标题（API） | **closed** |
 | 跨模块预填 + 开专访 CTA | **closed** |
 | 报告 | `2026-08-01-asset-chat-optimization-report.md` |
+| 生产冒烟 | **PASS** · `2026-08-01-asset-chat-workflow-smoke.md` + `scripts/asset-chat-prod-smoke.mjs` |
 
-**§0.11 任务状态：实现完成 · 待部署/归档提交**
+**§0.11 任务状态：关闭 · 已部署 · 生产冒烟 PASS**
 
 
 ---
