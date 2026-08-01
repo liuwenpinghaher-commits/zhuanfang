@@ -1,3 +1,4 @@
+import { discardEmptyActiveInterviewSession } from "../../../../src/domain/lifecycle";
 import type { FastifyInstance } from "fastify";
 import {
   buildInterviewEnginePolicy,
@@ -711,6 +712,23 @@ export async function registerInterviewSessionRoutes(
 
   // Voice path: generate interaction pre_signals for the next turn on demand
   // (the realtime voice model, unlike the character model, doesn't emit them).
+  server.post("/api/interview-sessions/:id/discard", async (request, reply) => {
+    const state = repository.getState();
+    const session = findSession(state, getSessionId(request.params));
+    if (!session) {
+      return reply.code(404).send({ error: "Interview session not found." });
+    }
+    const nextState = discardEmptyActiveInterviewSession(state, session.id);
+    if (!nextState) {
+      return reply.code(422).send({
+        error: "只能移除尚未产生用户发言的进行中专访。有内容的会话请使用结束归档或「本次不保存」。"
+      });
+    }
+    const persisted = /*durable*/await replaceStateDurable(repository, nextState);
+    budget.reset(session.id);
+    return { state: persisted };
+  });
+
   server.post("/api/interview-sessions/:id/pre-signals", async (request, reply) => {
     const state = repository.getState();
     const session = findSession(state, getSessionId(request.params));

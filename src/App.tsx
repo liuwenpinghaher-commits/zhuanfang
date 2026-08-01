@@ -1455,8 +1455,42 @@ export default function App() {
       setNotice(buildNotice("warning", "无法继续", "这条未完成的专访已不存在或已结束。"));
       return;
     }
+    closeRealtimeVoiceSession();
+    setInterviewInput("");
+    setFailedTurnContent(null);
+    setPendingMode(target.mode);
     setSession(target);
     setView("interview");
+  }
+
+  async function discardEmptyInterview(sessionId: string) {
+    try {
+      const result = await productApiClient.discardInterviewSession(sessionId);
+      adoptServerState(result.state);
+      setApiPersistenceEnabled(true);
+      if (session?.id === sessionId) {
+        setSession(null);
+      }
+      setNotice(buildNotice("info", "已移除空场专访", "尚未产生对话的会话已清理。"));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "请稍后重试。";
+      // 后端不可达时本地乐观清理空壳，避免横幅长期占位
+      if (isNetworkError(err)) {
+        setApiPersistenceEnabled(false);
+        const next = productState.sessions.find((s) => s.id === sessionId);
+        const userTurns = next?.turns.filter((turn) => turn.role === "user").length ?? 0;
+        if (next?.status === "active" && userTurns === 0) {
+          setProductState({
+            ...productState,
+            sessions: productState.sessions.filter((s) => s.id !== sessionId)
+          });
+          if (session?.id === sessionId) setSession(null);
+          setNotice(buildNotice("warning", "已在本地移除空场（尚未同步）", message));
+          return;
+        }
+      }
+      setNotice(buildNotice("danger", "无法移除空场", message));
+    }
   }
 
   /** 一键开始：直接传参给 startInterview，不依赖 setState 后的值。 */
@@ -2936,7 +2970,7 @@ export default function App() {
             {notice.detail && <span>{notice.detail}</span>}
           </section>
         )}
-        {view !== "interview" && resumeCards.some((card) => session?.id !== card.sessionId) && (
+        {view !== "interview" && view !== "home" && resumeCards.some((card) => session?.id !== card.sessionId) && (
           <section className="resume-banner resume-session-picker" aria-label="未完成的专访">
             <div className="resume-banner-main">
               <span className="resume-banner-eyebrow">未完成的专访 · 共 {resumeCards.length} 场</span>
@@ -2964,7 +2998,13 @@ export default function App() {
             suggestedTopicHint={suggestedTopicHint}
             recommendedMode={recommendedLaunch.mode}
             recommendationReason={recommendedLaunch.reason}
+            resumeCards={resumeCards}
+            activeBriefId={activeSearchBriefId}
+            starting={startingInterview}
             onStart={(mode, topicHint) => launchInterview(mode, activeSearchBriefId, topicHint)}
+            onContinue={continueInterview}
+            onDiscardEmpty={(id) => void discardEmptyInterview(id)}
+            onClearBrief={() => setActiveSearchBriefId(undefined)}
             onOpenTrack={openTrack}
             onNavigate={(v) => setView(v as Parameters<typeof setView>[0])}
           />
@@ -2993,6 +3033,8 @@ export default function App() {
               }
             }}
             onStart={startInterview}
+            launchSearchBriefId={activeSearchBriefId}
+            launchTopicHint={suggestedTopicHint}
             onSubmit={submitTurn}
             onFinish={finishInterview}
             onControl={applyInterviewControl}

@@ -20,7 +20,9 @@ interface InterviewViewProps {
   voiceReviewItem?: { text: string; reason: string } | null;
   voiceTransport: "webrtc" | "websocket" | "livekit" | null;
   onInput: (value: string) => void;
-  onStart: (mode?: InterviewMode, searchBriefId?: string) => void;
+  onStart: (mode?: InterviewMode, searchBriefId?: string, topicHint?: string) => void;
+  launchSearchBriefId?: string;
+  launchTopicHint?: string;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onFinish: () => void;
   onControl: (action: InterviewControlAction) => void;
@@ -55,6 +57,8 @@ export function InterviewView({
   voiceTransport,
   onInput,
   onStart,
+  launchSearchBriefId,
+  launchTopicHint,
   onSubmit,
   onFinish,
   onControl,
@@ -97,7 +101,13 @@ export function InterviewView({
               <p>{card.sourceHighlights[0].snippet}</p>
             </div>
           )}
-          <button className="launch-action" type="button" onClick={() => onStart(pendingMode)} disabled={starting} aria-busy={starting}>
+          <button
+            className="launch-action"
+            type="button"
+            onClick={() => onStart(pendingMode, launchSearchBriefId, launchTopicHint)}
+            disabled={starting}
+            aria-busy={starting}
+          >
             <Play size={18} />{starting ? "正在准备…" : "开始专访"}
           </button>
         </div>

@@ -22,7 +22,9 @@ describe("HomeView 专访启动真值", () => {
     const onStart = vi.fn<(mode?: InterviewMode, topicHint?: string) => void>();
     renderHome(state, onStart);
 
-    const button = Array.from(container?.querySelectorAll("button") ?? []).find((item) => item.textContent?.includes("一键开始"));
+    const button = Array.from(container?.querySelectorAll("button") ?? []).find((item) =>
+      item.textContent?.includes("开始 · 长期主题") || item.textContent?.includes("一键开始 · 长期主题")
+    );
     act(() => button?.click());
 
     expect(container?.textContent).toContain("长期主题");

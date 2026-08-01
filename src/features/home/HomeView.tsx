@@ -1,8 +1,8 @@
-import { BookOpen, Clock, Plus, Play, Sparkles, Target, TrendingUp } from "lucide-react";
-import { useState } from "react";
+import { BookOpen, Clock, Plus, Play, Sparkles, Target, TrendingUp, X } from "lucide-react";
+import { useEffect, useState } from "react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import { buildTimeline } from "../../domain/timeline";
-import type { buildInterviewCard } from "../../domain/engine";
+import type { buildInterviewCard, buildInterviewResumeCards } from "../../domain/engine";
 import type { InterviewMode, ProductState } from "../../domain/types";
 
 const modeOptions: Array<{ id: InterviewMode; label: string; detail: string }> = [
@@ -42,14 +42,23 @@ function formatAt(iso: string): string {
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
+function modeLabel(id: InterviewMode): string {
+  return modeOptions.find((item) => item.id === id)?.label ?? id;
+}
+
 interface HomeViewProps {
   state: ProductState;
   card: ReturnType<typeof buildInterviewCard>;
   suggestedTopicHint?: string;
   recommendedMode?: InterviewMode;
   recommendationReason?: string;
-  // P3-08:曾有 monthlyReview prop 但组件从不消费(死 prop),已移除。复盘在 ThemesView 呈现。
+  resumeCards?: ReturnType<typeof buildInterviewResumeCards>;
+  activeBriefId?: string;
+  starting?: boolean;
   onStart: (mode?: InterviewMode, topicHint?: string) => void;
+  onContinue?: (sessionId: string) => void;
+  onDiscardEmpty?: (sessionId: string) => void;
+  onClearBrief?: () => void;
   onOpenTrack?: (themeId: string) => void;
   onNavigate?: (view: string) => void;
 }
@@ -60,14 +69,32 @@ export function HomeView({
   suggestedTopicHint = card.title,
   recommendedMode = "daily",
   recommendationReason = "先从最近发生的一件具体事情开始",
+  resumeCards = [],
+  activeBriefId,
+  starting = false,
   onStart,
+  onContinue,
+  onDiscardEmpty,
+  onClearBrief,
   onOpenTrack,
   onNavigate
 }: HomeViewProps) {
   const timelineEvents = buildTimeline(state, 20);
   const [topicInput, setTopicInput] = useState("");
+  const [selectedMode, setSelectedMode] = useState<InterviewMode>(recommendedMode);
+
+  useEffect(() => {
+    setSelectedMode(recommendedMode);
+  }, [recommendedMode]);
+
   const selectedTopic = topicInput.trim() || suggestedTopicHint;
-  const recommendedModeLabel = modeOptions.find((item) => item.id === recommendedMode)?.label ?? recommendedMode;
+  const selectedModeLabel = modeLabel(selectedMode);
+  const primaryResume = resumeCards[0];
+  const hasResume = resumeCards.length > 0;
+  const activeBrief = activeBriefId
+    ? state.searchBriefs.find((b) => b.id === activeBriefId)
+    : undefined;
+  const topTheme = [...state.themes].sort((a, b) => b.appearances - a.appearances)[0];
 
   function handleEventClick(ev: (typeof timelineEvents)[number]) {
     if (ev.href.view === "track" && ev.href.trackId) {
@@ -77,23 +104,88 @@ export function HomeView({
     }
   }
 
+  function startWithCurrent(mode: InterviewMode = selectedMode) {
+    if (starting) return;
+    onStart(mode, selectedTopic);
+  }
+
   return (
     <section className="view-stack">
+      {/* 有未完成：继续优先主卡 */}
+      {hasResume && primaryResume && (
+        <section className="panel resume-home-card" aria-label="继续未完成的专访">
+          <div className="panel-title row-between">
+            <div className="row">
+              <Play size={18} aria-hidden="true" />
+              <h2>继续未完成的专访</h2>
+            </div>
+            <span className="status-pill">{resumeCards.length} 场进行中</span>
+          </div>
+          <p className="field-help mb-2">
+            优先接上未完成的对话，避免并行开多场空会话。
+          </p>
+          <div className="resume-session-list">
+            {resumeCards.map((item) => {
+              const empty = item.turnCount === 0;
+              return (
+                <article className="resume-session-option is-static" key={item.sessionId}>
+                  <div>
+                    <strong>
+                      {modeLabel(item.mode)}：{item.title}
+                      {empty ? " · 尚未开始对话" : ` · ${item.turnCount} 轮`}
+                    </strong>
+                    <small>{item.pendingQuestion}</small>
+                  </div>
+                  <div className="form-actions">
+                    <button
+                      className="primary-action"
+                      type="button"
+                      onClick={() => onContinue?.(item.sessionId)}
+                    >
+                      <Play size={16} />
+                      继续
+                    </button>
+                    {empty && onDiscardEmpty && (
+                      <button
+                        className="secondary-action"
+                        type="button"
+                        onClick={() => onDiscardEmpty(item.sessionId)}
+                      >
+                        <X size={16} />
+                        移除空场
+                      </button>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
-      {/* ① Hero */}
+      {/* ① Hero / 今日推荐 */}
       <HeaderBlock
         eyebrow="今日访谈台"
         title={card.title}
         subtitle={card.whyNow}
         action={
           <button
-            className="primary-action"
+            className={`primary-action${starting ? " btn-loading" : ""}`}
             type="button"
-            onClick={() => onStart(recommendedMode, selectedTopic)}>
+            disabled={starting}
+            aria-busy={starting}
+            onClick={() => startWithCurrent()}
+          >
+            {starting && <span className="spinner" aria-hidden="true" />}
             <Play size={18} />
-            一键开始 · {recommendedModeLabel}
+            {starting
+              ? "准备中…"
+              : hasResume
+                ? `另开一场 · ${selectedModeLabel}`
+                : `一键开始 · ${selectedModeLabel}`}
           </button>
-        } />
+        }
+      />
 
       <section className="panel interview-topic-launch" aria-label="专访启动设置">
         <div className="panel-title">
@@ -101,7 +193,8 @@ export function HomeView({
           <h2>这次想深入什么？</h2>
         </div>
         <p className="field-help">
-          推荐模式：<strong>{recommendedModeLabel}</strong> · {recommendationReason}
+          当前模式：<strong>{selectedModeLabel}</strong>
+          {selectedMode === recommendedMode ? ` · ${recommendationReason}` : " · 已手动切换模式"}
         </p>
         <label className="field-stack" htmlFor="home-interview-topic">
           <span className="field-label">具体专访主题</span>
@@ -109,10 +202,35 @@ export function HomeView({
             id="home-interview-topic"
             value={topicInput}
             maxLength={160}
+            disabled={starting}
             placeholder="输入具体专访主题，例如：企业如何进行 AI Native 转型"
-            onChange={(event) => setTopicInput(event.target.value)} />
+            onChange={(event) => setTopicInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                startWithCurrent();
+              }
+            }}
+          />
           <span className="field-help">留空则沿用当前推荐主题：{suggestedTopicHint}</span>
         </label>
+
+        {(activeBrief || topTheme) && (
+          <div className="inline-list context-chip-row" aria-label="将带入的上下文">
+            <span className="field-label">将带入</span>
+            {activeBrief && (
+              <span className="status-pill is-tracked">
+                简报：{activeBrief.topic}
+                {onClearBrief && (
+                  <button type="button" className="text-button" onClick={onClearBrief} aria-label="清除简报">
+                    清除
+                  </button>
+                )}
+              </span>
+            )}
+            {topTheme && <span className="status-pill">主题线：{topTheme.name}</span>}
+          </div>
+        )}
       </section>
 
       {card.historyReferences[0] && (
@@ -137,42 +255,40 @@ export function HomeView({
         </div>
 
         {state.themes.length === 0 ? (
-          <p className="empty-hint">
-            还没有主题线，完成专访后会自动浮现。
-          </p>
+          <p className="empty-hint">还没有主题线，完成专访后会自动浮现。</p>
         ) : (
           <div className="track-chip-row">
             {state.themes.map((theme) => {
               const dotColor = MATURITY_DOT_COLOR[theme.maturity] ?? "var(--text-muted)";
               return (
-                <button
-                  key={theme.id}
-                  className="track-chip"
-                  type="button"
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => onOpenTrack?.(theme.id)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      onOpenTrack?.(theme.id);
-                    }
-                  }}
->
-                  <span
-                    className="track-chip-dot"
-                    style={{ background: dotColor }}
-                    aria-hidden="true" />
-                  <span className="track-chip-name">{theme.name}</span>
-                  <span className="track-chip-badge">{theme.maturity}</span>
-                  <span className="track-chip-count">{theme.appearances}次</span>
-                </button>
+                <div className="track-chip-wrap" key={theme.id}>
+                  <button
+                    className="track-chip"
+                    type="button"
+                    onClick={() => onOpenTrack?.(theme.id)}
+                  >
+                    <span className="track-chip-dot" style={{ background: dotColor }} aria-hidden="true" />
+                    <span className="track-chip-name">{theme.name}</span>
+                    <span className="track-chip-badge">{theme.maturity}</span>
+                    <span className="track-chip-count">{theme.appearances}次</span>
+                  </button>
+                  <button
+                    className="text-button"
+                    type="button"
+                    disabled={starting}
+                    onClick={() => onStart("long-term", theme.name)}
+                  >
+                    用此主题开始
+                  </button>
+                </div>
               );
             })}
             <button
               className="track-chip track-chip-add"
               type="button"
-              onClick={() => onStart("long-term")}>
+              disabled={starting}
+              onClick={() => onStart("long-term", selectedTopic)}
+            >
               <Plus size={16} />
               新建主题线
             </button>
@@ -180,7 +296,7 @@ export function HomeView({
         )}
       </section>
 
-      {/* ③ 时间轴叙事流 */}
+      {/* ③ 时间轴 */}
       <section className="panel">
         <div className="panel-title">
           <Clock size={18} />
@@ -192,9 +308,12 @@ export function HomeView({
             <BookOpen size={28} />
             <div>
               <p>开始第一次专访，你的记录会在这里形成时间轴。</p>
-              <button className="primary-action compact-action mt-3"
+              <button
+                className="primary-action compact-action mt-3"
                 type="button"
-                onClick={() => onStart()}>
+                disabled={starting}
+                onClick={() => startWithCurrent()}
+              >
                 <Play size={16} />
                 开始第一次专访
               </button>
@@ -207,51 +326,65 @@ export function HomeView({
               const kindLabel = KIND_LABEL[ev.kind] ?? ev.kind;
               const dateStr = formatAt(ev.at);
               const isLast = idx === timelineEvents.length - 1;
+              const topicForEvent =
+                ev.kind === "theme" && ev.href.trackId
+                  ? state.themes.find((t) => t.id === ev.href.trackId)?.name
+                  : undefined;
               return (
-                <li
-                  key={ev.id}
-                  className={`timeline-item${isLast ? " timeline-item-last" : ""}`}
->
+                <li key={ev.id} className={`timeline-item${isLast ? " timeline-item-last" : ""}`}>
                   <div className="timeline-spine">
                     <span
                       className="timeline-dot"
-                      style={{ background: dotColor, boxShadow: `0 0 0 3px rgba(0,0,0,0.4), 0 0 6px ${dotColor}55` }}
-                      aria-hidden="true" />
+                      style={{
+                        background: dotColor,
+                        boxShadow: `0 0 0 3px rgba(0,0,0,0.4), 0 0 6px ${dotColor}55`
+                      }}
+                      aria-hidden="true"
+                    />
                     {!isLast && <span className="timeline-line" aria-hidden="true" />}
                   </div>
-                  <div
-                    className="timeline-content"
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => handleEventClick(ev)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        handleEventClick(ev);
-                      }
-                    }}
->
-                    <div className="timeline-meta">
-                      {dateStr && <span className="timeline-date">{dateStr}</span>}
-                      <span
-                        className="timeline-kind-badge"
-                        style={{ background: `${dotColor}20`, color: dotColor }}
->
-                        {kindLabel}
-                      </span>
-                    </div>
-                    <p className="timeline-title">{ev.title}</p>
-                    {ev.summary && (
-                      <p className="timeline-summary">{ev.summary}</p>
-                    )}
-                    {ev.outputs.length > 0 && (
-                      <div className="timeline-outputs">
-                        {ev.outputs.map((o) => (
-                          <span key={`${ev.id}-${o.label}`} className="timeline-output-chip">
-                            &rarr; {o.count} {o.label}
-                          </span>
-                        ))}
+                  <div className="timeline-content">
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => handleEventClick(ev)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          handleEventClick(ev);
+                        }
+                      }}
+                    >
+                      <div className="timeline-meta">
+                        {dateStr && <span className="timeline-date">{dateStr}</span>}
+                        <span
+                          className="timeline-kind-badge"
+                          style={{ background: `${dotColor}20`, color: dotColor }}
+                        >
+                          {kindLabel}
+                        </span>
                       </div>
+                      <p className="timeline-title">{ev.title}</p>
+                      {ev.summary && <p className="timeline-summary">{ev.summary}</p>}
+                      {ev.outputs.length > 0 && (
+                        <div className="timeline-outputs">
+                          {ev.outputs.map((o) => (
+                            <span key={`${ev.id}-${o.label}`} className="timeline-output-chip">
+                              &rarr; {o.count} {o.label}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {topicForEvent && (
+                      <button
+                        className="text-button"
+                        type="button"
+                        disabled={starting}
+                        onClick={() => onStart("long-term", topicForEvent)}
+                      >
+                        接着聊
+                      </button>
                     )}
                   </div>
                 </li>
@@ -261,7 +394,7 @@ export function HomeView({
         )}
       </section>
 
-      {/* 底部：选择访谈模式（次级入口） */}
+      {/* 底部：选择访谈模式 */}
       <section className="panel">
         <div className="panel-title">
           <Target size={18} />
@@ -270,10 +403,15 @@ export function HomeView({
         <div className="mode-grid">
           {modeOptions.map((mode) => (
             <button
-              className="mode-option"
+              className={`mode-option${selectedMode === mode.id ? " is-selected" : ""}`}
               key={mode.id}
               type="button"
-              onClick={() => onStart(mode.id, selectedTopic)}>
+              disabled={starting}
+              onClick={() => {
+                setSelectedMode(mode.id);
+                onStart(mode.id, selectedTopic);
+              }}
+            >
               <strong>{mode.label}</strong>
               <span>{mode.detail}</span>
             </button>

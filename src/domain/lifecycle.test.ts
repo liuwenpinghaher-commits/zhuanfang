@@ -10,6 +10,7 @@ import {
   deleteCorpusInsightBundle,
   deletePodcastEpisode,
   deleteSearchBrief,
+  discardEmptyActiveInterviewSession,
   dedupeGeneratedArtifacts
 } from "./lifecycle";
 import type { PodcastEpisode } from "./types";
@@ -188,5 +189,100 @@ describe("podcastEpisodeKey dedup — sourceType+sourceId priority (P2-20)", () 
     // 无 sourceType/sourceId 的旧格式,noteId 相同时仍去重
     expect(result.removed.podcastEpisodes).toBe(1);
     expect(result.nextState.podcastEpisodes).toHaveLength(1);
+  });
+});
+
+
+describe("discardEmptyActiveInterviewSession", () => {
+  it("removes active sessions with zero user turns", () => {
+    const base = createInitialProductState();
+    const card = {
+      title: "t",
+      whyNow: "w",
+      suggestedOpening: "o",
+      historyReferences: [] as string[],
+      potentialTension: "p",
+      suggestedPerspectives: [] as string[],
+      likelyOutputs: [] as string[]
+    };
+    const guide = {
+      topicHint: "x",
+      dailyBrief: { suggestedTopic: "x", openingQuestion: "o", contextNote: "c" },
+      perspectiveCoverage: {} as Record<string, number>,
+      missingPerspectives: [] as string[],
+      recommendedPerspectives: [] as string[],
+      perspectiveRationale: [] as string[],
+      relevantMemories: [] as string[],
+      availableReferences: [] as never[],
+      graphReferences: [] as never[],
+      opinionEvolution: [] as never[],
+      statedPositions: [] as string[],
+      openDebts: [] as string[],
+      decisionsToReview: [] as string[],
+      blindspotCandidates: [] as string[],
+      knowledgeFragments: [] as string[],
+      suggestedOpening: "o",
+      strategyChecklist: [] as string[]
+    };
+    const empty = {
+      id: "session-empty-1",
+      mode: "daily" as const,
+      strength: "standard" as const,
+      status: "active" as const,
+      title: "空会话",
+      card,
+      guide,
+      turns: [] as never[],
+      startedAt: "2026-06-01T00:00:00.000Z"
+    };
+    const withSession = { ...base, sessions: [empty] };
+    const next = discardEmptyActiveInterviewSession(withSession as never, "session-empty-1");
+    expect(next).not.toBeNull();
+    expect(next!.sessions).toHaveLength(0);
+  });
+
+  it("returns null when user already spoke", () => {
+    const base = createInitialProductState();
+    const card = {
+      title: "t",
+      whyNow: "w",
+      suggestedOpening: "o",
+      historyReferences: [] as string[],
+      potentialTension: "p",
+      suggestedPerspectives: [] as string[],
+      likelyOutputs: [] as string[]
+    };
+    const guide = {
+      topicHint: "x",
+      dailyBrief: { suggestedTopic: "x", openingQuestion: "o", contextNote: "c" },
+      perspectiveCoverage: {} as Record<string, number>,
+      missingPerspectives: [] as string[],
+      recommendedPerspectives: [] as string[],
+      perspectiveRationale: [] as string[],
+      relevantMemories: [] as string[],
+      availableReferences: [] as never[],
+      graphReferences: [] as never[],
+      opinionEvolution: [] as never[],
+      statedPositions: [] as string[],
+      openDebts: [] as string[],
+      decisionsToReview: [] as string[],
+      blindspotCandidates: [] as string[],
+      knowledgeFragments: [] as string[],
+      suggestedOpening: "o",
+      strategyChecklist: [] as string[]
+    };
+    const busy = {
+      id: "session-busy-1",
+      mode: "daily" as const,
+      strength: "standard" as const,
+      status: "active" as const,
+      title: "进行中",
+      card,
+      guide,
+      turns: [{ id: "t1", role: "user" as const, content: "hi", createdAt: "2026-06-01T00:00:01.000Z" }],
+      startedAt: "2026-06-01T00:00:00.000Z"
+    };
+    const withSession = { ...base, sessions: [busy] };
+    expect(discardEmptyActiveInterviewSession(withSession as never, "session-busy-1")).toBeNull();
   });
 });

@@ -118,6 +118,7 @@ export interface ProductApiClient {
   logCascadeDecision(sessionId: string, trace: { layer: number; action: string; reason: string; silenceMs: number; expressionState: string; transcript: string }): Promise<void>;
   applyInterviewControl(sessionId: string, input: ApplyInterviewControlRequest): Promise<InterviewSessionResponse>;
   endInterviewSession(sessionId: string): Promise<EndInterviewSessionResponse>;
+  discardInterviewSession(sessionId: string): Promise<{ state: ProductState }>;
   generateInterviewPreSignals(sessionId: string): Promise<GeneratePreSignalsResponse>;
   /**
    * Fetch the assembled raw-material record (evidence chain) for a session.
@@ -1309,6 +1310,12 @@ export function createProductApiClient(
         ...response,
         state: normalizeProductState(response.state)
       };
+    },
+    async discardInterviewSession(sessionId) {
+      const response = (await requestJson(`/api/interview-sessions/${sessionId}/discard`, {
+        method: "POST"
+      })) as { state: ProductState };
+      return { state: normalizeProductState(response.state) };
     },
     async generateInterviewPreSignals(sessionId) {
       return (await requestJson(`/api/interview-sessions/${sessionId}/pre-signals`, {

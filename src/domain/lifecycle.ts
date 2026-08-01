@@ -1,5 +1,6 @@
 import type { CorpusInsight, PodcastEpisode, ProductState, SearchBrief } from "./types";
 
+
 export interface GeneratedArtifactRemovalCounts {
   searchBriefs: number;
   podcastEpisodes: number;
@@ -22,6 +23,25 @@ export function deletePodcastEpisode(state: ProductState, episodeId: string): Pr
   return {
     ...state,
     podcastEpisodes: state.podcastEpisodes.filter((episode) => episode.id !== episodeId)
+  };
+}
+
+/**
+ * Remove an active interview shell that never received a user turn.
+ * Returns null when the session is missing, completed, or already has user content.
+ */
+export function discardEmptyActiveInterviewSession(state: ProductState, sessionId: string): ProductState | null {
+  const session = state.sessions.find((item) => item.id === sessionId);
+  if (!session || session.status !== "active") {
+    return null;
+  }
+  const userTurns = session.turns.filter((turn) => turn.role === "user");
+  if (userTurns.length > 0) {
+    return null;
+  }
+  return {
+    ...state,
+    sessions: state.sessions.filter((item) => item.id !== sessionId)
   };
 }
 
