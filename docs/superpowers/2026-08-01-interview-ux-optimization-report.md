@@ -1,6 +1,6 @@
 # 实时专访交互与闭环优化 · 最终报告（2026-08-01）
 
-> **代码 tip：** `main` @ `080308b0`  
+> **代码 tip：** `main` @ follow-up residual closeout  
 > **范围：** 实时专访页（`InterviewView`）交互体验 + 会中控制/结束交接闭环  
 > **前置审查：** 对话优先、控制留痕、文本默认、结束交接  
 > **关联：** 今日访谈台闭环 `6b295e0f`；播客/资产收口 `4a6d1b7a` / `31294d37`
@@ -51,12 +51,22 @@
 | ⌘/Ctrl+Enter 提交 | UI |
 | 结束成功 notice 带笔记标题 | `App.tsx` `finishInterview` |
 
-### 未做（明确边界）
+### 续作（本批已补齐）
+
+| 项 | 状态 |
+| --- | --- |
+| 结束回流「上场摘要」回 Home | **closed** |
+| 结束二次确认 | **closed** |
+| Esc 停录 | **closed** |
+| 语音断连→可打字继续文案 | **closed** |
+| 移动端专访布局（侧栏下沉/composer） | **closed** |
+
+### 仍明确不做
 
 - 重写策略引擎 / LLM prompt  
-- 结束中间页大改版（仅 notice 增强）  
-- 长列表虚拟化、移动端专访专项 e2e  
+- 长列表虚拟化（无性能痛点前）  
 - 强制默认开麦  
+- Wave D 全量增强 / 多租户  
 
 ---
 
@@ -76,7 +86,7 @@
 
 | 门禁 | 命令 | 结果 |
 | --- | --- | --- |
-| Git | `main` @ `080308b0` · 与 origin 同步 · 干净 | **PASS** |
+| Git | `main` @ follow-up residual closeout · 与 origin 同步 · 干净 | **PASS** |
 | Typecheck | `npm run typecheck` | **PASS** |
 | Unit | `npx vitest run` | **PASS** · **1626 pass / 6 skip** · 160 files |
 | E2E | scrub env · `npx playwright test` | **PASS** · **38/38** |

@@ -103,6 +103,18 @@ export function InterviewView({
     }
   }, [session?.turns.length]);
 
+  useEffect(() => {
+    if (!recording) return;
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        void onToggleRecording();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [recording, onToggleRecording]);
+
   // Open controls when user is mid-conversation and may need them; keep collapsed on empty first paint.
   useEffect(() => {
     if (session && session.turns.length > 0) {
@@ -393,13 +405,23 @@ export function InterviewView({
                     : "继续补充具体场景、代价或你的真实判断…"
                 }
               />
-              <span className="field-help">⌘/Ctrl + Enter 提交。可以先写片段，系统会围绕锚点追问。</span>
+              <span className="field-help">⌘/Ctrl + Enter 提交；录音中 Esc 停止语音。可以先写片段，系统会围绕锚点追问。</span>
             </label>
             <div className="composer-actions">
               <button
                 className="secondary-action"
                 type="button"
-                onClick={onFinish}
+                onClick={() => {
+                  if (userTurnCount === 0 || busy) return;
+                  const ok =
+                    typeof window === "undefined" ||
+                    window.confirm(
+                      session.doNotSave
+                        ? "确认结束本场？本场已标记不保存，不会写入长期资产。"
+                        : "确认结束并生成档案？结束后将归档双轨笔记与相关资产。"
+                    );
+                  if (ok) onFinish();
+                }}
                 disabled={userTurnCount === 0 || busy}
                 aria-busy={finishing}
               >

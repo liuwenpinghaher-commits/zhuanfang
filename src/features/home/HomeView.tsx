@@ -55,10 +55,18 @@ interface HomeViewProps {
   resumeCards?: ReturnType<typeof buildInterviewResumeCards>;
   activeBriefId?: string;
   starting?: boolean;
+  lastInterviewSummary?: null | {
+    noteTitle: string;
+    pendingMemory: number;
+    destination: "notes" | "memory";
+    doNotSave: boolean;
+    finishedAt: string;
+  };
   onStart: (mode?: InterviewMode, topicHint?: string) => void;
   onContinue?: (sessionId: string) => void;
   onDiscardEmpty?: (sessionId: string) => void;
   onClearBrief?: () => void;
+  onDismissLastSummary?: () => void;
   onOpenTrack?: (themeId: string) => void;
   onNavigate?: (view: string) => void;
 }
@@ -72,10 +80,12 @@ export function HomeView({
   resumeCards = [],
   activeBriefId,
   starting = false,
+  lastInterviewSummary = null,
   onStart,
   onContinue,
   onDiscardEmpty,
   onClearBrief,
+  onDismissLastSummary,
   onOpenTrack,
   onNavigate
 }: HomeViewProps) {
@@ -159,6 +169,54 @@ export function HomeView({
                 </article>
               );
             })}
+          </div>
+        </section>
+      )}
+
+      {lastInterviewSummary && (
+        <section className="panel last-interview-summary" aria-label="上场专访摘要">
+          <div className="panel-title row-between">
+            <div className="row">
+              <BookOpen size={18} aria-hidden="true" />
+              <h2>上场专访已结束</h2>
+            </div>
+            {onDismissLastSummary && (
+              <button type="button" className="text-button" onClick={onDismissLastSummary}>
+                关闭
+              </button>
+            )}
+          </div>
+          <p>
+            {lastInterviewSummary.doNotSave
+              ? "本场按「不保存」结束，未写入长期资产。"
+              : `笔记「${lastInterviewSummary.noteTitle}」已生成。`}
+            {lastInterviewSummary.pendingMemory > 0
+              ? ` 另有 ${lastInterviewSummary.pendingMemory} 条记忆待确认。`
+              : ""}
+          </p>
+          <div className="form-actions">
+            {!lastInterviewSummary.doNotSave && (
+              <button
+                type="button"
+                className="primary-action"
+                onClick={() => {
+                  onNavigate?.(lastInterviewSummary.destination);
+                  onDismissLastSummary?.();
+                }}
+              >
+                {lastInterviewSummary.destination === "memory" ? "去记忆治理" : "查看双轨笔记"}
+              </button>
+            )}
+            <button
+              type="button"
+              className="secondary-action"
+              onClick={() => {
+                onNavigate?.("my-assets");
+                onDismissLastSummary?.();
+              }}
+            >
+              我的资产
+            </button>
           </div>
         </section>
       )}

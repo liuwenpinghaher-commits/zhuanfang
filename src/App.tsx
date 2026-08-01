@@ -206,6 +206,13 @@ export default function App() {
   // 第一次成功 completed 后,后续点击全部 409(已结束)→ "结束失败"提示覆盖成功 → 诱导继续点。
   const finishingRef = useRef(false);
   const [finishingInterview, setFinishingInterview] = useState(false); // UI:结束按钮显示"正在生成档案…"
+  const [lastInterviewSummary, setLastInterviewSummary] = useState<null | {
+    noteTitle: string;
+    pendingMemory: number;
+    destination: "notes" | "memory";
+    doNotSave: boolean;
+    finishedAt: string;
+  }>(null);
   const [correctionText, setCorrectionText] = useState("");
   const [assetQuery, setAssetQuery] = useState("");
   const [assetFilter, setAssetFilter] = useState<AssetFilter>("all");
@@ -2136,6 +2143,13 @@ export default function App() {
       const needsHitl =
         apiRun.longTermRecallRequiresApproval === true || pendingCount > 0;
       if (skipAudioUpload) {
+        setLastInterviewSummary({
+          noteTitle: "本场不保存",
+          pendingMemory: 0,
+          destination: "notes",
+          doNotSave: true,
+          finishedAt: new Date().toISOString()
+        });
         setNotice(
           buildNotice(
             "info",
@@ -2143,8 +2157,15 @@ export default function App() {
             "按你的选择，本场未写入长期资产与录音；对话仅作当次体验。"
           )
         );
-        setView("notes");
+        setView("home");
       } else if (needsHitl) {
+        setLastInterviewSummary({
+          noteTitle: apiRun.note?.title ?? "本场笔记",
+          pendingMemory: pendingCount,
+          destination: "memory",
+          doNotSave: false,
+          finishedAt: new Date().toISOString()
+        });
         setNotice(
           buildNotice(
             "success",
@@ -2154,16 +2175,23 @@ export default function App() {
               : "双轨笔记已更新。长期记忆需你确认后才会进入跨会话召回。"
           )
         );
-        setView("memory");
+        setView("home");
       } else {
+        setLastInterviewSummary({
+          noteTitle: apiRun.note?.title ?? "本场笔记",
+          pendingMemory: 0,
+          destination: "notes",
+          doNotSave: false,
+          finishedAt: new Date().toISOString()
+        });
         setNotice(
           buildNotice(
             "success",
             "专访档案已生成",
-            `「${apiRun.note?.title ?? "本场笔记"}」已写入双轨笔记；可在笔记或我的资产中继续。`
+            `「${apiRun.note?.title ?? "本场笔记"}」已写入双轨笔记；可在下方「上场摘要」或笔记/资产中继续。`
           )
         );
-        setView("notes");
+        setView("home");
       }
       return;
     } catch (err) {
@@ -2497,7 +2525,7 @@ export default function App() {
               // 审计修复(P2-22):中途断连如实上报并收尾——此前 UI 停在"聆听"假象,用户
               // 继续说话被静默丢帧,只能自己困惑几十秒后手动重开。
               onConnectionLost: () => {
-                setNotice(buildNotice("warning", "语音连接已断开", "语音识别中断,请重新点击录音继续。文字输入不受影响。"));
+                setNotice(buildNotice("warning", "语音连接已断开", "已提交的回合仍在。可直接打字继续本场，或重新点「语音」。"));
                 closeRealtimeVoiceSession();
               },
               // Tee the live mic into a whole-session recorder. Best-effort: guard
@@ -3005,10 +3033,12 @@ export default function App() {
             resumeCards={resumeCards}
             activeBriefId={activeSearchBriefId}
             starting={startingInterview}
+            lastInterviewSummary={lastInterviewSummary}
             onStart={(mode, topicHint) => launchInterview(mode, activeSearchBriefId, topicHint)}
             onContinue={continueInterview}
             onDiscardEmpty={(id) => void discardEmptyInterview(id)}
             onClearBrief={() => setActiveSearchBriefId(undefined)}
+            onDismissLastSummary={() => setLastInterviewSummary(null)}
             onOpenTrack={openTrack}
             onNavigate={(v) => setView(v as Parameters<typeof setView>[0])}
           />

@@ -53,14 +53,16 @@ test("full interview lifecycle: start, submit 3 turns, end, assert diary note", 
   // "结束并生成档案" button is disabled until there's ≥1 turn, then enabled.
   const finishButton = page.getByRole("button", { name: "结束并生成档案" });
   await expect(finishButton).toBeEnabled();
+  page.once("dialog", async (dialog) => {
+    await dialog.accept();
+  });
   await finishButton.click();
 
-  // ── Step 5: assert navigation to notes view + success notice ──────────────
+  // ── Step 5: finish returns home with success notice + 上场摘要 ────────────
   // finishInterview calls the real API (POST /api/interview-sessions/:id/end) which
   // runs LLM-based session analysis — empirically ~16s. Allow 35s for headroom.
   await expect(page.getByText("专访档案已生成")).toBeVisible({ timeout: 35000 });
-  // Pending memory candidates → memory view; otherwise notes.
-  await expect(page.getByText(/从访谈沉淀认知资产|待审候选记忆|记忆治理/).first()).toBeVisible({
+  await expect(page.getByText(/上场专访已结束|查看双轨笔记|去记忆治理/).first()).toBeVisible({
     timeout: 10000
   });
 

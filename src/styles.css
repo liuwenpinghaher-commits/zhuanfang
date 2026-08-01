@@ -5519,3 +5519,29 @@ p.field-error {
   gap: 0.35rem;
   margin-top: 0.4rem;
 }
+
+
+.last-interview-summary {
+  border-color: color-mix(in srgb, var(--accent-green, #3a9) 35%, transparent);
+}
+@media (max-width: 760px) {
+  .interview-layout {
+    display: flex;
+    flex-direction: column;
+  }
+  .interview-layout .side-panel.context-panel {
+    order: 3;
+  }
+  .opening-hero-question {
+    font-size: 1.05rem;
+  }
+  .composer-priority {
+    position: static;
+  }
+  .control-drawer-toggle small {
+    display: none;
+  }
+  .interview-status-chips {
+    max-width: 100%;
+  }
+}

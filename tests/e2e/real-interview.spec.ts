@@ -48,6 +48,7 @@ test.describe("真实业务·文本访谈全链路(UI→真后端)", () => {
     await submitTurn(page, "具体说,我担心市场太小,投入大量精力却没有足够付费用户,这个风险我评估不清。", 2);
 
     // 结束 → 真实 finalize(慢)
+    page.once("dialog", async (dialog) => { await dialog.accept(); });
     await page.getByRole("button", { name: /结束并生成档案/ }).click();
     await expect.poll(async () => {
       const st = await (await page.request.get(`${API}/api/state`)).json();

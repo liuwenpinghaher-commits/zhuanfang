@@ -461,6 +461,7 @@ test.describe("真实业务·认知资产模块(UI→真后端 3210,不 mock)", 
       .toBeGreaterThan(0);
 
     // 结束 → 真实 finalize(慢)。
+    page.once("dialog", async (dialog) => { await dialog.accept(); });
     await page.getByRole("button", { name: /结束并生成档案/ }).click();
     await expect
       .poll(

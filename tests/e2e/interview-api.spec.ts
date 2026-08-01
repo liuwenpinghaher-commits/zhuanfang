@@ -50,12 +50,15 @@ test("runs the interview workflow through the Product API", async ({ page }) => 
   await expect(page.getByText("百炼角色扮演追问").first()).toBeVisible();
   await expect(page.getByText("depth_direction")).toHaveCount(0);
 
+  page.once("dialog", async (dialog) => {
+    await dialog.accept();
+  });
   await page.getByRole("button", { name: "结束并生成档案" }).click();
   await expect(page.getByText("专访档案已生成")).toBeVisible({ timeout: 30000 });
-  // R-P1-04: pending HITL → memory view; otherwise notes.
-  await expect(
-    page.getByText(/从访谈沉淀认知资产|待审候选记忆|记忆治理/).first()
-  ).toBeVisible({ timeout: 10000 });
+  // Finish returns to home with 上场摘要 (may point to notes or memory).
+  await expect(page.getByText(/上场专访已结束|查看双轨笔记|去记忆治理/).first()).toBeVisible({
+    timeout: 10000
+  });
   await expectNoHorizontalOverflow(page);
 
   expect(apiCalls).toContain("POST /api/interview-sessions");
