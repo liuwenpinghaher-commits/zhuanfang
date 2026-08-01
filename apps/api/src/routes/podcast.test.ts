@@ -290,6 +290,108 @@ describe("POST /api/podcast/episodes/:id/synthesize", () => {
 });
 
 
+describe("POST /api/podcast/episodes multi-source LLM", () => {
+  it("theme path uses LLM script (not domain template body)", async () => {
+    const llmBody = "主题路径 LLM 脚本正文：控制感与授权边界。";
+    const server = buildApiServer({
+      bailianChatClient: createFakeChatClient({ podcastScript: llmBody })
+    });
+    const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
+    const themeId = state.themes[0]?.id;
+    expect(themeId).toBeTruthy();
+    const res = await server.inject({
+      method: "POST",
+      url: "/api/podcast/episodes",
+      payload: { sourceType: "theme", sourceId: themeId, format: "solo", voice: "longyuan_v3" }
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().episode.script).toBe(llmBody);
+    expect(res.json().episode.audioRenderStatus).toBe("pending");
+    await server.close();
+  });
+
+  it("knowledge-debt path uses LLM script", async () => {
+    const llmBody = "知识债路径 LLM 脚本正文：组织惯性。";
+    const server = buildApiServer({
+      bailianChatClient: createFakeChatClient({ podcastScript: llmBody })
+    });
+    const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
+    const debtId = state.debts[0]?.id;
+    expect(debtId).toBeTruthy();
+    const res = await server.inject({
+      method: "POST",
+      url: "/api/podcast/episodes",
+      payload: { sourceType: "knowledge-debt", sourceId: debtId, format: "host-guest", voice: "longyuan_v3" }
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().episode.script).toBe(llmBody);
+    await server.close();
+  });
+
+  it("search-brief path uses LLM script when brief exists", async () => {
+    const llmBody = "简报路径 LLM 脚本正文。";
+    const base = createInitialProductState();
+    const brief = {
+      id: "brief-podcast-1",
+      topic: "AI 产品定价",
+      provider: "local-demo" as const,
+      status: "ready" as const,
+      summary: "市场对订阅与用量计费仍有分歧。",
+      facts: ["并行提供席位与 token 计费"],
+      controversies: ["免费额度是否扭曲需求"],
+      opposingViews: ["应按结果收费"],
+      interviewAngles: ["你上次为何改定价？"],
+      discussionTopics: ["定价对销售话术的影响"],
+      sourceAngles: [],
+      sources: [
+        {
+          id: "src-1",
+          title: "定价观察",
+          url: "https://example.com/pricing",
+          publisher: "示例刊",
+          publishedAt: "2026-06-01T00:00:00.000Z",
+          snippet: "snippet",
+          relevanceScore: 0.9,
+          usage: "interview-context" as const
+        }
+      ],
+      sourceTrace: [],
+      appliedToSessionIds: [],
+      createdAt: "2026-06-01T00:00:00.000Z"
+    };
+    const repository = createInMemoryProductStateRepository({
+      ...base,
+      searchBriefs: [brief]
+    });
+    const server = Fastify();
+    await registerPodcastRoutes(server, repository, {
+      bailianChatClient: createFakeChatClient({ podcastScript: llmBody })
+    });
+    const res = await server.inject({
+      method: "POST",
+      url: "/api/podcast/episodes",
+      payload: { sourceType: "search-brief", sourceId: brief.id, format: "solo", voice: "longyuan_v3" }
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().episode.script).toBe(llmBody);
+    await server.close();
+  });
+
+  it("non-note path without chatClient → 503", async () => {
+    const server = buildApiServer({ env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" } });
+    const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
+    const themeId = state.themes[0]?.id;
+    const res = await server.inject({
+      method: "POST",
+      url: "/api/podcast/episodes",
+      payload: { sourceType: "theme", sourceId: themeId, format: "solo" }
+    });
+    expect(res.statusCode).toBe(503);
+    expect(res.json().error).toContain("未配置");
+    await server.close();
+  });
+});
+
 describe("DELETE /api/podcast/episodes/:id", () => {
   it("removes episode from authoritative state", async () => {
     const server = buildApiServer({ bailianChatClient: createFakeChatClient() });

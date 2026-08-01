@@ -11,7 +11,7 @@ import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import type { BailianChatClient, BailianPodcastAudioClient } from "../providers/bailian";
 import type { ProductStateRepository } from "../product-state-repository"
 import { replaceStateDurable } from "../product-state-repository";
-import { generatePodcastScript } from "../intelligence/podcast-script-llm";
+import { generatePodcastScriptFromSource } from "../intelligence/podcast-script-llm";
 
 interface PodcastEpisodeRequestPayload {
   noteId?: unknown;
@@ -92,63 +92,77 @@ export async function registerPodcastRoutes(
     let episode: PodcastEpisode;
     let nextState: ReturnType<typeof repository.getState>;
 
+    // All source paths use LLM for the spoken script. Domain helpers still build
+    // chapters/shownotes skeleton; script body is replaced after a successful LLM call.
+    // Missing LLM / budget / LLM failure → fail-loud (no silent template masquerade).
+    // Validate source first so 422 never burns LLM budget.
+    if (!options.bailianChatClient) {
+      return reply.code(503).send({ error: "播客脚本 LLM 未配置（缺少 DASHSCOPE_API_KEY），无法生成播客。" });
+    }
+
+    let scriptSource:
+      | { kind: "note"; note: (typeof state.notes)[number]; format: typeof format }
+      | { kind: "search-brief"; brief: (typeof state.searchBriefs)[number]; format: typeof format }
+      | { kind: "theme"; theme: (typeof state.themes)[number]; format: typeof format }
+      | { kind: "knowledge-debt"; debt: (typeof state.debts)[number]; format: typeof format };
+
     if (sourceType === "search-brief" && sourceId) {
-      const brief = state.searchBriefs.find((b: any) => b.id === sourceId);
+      const brief = state.searchBriefs.find((b) => b.id === sourceId);
       if (!brief) {
         return reply.code(422).send({ error: "Search brief not found." });
       }
       ({ episode, nextState } = generatePodcastEpisodeFromSearchBrief(state, sourceId, { format, voice }));
+      scriptSource = { kind: "search-brief", brief, format };
     } else if (sourceType === "theme" && sourceId) {
-      const theme = state.themes.find((t: any) => t.id === sourceId);
+      const theme = state.themes.find((t) => t.id === sourceId);
       if (!theme) {
         return reply.code(422).send({ error: "Theme not found." });
       }
       ({ episode, nextState } = generatePodcastEpisodeFromTheme(state, sourceId, { format, voice }));
+      scriptSource = { kind: "theme", theme, format };
     } else if (sourceType === "knowledge-debt" && sourceId) {
-      const debt = state.debts.find((d: any) => d.id === sourceId);
+      const debt = state.debts.find((d) => d.id === sourceId);
       if (!debt) {
         return reply.code(422).send({ error: "Knowledge debt not found." });
       }
       ({ episode, nextState } = generatePodcastEpisodeFromKnowledgeDebt(state, sourceId, { format, voice }));
+      scriptSource = { kind: "knowledge-debt", debt, format };
     } else {
       if (!noteId) {
         return reply.code(422).send({ error: "No notes are available for podcast generation." });
-      }
-      // Note 路径的脚本是 LLM 能力：不可用/失败就如实暴露，绝不用确定性模板脚本冒充。
-      if (!options.bailianChatClient) {
-        return reply.code(503).send({ error: "播客脚本 LLM 未配置（缺少 DASHSCOPE_API_KEY），无法从笔记生成播客。" });
-      }
-      if (!budget.tryConsume("system")) {
-        console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "podcast_script" }));
-        return reply.code(429).send({ error: "本时段 LLM 预算已用尽，播客脚本生成暂不可用，请稍后重试。" });
       }
       const note = state.notes.find((n) => n.id === noteId);
       if (!note) {
         return reply.code(422).send({ error: "Note not found." });
       }
       ({ episode, nextState } = generatePodcastEpisode(state, noteId, { format, voice }));
-      let llmScript: string;
-      try {
-        llmScript = await generatePodcastScript({ note, format }, options.bailianChatClient);
-      } catch (llmError) {
-        const message = llmError instanceof Error ? llmError.message : String(llmError);
-        console.warn(JSON.stringify({ event: "llm_failed", capability: "podcast_script", error: message }));
-        return reply.code(502).send({ error: `播客脚本生成失败：${message}` });
-      }
-      episode = {
-        ...episode,
-        script: llmScript,
-        durationSec: Math.max(180, Math.round(llmScript.length * 0.8))
-      };
-      nextState = {
-        ...nextState,
-        podcastEpisodes: nextState.podcastEpisodes.map((item) =>
-          item.id === episode.id ? episode : item
-        )
-      };
+      scriptSource = { kind: "note", note, format };
     }
 
-// --- Step 1: Persist the episode FIRST (script is now saved, TTS failure won't lose it) ---
+    if (!budget.tryConsume("system")) {
+      console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "podcast_script" }));
+      return reply.code(429).send({ error: "本时段 LLM 预算已用尽，播客脚本生成暂不可用，请稍后重试。" });
+    }
+
+    let llmScript: string;
+    try {
+      llmScript = await generatePodcastScriptFromSource(scriptSource, options.bailianChatClient);
+    } catch (llmError) {
+      const message = llmError instanceof Error ? llmError.message : String(llmError);
+      console.warn(JSON.stringify({ event: "llm_failed", capability: "podcast_script", error: message, sourceType }));
+      return reply.code(502).send({ error: `播客脚本生成失败：${message}` });
+    }
+    episode = {
+      ...episode,
+      script: llmScript,
+      durationSec: Math.max(180, Math.round(llmScript.length * 0.8))
+    };
+    nextState = {
+      ...nextState,
+      podcastEpisodes: nextState.podcastEpisodes.map((item) => (item.id === episode.id ? episode : item))
+    };
+
+    // --- Step 1: Persist the episode FIRST (script is now saved, TTS failure won't lose it) ---
     // state 必须是 replaceState 返回的权威态(revision 已 bump),否则客户端下一次乐观 PUT 必 409。
     const persistedDraft = /*durable*/await replaceStateDurable(repository, nextState);
 

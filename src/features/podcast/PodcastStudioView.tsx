@@ -233,7 +233,7 @@ export function PodcastStudioView({
             <h3>{sourceItems.find((item) => item.id === selectedSourceId)?.label ?? "—"}</h3>
             <p>
               来源类型：{sourceOptions.find((o) => o.value === sourceType)?.label ?? "—"}
-              " · 当前为结构化模板脚本（可后续升级 LLM）"
+              {" · 脚本将基于该来源由 LLM 生成，失败会如实提示"}
             </p>
           </article>
         ) : (

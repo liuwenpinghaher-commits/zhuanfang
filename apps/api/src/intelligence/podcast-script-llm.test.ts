@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BailianChatClient } from "../providers/bailian";
-import { generatePodcastScript } from "./podcast-script-llm";
+import { generatePodcastScript, generatePodcastScriptFromSource } from "./podcast-script-llm";
 
 const mockNote = {
   title: "关于产品决策的访谈",
@@ -9,6 +9,34 @@ const mockNote = {
   saidTrack: ["我们砍掉了三个功能", "选择聚焦核心留存"],
   learnedTrack: ["做减法需要更大的勇气", "数据不说谎，人会"],
   nextQuestions: ["下次如何让团队更早暴露问题？"]
+};
+
+const mockBrief = {
+  topic: "AI 产品定价",
+  summary: "市场对订阅制与用量计费仍有分歧。",
+  facts: ["多家厂商并行提供席位与 token 计费"],
+  controversies: ["免费额度是否扭曲真实需求"],
+  opposingViews: ["应完全按结果收费"],
+  interviewAngles: ["你上次为何改定价？"],
+  discussionTopics: ["定价对销售话术的影响"],
+  sources: [{ publisher: "示例刊", title: "定价观察" }]
+};
+
+const mockTheme = {
+  name: "控制感",
+  summary: "授权与亲自下场之间的摆动。",
+  representativeQuote: "我不是不想管，是不想每次都替他们兜底。",
+  maturity: "聚焦" as const,
+  appearances: 5,
+  nextQuestion: "如果允许短期失控，最坏会发生什么？"
+};
+
+const mockDebt = {
+  concept: "组织惯性",
+  context: "团队习惯等用户拍板。",
+  whyImportant: "把人不主动转译成系统奖励了什么。",
+  status: "待了解" as const,
+  nextQuestion: "你后来能用自己的话解释它了吗？"
 };
 
 const mockChat = (response: string): BailianChatClient => ({
@@ -90,5 +118,59 @@ describe("generatePodcastScript", () => {
     expect(capturedUserContent).toContain(mockNote.saidTrack[0]);
     expect(capturedUserContent).toContain(mockNote.learnedTrack[0]);
     expect(capturedUserContent).toContain(mockNote.nextQuestions[0]);
+  });
+});
+
+describe("generatePodcastScriptFromSource", () => {
+  it("grounds search-brief facts and topic", async () => {
+    let captured = "";
+    const chat: BailianChatClient = {
+      async complete(input) {
+        captured = String(input.messages.find((m) => m.role === "user")?.content ?? "");
+        return "简报播客脚本";
+      }
+    };
+    const result = await generatePodcastScriptFromSource(
+      { kind: "search-brief", brief: mockBrief as never, format: "solo" },
+      chat
+    );
+    expect(result).toBe("简报播客脚本");
+    expect(captured).toContain(mockBrief.topic);
+    expect(captured).toContain(mockBrief.facts[0]);
+    expect(captured).toContain(mockBrief.sources[0].title);
+  });
+
+  it("grounds theme quote and next question", async () => {
+    let captured = "";
+    const chat: BailianChatClient = {
+      async complete(input) {
+        captured = String(input.messages.find((m) => m.role === "user")?.content ?? "");
+        return "主题播客脚本";
+      }
+    };
+    await generatePodcastScriptFromSource({ kind: "theme", theme: mockTheme, format: "host-guest" }, chat);
+    expect(captured).toContain(mockTheme.name);
+    expect(captured).toContain(mockTheme.representativeQuote);
+    expect(captured).toContain("主持对谈（双人）");
+  });
+
+  it("grounds knowledge-debt concept and context", async () => {
+    let captured = "";
+    const chat: BailianChatClient = {
+      async complete(input) {
+        captured = String(input.messages.find((m) => m.role === "user")?.content ?? "");
+        return "知识债播客脚本";
+      }
+    };
+    await generatePodcastScriptFromSource({ kind: "knowledge-debt", debt: mockDebt, format: "solo" }, chat);
+    expect(captured).toContain(mockDebt.concept);
+    expect(captured).toContain(mockDebt.context);
+    expect(captured).toContain(mockDebt.whyImportant);
+  });
+
+  it("throws on empty output for non-note sources", async () => {
+    await expect(
+      generatePodcastScriptFromSource({ kind: "theme", theme: mockTheme, format: "solo" }, mockChat("  "))
+    ).rejects.toThrow("empty output");
   });
 });
