@@ -1,6 +1,6 @@
-import type { FormEvent } from "react";
-import { useEffect, useRef } from "react";
-import { ChevronRight, Flag, Lightbulb, Mic, MicOff, Pause, Play, Sparkles } from "lucide-react";
+import type { FormEvent, KeyboardEvent } from "react";
+import { useEffect, useRef, useState } from "react";
+import { ChevronDown, ChevronRight, Flag, Lightbulb, Mic, MicOff, Pause, Play, Settings2, Sparkles } from "lucide-react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { buildInterviewCard, buildRealtimeTurnState } from "../../domain/engine";
 import { INTERVIEW_STRATEGY_LABELS, PLAYBOOK_DRIVEN_STRATEGIES } from "../../domain/engine";
@@ -43,6 +43,27 @@ interface InterviewViewProps {
   };
 }
 
+const MODE_LABEL: Record<InterviewMode, string> = {
+  daily: "日常复盘",
+  decision: "决策专访",
+  point: "观点专访",
+  learning: "学习专访",
+  organization: "组织/关系",
+  "long-term": "长期主题"
+};
+
+/** Avoid "决策专访：继续追问：控制感" stacking. */
+export function formatInterviewHeaderTitle(session: InterviewSession): string {
+  const mode = MODE_LABEL[session.mode] ?? session.mode;
+  let topic = (session.title || "").trim();
+  const modePrefix = new RegExp(`^${mode.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[：:]\s*`, "u");
+  topic = topic.replace(modePrefix, "");
+  topic = topic.replace(/^继续追问[：:]\s*/u, "");
+  topic = topic.replace(modePrefix, "");
+  if (!topic || topic === mode) return mode;
+  return `${mode} · ${topic}`;
+}
+
 export function InterviewView({
   card,
   session,
@@ -73,16 +94,21 @@ export function InterviewView({
   finishing,
   guidanceState
 }: InterviewViewProps) {
-  // Hooks must run unconditionally on every render (Rules of Hooks). Keep them
-  // ABOVE the `if (!session)` early return so the launch screen and the live
-  // conversation render the same hook sequence — otherwise React throws
-  // "Expected static flag was missing" and the view misrenders on start.
   const turnListRef = useRef<HTMLDivElement>(null);
+  const [controlsOpen, setControlsOpen] = useState(false);
+
   useEffect(() => {
     if (turnListRef.current) {
       turnListRef.current.scrollTop = turnListRef.current.scrollHeight;
     }
   }, [session?.turns.length]);
+
+  // Open controls when user is mid-conversation and may need them; keep collapsed on empty first paint.
+  useEffect(() => {
+    if (session && session.turns.length > 0) {
+      setControlsOpen(false);
+    }
+  }, [session?.id]);
 
   if (!session) {
     return (
@@ -122,9 +148,6 @@ export function InterviewView({
     standard: "标准",
     sharp: "直接"
   }[session.strength];
-  // C-P1-03: show the LIVE guide recall (refreshed each turn / voice-instructions),
-  // not only the create-time frozen card.historyReferences — so the sidebar matches
-  // what the model is actually allowed to cite this turn.
   const liveRelevantMemories = (session.guide.relevantMemories ?? []).filter((m) => m.trim());
   const openingHistoryReferences = session.card.historyReferences.filter((m) => m.trim());
   const memoryListForSidebar =
@@ -133,31 +156,66 @@ export function InterviewView({
       : openingHistoryReferences.length > 0
         ? openingHistoryReferences
         : ["暂无明确可引用记忆"];
-  // Corpus-learning techniques actually in scope for THIS session. These are the
-  // applied PlaybookPatch rules that the server re-stamps onto session.enginePolicy
-  // every turn and feeds into the interview prompt — so showing them here is honest,
-  // not decorative. Empty => render nothing.
   const appliedTechniques = (session.enginePolicy?.appliedPlaybookRules ?? []).filter((rule) => rule.trim());
+  const sessionCard = session.card;
+  const busy = Boolean(submitting || finishing);
+  const controlsDisabled = busy;
+  const userTurnCount = session.turns.filter((t) => t.role === "user").length;
+  const headerTitle = formatInterviewHeaderTitle(session);
+  const statusLine =
+    realtimeState?.nextAction ??
+    (session.turns.length === 0
+      ? "先回答下方开场问题（也可开语音）"
+      : recording
+        ? "语音对话进行中"
+        : "围绕锚点继续追问");
+
+  function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+      event.preventDefault();
+      const form = event.currentTarget.form;
+      if (form && input.trim() && !busy) {
+        form.requestSubmit();
+      }
+    }
+  }
+
+  function handleControl(action: InterviewControlAction) {
+    if (controlsDisabled) return;
+    onControl(action);
+  }
 
   return (
     <section className="view-stack">
       <HeaderBlock
         eyebrow="实时专访"
-        title={session.title}
-        subtitle={voiceTransport
-          ? `${voiceTransport === "websocket" ? "WebSocket 实时语音" : voiceTransport === "livekit" ? "LiveKit 级联语音" : "实时语音"} · 语音回合与文本写入同一份专访记录`
-          : "文本追问已接入策略引擎；点击语音按钮开始实时对话。"} />
+        title={headerTitle}
+        subtitle={
+          voiceTransport
+            ? `${voiceTransport === "websocket" ? "WebSocket 实时语音" : voiceTransport === "livekit" ? "LiveKit 级联语音" : "实时语音"} · 与文本写入同一份记录`
+            : "默认文本追问；需要时再点「语音」。会话与已提交回合会保留。"
+        }
+      />
 
       <section className="interview-layout">
         <div className="conversation-panel">
           <div className="conversation-header">
             <div>
               <span className="label">当前状态</span>
-              <strong>{realtimeState?.nextAction ?? (session.turns.length === 0 ? "等待用户开口" : "正在追问锚点")}</strong>
+              <strong>{statusLine}</strong>
+              <div className="interview-status-chips" aria-label="本场标记">
+                <span className="status-pill">{strengthLabel}强度</span>
+                <span className={`status-pill${session.doNotSave ? " is-stale" : " is-tracked"}`}>
+                  {session.doNotSave ? "本场不保存资产" : "可写入资产"}
+                </span>
+                {session.pendingControl && (
+                  <span className="status-pill is-emphasis">下轮：{controlActionLabel(session.pendingControl)}</span>
+                )}
+              </div>
             </div>
             <div className="voice-controls">
               {recording && voiceStatus === "speaking" && (
-                <button className="interrupt-button" type="button" onClick={onInterrupt} title="打断 AI">
+                <button className="interrupt-button" type="button" onClick={onInterrupt} title="打断 AI" disabled={finishing}>
                   <Pause size={16} />打断
                 </button>
               )}
@@ -165,16 +223,17 @@ export function InterviewView({
                 className={`record-button ${recording ? "active" : ""} ${voiceStatus}`}
                 type="button"
                 onClick={onToggleRecording}
+                disabled={finishing}
                 aria-label={recording ? "停止录音" : "开始录音"}
->
+              >
                 <span className="record-icon">
                   {recording ? <MicOff size={18} /> : <Mic size={18} />}
                 </span>
-                <span className="record-label">
-                  {recording ? "停止" : "语音"}
-                </span>
+                <span className="record-label">{recording ? "停止" : "语音"}</span>
                 {voiceTransport && (
-                  <span className="transport-badge">{voiceTransport === "websocket" ? "WS" : voiceTransport === "livekit" ? "LK" : "RTC"}</span>
+                  <span className="transport-badge">
+                    {voiceTransport === "websocket" ? "WS" : voiceTransport === "livekit" ? "LK" : "RTC"}
+                  </span>
                 )}
               </button>
             </div>
@@ -190,15 +249,17 @@ export function InterviewView({
                       className="waveform-bar"
                       style={{
                         animationDelay: `${i * 0.06}s`,
-                        height: voiceStatus === "idle"
-                          ? "4px"
-                          : `${4 + audioLevel * 36 * (0.4 + 0.6 * Math.sin((i / 16) * Math.PI))}px`
-                      }} />
+                        height:
+                          voiceStatus === "idle"
+                            ? "4px"
+                            : `${4 + audioLevel * 36 * (0.4 + 0.6 * Math.sin((i / 16) * Math.PI))}px`
+                      }}
+                    />
                   ))}
                 </div>
                 <div className="voice-status-label">
                   {voiceStatus === "connecting" && <><span className="status-dot connecting" />正在连接…</>}
-                  {voiceStatus === "listening" && <><span className="status-dot listening" />聆听中</>}
+                  {voiceStatus === "listening" && <><span className="status-dot listening" />聆听中 · 说完稍等片刻</>}
                   {voiceStatus === "speaking" && <><span className="status-dot speaking" />AI 正在回应</>}
                   {voiceStatus === "interrupted" && <><span className="status-dot interrupted" />已打断</>}
                   {voiceStatus === "idle" && <><span className="status-dot idle" />等待语音</>}
@@ -222,29 +283,36 @@ export function InterviewView({
               <textarea
                 aria-label="等待确认的语音转写"
                 value={voiceReviewItem.text}
-                onChange={(event) => onVoiceReviewText?.(event.target.value)} />
+                onChange={(event) => onVoiceReviewText?.(event.target.value)}
+              />
               <small>{voiceReviewItem.reason}</small>
               <div className="voice-review-actions">
                 <button type="button" data-action="discard" onClick={onDiscardVoiceReview}>丢弃</button>
-                <button type="button" data-action="confirm" onClick={onConfirmVoiceReview} disabled={!voiceReviewItem.text.trim()}>确认并提交</button>
+                <button type="button" data-action="confirm" onClick={onConfirmVoiceReview} disabled={!voiceReviewItem.text.trim()}>
+                  确认并提交
+                </button>
               </div>
             </div>
           )}
           {guidanceState?.active && guidanceState.text && (
             <div className="guidance-indicator" aria-live="polite">
               <span className="guidance-badge">
-                {guidanceState.kind === "anchor_probe" ? "追问锚点" :
-                 guidanceState.kind === "emotion_label" ? "情感标记" :
-                 guidanceState.kind === "contradiction" ? "发现矛盾" :
-                 guidanceState.kind === "nudge" ? "轻推" :
-                 guidanceState.kind === "echo" ? "回音" : "引导"}
+                {guidanceState.kind === "anchor_probe"
+                  ? "追问锚点"
+                  : guidanceState.kind === "emotion_label"
+                    ? "情感标记"
+                    : guidanceState.kind === "contradiction"
+                      ? "发现矛盾"
+                      : guidanceState.kind === "nudge"
+                        ? "轻推"
+                        : guidanceState.kind === "echo"
+                          ? "回音"
+                          : "引导"}
               </span>
               <p className="guidance-text">{guidanceState.text}</p>
             </div>
           )}
 
-          {/* 会中节奏/把握度由实时语音管线驱动；仅在录音(语音对话)时有意义。文字访谈下
-              这些值是静态的(phase 恒 holding、confidence 恒 72%),会误导,故只在录音时显示。 */}
           {recording && (
             <div className="interview-rhythm" aria-live="polite">
               <div className="rhythm-main">
@@ -263,40 +331,28 @@ export function InterviewView({
               </div>
             </div>
           )}
-          <div className="control-groups" aria-label="访谈控制">
-            {interviewControlGroups.map((group, groupIdx) => (
-              <section className="control-group" key={`group-${groupIdx}`} aria-label={group.description}>
-                <div className="control-group-heading">
-                  <span>{group.label}</span>
-                  <small>{group.description}</small>
-                </div>
-                <div className="control-group-actions">
-                  {group.actions.map((action) => (
-                    <button key={action.id} title={action.description} type="button" onClick={() => onControl(action.id)}>
-                      {action.label}
-                    </button>
-                  ))}
-                </div>
-              </section>
-            ))}
-          </div>
 
+          {/* 对话流：优先于控制条 */}
           <div className="turn-list" ref={turnListRef}>
             {session.turns.length === 0 && (
-              <div className="empty-state">
-                <Lightbulb size={24} />
-                <p>{session.card.suggestedOpening}</p>
+              <div className="opening-hero" data-testid="opening-hero">
+                <span className="label">开场问题</span>
+                <p className="opening-hero-question">{session.card.suggestedOpening}</p>
+                {session.card.whyNow && <p className="opening-hero-why">{session.card.whyNow}</p>}
+                <p className="field-help">在下方直接写回答，或点右上角「语音」口述。</p>
               </div>
             )}
             {session.turns.map((turn) => {
+              const isControl = turn.intent === "控制反馈";
               const showTechniqueBadge =
                 turn.role === "assistant" &&
+                !isControl &&
                 turn.strategy !== undefined &&
                 PLAYBOOK_DRIVEN_STRATEGIES.has(turn.strategy);
               return (
-                <article className={`turn ${turn.role}`} key={turn.id}>
+                <article className={`turn ${turn.role}${isControl ? " turn-control" : ""}`} key={turn.id}>
                   <div className="turn-meta">
-                    <span>{turn.role === "user" ? "你" : "专访编辑"}</span>
+                    <span>{isControl ? "系统" : turn.role === "user" ? "你" : "专访编辑"}</span>
                     <span>{turn.intent}</span>
                     {showTechniqueBadge && (
                       <span className="technique-badge" title="本句应用了从语料学到的提问技法">
@@ -308,7 +364,9 @@ export function InterviewView({
                   {turn.references && turn.references.length > 0 ? (
                     <div className="turn-references" aria-label="本轮引用">
                       {turn.references.map((reference) => (
-                        <small key={reference.id}>引用 · {reference.sourceLabel}：{reference.text}</small>
+                        <small key={reference.id}>
+                          引用 · {reference.sourceLabel}：{reference.text}
+                        </small>
                       ))}
                     </div>
                   ) : turn.referencedMemory ? (
@@ -319,32 +377,103 @@ export function InterviewView({
             })}
           </div>
 
-          <form className="composer" onSubmit={onSubmit}>
+          {/* 表达区紧贴对话 */}
+          <form className="composer composer-priority" onSubmit={onSubmit}>
             <label className="field-stack" htmlFor="interview-input">
               <span className="field-label">你的回答</span>
               <textarea
                 id="interview-input"
                 value={input}
+                disabled={finishing}
                 onChange={(event) => onInput(event.target.value)}
-                placeholder="把你现在想说的直接写下来。例：我不想每次都替团队兜底，但又怕放手之后项目失控。" />
-              <span className="field-help">可以先写片段，系统会保留停顿，并围绕表达里的锚点继续追问。</span>
+                onKeyDown={handleComposerKeyDown}
+                placeholder={
+                  session.turns.length === 0
+                    ? "直接回应开场问题。例：我不想每次都替团队兜底，但又怕放手之后项目失控。"
+                    : "继续补充具体场景、代价或你的真实判断…"
+                }
+              />
+              <span className="field-help">⌘/Ctrl + Enter 提交。可以先写片段，系统会围绕锚点追问。</span>
             </label>
             <div className="composer-actions">
-              <button className="secondary-action" type="button" onClick={onFinish} disabled={session.turns.length === 0 || submitting || finishing} aria-busy={finishing}>
+              <button
+                className="secondary-action"
+                type="button"
+                onClick={onFinish}
+                disabled={userTurnCount === 0 || busy}
+                aria-busy={finishing}
+              >
                 {finishing ? "正在生成档案…" : "结束并生成档案"}
               </button>
-              <button className="primary-action" type="submit" disabled={submitting || !input.trim()} aria-busy={submitting}>
-                <ChevronRight size={18} />{submitting ? "思考中…" : retryAvailable ? "重试本轮" : "提交表达"}
+              <button className="primary-action" type="submit" disabled={submitting || finishing || !input.trim()} aria-busy={submitting}>
+                <ChevronRight size={18} />
+                {submitting ? "思考中…" : retryAvailable ? "重试本轮" : "提交表达"}
               </button>
             </div>
           </form>
+
+          {/* 控制：默认折叠，不抢首屏 */}
+          <div className="control-drawer">
+            <button
+              type="button"
+              className="control-drawer-toggle"
+              aria-expanded={controlsOpen}
+              onClick={() => setControlsOpen((v) => !v)}
+            >
+              <Settings2 size={16} />
+              <span>访谈调节</span>
+              <small>节奏 · 方向 · 边界</small>
+              <ChevronDown size={16} className={controlsOpen ? "is-open" : undefined} />
+            </button>
+            {controlsOpen && (
+              <div className="control-groups" aria-label="访谈控制">
+                {userTurnCount === 0 && (
+                  <p className="field-help control-empty-hint">调节会在你首轮回答后的追问中生效；也可先写回答再调。</p>
+                )}
+                {interviewControlGroups.map((group, groupIdx) => (
+                  <section className="control-group" key={`group-${groupIdx}`} aria-label={group.description}>
+                    <div className="control-group-heading">
+                      <span>{group.label}</span>
+                      <small>{group.description}</small>
+                    </div>
+                    <div className="control-group-actions">
+                      {group.actions.map((action) => {
+                        const pressed =
+                          (action.id === "do-not-save" && Boolean(session.doNotSave)) ||
+                          session.pendingControl === action.id;
+                        return (
+                          <button
+                            key={action.id}
+                            title={action.description}
+                            type="button"
+                            className={pressed ? "is-pressed" : undefined}
+                            aria-pressed={pressed || undefined}
+                            disabled={controlsDisabled}
+                            onClick={() => handleControl(action.id)}
+                          >
+                            {action.id === "do-not-save" && session.doNotSave ? "取消不保存" : action.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
 
         <aside className="side-panel context-panel" aria-label="本次专访上下文">
-          <div className="panel-title"><Flag size={18} /><h2>本次准备</h2></div>
+          <div className="panel-title">
+            <Flag size={18} />
+            <h2>本次准备</h2>
+          </div>
           {appliedTechniques.length > 0 && (
             <div className="context-block applied-techniques">
-              <span><Sparkles size={12} />本场已应用的学习技法</span>
+              <span>
+                <Sparkles size={12} />
+                本场已应用的学习技法
+              </span>
               <ul>
                 {appliedTechniques.slice(0, 3).map((rule, ruleIdx) => (
                   <li key={`technique-${ruleIdx}`}>{rule}</li>
@@ -371,31 +500,41 @@ export function InterviewView({
               </>
             )}
           </div>
-          {card.opinionEvolution && card.opinionEvolution.length > 0 && (
+          {sessionCard.opinionEvolution && sessionCard.opinionEvolution.length > 0 && (
             <div className="context-block opinion-evolution">
-              <span><Sparkles size={12} />观点演化</span>
+              <span>
+                <Sparkles size={12} />
+                观点演化
+              </span>
               <ul>
-                {card.opinionEvolution.slice(0, 3).map((evo, evoIdx) => (
-                  <li key={`evo-${evoIdx}`}><strong>{evo.topic}</strong>：{evo.oldView} → {evo.newView}</li>
+                {sessionCard.opinionEvolution.slice(0, 3).map((evo, evoIdx) => (
+                  <li key={`evo-${evoIdx}`}>
+                    <strong>{evo.topic}</strong>：{evo.oldView} → {evo.newView}
+                  </li>
                 ))}
               </ul>
             </div>
           )}
-          {card.contradictions && card.contradictions.length > 0 && (
+          {sessionCard.contradictions && sessionCard.contradictions.length > 0 && (
             <div className="context-block contradictions">
-              <span><Flag size={12} />发现的对立观点</span>
+              <span>
+                <Flag size={12} />
+                发现的对立观点
+              </span>
               <ul>
-                {card.contradictions.slice(0, 3).map((contra, contraIdx) => (
-                  <li key={`contra-${contraIdx}`}>「{contra.a}」⇄「{contra.b}」</li>
+                {sessionCard.contradictions.slice(0, 3).map((contra, contraIdx) => (
+                  <li key={`contra-${contraIdx}`}>
+                    「{contra.a}」⇄「{contra.b}」
+                  </li>
                 ))}
               </ul>
             </div>
           )}
-          {session.card.sourceHighlights && session.card.sourceHighlights.length > 0 && (
+          {sessionCard.sourceHighlights && sessionCard.sourceHighlights.length > 0 && (
             <div className="context-block">
               <span>联网素材</span>
               <ul>
-                {session.card.sourceHighlights.map((source) => (
+                {sessionCard.sourceHighlights.map((source) => (
                   <li key={source.id}>{source.title}</li>
                 ))}
               </ul>
@@ -403,18 +542,29 @@ export function InterviewView({
           )}
           <div className="context-block">
             <span>建议视角</span>
-            <p>{session.card.suggestedPerspectives.join(" / ")}</p>
+            <p>{sessionCard.suggestedPerspectives.join(" / ") || "—"}</p>
           </div>
           <div className="context-block">
             <span>可能产出</span>
-            <p>{session.card.likelyOutputs.join("；")}</p>
+            <p>{sessionCard.likelyOutputs.join("；") || "—"}</p>
           </div>
           <div className="context-block compact">
             <span>本次边界</span>
-            <p>{strengthLabel}{session.doNotSave ? " · 不写入长期资产" : " · 可写入资产"}</p>
+            <p>
+              {strengthLabel}
+              {session.doNotSave ? " · 不写入长期资产" : " · 可写入资产"}
+            </p>
           </div>
         </aside>
       </section>
     </section>
   );
+}
+
+function controlActionLabel(action: InterviewControlAction): string {
+  for (const group of interviewControlGroups) {
+    const hit = group.actions.find((a) => a.id === action);
+    if (hit) return hit.label;
+  }
+  return action;
 }

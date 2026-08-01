@@ -2157,7 +2157,11 @@ export default function App() {
         setView("memory");
       } else {
         setNotice(
-          buildNotice("success", "专访档案已生成", "双轨笔记和认知资产已更新。")
+          buildNotice(
+            "success",
+            "专访档案已生成",
+            `「${apiRun.note?.title ?? "本场笔记"}」已写入双轨笔记；可在笔记或我的资产中继续。`
+          )
         );
         setView("notes");
       }

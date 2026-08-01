@@ -144,7 +144,9 @@ function controlFeedback(
     case "do-not-save":
       return {
         nextStrength: session.strength,
-        content: "本次我会按不保存处理。你仍然可以继续说，但结束后不会沉淀到长期档案。"
+        content: session.doNotSave
+          ? "已取消「本场不保存」。结束后仍可按默认流程写入长期档案。"
+          : "本次我会按不保存处理。你仍然可以继续说，但结束后不会沉淀到长期档案。"
       };
   }
 }
@@ -250,7 +252,7 @@ export function updateInterviewControl(session: InterviewSession, action: Interv
   return {
     ...session,
     strength: feedback.nextStrength,
-    doNotSave: action === "do-not-save" ? true : session.doNotSave,
+    doNotSave: action === "do-not-save" ? !Boolean(session.doNotSave) : session.doNotSave,
     // Structured directive for the next turn's prompt (robust, not话术-matched).
     pendingControl: action,
     turns: [

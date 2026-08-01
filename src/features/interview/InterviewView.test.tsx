@@ -2,7 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createInitialProductState, createSessionDraft } from "../../domain/engine";
-import { InterviewView } from "./InterviewView";
+import { formatInterviewHeaderTitle, InterviewView } from "./InterviewView";
 
 describe("InterviewView", () => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -15,6 +15,52 @@ describe("InterviewView", () => {
     container?.remove();
     root = undefined;
     container = undefined;
+  });
+
+  it("标题去掉重复的继续追问前缀", () => {
+    const session = createSessionDraft(createInitialProductState(), "decision", "standard", {
+      topicHint: "控制感"
+    });
+    // Simulate stacked title from product
+    session.title = "决策专访：继续追问：控制感";
+    session.mode = "decision";
+    expect(formatInterviewHeaderTitle(session)).toBe("决策专访 · 控制感");
+  });
+
+  it("空场显示开场 hero 且控制默认折叠", () => {
+    const session = createSessionDraft(createInitialProductState(), "organization");
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    act(() => {
+      root?.render(
+        <InterviewView
+          card={session.card}
+          session={session}
+          pendingMode="organization"
+          input=""
+          recording={false}
+          realtimeState={null}
+          audioLevel={0}
+          voiceStatus="idle"
+          liveUserTranscript=""
+          voiceTransport={null}
+          onInput={vi.fn()}
+          onStart={vi.fn()}
+          onSubmit={vi.fn()}
+          onFinish={vi.fn()}
+          onControl={vi.fn()}
+          onToggleRecording={vi.fn()}
+          onInterrupt={vi.fn()}
+        />
+      );
+    });
+    expect(container.querySelector('[data-testid="opening-hero"]')?.textContent).toContain(
+      session.card.suggestedOpening
+    );
+    expect(container.querySelector(".control-groups")).toBeNull();
+    expect(container.textContent).toContain("访谈调节");
+    expect(container.textContent).toContain("默认文本追问");
   });
 
   it("失败轮恢复输入后显示明确的重试本轮操作", () => {

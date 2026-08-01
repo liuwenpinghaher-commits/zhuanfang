@@ -5439,3 +5439,83 @@ p.field-error {
   margin-top: 0.75rem;
   align-items: center;
 }
+
+
+/* Interview conversation-first layout (2026-08-01) */
+.opening-hero {
+  margin: 0.75rem 0 1rem;
+  padding: 1rem 1.1rem;
+  border-radius: var(--radius-lg, 14px);
+  background: color-mix(in srgb, var(--action-primary) 8%, var(--surface-elevated, #fff));
+  border: 1px solid color-mix(in srgb, var(--action-primary) 22%, transparent);
+}
+.opening-hero-question {
+  margin: 0.35rem 0 0.5rem;
+  font-size: 1.15rem;
+  font-weight: 650;
+  line-height: 1.45;
+  color: var(--text-primary);
+}
+.opening-hero-why {
+  margin: 0 0 0.35rem;
+  color: var(--text-secondary);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+.composer-priority {
+  order: 0;
+  margin-top: 0.5rem;
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  background: color-mix(in srgb, var(--surface-elevated, #fff) 92%, transparent);
+  backdrop-filter: blur(8px);
+  padding-top: 0.5rem;
+  border-top: 1px solid color-mix(in srgb, var(--border-subtle, #ddd) 80%, transparent);
+}
+.control-drawer {
+  margin-top: 0.75rem;
+  border-top: 1px solid color-mix(in srgb, var(--border-subtle, #ddd) 70%, transparent);
+  padding-top: 0.5rem;
+}
+.control-drawer-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 0.55rem 0.25rem;
+  cursor: pointer;
+  font: inherit;
+}
+.control-drawer-toggle small {
+  margin-left: auto;
+  margin-right: 0.35rem;
+  opacity: 0.75;
+}
+.control-drawer-toggle svg.is-open {
+  transform: rotate(180deg);
+}
+.control-empty-hint {
+  margin: 0 0 0.5rem;
+}
+.control-group-actions button.is-pressed {
+  border-color: var(--action-primary);
+  background: color-mix(in srgb, var(--action-primary) 12%, transparent);
+  color: var(--text-primary);
+}
+.turn.turn-control {
+  border-style: dashed;
+  opacity: 0.95;
+}
+.turn.turn-control .turn-meta span:first-child {
+  color: var(--action-primary);
+}
+.interview-status-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.4rem;
+}
