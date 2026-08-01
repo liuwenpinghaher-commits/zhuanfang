@@ -134,6 +134,50 @@ describe("empty-state render guards", () => {
         getRawMaterial={async () => null} />
     );
     expect(html).toContain("还没有专访笔记");
+    expect(html).toContain("开始一场专访");
+    expect(html).toContain("阅读与回访");
+  });
+
+  it("NotesView surfaces revisit CTA and light pill for notes with questions", () => {
+    const s = createEmptyProductState();
+    s.notes = [
+      {
+        id: "note-1",
+        sessionId: "sess-1",
+        title: "关于控制感",
+        summary: "完整摘要",
+        keyQuote: "我有点矛盾",
+        saidTrack: ["原话一", "原话二"],
+        learnedTrack: ["学到一"],
+        nextQuestions: ["矛盾具体卡在哪？"],
+        createdAt: new Date().toISOString()
+      },
+      {
+        id: "note-light",
+        sessionId: "sess-2",
+        title: "轻量场",
+        summary: "【轻量记录·未生成资产】关键表达：试一下",
+        keyQuote: "试一下",
+        saidTrack: ["试一下"],
+        learnedTrack: ["（本次为轻量记录：AI 综合暂不可用，仅保留你的原话，未做深度提炼或资产抽取。）"],
+        nextQuestions: [],
+        createdAt: new Date().toISOString()
+      }
+    ];
+    const html = renderToString(
+      <NotesView
+        state={s}
+        onStart={() => {}}
+        onSaveQuestion={() => {}}
+        onAddAnnotation={() => {}}
+        onRemoveAnnotation={() => {}}
+        getRawMaterial={async () => null} />
+    );
+    expect(html).toContain("用下个问题开场");
+    expect(html).toContain("用此问题开场");
+    expect(html).toContain("保存到资产库");
+    expect(html).toContain("轻量记录");
+    expect(html).toContain("矛盾具体卡在哪？");
   });
 
   it("ThemesView renders empty state copy when themes array is empty (P1-6)", () => {

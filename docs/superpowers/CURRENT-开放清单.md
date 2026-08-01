@@ -114,6 +114,7 @@
 | 实时专访 UX：对话优先 / 控制折叠 | **closed** · `080308b0` |
 | 上场摘要回流 + 结束确认 + Esc 停录 + 移动端 | **closed** |
 | 主题线 / Track 端到端（resume 空场、复盘 SWR、继续绑定 themeId、Track 回流钻取、雷达诚实） | **closed** · 见 `2026-08-01-themes-track-optimization-report.md` |
+| 双轨笔记阅读室（回访开场、保存留页、轻量 pill、主题/播客/原文、档案高亮） | **closed** · 见 `2026-08-01-notes-reading-room-optimization-report.md` |
 
 ## 验收
 

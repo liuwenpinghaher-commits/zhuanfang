@@ -72,6 +72,16 @@
 | 雷达真实零值 | **closed** |
 | 报告 | `2026-08-01-themes-track-optimization-report.md` |
 
+### 0.8 双轨笔记阅读室（同日续）
+
+| 项 | 状态 |
+| --- | --- |
+| 用此问题开场 + Hero 智能 CTA | **closed** |
+| 保存问题去重并留页 | **closed** |
+| 轻量 pill / 展开 / 搜索筛选 | **closed** |
+| 主题 chip · 播客 · 原文 · 档案高亮 | **closed** |
+| 报告 | `2026-08-01-notes-reading-room-optimization-report.md` |
+
 ---
 ## 1. 最终系统健康检查（2026-07-30）
 
@@ -126,6 +136,7 @@
 | 3b | [`docs/superpowers/2026-08-01-podcast-multisource-llm-deploy-verification.md`](./superpowers/2026-08-01-podcast-multisource-llm-deploy-verification.md) | 2026-08-01 播客多源 LLM 生产验证 |
 | 3c | [`docs/superpowers/2026-08-01-interview-ux-optimization-report.md`](./superpowers/2026-08-01-interview-ux-optimization-report.md) | 2026-08-01 实时专访 UX 最终报告 |
 | 3d | [`docs/superpowers/2026-08-01-themes-track-optimization-report.md`](./superpowers/2026-08-01-themes-track-optimization-report.md) | 2026-08-01 主题线/Track 端到端优化 |
+| 3e | [`docs/superpowers/2026-08-01-notes-reading-room-optimization-report.md`](./superpowers/2026-08-01-notes-reading-room-optimization-report.md) | 2026-08-01 双轨笔记阅读室 |
 | 4 | [`docs/superpowers/2026-07-30-integration-and-deployment-state.md`](./superpowers/2026-07-30-integration-and-deployment-state.md) | 集成矩阵、架构、容量信封 |
 | 5 | [`docs/runbooks/README.md`](./runbooks/README.md) | 故障手册（双开锁 / export / 5xx / persist / 429） |
 | 6 | [`docs/superpowers/eval/interview-rubric.md`](./superpowers/eval/interview-rubric.md) | 追问质量抽检 rubric |

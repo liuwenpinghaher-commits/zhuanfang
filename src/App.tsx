@@ -225,6 +225,8 @@ export default function App() {
   const [confirmingDecisionId, setConfirmingDecisionId] = useState<string | undefined>(undefined);
   const [configSection, setConfigSection] = useState<ConfigSection>("status");
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
+  /** 从双轨笔记「打开专访档案」跳入我的资产时高亮对应场次。 */
+  const [archiveFocusSessionId, setArchiveFocusSessionId] = useState<string | null>(null);
   const [recording, setRecording] = useState(false);
   const [realtimeVoiceSession, setRealtimeVoiceSession] = useState<RealtimeVoiceSessionResponse | null>(null);
   const [realtimeVoiceConnection, setRealtimeVoiceConnection] = useState<BailianRealtimeWebrtcConnection | BailianRealtimeWebsocketConnection | LivekitVoiceSession | null>(null);
@@ -2260,6 +2262,18 @@ export default function App() {
   }
 
   function saveNoteQuestion(noteId: string, index: number) {
+    const note = productState.notes.find((item) => item.id === noteId);
+    const questionText = note?.nextQuestions[index]?.trim() ?? "";
+    if (questionText) {
+      const norm = questionText.replace(/[\s。，、；：！？·.,;:!?]/g, "");
+      const exists = productState.questions.some(
+        (item) => item.question.replace(/[\s。，、；：！？·.,;:!?]/g, "") === norm
+      );
+      if (exists) {
+        setNotice(buildNotice("info", "问题已在资产库", "相同回访问题已保存过，无需重复添加。"));
+        return;
+      }
+    }
     const next = createQuestionFromNote(productState, noteId, index);
     if (next === productState) {
       // createQuestionFromNote returns the original state untouched when the note
@@ -2268,8 +2282,8 @@ export default function App() {
       return;
     }
     setProductState(next);
-    setNotice(buildNotice("success", "问题已保存到资产库", "在「我的资产 → 资产库」中可继续标记状态。"));
-    setView("my-assets");
+    // 留在笔记阅读流，避免打断回访；需要治理状态时再去资产库。
+    setNotice(buildNotice("success", "问题已保存到资产库", "可继续阅读本场笔记，或稍后在「我的资产 → 资产库」标记状态。"));
   }
 
   function addCorrection() {
@@ -2285,9 +2299,11 @@ export default function App() {
   // Task 11 会把这两个 handler 传给 RawMaterialViewer。
   function addInterviewAnnotation(sessionId: string, turnId: string, text: string) {
     setProductState(addAnnotation(productState, sessionId, turnId, text));
+    setNotice(buildNotice("success", "旁注已保存", "已挂到该轮对话，可随时删除。"));
   }
   function removeInterviewAnnotation(id: string) {
     setProductState(removeAnnotation(productState, id));
+    setNotice(buildNotice("info", "旁注已删除", "该轮旁注已移除。"));
   }
 
   async function exportData() {
@@ -3211,7 +3227,9 @@ export default function App() {
         {view === "notes" && (
           <NotesView
             state={productState}
-            onStart={launchInterview}
+            onStart={(mode, topicHint, relatedThemeIds) =>
+              void launchInterview(mode, activeSearchBriefId, topicHint, relatedThemeIds)
+            }
             onSaveQuestion={saveNoteQuestion}
             onAddAnnotation={addInterviewAnnotation}
             onRemoveAnnotation={removeInterviewAnnotation}
@@ -3220,6 +3238,17 @@ export default function App() {
             audioUrl={(sessionId) => productApiClient.sessionAudioUrl(sessionId)}
             getAudioBlob={(sessionId, role) => productApiClient.fetchSessionAudioBlob(sessionId, role)}
             focus={notesFocus}
+            onOpenTrack={openTrack}
+            onGeneratePodcast={(noteId) => {
+              setPodcastNoteId(noteId);
+              setPodcastSourceType("note");
+              setPodcastSourceId("");
+              setView("podcast");
+            }}
+            onOpenArchive={(sessionId) => {
+              setArchiveFocusSessionId(sessionId);
+              setView("my-assets");
+            }}
           />
         )}
         {view === "material" && (
@@ -3268,6 +3297,7 @@ export default function App() {
             results={assetResults}
             filter={assetFilter}
             selectedAssetKey={selectedAssetKey}
+            focusSessionId={archiveFocusSessionId}
             importantOnly={assetImportantOnly}
             sortMode={assetSortMode}
             onQuery={setAssetQuery}

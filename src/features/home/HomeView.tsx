@@ -204,7 +204,7 @@ export function HomeView({
                   onDismissLastSummary?.();
                 }}
               >
-                {lastInterviewSummary.destination === "memory" ? "去记忆治理" : "查看双轨笔记"}
+                {lastInterviewSummary.destination === "memory" ? "去记忆治理" : "查看本场笔记"}
               </button>
             )}
             <button

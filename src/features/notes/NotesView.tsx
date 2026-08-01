@@ -1,13 +1,31 @@
-import { BookmarkCheck, FileText, FileSearch, Play } from "lucide-react";
-import { useEffect, useState } from "react";
+import {
+  BookmarkCheck,
+  ChevronDown,
+  ChevronUp,
+  ExternalLink,
+  FileSearch,
+  FileText,
+  Headphones,
+  Play,
+  Search
+} from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { HeaderBlock } from "../../components/HeaderBlock";
-import type { InterviewMode, InterviewRawMaterial, ProductState } from "../../domain/types";
+import type {
+  DualTrackNote,
+  InterviewMode,
+  InterviewRawMaterial,
+  ProductState
+} from "../../domain/types";
 import type { SessionAudioMeta } from "../../api/productApi";
 import { RawMaterialViewer } from "./RawMaterialViewer";
 
 interface NotesViewProps {
   state: ProductState;
-  onStart: (mode?: InterviewMode) => void;
+  /**
+   * 开始专访。topicHint / relatedThemeIds 用于「用此问题开场」闭环。
+   */
+  onStart: (mode?: InterviewMode, topicHint?: string, relatedThemeIds?: string[]) => void;
   onSaveQuestion: (noteId: string, index: number) => void;
   onAddAnnotation: (sessionId: string, turnId: string, text: string) => void;
   onRemoveAnnotation: (id: string) => void;
@@ -17,6 +35,26 @@ interface NotesViewProps {
   getAudioBlob?: (sessionId: string, role?: "interviewee" | "interviewer") => Promise<Blob | null>;
   // 引用跳源:外部(如资产对话的逐字稿引用)指定要展开的会话与高亮的轮次。nonce 每次点击自增,用于连点重触发。
   focus?: { sessionId: string; turnId?: string; nonce?: number } | null;
+  onOpenTrack?: (themeId: string) => void;
+  onGeneratePodcast?: (noteId: string) => void;
+  onOpenArchive?: (sessionId: string) => void;
+}
+
+function isLightNote(note: DualTrackNote): boolean {
+  return (
+    note.summary.includes("轻量记录") ||
+    note.learnedTrack.some((line) => line.includes("轻量记录") || line.includes("AI 综合暂不可用"))
+  );
+}
+
+function normalizeQuestionText(text: string): string {
+  return text.trim().replace(/[\s。，、；：！？·.,;:!?]/g, "");
+}
+
+function questionAlreadySaved(state: ProductState, question: string): boolean {
+  const key = normalizeQuestionText(question);
+  if (!key) return false;
+  return state.questions.some((item) => normalizeQuestionText(item.question) === key);
 }
 
 export function NotesView({
@@ -29,9 +67,15 @@ export function NotesView({
   getAudioMeta,
   audioUrl,
   getAudioBlob,
-  focus
+  focus,
+  onOpenTrack,
+  onGeneratePodcast,
+  onOpenArchive
 }: NotesViewProps) {
   const [openSessionId, setOpenSessionId] = useState<string | null>(null);
+  const [expandedNoteIds, setExpandedNoteIds] = useState<Record<string, boolean>>({});
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<"all" | "with-questions" | "light">("all");
 
   // 收到跳源 focus → 自动展开对应会话的原始材料(RawMaterialViewer 再按 focusTurnId 滚动高亮该轮)。
   // 依赖含 nonce:连点同一引用(sessionId/turnId 不变)时也重新触发,避免"第二次点击无反应"。
@@ -48,70 +92,308 @@ export function NotesView({
     ? state.notes.some((note) => note.sessionId === focus.sessionId)
     : true;
   const orphanFocusSessionId = !focusSessionHasNote && focus?.sessionId ? focus.sessionId : null;
+
+  const sortedNotes = useMemo(
+    () => [...state.notes].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    [state.notes]
+  );
+
+  const visibleNotes = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return sortedNotes.filter((note) => {
+      if (filter === "with-questions" && note.nextQuestions.length === 0) return false;
+      if (filter === "light" && !isLightNote(note)) return false;
+      if (!q) return true;
+      const hay = [note.title, note.summary, note.keyQuote, ...note.saidTrack, ...note.learnedTrack, ...note.nextQuestions]
+        .join("\n")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+  }, [sortedNotes, query, filter]);
+
+  const latestActionable = sortedNotes.find((note) => note.nextQuestions.some((q) => q.trim())) ?? sortedNotes[0];
+  const heroQuestion = latestActionable?.nextQuestions.find((q) => q.trim()) ?? "";
+
+  function toggleExpanded(noteId: string) {
+    setExpandedNoteIds((prev) => ({ ...prev, [noteId]: !prev[noteId] }));
+  }
+
+  function startWithQuestion(note: DualTrackNote, question?: string) {
+    const hint = (question ?? note.nextQuestions[0] ?? note.keyQuote ?? note.title).trim();
+    onStart("daily", hint || undefined, note.relatedThemeIds);
+  }
+
+  function handleHeroPrimary() {
+    if (latestActionable && heroQuestion) {
+      startWithQuestion(latestActionable, heroQuestion);
+      return;
+    }
+    onStart("daily");
+  }
+
   return (
     <section className="view-stack">
       <HeaderBlock
         eyebrow="双轨笔记"
         title="从访谈沉淀认知资产"
-        subtitle="每份档案都区分“我说了什么”和“我学到了什么”，并保留下次回访问题。"
-        action={<button className="secondary-action" type="button" onClick={() => onStart("daily")}><Play size={18} />再做一次复盘</button>} />
+        subtitle="这里用来阅读与回访：区分「我说了什么」和「我学到了什么」。状态确认与筛选请去「我的资产」。"
+        action={
+          <div className="form-actions">
+            <button className="primary-action" type="button" onClick={handleHeroPrimary}>
+              <Play size={18} />
+              {heroQuestion ? "用下个问题开场" : "再做一次复盘"}
+            </button>
+            {heroQuestion && (
+              <button className="secondary-action" type="button" onClick={() => onStart("daily")}>
+                新开日常复盘
+              </button>
+            )}
+          </div>
+        }
+      />
+
+      {state.notes.length > 0 && (
+        <section className="panel notes-toolbar" aria-label="笔记筛选">
+          <label className="field-stack notes-search-field" htmlFor="notes-search">
+            <span className="field-label row">
+              <Search size={14} aria-hidden="true" />
+              搜索笔记
+            </span>
+            <input
+              id="notes-search"
+              value={query}
+              maxLength={120}
+              placeholder="标题、摘要、原话或回访问题"
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </label>
+          <div className="form-actions row-wrap" role="group" aria-label="筛选">
+            {(
+              [
+                ["all", "全部"],
+                ["with-questions", "有回访问题"],
+                ["light", "轻量记录"]
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                className={filter === id ? "secondary-action is-pressed" : "secondary-action"}
+                onClick={() => setFilter(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
       <div className="record-list">
         {state.notes.length === 0 && (
           <section className="panel empty-module">
             <FileText size={18} />
             <p>还没有专访笔记，完成一次专访后这里会出现双轨笔记。</p>
+            <button className="primary-action" type="button" onClick={() => onStart("daily")}>
+              <Play size={16} />
+              开始一场专访
+            </button>
           </section>
         )}
-        {state.notes.map((note) => (
-          <article className="record-row" key={note.id}>
-            <div className="record-main">
-              <span className="label">{new Date(note.createdAt).toLocaleDateString("zh-CN")}</span>
-              <h2>{note.title}</h2>
-              <p>{note.summary}</p>
-              <div className="quote-line">“{note.keyQuote}”</div>
-            </div>
-            <div className="dual-track">
-              <div>
-                <strong>我说了什么</strong>
-                <ul>{note.saidTrack.slice(0, 3).map((item, itemIdx) => <li key={`${note.id}-said-${itemIdx}`}>{item}</li>)}</ul>
+
+        {state.notes.length > 0 && visibleNotes.length === 0 && (
+          <section className="panel empty-module">
+            <Search size={18} />
+            <p>没有符合当前筛选的笔记。</p>
+            <button className="secondary-action" type="button" onClick={() => { setQuery(""); setFilter("all"); }}>
+              清除筛选
+            </button>
+          </section>
+        )}
+
+        {visibleNotes.map((note) => {
+          const light = isLightNote(note);
+          const expanded = Boolean(expandedNoteIds[note.id]);
+          const said = expanded ? note.saidTrack : note.saidTrack.slice(0, 3);
+          const learned = expanded ? note.learnedTrack : note.learnedTrack.slice(0, 3);
+          const questions = expanded ? note.nextQuestions : note.nextQuestions.slice(0, 2);
+          const canExpandTracks =
+            note.saidTrack.length > 3 || note.learnedTrack.length > 3 || note.nextQuestions.length > 2;
+          const session = state.sessions.find((item) => item.id === note.sessionId);
+          const themes = (note.relatedThemeIds ?? [])
+            .map((id) => state.themes.find((theme) => theme.id === id))
+            .filter((theme): theme is NonNullable<typeof theme> => Boolean(theme));
+
+          return (
+            <article className="record-row note-card" key={note.id}>
+              <div className="record-main">
+                <div className="row notes-card-meta">
+                  <span className="label">{new Date(note.createdAt).toLocaleDateString("zh-CN")}</span>
+                  {session?.mode && <span className="status-pill">{session.mode}</span>}
+                  {light ? (
+                    <span className="status-pill notes-light-pill">轻量记录</span>
+                  ) : (
+                    <span className="status-pill">完整沉淀</span>
+                  )}
+                </div>
+                <h2>{note.title}</h2>
+                <p>{note.summary}</p>
+                {note.keyQuote?.trim() && (
+                  <div className="notes-quote-block">
+                    <div className="quote-line">“{note.keyQuote}”</div>
+                    {note.keyQuoteAnchor && (
+                      <button
+                        className="text-button"
+                        type="button"
+                        onClick={() => {
+                          setOpenSessionId(note.sessionId);
+                        }}
+                      >
+                        <ExternalLink size={14} />
+                        查看来源原文
+                      </button>
+                    )}
+                  </div>
+                )}
+                {themes.length > 0 && (
+                  <div className="inline-list notes-theme-chips" aria-label="关联主题线">
+                    {themes.map((theme) => (
+                      <button
+                        key={theme.id}
+                        type="button"
+                        className="status-pill notes-theme-chip"
+                        onClick={() => onOpenTrack?.(theme.id)}
+                        disabled={!onOpenTrack}
+                      >
+                        主题线：{theme.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
-              <div>
-                <strong>我学到了什么</strong>
-                <ul>{note.learnedTrack.slice(0, 3).map((item, itemIdx) => <li key={`${note.id}-learned-${itemIdx}`}>{item}</li>)}</ul>
+
+              <div className="dual-track">
+                <div>
+                  <strong>我说了什么</strong>
+                  {said.length === 0 ? (
+                    <p className="field-help">暂无提炼条目</p>
+                  ) : (
+                    <ul>
+                      {said.map((item, itemIdx) => (
+                        <li key={`${note.id}-said-${itemIdx}`}>{item}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <div>
+                  <strong>我学到了什么</strong>
+                  {learned.length === 0 ? (
+                    <p className="field-help">{light ? "轻量记录未做深度提炼。" : "暂无提炼条目"}</p>
+                  ) : (
+                    <ul>
+                      {learned.map((item, itemIdx) => (
+                        <li key={`${note.id}-learned-${itemIdx}`}>{item}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
               </div>
-            </div>
-            <div className="note-actions">
-              {note.nextQuestions.slice(0, 2).map((question, index) => (
-                <button className="secondary-action" type="button" key={`${note.id}-q-${index}`} onClick={() => onSaveQuestion(note.id, index)}>
-                  <BookmarkCheck size={16} aria-hidden="true" />保存问题：{question}
-                </button>
-              ))}
-              <button
-                className="secondary-action"
-                type="button"
-                aria-expanded={openSessionId === note.sessionId}
-                onClick={() => setOpenSessionId((prev) => (prev === note.sessionId ? null : note.sessionId))}>
-                <FileSearch size={16} aria-hidden="true" />
-                {openSessionId === note.sessionId ? "收起原始材料" : "查看原始材料"}
-              </button>
-            </div>
-            {openSessionId === note.sessionId && (
-              // record-row 是两列网格；让原始材料查看器横跨两列用满宽度，否则会被挤在左列、右侧留大片空白。
-              <div className="span-all">
-                <RawMaterialViewer
-                  sessionId={note.sessionId}
-                  state={state}
-                  focusTurnId={focus?.sessionId === note.sessionId ? focus?.turnId : undefined}
-                  onAddAnnotation={onAddAnnotation}
-                  onRemoveAnnotation={onRemoveAnnotation}
-                  getRawMaterial={getRawMaterial}
-                  getAudioMeta={getAudioMeta}
-                  audioUrl={audioUrl}
-                  getAudioBlob={getAudioBlob} />
+
+              {canExpandTracks && (
+                <div className="span-all">
+                  <button className="text-button" type="button" onClick={() => toggleExpanded(note.id)}>
+                    {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                    {expanded ? "收起全部" : "展开全部双轨与问题"}
+                  </button>
+                </div>
+              )}
+
+              <div className="note-actions span-all">
+                {questions.length === 0 ? (
+                  <p className="field-help">
+                    {light ? "轻量记录没有下次回访问题（AI 未完整沉淀）。" : "本场暂无下次回访问题。"}
+                  </p>
+                ) : (
+                  questions.map((question, index) => {
+                    // index 必须对应 nextQuestions 原下标（截断时仍用真实 index）
+                    const realIndex = note.nextQuestions.indexOf(question);
+                    const saved = questionAlreadySaved(state, question);
+                    return (
+                      <div className="notes-question-row" key={`${note.id}-q-${realIndex}`}>
+                        <p className="notes-question-text">{question}</p>
+                        <div className="form-actions">
+                          <button
+                            className="secondary-action"
+                            type="button"
+                            disabled={saved}
+                            onClick={() => onSaveQuestion(note.id, realIndex >= 0 ? realIndex : index)}
+                          >
+                            <BookmarkCheck size={16} aria-hidden="true" />
+                            {saved ? "已保存到资产" : "保存到资产库"}
+                          </button>
+                          <button
+                            className="primary-action"
+                            type="button"
+                            onClick={() => startWithQuestion(note, question)}
+                          >
+                            <Play size={16} />
+                            用此问题开场
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+
+                <div className="form-actions notes-secondary-actions">
+                  <button
+                    className="secondary-action"
+                    type="button"
+                    aria-expanded={openSessionId === note.sessionId}
+                    onClick={() => setOpenSessionId((prev) => (prev === note.sessionId ? null : note.sessionId))}
+                  >
+                    <FileSearch size={16} aria-hidden="true" />
+                    {openSessionId === note.sessionId ? "收起原始材料" : "查看原始材料"}
+                  </button>
+                  {onGeneratePodcast && !light && (
+                    <button className="secondary-action" type="button" onClick={() => onGeneratePodcast(note.id)}>
+                      <Headphones size={16} />
+                      生成播客
+                    </button>
+                  )}
+                  {onOpenArchive && (
+                    <button className="secondary-action" type="button" onClick={() => onOpenArchive(note.sessionId)}>
+                      打开专访档案
+                    </button>
+                  )}
+                </div>
               </div>
-            )}
-          </article>
-        ))}
+
+              {openSessionId === note.sessionId && (
+                // record-row 是两列网格；让原始材料查看器横跨两列用满宽度，否则会被挤在左列、右侧留大片空白。
+                <div className="span-all">
+                  <RawMaterialViewer
+                    sessionId={note.sessionId}
+                    state={state}
+                    focusTurnId={
+                      focus?.sessionId === note.sessionId
+                        ? focus?.turnId
+                        : note.keyQuoteAnchor?.sessionId === note.sessionId
+                          ? note.keyQuoteAnchor.turnId
+                          : undefined
+                    }
+                    onAddAnnotation={onAddAnnotation}
+                    onRemoveAnnotation={onRemoveAnnotation}
+                    getRawMaterial={getRawMaterial}
+                    getAudioMeta={getAudioMeta}
+                    audioUrl={audioUrl}
+                    getAudioBlob={getAudioBlob}
+                  />
+                </div>
+              )}
+            </article>
+          );
+        })}
+
         {orphanFocusSessionId && (
           // 无对应双轨笔记的跳源会话:独立渲染原始材料查看器,保证逐字稿引用不静默失败。
           <article className="record-row" key={`orphan-focus-${orphanFocusSessionId}`}>
@@ -130,7 +412,8 @@ export function NotesView({
                 getRawMaterial={getRawMaterial}
                 getAudioMeta={getAudioMeta}
                 audioUrl={audioUrl}
-                getAudioBlob={getAudioBlob} />
+                getAudioBlob={getAudioBlob}
+              />
             </div>
           </article>
         )}

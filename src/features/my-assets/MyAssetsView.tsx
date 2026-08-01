@@ -34,6 +34,8 @@ interface MyAssetsViewProps {
   onBringIntoInterview?: (asset: { type: string; title: string; summary: string }) => void;
   onGeneratePodcast: (noteId: string) => void;
   onOpenNote?: (sessionId: string) => void;
+  /** 外部跳入时高亮并滚到对应专访档案。 */
+  focusSessionId?: string | null;
 }
 
 export function MyAssetsView({
@@ -59,7 +61,8 @@ export function MyAssetsView({
   onSortMode,
   onBringIntoInterview,
   onGeneratePodcast,
-  onOpenNote
+  onOpenNote,
+  focusSessionId = null
 }: MyAssetsViewProps) {
   const [activeTab, setActiveTab] = useState<Tab>(initialTab);
   const [sessionScopeId, setSessionScopeId] = useState<string | null>(null);
@@ -78,6 +81,18 @@ export function MyAssetsView({
   useEffect(() => {
     if (selectedAssetKey) setActiveTab("assets");
   }, [selectedAssetKey]);
+
+  // 从双轨笔记打开专访档案：切到档案页并高亮场次。
+  useEffect(() => {
+    if (!focusSessionId) return;
+    setActiveTab("archive");
+    setSessionScopeId(null);
+    setHighlightSessionId(focusSessionId);
+    requestAnimationFrame(() => {
+      const el = document.querySelector(`[data-archive-session="${focusSessionId}"]`);
+      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }, [focusSessionId]);
 
   function openArchiveAssets(
     sessionId: string,
