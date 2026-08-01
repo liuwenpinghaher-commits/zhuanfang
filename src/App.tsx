@@ -63,7 +63,6 @@ import { deriveRealtimeWsBaseUrl } from "./realtime/wsBaseUrl";
 import {
   dedupeGeneratedArtifacts,
   deleteCorpusInsightBundle,
-  deletePodcastEpisode,
   deleteSearchBrief
 } from "./domain/lifecycle";
 import { CACHE_CORRUPTION_MARKER_KEY, isPristineDemoState, loadProductState, normalizeProductState, productStateContentSignature, resetProductState, saveProductState } from "./domain/storage";
@@ -87,7 +86,7 @@ import type {
   InterviewControlAction,
   InterviewMode,
   InterviewSession,
-  PodcastSourceType,
+  PodcastEpisode, PodcastSourceType,
   ProductState,
   SearchBriefInput,
   SearchProviderId,
@@ -259,7 +258,12 @@ export default function App() {
   const [podcastVoice, setPodcastVoice] = useState(productState.systemConfig.voice.podcastVoice);
   const [podcastSourceType, setPodcastSourceType] = useState<PodcastSourceType>("note");
   const [podcastSourceId, setPodcastSourceId] = useState("");
+  const [podcastFormat, setPodcastFormat] = useState<PodcastEpisode["format"]>("solo");
   const [podcastEditingScript, setPodcastEditingScript] = useState("");
+  const [podcastActiveEpisodeId, setPodcastActiveEpisodeId] = useState<string | null>(null);
+  const [podcastGenerating, setPodcastGenerating] = useState(false);
+  const [podcastSynthesizing, setPodcastSynthesizing] = useState(false);
+  const [podcastDeletingId, setPodcastDeletingId] = useState<string | null>(null);
   const [corpusMediaType, setCorpusMediaType] = useState<CorpusImportInput["mediaType"]>("text");
   const [corpusTitle, setCorpusTitle] = useState("优秀专访样本");
   const [corpusSourceUrl, setCorpusSourceUrl] = useState("");
@@ -1669,68 +1673,93 @@ export default function App() {
       podcastSourceType === "note"
         ? podcastNoteId || productState.notes[0]?.id
         : podcastSourceId || "";
-    if (!effectiveSourceId) {
+    if (!effectiveSourceId || podcastGenerating) {
       return;
     }
 
+    setPodcastGenerating(true);
     try {
       const apiRun = await productApiClient.generatePodcastEpisode({
         ...(podcastSourceType === "note" ? { noteId: effectiveSourceId } : {}),
         sourceType: podcastSourceType,
         sourceId: effectiveSourceId,
-        format: "solo",
+        format: podcastFormat,
         voice: podcastVoice
       });
       adoptServerState(apiRun.state);
       setApiPersistenceEnabled(true);
-      setPodcastNoteId(effectiveSourceId);
+      if (podcastSourceType === "note") {
+        setPodcastNoteId(effectiveSourceId);
+      } else {
+        setPodcastSourceId(effectiveSourceId);
+      }
+      setPodcastActiveEpisodeId(apiRun.episode.id);
       setPodcastEditingScript(apiRun.episode.script);
       setNotice(buildNotice("success", "播客脚本已生成", `使用声音配置：${apiRun.episode.voice}`));
       setView("podcast");
     } catch (err) {
-      // 失败即如实暴露——不再在后端不可达时本地捏造脚本并用与真实成功相同的提示冒充。
       const message = err instanceof Error && err.message ? err.message : "请检查服务与配置后重试。";
       if (isNetworkError(err)) {
         setApiPersistenceEnabled(false);
       }
       setNotice(buildNotice("danger", "播客脚本生成失败", message));
+    } finally {
+      setPodcastGenerating(false);
     }
   }
 
   async function synthesizePodcastSpeech(episodeId: string) {
-    const episode = productState.podcastEpisodes.find((ep) => ep.id === episodeId);
-    if (!episode) {
+    const targetId = episodeId || podcastActiveEpisodeId || "";
+    const episode = productState.podcastEpisodes.find((ep) => ep.id === targetId);
+    if (!episode || podcastSynthesizing) {
       return;
     }
 
-    // Capture the script the user is currently editing. We pass it directly to the
-    // synthesize endpoint so TTS always uses the current version — this eliminates the
-    // race where a prior saveState failure left the server holding a stale script.
-    const scriptToSynthesize = podcastEditingScript || episode.script;
+    // Always synthesize the active draft episode — never assume list[0].
+    const scriptToSynthesize =
+      targetId === podcastActiveEpisodeId && podcastEditingScript.trim()
+        ? podcastEditingScript
+        : episode.script;
 
-    // P3-09:此前先裸 setProductState 乐观更新、再 fire-and-forget 整包 saveState(PUT),然后又调
-    // synthesize——而 synthesize 本身就带着 scriptToSynthesize 在服务端确认脚本 + 持久化(见下)。
-    // 那条 saveState 是纯写放大:PUT 一份和 synthesize 即将持久化的同一脚本,还触发 autosave echo。
-    // 收敛不丢数据(synthesize 是权威),故删除旁路 PUT,统一由 synthesize 结果走 adoptServerState。
+    setPodcastSynthesizing(true);
     try {
-      const { state: synthState } = await productApiClient.synthesizePodcastEpisode(episodeId, scriptToSynthesize);
-      adoptServerState(synthState);   // 采纳权威态(revision 已 bump,不触发 echo PUT)
+      const { state: synthState } = await productApiClient.synthesizePodcastEpisode(targetId, scriptToSynthesize);
+      adoptServerState(synthState);
       setApiPersistenceEnabled(true);
       setPodcastEditingScript("");
-      setNotice(buildNotice("success", "语音合成完成", `播客 "${episode.title}" 音频已渲染。`));
+      setPodcastActiveEpisodeId(targetId);
+      setNotice(buildNotice("success", "语音合成完成", `播客「${episode.title}」音频已渲染。`));
     } catch (err) {
-      // 后端合成失败已如实 502/503（脚本在服务端保留），把真实原因暴露给用户。
       const message = err instanceof Error && err.message ? err.message : "TTS 请求失败。";
       setNotice(buildNotice("danger", "语音合成失败", `${message}（脚本已保留，可重试。）`));
+    } finally {
+      setPodcastSynthesizing(false);
     }
   }
 
-  function removePodcastEpisode(episodeId: string) {
+  async function removePodcastEpisode(episodeId: string) {
     if (typeof window !== "undefined" && !window.confirm("确定要删除这条播客生成结果吗？来源笔记不会被删除。")) {
       return;
     }
-    setProductState(deletePodcastEpisode(productState, episodeId));
-    setNotice(buildNotice("warning", "播客生成结果已删除", "来源笔记和认知资产保持不变。"));
+    setPodcastDeletingId(episodeId);
+    try {
+      const next = await productApiClient.deletePodcastEpisode(episodeId);
+      adoptServerState(next);
+      setApiPersistenceEnabled(true);
+      if (podcastActiveEpisodeId === episodeId) {
+        setPodcastActiveEpisodeId(null);
+        setPodcastEditingScript("");
+      }
+      setNotice(buildNotice("warning", "播客生成结果已删除", "来源笔记和认知资产保持不变。"));
+    } catch (err) {
+      const message = err instanceof Error && err.message ? err.message : "删除失败，请重试。";
+      if (isNetworkError(err)) {
+        setApiPersistenceEnabled(false);
+      }
+      setNotice(buildNotice("danger", "播客删除失败", message));
+    } finally {
+      setPodcastDeletingId(null);
+    }
   }
 
   async function analyzeCorpus() {
@@ -2339,7 +2368,12 @@ export default function App() {
     setPodcastNoteId("");
     setPodcastSourceType("note");
     setPodcastSourceId("");
+    setPodcastFormat("solo");
     setPodcastEditingScript("");
+    setPodcastActiveEpisodeId(null);
+    setPodcastGenerating(false);
+    setPodcastSynthesizing(false);
+    setPodcastDeletingId(null);
     setCorpusMediaType("text");
     setCorpusSourceUrl("");
     setCorpusAudioBase64("");
@@ -2996,12 +3030,20 @@ export default function App() {
             voice={podcastVoice}
             sourceType={podcastSourceType}
             sourceId={podcastSourceId}
+            format={podcastFormat}
             editingScript={podcastEditingScript}
+            activeEpisodeId={podcastActiveEpisodeId}
+            generating={podcastGenerating}
+            synthesizing={podcastSynthesizing}
+            deletingEpisodeId={podcastDeletingId}
+            voices={voices}
             onNoteId={setPodcastNoteId}
             onVoice={setPodcastVoice}
             onSourceType={setPodcastSourceType}
             onSourceId={setPodcastSourceId}
+            onFormat={setPodcastFormat}
             onEditingScript={setPodcastEditingScript}
+            onActiveEpisodeId={setPodcastActiveEpisodeId}
             onGenerateScript={generatePodcastScript}
             onSynthesizeSpeech={synthesizePodcastSpeech}
             onDeleteEpisode={removePodcastEpisode}

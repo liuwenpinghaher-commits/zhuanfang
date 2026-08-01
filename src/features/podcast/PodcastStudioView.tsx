@@ -1,7 +1,9 @@
-import { ClipboardList, Headphones, Mic, Play, Trash2, Volume2 } from "lucide-react";
+import { useMemo, useRef } from "react";
+import { ClipboardList, Headphones, Mic, Pencil, Trash2, Volume2 } from "lucide-react";
 import { HeaderBlock } from "../../components/HeaderBlock";
+import type { VoiceInfo } from "../../api/productApi";
 import type { PodcastEpisode, PodcastSourceType, ProductState } from "../../domain/types";
-import { formatPodcastTimestamp, podcastProductionSections } from "../../ui";
+import { formatPodcastTimestamp } from "../../ui";
 
 interface PodcastStudioViewProps {
   state: ProductState;
@@ -9,17 +11,37 @@ interface PodcastStudioViewProps {
   voice: string;
   sourceType: PodcastSourceType;
   sourceId: string;
+  format: PodcastEpisode["format"];
   editingScript: string;
+  activeEpisodeId: string | null;
+  generating?: boolean;
+  synthesizing?: boolean;
+  deletingEpisodeId?: string | null;
+  voices?: VoiceInfo[];
   onNoteId: (value: string) => void;
   onVoice: (value: string) => void;
   onSourceType: (value: PodcastSourceType) => void;
   onSourceId: (value: string) => void;
+  onFormat: (value: PodcastEpisode["format"]) => void;
   onEditingScript: (value: string) => void;
+  onActiveEpisodeId: (value: string | null) => void;
   onGenerateScript: () => void;
   onSynthesizeSpeech: (episodeId: string) => void;
   onDeleteEpisode: (episodeId: string) => void;
   onSaveDefaultVoice: () => void;
 }
+
+const formatLabel: Record<PodcastEpisode["format"], string> = {
+  solo: "单人旁白",
+  "host-guest": "主持对谈"
+};
+
+const sourceOptions: Array<{ value: PodcastSourceType; label: string }> = [
+  { value: "note", label: "双轨笔记" },
+  { value: "search-brief", label: "搜索简报" },
+  { value: "theme", label: "长期主题" },
+  { value: "knowledge-debt", label: "知识债" }
+];
 
 export function PodcastStudioView({
   state,
@@ -27,12 +49,20 @@ export function PodcastStudioView({
   voice,
   sourceType,
   sourceId,
+  format,
   editingScript,
+  activeEpisodeId,
+  generating = false,
+  synthesizing = false,
+  deletingEpisodeId = null,
+  voices = [],
   onNoteId,
   onVoice,
   onSourceType,
   onSourceId,
+  onFormat,
   onEditingScript,
+  onActiveEpisodeId,
   onGenerateScript,
   onSynthesizeSpeech,
   onDeleteEpisode,
@@ -40,19 +70,8 @@ export function PodcastStudioView({
 }: PodcastStudioViewProps) {
   const selectedNoteId = noteId || state.notes[0]?.id || "";
   const selectedNote = state.notes.find((note) => note.id === selectedNoteId) ?? state.notes[0];
-  const formatLabel: Record<"solo" | "host-guest", string> = {
-    solo: "单人旁白",
-    "host-guest": "主持对谈"
-  };
 
-  const sourceOptions: Array<{ value: PodcastSourceType; label: string }> = [
-    { value: "note", label: "双轨笔记" },
-    { value: "search-brief", label: "搜索简报" },
-    { value: "theme", label: "长期主题" },
-    { value: "knowledge-debt", label: "知识债" }
-  ];
-
-  const sourceItems = (() => {
+  const sourceItems = useMemo(() => {
     switch (sourceType) {
       case "search-brief":
         return state.searchBriefs.map((item) => ({ id: item.id, label: item.topic }));
@@ -63,205 +82,423 @@ export function PodcastStudioView({
       default:
         return state.notes.map((item) => ({ id: item.id, label: item.title }));
     }
-  })();
+  }, [sourceType, state.searchBriefs, state.themes, state.debts, state.notes]);
 
   const selectedSourceId = sourceId || sourceItems[0]?.id || "";
+  const activeEpisode =
+    state.podcastEpisodes.find((ep) => ep.id === activeEpisodeId) ??
+    null;
+  const showDraftEditor = Boolean(activeEpisode && editingScript.trim());
+  const busy = generating || synthesizing;
+
+  const voiceOptions = useMemo(() => {
+    const preset = voices.map((v) => v.voice);
+    if (voice && !preset.includes(voice)) {
+      return [voice, ...preset];
+    }
+    return preset;
+  }, [voices, voice]);
+
+  function beginEditEpisode(episode: PodcastEpisode) {
+    onActiveEpisodeId(episode.id);
+    onEditingScript(episode.script);
+  }
 
   return (
-    <section className="view-stack">
+    <section className="view-stack podcast-view">
       <HeaderBlock
         eyebrow="播客工作台"
         title="把一次专访生成可收听的语音节目"
-        subtitle="Product API 会生成脚本、shownotes 和音频；配置百炼 CosyVoice 后渲染真实音频，未配置时保留本地占位。" />
+        subtitle="先选来源并生成脚本，确认口播稿后再合成音频。默认不会在生成时自动扣费渲染。"
+      />
 
-      <section className="podcast-workbench">
-        <section className="panel podcast-setup-panel">
-          <div className="panel-title"><Headphones size={18} /><h2>制作设置</h2></div>
-          <div className="production-steps" aria-label="播客制作流程">
-            {podcastProductionSections.map((section) => (
-              <div className="production-step" key={section.id}>
-                <strong>{section.label}</strong>
-                <span>{section.description}</span>
-              </div>
-            ))}
+      <div className="config-hint podcast-pipeline" aria-label="制作进度">
+        <span className={!activeEpisode && state.podcastEpisodes.length === 0 ? "is-emphasis" : undefined}>① 选来源</span>
+        <span className={showDraftEditor ? "is-emphasis" : undefined}>② 确认脚本</span>
+        <span className={state.podcastEpisodes.some((e) => e.audioRenderStatus === "rendered") ? "is-emphasis" : undefined}>
+          ③ 合成收听
+        </span>
+      </div>
+
+      <section className="panel podcast-setup-panel">
+        <div className="panel-title row">
+          <Headphones size={18} aria-hidden="true" />
+          <h2>① 选来源并生成脚本</h2>
+        </div>
+
+        <div className="podcast-setup-grid">
+          <label className="field-stack" htmlFor="podcast-source-type">
+            <span className="field-label">来源类型</span>
+            <select
+              id="podcast-source-type"
+              value={sourceType}
+              disabled={busy}
+              onChange={(event) => {
+                onSourceType(event.target.value as PodcastSourceType);
+                onSourceId("");
+              }}
+            >
+              {sourceOptions.map((option) => (
+                <option value={option.value} key={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="field-stack" htmlFor="podcast-source">
+            <span className="field-label">来源内容</span>
+            <select
+              id="podcast-source"
+              value={selectedSourceId}
+              disabled={busy || sourceItems.length === 0}
+              onChange={(event) => {
+                if (sourceType === "note") onNoteId(event.target.value);
+                onSourceId(event.target.value);
+              }}
+            >
+              {sourceItems.length === 0 ? (
+                <option value="">暂无可用来源</option>
+              ) : (
+                sourceItems.map((item) => (
+                  <option value={item.id} key={item.id}>
+                    {item.label}
+                  </option>
+                ))
+              )}
+            </select>
+          </label>
+
+          <label className="field-stack" htmlFor="podcast-format">
+            <span className="field-label">节目形态</span>
+            <select
+              id="podcast-format"
+              value={format}
+              disabled={busy}
+              onChange={(event) => onFormat(event.target.value as PodcastEpisode["format"])}
+            >
+              <option value="solo">单人旁白</option>
+              <option value="host-guest">主持对谈</option>
+            </select>
+          </label>
+
+          <label className="field-stack" htmlFor="podcast-voice">
+            <span className="field-label">声音配置</span>
+            <input
+              id="podcast-voice"
+              list="podcast-voice-options"
+              value={voice}
+              disabled={busy}
+              onChange={(event) => onVoice(event.target.value)}
+              placeholder="CosyVoice voice id"
+            />
+            <datalist id="podcast-voice-options">
+              {voiceOptions.map((v) => (
+                <option value={v} key={v}>
+                  {voices.find((x) => x.voice === v)?.name ?? v}
+                </option>
+              ))}
+            </datalist>
+            <span className="field-help">可从系统音色建议中选择，或填写自定义 CosyVoice id。</span>
+          </label>
+        </div>
+
+        <div className="form-actions">
+          <button
+            className={`primary-action${generating ? " btn-loading" : ""}`}
+            type="button"
+            onClick={onGenerateScript}
+            disabled={!selectedSourceId || busy}
+            aria-busy={generating}
+          >
+            {generating && <span className="spinner" aria-hidden="true" />}
+            <Mic size={18} />
+            {generating ? "生成中…" : "生成脚本"}
+          </button>
+          <button className="secondary-action" type="button" onClick={onSaveDefaultVoice} disabled={busy || !voice.trim()}>
+            保存为默认声音
+          </button>
+        </div>
+
+        {selectedNote && sourceType === "note" ? (
+          <article className="podcast-source-card">
+            <span className="label">当前来源</span>
+            <h3>{selectedNote.title}</h3>
+            <p>{selectedNote.summary}</p>
+            <blockquote>&quot;{selectedNote.keyQuote}&quot;</blockquote>
+          </article>
+        ) : selectedSourceId && sourceType !== "note" ? (
+          <article className="podcast-source-card">
+            <span className="label">当前来源</span>
+            <h3>{sourceItems.find((item) => item.id === selectedSourceId)?.label ?? "—"}</h3>
+            <p>
+              来源类型：{sourceOptions.find((o) => o.value === sourceType)?.label ?? "—"}
+              " · 当前为结构化模板脚本（可后续升级 LLM）"
+            </p>
+          </article>
+        ) : (
+          <div className="empty-module">
+            <ClipboardList size={18} />
+            <p>还没有可生成播客的内容。先完成一次专访并生成档案，或从外部调研带入简报。</p>
           </div>
-          <div className="input-row three">
-            <label className="field-stack" htmlFor="podcast-source-type">
-              <span className="field-label">来源类型</span>
-              <select
-                id="podcast-source-type"
-                value={sourceType}
-                onChange={(event) => onSourceType(event.target.value as PodcastSourceType)}
->
-                {sourceOptions.map((option) => (
-                  <option value={option.value} key={option.value}>{option.label}</option>
-                ))}
-              </select>
-            </label>
-            <label className="field-stack" htmlFor="podcast-source">
-              <span className="field-label">来源内容</span>
-              <select
-                id="podcast-source"
-                value={selectedSourceId}
-                onChange={(event) => {
-                  if (sourceType === "note") {
-                    onNoteId(event.target.value);
-                  }
-                  onSourceId(event.target.value);
-                }}
->
-                {sourceItems.map((item) => (
-                  <option value={item.id} key={item.id}>{item.label}</option>
-                ))}
-              </select>
-            </label>
-            <label className="field-stack" htmlFor="podcast-voice">
-              <span className="field-label">声音配置</span>
-              <input id="podcast-voice" value={voice} onChange={(event) => onVoice(event.target.value)} placeholder="声音配置" />
-              <span className="field-help">可填写 CosyVoice voice id；常用默认值会由服务端映射到系统声音。</span>
-            </label>
-          </div>
-          <div className="input-row">
-            <button className="primary-action" type="button" onClick={onGenerateScript} disabled={!selectedSourceId}>
-              <Mic size={18} />生成脚本
-            </button>
-            <button className="secondary-action" type="button" onClick={onSaveDefaultVoice}>
-              保存为默认声音
-            </button>
-          </div>
-          {editingScript && (
-            <div className="script-editor">
-              <div className="section-heading">
-                <span className="label">编辑脚本</span>
-                <strong>确认后合成语音</strong>
-              </div>
-              <textarea
-                className="script-textarea"
-                value={editingScript}
-                onChange={(event) => onEditingScript(event.target.value)}
-                rows={12}
-                placeholder="编辑或确认播客脚本..." />
-              <button
-                className="primary-action"
-                type="button"
-                onClick={() => {
-                  const latest = state.podcastEpisodes[0];
-                  if (latest) {
-                    onSynthesizeSpeech(latest.id);
-                  }
-                }}
-                disabled={!editingScript.trim()}
->
-                <Volume2 size={18} />合成语音
-              </button>
+        )}
+      </section>
+
+      {showDraftEditor && activeEpisode && (
+        <section className="panel podcast-draft-panel">
+          <div className="panel-title row-between">
+            <div className="row">
+              <Pencil size={18} aria-hidden="true" />
+              <h2>② 确认脚本</h2>
             </div>
-          )}
-          {selectedNote && sourceType === "note" ? (
-            <article className="podcast-source-card">
-              <span className="label">当前来源</span>
-              <h3>{selectedNote.title}</h3>
-              <p>{selectedNote.summary}</p>
-              <blockquote>"{selectedNote.keyQuote}"</blockquote>
-            </article>
-          ) : selectedSourceId && sourceType !== "note" ? (
-            <article className="podcast-source-card">
-              <span className="label">当前来源</span>
-              <h3>{sourceItems.find((item) => item.id === selectedSourceId)?.label ?? "—"}</h3>
-              <p>来源类型：{sourceOptions.find((o) => o.value === sourceType)?.label ?? "—"}</p>
-            </article>
-          ) : (
-            <div className="empty-module">
-              <ClipboardList size={18} />
-              <p>还没有可生成播客的内容。先完成一次专访并生成档案。</p>
-            </div>
-          )}
+            <span className={`status-pill ${statusPillClass(activeEpisode)}`}>
+              {formatEpisodeStatus(activeEpisode)}
+            </span>
+          </div>
+          <p className="field-help mb-3">
+            正在编辑：{activeEpisode.title} · {formatLabel[activeEpisode.format]} · {activeEpisode.voice}
+          </p>
+          <textarea
+            className="script-textarea"
+            value={editingScript}
+            onChange={(event) => onEditingScript(event.target.value)}
+            rows={12}
+            disabled={synthesizing}
+            aria-label="编辑播客脚本"
+            placeholder="编辑或确认播客脚本..."
+          />
+          <div className="form-actions">
+            <button
+              className={`primary-action${synthesizing ? " btn-loading" : ""}`}
+              type="button"
+              onClick={() => onSynthesizeSpeech(activeEpisode.id)}
+              disabled={!editingScript.trim() || busy}
+              aria-busy={synthesizing}
+            >
+              {synthesizing && <span className="spinner" aria-hidden="true" />}
+              <Volume2 size={18} />
+              {synthesizing ? "合成中…" : "合成语音"}
+            </button>
+            <button
+              className="secondary-action"
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                onEditingScript("");
+                onActiveEpisodeId(null);
+              }}
+            >
+              收起草稿
+            </button>
+          </div>
         </section>
+      )}
 
-        <section className="podcast-result-panel">
-          {state.podcastEpisodes.length === 0 && (
-            <section className="panel empty-module">
-              <Headphones size={18} />
-              <p>还没有播客。选择一份双轨笔记后即可生成脚本、shownotes 和音频文件。</p>
-            </section>
-          )}
-          {state.podcastEpisodes.map((episode) => (
-            <article className="panel podcast-episode" key={episode.id}>
-              <div className="episode-hero">
-                <div>
-                  <span className="status-pill">{episode.status} · {episode.voice}</span>
-                  <h2>{episode.title}</h2>
-                  <p>{formatLabel[episode.format]} · {formatPodcastTimestamp(episode.durationSec)} · {new Date(episode.createdAt).toLocaleDateString("zh-CN")}</p>
-                  <div className="record-actions">
-                    <button className="danger-button" type="button" onClick={() => onDeleteEpisode(episode.id)}>
-                      <Trash2 size={16} />删除播客
-                    </button>
-                  </div>
-                </div>
-                <PodcastAudioPreview episode={episode} />
-              </div>
+      <section className="podcast-library">
+        <div className="memory-section-head">
+          <div>
+            <h2>③ 节目库（{state.podcastEpisodes.length}）</h2>
+            <p className="field-help">收听、再编辑脚本并重新合成，或删除生成结果。</p>
+          </div>
+        </div>
 
-              <div className="episode-grid">
-                <section className="episode-section">
-                  <div className="section-heading">
-                    <span className="label">章节导航</span>
-                    <strong>{episode.chapters.length} 段</strong>
-                  </div>
-                  <div className="chapter-list">
-                    {episode.chapters.map((chapter, chapterIdx) => (
-                      <div key={`chapter-${chapterIdx}`}>
-                        <strong>{chapter.title}</strong>
-                        <span>{formatPodcastTimestamp(chapter.startsAtSec)}</span>
-                        <p>{chapter.summary}</p>
+        {state.podcastEpisodes.length === 0 ? (
+          <section className="panel empty-state podcast-empty">
+            <div className="memory-empty-icon" aria-hidden="true">
+              <Headphones size={28} />
+            </div>
+            <h3 className="memory-empty-title">还没有播客</h3>
+            <p>选择来源并生成脚本后，节目会出现在这里。</p>
+          </section>
+        ) : (
+          <div className="podcast-episode-list">
+            {state.podcastEpisodes.map((episode) => {
+              const isActive = episode.id === activeEpisodeId;
+              const deleting = deletingEpisodeId === episode.id;
+              return (
+                <article
+                  className={`panel podcast-episode${isActive ? " is-active" : ""}`}
+                  key={episode.id}
+                >
+                  <div className="episode-hero">
+                    <div>
+                      <div className="row-wrap mb-2">
+                        <span className={`status-pill ${statusPillClass(episode)}`}>
+                          {formatEpisodeStatus(episode)}
+                        </span>
+                        <span className="status-pill">
+                          {formatLabel[episode.format]} · {episode.voice}
+                        </span>
+                        <span className="status-pill tabular-nums">
+                          {formatPodcastTimestamp(episode.durationSec)}
+                        </span>
                       </div>
-                    ))}
+                      <h2>{episode.title}</h2>
+                      <p className="field-help">
+                        {new Date(episode.createdAt).toLocaleString("zh-CN")}
+                        {episode.sourceLabel ? ` · 来源 ${episode.sourceLabel}` : ""}
+                      </p>
+                      <div className="record-actions">
+                        <button
+                          className="secondary-action"
+                          type="button"
+                          disabled={busy || deleting}
+                          onClick={() => beginEditEpisode(episode)}
+                        >
+                          <Pencil size={16} />
+                          {episode.audioRenderStatus === "failed" ? "改稿并重试" : "编辑脚本"}
+                        </button>
+                        <button
+                          className={`secondary-action${synthesizing && isActive ? " btn-loading" : ""}`}
+                          type="button"
+                          disabled={busy || deleting}
+                          onClick={() => {
+                            onActiveEpisodeId(episode.id);
+                            onSynthesizeSpeech(episode.id);
+                          }}
+                        >
+                          <Volume2 size={16} />
+                          重新合成
+                        </button>
+                        <button
+                          className={`danger-button${deleting ? " btn-loading" : ""}`}
+                          type="button"
+                          disabled={busy || deleting}
+                          aria-busy={deleting}
+                          onClick={() => onDeleteEpisode(episode.id)}
+                        >
+                          {deleting && <span className="spinner" aria-hidden="true" />}
+                          <Trash2 size={16} />
+                          删除播客
+                        </button>
+                      </div>
+                    </div>
+                    <PodcastAudioPreview episode={episode} />
                   </div>
-                </section>
 
-                <section className="episode-section">
-                  <div className="section-heading">
-                    <span className="label">Shownotes</span>
-                    <strong>{episode.shownotes.length} 条</strong>
-                  </div>
-                  <ul className="shownotes-list">
-                    {episode.shownotes.map((item, snIdx) => <li key={`shownote-${snIdx}`}>{item}</li>)}
-                  </ul>
-                </section>
+                  <div className="episode-grid">
+                    <section className="episode-section">
+                      <div className="section-heading">
+                        <span className="label">章节导航</span>
+                        <strong>{episode.chapters.length} 段</strong>
+                      </div>
+                      <div className="chapter-list">
+                        {episode.chapters.map((chapter, chapterIdx) => (
+                          <button
+                            type="button"
+                            className="chapter-seek"
+                            key={`${episode.id}-chapter-${chapterIdx}`}
+                            onClick={() => seekEpisodeAudio(episode.id, chapter.startsAtSec)}
+                            title="跳到该章节"
+                          >
+                            <strong>{chapter.title}</strong>
+                            <span>{formatPodcastTimestamp(chapter.startsAtSec)}</span>
+                            <p>{chapter.summary}</p>
+                          </button>
+                        ))}
+                      </div>
+                    </section>
 
-                <section className="episode-section script-section">
-                  <div className="section-heading">
-                    <span className="label">脚本复核</span>
-                    <strong>完整口播稿</strong>
+                    <section className="episode-section">
+                      <div className="section-heading">
+                        <span className="label">Shownotes</span>
+                        <strong>{episode.shownotes.length} 条</strong>
+                      </div>
+                      <ul className="shownotes-list">
+                        {episode.shownotes.map((item, snIdx) => (
+                          <li key={`${episode.id}-sn-${snIdx}`}>{item}</li>
+                        ))}
+                      </ul>
+                    </section>
+
+                    <section className="episode-section script-section">
+                      <div className="section-heading">
+                        <span className="label">脚本复核</span>
+                        <strong>{episode.scriptReviewStatus || "口播稿"}</strong>
+                      </div>
+                      <pre className="script-preview">{episode.script}</pre>
+                    </section>
                   </div>
-                  <pre className="script-preview">{episode.script}</pre>
-                </section>
-              </div>
-            </article>
-          ))}
-        </section>
+                </article>
+              );
+            })}
+          </div>
+        )}
       </section>
     </section>
   );
 }
 
-function PodcastAudioPreview({ episode }: { episode: ProductState["podcastEpisodes"][number] }) {
+function PodcastAudioPreview({ episode }: { episode: PodcastEpisode }) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const playable = isPlayableAudioUrl(episode.audioUrl);
 
   return (
     <div className="audio-preview" aria-label={`音频预览：${episode.title}`}>
       <Volume2 size={18} />
       <div>
-        <strong>{playable ? "可播放音频" : "本地占位"}</strong>
+        <strong>{playable ? "可播放音频" : formatAudioPlaceholder(episode)}</strong>
         {playable ? (
-          <audio controls preload="metadata">
+          <audio
+            ref={audioRef}
+            id={`podcast-audio-${episode.id}`}
+            controls
+            preload="metadata"
+          >
             <source src={episode.audioUrl} type={inferAudioMimeType(episode.audioUrl)} />
           </audio>
         ) : (
-          <p>服务端未配置真实 TTS 时会保留占位地址。</p>
+          <p>
+            {episode.audioRenderMessage ||
+              (episode.audioRenderStatus === "pending"
+                ? "脚本待确认，确认后才会渲染音频。"
+                : "服务端未配置真实 TTS 时会保留占位地址。")}
+          </p>
         )}
-        <code>{episode.audioUrl}</code>
+        {playable && <code className="audio-url">{episode.audioUrl}</code>}
       </div>
     </div>
   );
+}
+
+function seekEpisodeAudio(episodeId: string, startsAtSec: number) {
+  const el = document.getElementById(`podcast-audio-${episodeId}`) as HTMLAudioElement | null;
+  if (!el) return;
+  el.currentTime = Math.max(0, startsAtSec);
+  void el.play().catch(() => {
+    /* autoplay may be blocked until user gesture on the control */
+  });
+}
+
+function formatEpisodeStatus(episode: PodcastEpisode): string {
+  if (episode.audioRenderStatus === "rendered" && isPlayableAudioUrl(episode.audioUrl)) {
+    return "可播放";
+  }
+  if (episode.audioRenderStatus === "failed") {
+    return "渲染失败";
+  }
+  if (episode.audioRenderStatus === "pending" || episode.scriptReviewStatus === "待确认") {
+    return "待确认脚本";
+  }
+  if (episode.status === "ready") {
+    return "已就绪";
+  }
+  if (episode.status === "draft") {
+    return "草稿";
+  }
+  return String(episode.status);
+}
+
+function statusPillClass(episode: PodcastEpisode): string {
+  if (episode.audioRenderStatus === "rendered") return "is-tracked";
+  if (episode.audioRenderStatus === "failed") return "is-stale";
+  return "";
+}
+
+function formatAudioPlaceholder(episode: PodcastEpisode): string {
+  if (episode.audioRenderStatus === "failed") return "渲染失败";
+  if (episode.audioRenderStatus === "pending") return "待合成";
+  return "本地占位";
 }
 
 function isPlayableAudioUrl(value: string) {
@@ -270,14 +507,8 @@ function isPlayableAudioUrl(value: string) {
 
 function inferAudioMimeType(value: string) {
   const cleanUrl = value.split("?")[0].toLowerCase();
-  if (cleanUrl.endsWith(".wav")) {
-    return "audio/wav";
-  }
-  if (cleanUrl.endsWith(".ogg")) {
-    return "audio/ogg";
-  }
-  if (cleanUrl.endsWith(".pcm")) {
-    return "audio/L16";
-  }
+  if (cleanUrl.endsWith(".wav")) return "audio/wav";
+  if (cleanUrl.endsWith(".ogg")) return "audio/ogg";
+  if (cleanUrl.endsWith(".pcm")) return "audio/L16";
   return "audio/mpeg";
 }

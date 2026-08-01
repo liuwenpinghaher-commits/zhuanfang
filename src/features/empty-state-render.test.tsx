@@ -98,17 +98,21 @@ describe("empty-state render guards", () => {
     const s = createEmptyProductState();
     expect(() =>
       renderToString(
-        <PodcastStudioView
+<PodcastStudioView
           state={s}
           noteId=""
           voice=""
           sourceType="note"
           sourceId=""
+          format="solo"
           editingScript=""
+          activeEpisodeId={null}
           onNoteId={() => {}}
           onVoice={() => {}}
           onSourceType={() => {}}
           onSourceId={() => {}}
+          onFormat={() => {}}
+          onActiveEpisodeId={() => {}}
           onEditingScript={() => {}}
           onGenerateScript={() => {}}
           onSynthesizeSpeech={() => {}}

@@ -288,3 +288,26 @@ describe("POST /api/podcast/episodes/:id/synthesize", () => {
     await server.close();
   });
 });
+
+
+describe("DELETE /api/podcast/episodes/:id", () => {
+  it("removes episode from authoritative state", async () => {
+    const server = buildApiServer({ bailianChatClient: createFakeChatClient() });
+    const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
+    const noteId = state.notes[0]?.id;
+    const createRes = await server.inject({
+      method: "POST",
+      url: "/api/podcast/episodes",
+      payload: { noteId, format: "solo", voice: "longyuan_v3" }
+    });
+    expect(createRes.statusCode).toBe(200);
+    const episodeId = createRes.json().episode.id;
+    const del = await server.inject({ method: "DELETE", url: `/api/podcast/episodes/${episodeId}` });
+    expect(del.statusCode).toBe(200);
+    const after = del.json().state;
+    expect(after.podcastEpisodes.some((e: { id: string }) => e.id === episodeId)).toBe(false);
+    const missing = await server.inject({ method: "DELETE", url: "/api/podcast/episodes/nope" });
+    expect(missing.statusCode).toBe(404);
+    await server.close();
+  });
+});

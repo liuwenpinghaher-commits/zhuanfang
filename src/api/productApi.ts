@@ -152,6 +152,8 @@ export interface ProductApiClient {
   ): Promise<InterruptRealtimeVoiceSessionResponse>;
   generatePodcastEpisode(input: GeneratePodcastEpisodeRequest): Promise<GeneratePodcastEpisodeResponse>;
   synthesizePodcastEpisode(episodeId: string, script?: string): Promise<GeneratePodcastEpisodeResponse>;
+  /** Delete one podcast episode; returns authoritative product state. */
+  deletePodcastEpisode(episodeId: string): Promise<ProductState>;
   transcribeCorpusAudio(input: AudioTranscriptionInput): Promise<TranscribeCorpusAudioResponse>;
   analyzeCorpusImport(input: CorpusImportInput, focus?: string): Promise<AnalyzeCorpusImportResponse>;
   listVoices(): Promise<VoiceListResponse>;
@@ -1390,6 +1392,12 @@ export function createProductApiClient(
         ...response,
         state: normalizeProductState(response.state)
       };
+    },
+    async deletePodcastEpisode(episodeId) {
+      const response = (await requestJson(`/api/podcast/episodes/${encodeURIComponent(episodeId)}`, {
+        method: "DELETE"
+      })) as { state: ProductState };
+      return normalizeProductState(response.state);
     },
     async transcribeCorpusAudio(input) {
       return (await requestJson("/api/corpus/transcriptions", {

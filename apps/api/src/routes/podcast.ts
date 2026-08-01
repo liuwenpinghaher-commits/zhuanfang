@@ -5,6 +5,7 @@ import {
   generatePodcastEpisodeFromSearchBrief,
   generatePodcastEpisodeFromTheme
 } from "../../../../src/domain/engine";
+import { deletePodcastEpisode } from "../../../../src/domain/lifecycle";
 import type { PodcastEpisode } from "../../../../src/domain/types";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import type { BailianChatClient, BailianPodcastAudioClient } from "../providers/bailian";
@@ -236,6 +237,17 @@ export async function registerPodcastRoutes(
       });
     }
     return { episode: updatedEpisode, state: persisted };
+  });
+
+  server.delete("/api/podcast/episodes/:id", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const state = repository.getState();
+    if (!state.podcastEpisodes.some((ep) => ep.id === id)) {
+      return reply.code(404).send({ error: "Episode not found." });
+    }
+    const nextState = deletePodcastEpisode(state, id);
+    const persisted = /*durable*/await replaceStateDurable(repository, nextState);
+    return { state: persisted };
   });
 }
 
