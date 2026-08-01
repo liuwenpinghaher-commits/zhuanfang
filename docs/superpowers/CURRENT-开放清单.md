@@ -117,6 +117,7 @@
 | 双轨笔记阅读室（回访开场、保存留页、轻量 pill、主题/播客/原文、档案高亮） | **closed** · 见 `2026-08-01-notes-reading-room-optimization-report.md` |
 | 双轨笔记工作流生产冒烟 | **closed · archived** · PASS · `2026-08-01-notes-workflow-smoke.md` + `scripts/notes-workflow-smoke.mjs` |
 | 素材库原料车间（URL 同步、导入结果/审核闭环、列表经营、真实错误） | **closed** · 见 `2026-08-01-material-library-optimization-report.md` |
+| 素材库端到端业务质量验证 | **closed · PASS** · `2026-08-01-material-library-final-audit.md` + `scripts/material-workflow-smoke.mjs` |
 
 ## 验收
 

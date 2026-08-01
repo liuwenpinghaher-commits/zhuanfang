@@ -96,8 +96,10 @@
 | 索引概览 / 列表预览搜索主题 / 开场与对话 | **closed** |
 | 记忆 focusSourceId 过滤 | **closed** |
 | 报告 | `2026-08-01-material-library-optimization-report.md` |
+| 最终审查 / 生产 E2E | **PASS** · `2026-08-01-material-library-final-audit.md` |
+| 冒烟脚本 | `scripts/material-workflow-smoke.mjs` |
 
-**§0.9 任务状态：关闭**
+**§0.9 任务状态：关闭 · 业务质量验证 PASS**
 
 ---
 ## 1. 最终系统健康检查（2026-07-30）
@@ -156,6 +158,7 @@
 | 3e | [`docs/superpowers/2026-08-01-notes-reading-room-optimization-report.md`](./superpowers/2026-08-01-notes-reading-room-optimization-report.md) | 2026-08-01 双轨笔记阅读室 |
 | 3f | [`docs/superpowers/2026-08-01-notes-workflow-smoke.md`](./superpowers/2026-08-01-notes-workflow-smoke.md) | 2026-08-01 双轨笔记生产工作流冒烟（PASS） |
 | 3g | [`docs/superpowers/2026-08-01-material-library-optimization-report.md`](./superpowers/2026-08-01-material-library-optimization-report.md) | 2026-08-01 素材库原料车间 |
+| 3h | [`docs/superpowers/2026-08-01-material-library-final-audit.md`](./superpowers/2026-08-01-material-library-final-audit.md) | 2026-08-01 素材库最终 E2E 审查（PASS） |
 | 4 | [`docs/superpowers/2026-07-30-integration-and-deployment-state.md`](./superpowers/2026-07-30-integration-and-deployment-state.md) | 集成矩阵、架构、容量信封 |
 | 5 | [`docs/runbooks/README.md`](./runbooks/README.md) | 故障手册（双开锁 / export / 5xx / persist / 429） |
 | 6 | [`docs/superpowers/eval/interview-rubric.md`](./superpowers/eval/interview-rubric.md) | 追问质量抽检 rubric |
