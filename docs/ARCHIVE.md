@@ -81,6 +81,7 @@
 | 轻量 pill / 展开 / 搜索筛选 | **closed** |
 | 主题 chip · 播客 · 原文 · 档案高亮 | **closed** |
 | 报告 | `2026-08-01-notes-reading-room-optimization-report.md` |
+| 生产工作流冒烟 | **PASS** · `2026-08-01-notes-workflow-smoke.md` |
 
 ---
 ## 1. 最终系统健康检查（2026-07-30）
