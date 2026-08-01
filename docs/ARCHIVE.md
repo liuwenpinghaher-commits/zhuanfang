@@ -1,6 +1,6 @@
 # 项目文档归档与最终健康检查
 
-> **最近归档：** 2026-08-01 · tip `main` @ `6b295e0f`  
+> **最近归档：** 2026-08-01 · tip `main` @ `080308b0`  
 > **基线归档：** 2026-07-30 · tip `14304554`  
 > **远程：** `origin/main` 同步 · 工作区干净（归档时）  
 > **运行时：** Node ≥22.5 · macOS · Docker Compose `:3210`
@@ -105,6 +105,7 @@
 | 2e | [`docs/runbooks/ALERTS.md`](./runbooks/ALERTS.md) | **D6.a 告警协议（定稿）** |
 | 3 | [`docs/superpowers/CURRENT-开放清单.md`](./superpowers/CURRENT-开放清单.md) | 开放/已闭项与 Wave 进度 |
 | 3b | [`docs/superpowers/2026-08-01-podcast-multisource-llm-deploy-verification.md`](./superpowers/2026-08-01-podcast-multisource-llm-deploy-verification.md) | 2026-08-01 播客多源 LLM 生产验证 |
+| 3c | [`docs/superpowers/2026-08-01-interview-ux-optimization-report.md`](./superpowers/2026-08-01-interview-ux-optimization-report.md) | 2026-08-01 实时专访 UX 最终报告 |
 | 4 | [`docs/superpowers/2026-07-30-integration-and-deployment-state.md`](./superpowers/2026-07-30-integration-and-deployment-state.md) | 集成矩阵、架构、容量信封 |
 | 5 | [`docs/runbooks/README.md`](./runbooks/README.md) | 故障手册（双开锁 / export / 5xx / persist / 429） |
 | 6 | [`docs/superpowers/eval/interview-rubric.md`](./superpowers/eval/interview-rubric.md) | 追问质量抽检 rubric |
