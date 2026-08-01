@@ -1,14 +1,59 @@
 # 项目文档归档与最终健康检查
 
-> **归档日期：** 2026-07-30  
-> **代码 tip：** `main` @ `14304554`（`docs: finalize production deployment checklist`）  
-> **远程：** `origin/main` 同步 · 工作区干净  
-> **运行时：** Node v26.5.0 · npm 12.0.0 · macOS  
+> **最近归档：** 2026-08-01 · tip `main` @ `6b295e0f`  
+> **基线归档：** 2026-07-30 · tip `14304554`  
+> **远程：** `origin/main` 同步 · 工作区干净（归档时）  
+> **运行时：** Node ≥22.5 · macOS · Docker Compose `:3210`
 
-本文档是文档体系的**归档入口**：标明何为现行真源、何为历史过程材料，并固化最终健康检查结果。
+本文档是文档体系的**归档入口**：标明何为现行真源、何为历史过程材料，并固化健康检查结果。
 
 ---
 
+## 0. 2026-08-01 任务归档（本轮关闭）
+
+### 0.1 交付范围
+
+| 主题 | Commit | 说明 |
+| --- | --- | --- |
+| 播客多源 LLM | `31294d37` | note/search-brief/theme/knowledge-debt 全走 LLM 脚本；fail-loud |
+| 部署验证文档 | `c0a14c8c` | `2026-08-01-podcast-multisource-llm-deploy-verification.md` |
+| 播客 TTS / 资产 P1 | `4a6d1b7a` | CosyVoice 音色归一+动态超时；过期音频 UX；仅重要/排序/URL/带入专访 |
+| 今日访谈台闭环 | `6b295e0f` | 继续优先、空场 discard、launch 参数不丢、将带入芯片 |
+
+### 0.2 最终回归（2026-08-01 部署前）
+
+| 门禁 | 结果 |
+| --- | --- |
+| typecheck | **PASS** |
+| Vitest | **PASS** · **1624 pass / 6 skip** |
+| Playwright 默认 e2e | **PASS** · **38/38**（隔离 13210/13220/13230） |
+| Compose 生产 | **healthy** · `productStore=surreal` · 新 bundle 含「另开一场/移除空场」 |
+| discard 路由 | 在线（未知 id → 404） |
+
+### 0.3 本地清理（归档动作）
+
+- 删除 `test-results/`、`playwright-report/`（若存在）
+- 删除本轮 `/tmp/zf-*`、`/tmp/zhuanfang*` 冒烟临时文件
+- **保留** 生产容器 `:3210`（未 `compose down`，避免误停在用实例）
+- **未**执行 `git clean -fdx` / 删除 `node_modules` / 删 `.data`
+
+### 0.4 现行补充真源
+
+| 路径 | 角色 |
+| --- | --- |
+| `docs/superpowers/2026-08-01-podcast-multisource-llm-deploy-verification.md` | 播客多源 LLM 生产验证 |
+| `docs/superpowers/CURRENT-开放清单.md` | 含 2026-08-01 追加闭合项 |
+| `README.md` §验证状态 | 最近发布验证表 |
+
+### 0.5 明确未纳入本轮（非阻塞）
+
+- Wave D 其余增强（D2 融合深化、D3 账单、D4 全站 a11y、D5 第二厂商、D6 OTEL 看板）— 按需
+- 多租户 / CRDT / 完整 AWS SDK — Won't
+- 长脚本 TTS 分片拼接 — 已用动态超时缓解；完整分片属后续 D1.b
+
+**本轮任务状态：关闭 · 可归档**
+
+---
 ## 1. 最终系统健康检查（2026-07-30）
 
 | # | 门禁 | 命令 / 检查 | 结果 |
@@ -59,6 +104,7 @@
 | 2d | [`docs/COST-ENVELOPE.md`](./COST-ENVELOPE.md) | **D3.a 成本/调用信封（定稿）** |
 | 2e | [`docs/runbooks/ALERTS.md`](./runbooks/ALERTS.md) | **D6.a 告警协议（定稿）** |
 | 3 | [`docs/superpowers/CURRENT-开放清单.md`](./superpowers/CURRENT-开放清单.md) | 开放/已闭项与 Wave 进度 |
+| 3b | [`docs/superpowers/2026-08-01-podcast-multisource-llm-deploy-verification.md`](./superpowers/2026-08-01-podcast-multisource-llm-deploy-verification.md) | 2026-08-01 播客多源 LLM 生产验证 |
 | 4 | [`docs/superpowers/2026-07-30-integration-and-deployment-state.md`](./superpowers/2026-07-30-integration-and-deployment-state.md) | 集成矩阵、架构、容量信封 |
 | 5 | [`docs/runbooks/README.md`](./runbooks/README.md) | 故障手册（双开锁 / export / 5xx / persist / 429） |
 | 6 | [`docs/superpowers/eval/interview-rubric.md`](./superpowers/eval/interview-rubric.md) | 追问质量抽检 rubric |
@@ -118,6 +164,7 @@
 | `92d09059` | 集成验证与部署系统态 |
 | `14304554` | 部署清单定稿 |
 | PR [#2](https://github.com/liuwenpinghaher-commits/zhuanfang/pull/2) | 审阅切片已 MERGED；临时 baseline 分支已删 |
+| `31294d37` … `6b295e0f` | 2026-08-01：播客多源 LLM、资产 P1、今日访谈台闭环 |
 
 ---
 
@@ -128,7 +175,7 @@
 | Stage-1/2/3 | closed（见 CURRENT） |
 | 旅程后置（语音/WebRTC/OSS/BM25/TTFA） | closed |
 | Wave 0–C | closed |
-| Wave D（播客/成本/a11y/可移植/OTEL 增强） | **已分析 · 按需**；**D3.a + D6.a closed**（`COST-ENVELOPE.md` · `runbooks/ALERTS.md`） |
+| Wave D（播客/成本/a11y/可移植/OTEL 增强） | **已分析 · 按需**；**D3.a + D6.a closed**；播客多源 LLM / 资产 P1 / 访谈台闭环见 2026-08-01 |
 | 维护路线图 | **定稿**（`docs/MAINTENANCE-ROADMAP.md`） |
 | 非目标 | 多租户 · CRDT · 完整 AWS SDK |
 
@@ -141,5 +188,5 @@
 - 后续变更应：更新现行真源 → 在 CURRENT 记一笔 → 重大节点可新增 `docs/superpowers/YYYY-MM-DD-*.md` 快照。  
 
 **健康检查执行人：** Oz agent  
-**归档状态：** 完成  
-**系统健康：** 绿 · Conditional GO  
+**归档状态：** 完成（含 2026-08-01 追加）  
+**系统健康：** 绿 · 验证轨 Full GO + 2026-08-01 生产回归绿  

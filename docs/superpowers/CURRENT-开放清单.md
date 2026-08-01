@@ -110,6 +110,7 @@
 | CosyVoice 音色归一（`longyuan_v3`→预设）+ 动态超时 | **closed** |
 | 播客音频过期提示 + 重新合成引导 | **closed** |
 | 我的资产 P1：仅重要/排序/URL state/带入专访 | **closed** |
+| 今日访谈台：继续优先 / 空场 discard / launch 上下文 | **closed** · `6b295e0f` |
 
 ## 验收
 
