@@ -93,9 +93,20 @@
 | [`docs/ARCHIVE.md`](../ARCHIVE.md) | **文档归档入口 + 最终健康检查** |
 | [`docs/DEPLOYMENT-CHECKLIST.md`](../DEPLOYMENT-CHECKLIST.md) | **上线勾选清单（定稿真源）** |
 | [`docs/superpowers/2026-07-30-integration-and-deployment-state.md`](./2026-07-30-integration-and-deployment-state.md) | 集成矩阵、架构、容量信封 |
+| [`docs/superpowers/2026-08-01-podcast-multisource-llm-deploy-verification.md`](./2026-08-01-podcast-multisource-llm-deploy-verification.md) | **播客多源 LLM 上线 + 生产冒烟（`31294d37`）** |
 | [`docs/runbooks/README.md`](../runbooks/README.md) | 故障手册 |
 
 最终健康检查（`14304554`）：typecheck + **1600 pass / 0 fail** + build + voice-slo + capacity + compose → **绿 · Conditional GO**。Full GO = 清单 §6–§8。
+
+### 2026-08-01 追加（播客多源 LLM）
+
+| 项 | 状态 |
+| --- | --- |
+| 全来源脚本 LLM + UI 诚实文案 | **closed** · `31294d37` |
+| typecheck + Vitest 1618 + e2e 38/38 | **closed** |
+| Compose 生产 redeploy + health/surreal | **closed** |
+| 生产 note/theme/debt 脚本冒烟 | **closed** |
+| TTS 默认音色 `longanhuan` 短/中脚本 | **closed**（`longyuan_v3` / 超长脚本为已知边界） |
 
 ## 验收
 

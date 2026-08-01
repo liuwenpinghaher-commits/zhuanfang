@@ -10,7 +10,7 @@
 - 会后沉淀：双轨笔记、观点、问题、决策候选、知识债、长期主题。
 - 联网素材：百炼 Responses 内置联网、AnySearch / Tavily / Exa / Brave Search 外接搜索、本地降级素材、建议主题批量搜集、来源转资产。
 - 语料学习：导入文本或音频专访样本，分析追问逻辑，生成 PlaybookPatch，经确认后影响后续引擎。
-- 播客工作台：从笔记、搜索简报、长期主题、知识债、语料学习结果生成单人旁白或主持对谈播客；TTS 已配置时默认直出百炼 CosyVoice 音频。
+- 播客工作台：从笔记、搜索简报、长期主题、知识债生成单人旁白或主持对谈脚本（**全来源 LLM**，失败 5xx/429，不用模板冒充）；默认只落脚本，确认后再 CosyVoice 合成（`PODCAST_AUTO_RENDER_ON_CREATE` 可显式打开创建即渲染）。
 - 系统配置：provider 健康、运行配置、产品策略、配置版本、质量运营、质量修复动作和 AI 运行事件。
 - 数据治理：个人页提供完整 JSON 导出/导入、隐私数据库存、演示数据重置和彻底清空个人数据；Product API 清空会删除已引用的本地对象音频，清空不会恢复 demo 样例，导出包不包含运行密钥。
 
@@ -90,7 +90,10 @@ npm run start:api
 cp .env.production.example .env.production.local
 # 必填：长随机 PRODUCT_API_TOKEN
 # 建议：DASHSCOPE_API_KEY、PRODUCT_WEB_ORIGINS（正式域名）、CORPUS_AUDIO_PUBLIC_BASE_URL（若要 SenseVoice 拉本地音频）
-docker compose --env-file .env.production.local up --build -d
+# 若 shell 已 export PRODUCT_API_TOKEN / PRODUCT_WEB_ORIGINS 等，先 env -u 掉再 compose，避免污染容器
+env -u PRODUCT_API_TOKEN -u VITE_PRODUCT_API_TOKEN -u PRODUCT_WEB_ORIGINS \
+  -u DEPLOYMENT_PROFILE -u PRODUCT_STATIC_DIR -u PRODUCT_ENV_FILE \
+  docker compose --env-file .env.production.local up --build -d
 curl -sS http://127.0.0.1:3210/api/health
 ```
 
@@ -425,7 +428,7 @@ React UI
 
 实时语音的留白、打断和语音追问信号会写入会话 `realtimeSignals`。实时打断支持回填：调用 `POST /api/realtime-voice/sessions/:id/interrupt`，服务端 `truncateAssistantTurn` 截断已说出口的内容。详见 [docs/realtime-improvement-plan.md](docs/realtime-improvement-plan.md)。
 
-播客：创建剧集默认只落脚本；仅当 `PODCAST_AUTO_RENDER_ON_CREATE=true|1|yes|on` 时创建即 TTS。否则请在工作台确认脚本后调用 synthesize。
+播客：全来源（笔记 / 搜索简报 / 主题 / 知识债）脚本均由 LLM 生成；创建默认只落脚本，仅当 `PODCAST_AUTO_RENDER_ON_CREATE=true|1|yes|on` 时创建即 TTS。工作台确认后 `POST /api/podcast/episodes/:id/synthesize`。生产验证见 [`docs/superpowers/2026-08-01-podcast-multisource-llm-deploy-verification.md`](docs/superpowers/2026-08-01-podcast-multisource-llm-deploy-verification.md)（默认音色 `longanhuan` 可用；部分 voice id 如 `longyuan_v3` 可能被 CosyVoice 400 拒绝）。
 
 生产鉴权：`GET /api/runtime-bootstrap` 仅设置 HttpOnly cookie，**不**在 JSON body 回传长期 `PRODUCT_API_TOKEN`。同源 SPA 用 `credentials: include`；分域部署可另设 `VITE_PRODUCT_API_TOKEN`。
 
@@ -441,6 +444,20 @@ Wave D 分析：`docs/superpowers/2026-07-30-wave-d-analysis.md`。
 
 ## 验证状态
 
+### 最近一次发布验证（2026-08-01 · `31294d37`）
+
+| 门禁 | 结果 |
+| --- | --- |
+| typecheck | PASS |
+| Vitest | **1618 pass / 6 skip** |
+| Playwright 默认 e2e | **38/38**（隔离 13210/13220/13230） |
+| Compose 生产 `:3210` | healthy · `productStore=surreal` |
+| 播客多源 LLM 生产冒烟 | note / theme / knowledge-debt 脚本 200 |
+| TTS | 默认音色 `longanhuan` 短/中脚本 **rendered** + OSS `audio/mpeg`；失败路径 fail-loud |
+
+完整记录：[`docs/superpowers/2026-08-01-podcast-multisource-llm-deploy-verification.md`](docs/superpowers/2026-08-01-podcast-multisource-llm-deploy-verification.md)。  
+集成基线（2026-07-30）：[`docs/superpowers/2026-07-30-integration-and-deployment-state.md`](docs/superpowers/2026-07-30-integration-and-deployment-state.md)。
+
 优先命令：
 
 ```bash
@@ -455,6 +472,7 @@ node scripts/backup-export-smoke.mjs
 
 聚焦单测：
 
+- 播客多源 LLM：`apps/api/src/intelligence/podcast-script-llm.test.ts`、`apps/api/src/routes/podcast.test.ts`
 - 混合召回：`packages/db/src/surreal/surreal-recall.test.ts`
 - Surreal 数据层 e2e（含 P4 无向量 BM25）：`apps/api/src/e2e/surreal-data-layer-journey.real.test.ts`
 - RAG 路由：`apps/api/src/routes/rag.test.ts`
