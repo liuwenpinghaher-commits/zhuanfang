@@ -100,12 +100,12 @@ export function SearchIntelligenceView({
 
       {/* Auto-watch primary action */}
       {onAutoRun && (
-        <section className="panel action-panel" style={{ borderColor: autoRunning ? "var(--action-primary)" : undefined }}>
+        <section className={`panel action-panel${autoRunning ? " is-active" : ""}`}>
           <div className="panel-title">
             <Play size={18} />
             <h2>自动盯梢</h2>
           </div>
-          <p style={{ margin: "0 0 12px", color: "var(--text-muted)", fontSize: "0.875rem", lineHeight: 1.6 }}>
+          <p className="field-help mb-3">
             一键扫描主题和知识债，自动采集情报并刷新已过期的持续追踪简报。
           </p>
           <div className="row-wrap">
@@ -140,8 +140,7 @@ export function SearchIntelligenceView({
                     <span>{autoRunError}</span>
                     <button
                       type="button"
-                      className="primary-action"
-                      style={{ padding: "2px 12px", fontSize: "0.8rem" }}
+                      className="primary-action compact-retry"
                       onClick={handleAutoRun}>
                       重试
                     </button>
@@ -154,8 +153,8 @@ export function SearchIntelligenceView({
                     </span>
                     <button
                       type="button"
+                      className="ghost-icon-button"
                       aria-label="关闭提示"
-                      style={{ background: "none", border: "none", cursor: "pointer", padding: "2px", color: "inherit", opacity: 0.6, lineHeight: 1 }}
                       onClick={() => setAutoRunDismissed(true)}>
                       <X size={16} />
                     </button>
@@ -332,8 +331,7 @@ export function SearchIntelligenceView({
                     <span className="status-pill">{brief.provider} · {brief.status === "ready" ? "可用" : "需复核"}</span>
                     {isStale && (
                       <span
-                        className="status-pill"
-                        style={{ borderColor: "var(--accent-amber)", color: "var(--accent-amber)", display: "inline-flex", alignItems: "center", gap: "4px" }}
+                        className="status-pill is-stale"
                         title="该简报超过 14 天未刷新，建议重新调研"
 >
                         <AlertTriangle size={12} aria-hidden="true" />
@@ -341,10 +339,7 @@ export function SearchIntelligenceView({
                       </span>
                     )}
                     {brief.tracked && (
-                      <span
-                        className="status-pill"
-                        style={{ borderColor: "var(--action-primary)", color: "var(--action-primary)" }}
->
+                      <span className="status-pill is-tracked">
                         持续追踪中
                       </span>
                     )}

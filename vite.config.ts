@@ -28,9 +28,24 @@ export default defineConfig({
     }
   },
   test: {
-    include: ["src/**/*.test.ts", "src/**/*.test.tsx", "apps/**/*.test.ts", "packages/**/*.test.ts"],
     environment: "jsdom",
-    globals: false,
-    css: true
+    // Playwright specs live under tests/e2e — never execute them via Vitest.
+    exclude: [
+      "**/node_modules/**",
+      "**/dist/**",
+      "**/tests/e2e/**",
+      "**/*.spec.ts"
+    ],
+
+    setupFiles: ["./tests/vitest.setup.ts"],
+    env: {
+      DEPLOYMENT_PROFILE: "local",
+      PRODUCT_API_TOKEN: "",
+      PRODUCT_WEB_ORIGINS: "",
+      PRODUCT_STATIC_DIR: "",
+      RATE_LIMIT_DISABLED: "true",
+      VITEST: "true",
+      PRODUCT_STORE: "memory"
+    }
   }
 });

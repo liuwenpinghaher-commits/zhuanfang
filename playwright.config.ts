@@ -11,6 +11,25 @@ import { join } from "node:path";
 //     (绝不碰仓库 .data/ 真实库),透传真实 key;reuseExistingServer=false 强制自起隔离进程,
 //     避免复用一个连着真实数据的开发服务器;globalSetup 断言 productStore=surreal。
 const REAL = process.env.E2E_REAL === "1";
+
+/** Drop production shell secrets so Playwright env merges cannot re-enable auth/CORS. */
+function scrubShellEnv(base: Record<string, string>): Record<string, string> {
+  const blocked = new Set([
+    "PRODUCT_API_TOKEN",
+    "PRODUCT_WEB_ORIGINS",
+    "DEPLOYMENT_PROFILE",
+    "PRODUCT_STATIC_DIR",
+    "PRODUCT_ENV_FILE",
+    "VITE_PRODUCT_API_TOKEN"
+  ]);
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v == null) continue;
+    if (blocked.has(k)) continue;
+    out[k] = v;
+  }
+  return { ...out, ...base };
+}
 // 隔离的 real-E2E surreal 数据目录:dbPath 旁会建 surreal/,落到 tmp 而非仓库 .data/。
 const REAL_DB_PATH = join(tmpdir(), "zhuanfang-e2e-real", "product-state.db");
 
@@ -108,7 +127,7 @@ export default defineConfig({
       // local embedding prewarm may download Xenova/bge-large-zh on first run.
       timeout: REAL ? 600_000 : 120_000,
       url: "http://127.0.0.1:13210/api/health",
-      env: apiEnv
+      env: scrubShellEnv(apiEnv)
     },
     {
       command: "npm run dev -- --host 127.0.0.1 --port 13220 --strictPort",
@@ -117,8 +136,12 @@ export default defineConfig({
       url: "http://127.0.0.1:13220",
       env: {
         ...process.env,
+        // Always pin e2e SPA → isolated API. Do not inherit shell/production :3210.
         VITE_INTERVIEW_TURN_TIMEOUT_MS: REAL ? "180000" : (process.env.VITE_INTERVIEW_TURN_TIMEOUT_MS ?? ""),
-        VITE_PRODUCT_API_BASE_URL: process.env.VITE_PRODUCT_API_BASE_URL ?? "http://127.0.0.1:13210"
+        VITE_PRODUCT_API_BASE_URL: "http://127.0.0.1:13210",
+        VITE_PRODUCT_API_TOKEN: "",
+        DEPLOYMENT_PROFILE: "local",
+        PRODUCT_API_TOKEN: ""
       }
     }
   ],

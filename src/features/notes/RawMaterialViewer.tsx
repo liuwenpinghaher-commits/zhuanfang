@@ -246,7 +246,7 @@ export function RawMaterialViewer({
 
   if (status === "loading") {
     return (
-      <div className="panel" style={{ marginTop: "0.75rem", display: "flex", alignItems: "center", gap: "0.6rem" }}>
+      <div className="panel stack-sm mt-3">
         <span className="spinner" aria-hidden="true" />
         <span className="text-sm text-secondary">正在加载原始材料…</span>
       </div>
@@ -264,7 +264,7 @@ export function RawMaterialViewer({
   if (status === "error" || !material) {
     return (
       <div className="panel mt-3">
-        <p className="empty-hint" style={{ color: "var(--action-danger)" }}>
+        <p className="empty-hint text-danger">
           {errorMessage ?? "加载原始材料失败"}
         </p>
       </div>
@@ -327,21 +327,14 @@ export function RawMaterialViewer({
   }
 
   return (
-    <div ref={containerRef} className="panel" style={{ marginTop: "0.75rem", display: "flex", flexDirection: "column", gap: "0.85rem" }}>
+    <div ref={containerRef} className="panel stack mt-3">
       {audioLoadError && (
-        <p className="field-help" role="alert" style={{ color: "var(--danger, #e5484d)" }}>
+        <p className="field-help text-danger" role="alert">
           录音读取失败：{audioLoadError}（这不代表本场没有录音，请稍后重试。）
         </p>
       )}
       {showAudio && playbackSrc && (
-        <section
-          className="field-stack"
-          style={{
-            gap: "0.5rem",
-            paddingBottom: "0.85rem",
-            borderBottom: "1px solid var(--border-subtle, rgba(255,255,255,0.06))"
-          }}
->
+        <section className="field-stack section-divider">
           <div className="row">
             <span className="field-label row">
               <Headphones size={14} aria-hidden="true" />
@@ -353,14 +346,7 @@ export function RawMaterialViewer({
         </section>
       )}
       {showHostAudio && hostAudioBlobUrl && (
-        <section
-          className="field-stack"
-          style={{
-            gap: "0.5rem",
-            paddingBottom: "0.85rem",
-            borderBottom: "1px solid var(--border-subtle, rgba(255,255,255,0.06))"
-          }}
->
+        <section className="field-stack section-divider">
           <div className="row">
             <span className="field-label row">
               <Mic size={14} aria-hidden="true" />
@@ -450,12 +436,11 @@ export function RawMaterialViewer({
                 }
                 return (
                   <button
-                    className="icon-button"
+                    className="icon-button play-turn-btn"
                     type="button"
                     aria-label="从这一轮开始播放录音"
                     title="播这一段"
                     onClick={() => playFromOffset(offsetSec)}
-                    style={{ display: "inline-flex", alignItems: "center", gap: "0.25rem", marginLeft: "auto", fontSize: "0.78rem" }}
 >
                     <Play size={13} aria-hidden="true" />
                     播这一段
@@ -463,18 +448,10 @@ export function RawMaterialViewer({
                 );
               })()}
             </div>
-            <p style={{ margin: 0, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{turn.content}</p>
+            <p className="turn-body">{turn.content}</p>
 
             {turn.role === "assistant" && trace && (trace.reason || trace.label) && (
-              <div
-                style={{
-                  fontSize: "0.8125rem",
-                  color: "var(--text-secondary)",
-                  background: "var(--surface-subtle, rgba(255,255,255,0.04))",
-                  borderRadius: "0.5rem",
-                  padding: "0.5rem 0.65rem"
-                }}
->
+              <div className="strategy-trace">
                 <strong className="text-sm">AI 为何这么问：</strong>
                 {trace.label && <span>「{trace.label}」</span>}
                 {trace.reason && <span> {trace.reason}</span>}
@@ -498,13 +475,12 @@ export function RawMaterialViewer({
                     key={annotation.id}
                     className="row-between"
 >
-                    <span style={{ fontSize: "0.875rem", display: "inline-flex", alignItems: "center", gap: "0.4rem" }}><PenLine size={13} /> {annotation.text}</span>
+                    <span className="annotation-chip"><PenLine size={13} /> {annotation.text}</span>
                     <button
-                      className="icon-button"
+                      className="icon-button icon-inline"
                       type="button"
                       aria-label={"删除旁注：" + annotation.text}
                       onClick={() => onRemoveAnnotation(annotation.id)}
-                      style={{ flexShrink: 0 }}
 >
                       <Trash2 size={14} />
                     </button>
@@ -513,7 +489,7 @@ export function RawMaterialViewer({
               </ul>
             )}
 
-            <div className="correction-row" style={{ gap: "0.5rem" }}>
+            <div className="correction-row">
               <label className="field-stack flex-1">
                 <input
                   value={draft}

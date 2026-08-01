@@ -43,7 +43,7 @@ function SensitiveIcon() {
     <ShieldAlert
       size={16}
       aria-label="敏感内容，默认不写入上下文"
-      style={{ display: "inline", verticalAlign: "text-bottom", marginRight: 3 }} />
+      className="icon-sensitive" />
   );
 }
 
@@ -348,29 +348,15 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
                     <span className="label">{candidate.reviewSignals.join(" · ")}</span>
                   )}
                   {hint && (
-                    <div
-                      className="dedup-hint"
-                      style={{
-                        marginTop: 8,
-                        display: "flex",
-                        alignItems: "flex-start",
-                        gap: 6,
-                        padding: "6px 10px",
-                        borderRadius: 8,
-                        background: "var(--surface-muted, rgba(120,120,140,0.08))",
-                        fontSize: "0.85em",
-                        lineHeight: 1.45,
-                        color: "var(--text-secondary, #555)"
-                      }}
->
-                      <GitMerge size={14} aria-hidden="true" style={{ flexShrink: 0, marginTop: 2 }} />
+                    <div className="dedup-hint">
+                      <GitMerge size={14} aria-hidden="true" className="icon-inline" />
                       <span>
-                        似已有记忆：<span style={{ fontStyle: "italic" }}>{hint}</span> —— 可合并或仍新增。
+                        似已有记忆：<em>{hint}</em> —— 可合并或仍新增。
                       </span>
                     </div>
                   )}
                   {justSaved && (
-                    <span className="label" style={{ color: "var(--accent-green)" }}>已保存</span>
+                    <span className="label hint-saved">已保存</span>
                   )}
 
                   {/* Inline edit area */}
@@ -575,29 +561,10 @@ async function handleApprove(candidateId: string, mode: "merge" | "add" = "merge
           role="dialog"
           aria-modal="true"
           aria-label="原文出处"
+          className="modal-overlay"
           onClick={() => setSourceOverlay(null)}
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 1000,
-            background: "rgba(0,0,0,0.55)",
-            display: "flex",
-            alignItems: "flex-start",
-            justifyContent: "center",
-            padding: "5vh 1rem",
-            overflowY: "auto"
-          }}
 >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              width: "min(820px, 100%)",
-              background: "var(--surface, #1b1d22)",
-              borderRadius: "0.75rem",
-              padding: "1rem 1.1rem 1.4rem",
-              boxShadow: "0 18px 48px rgba(0,0,0,0.5)"
-            }}
->
+          <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
             <div className="row-between">
               <h2 className="panel-subhead">原文出处</h2>
               <button

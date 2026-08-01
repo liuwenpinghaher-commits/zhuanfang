@@ -341,7 +341,7 @@ export function ProfileView({
                 <span className="field-label">{FIELD_LABEL[s.field] ?? s.field}</span>
                 <div className="text-sm">
                   {s.currentValue
-                    ? <><span className="text-secondary" style={{ textDecoration: "line-through" }}>{s.currentValue}</span>{" → "}<strong>{s.suggestedValue}</strong></>
+                    ? <><span className="text-secondary line-through text-secondary">{s.currentValue}</span>{" → "}<strong>{s.suggestedValue}</strong></>
                     : <><span className="text-secondary">（原为空）→ </span><strong>{s.suggestedValue}</strong></>}
                 </div>
                 {s.reason && <span className="field-help">理由：{s.reason}</span>}
@@ -432,8 +432,11 @@ export function ProfileView({
             {exportError && <span className="field-status is-danger">{exportError}</span>}
             {exportNotice && <span className="text-sm text-secondary">{exportNotice}</span>}
             <label
-              className={"secondary-action" + (loadingAction === "import" ? " btn-loading" : "")}
-              style={{ cursor: loadingAction !== null ? "default" : "pointer", opacity: loadingAction !== null && loadingAction !== "import" ? 0.6 : 1 }}
+              className={
+                "secondary-action" +
+                (loadingAction === "import" ? " btn-loading" : "") +
+                (loadingAction !== null && loadingAction !== "import" ? " is-busy-pointer" : " pointer")
+              }
 >
               {loadingAction === "import" ? <span className="spinner" aria-hidden="true" /> : <Upload size={16} />}
               导入数据
@@ -531,7 +534,7 @@ export function ProfileView({
           )}
 
           {/* Privacy Report */}
-          <div style={{ display: "flex", alignItems: "flex-start", gap: "1rem", flexWrap: "wrap" }}>
+          <div className="row-wrap">
             <button
               className={"secondary-action" + (loadingAction === "privacy" ? " btn-loading" : "")}
               type="button"
@@ -545,7 +548,7 @@ export function ProfileView({
 
           {privacyReport && (
             <div className="panel mt-2">
-              <p style={{ fontSize: "0.8125rem", color: "var(--text-secondary)", marginBottom: "0.75rem" }}>
+              <p className="privacy-meta">
                 共 {privacyReport.totalRecords} 条记录 &nbsp;&middot;&nbsp; {privacyReport.generatedAt.slice(0, 10)} 生成
               </p>
               {privacyReport.inventory.length === 0 ? (
@@ -553,9 +556,9 @@ export function ProfileView({
               ) : (
                 <ul className="clean-list stack-sm">
                   {privacyReport.inventory.map((item) => (
-                    <li key={item.id} style={{ display: "flex", justifyContent: "space-between", fontSize: "0.875rem", padding: "0.375rem 0", borderBottom: "1px solid var(--border-subtle, rgba(255,255,255,0.06))" }}>
+                    <li key={item.id} className="privacy-inventory-row">
                       <span className="text-secondary">{item.label}</span>
-                      <span style={{ fontVariantNumeric: "tabular-nums", color: "var(--text-primary)" }}>{item.count}</span>
+                      <span className="tabular-nums">{item.count}</span>
                     </li>
                   ))}
                 </ul>
@@ -576,7 +579,7 @@ export function ProfileView({
             {purgeSuccess && <span className="field-status is-success">个人数据已彻底清空</span>}
             {purgeError && <span className="field-status is-danger">{purgeError}</span>}
           </div>
-          <p style={{ fontSize: "0.8125rem", color: "var(--text-secondary)", marginTop: "-0.25rem" }}>
+          <p className="help-tight">
             将删除专访、笔记、资产、记忆等所有个人数据，且无法撤销。Provider 运行配置保留。
           </p>
         </div>

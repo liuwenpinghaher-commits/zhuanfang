@@ -74,13 +74,14 @@
 | D3.a 成本信封 | closed | `docs/COST-ENVELOPE.md`（调用桶/场景上界；≠ USD） |
 | D6.a 告警草案 | closed | `docs/runbooks/ALERTS.md`（P0–P3 阈值/动作/降噪） |
 | UX-UI 交互与亮色主题 | closed | `src/theme.ts` + `data-theme` tokens；侧栏外观切换 light/dark/system；导航 `aria-current`；见 `docs/superpowers/2026-07-30-ui-light-theme.md` |
-| UI-SYSTEM Wave A 表单控件 | closed |
-| UI-SYSTEM Wave B 页面对齐 | closed | 布局工具类 + 去内联布局；动态数据 style 保留 | `docs/UI-SYSTEM.md` + 全局 `--control-*` + 素材库参考页 |
+| UI-SYSTEM Wave A 表单控件 | closed | `docs/UI-SYSTEM.md` + 全局 `--control-*` + 素材库参考页 |
+| UI-SYSTEM Wave B 页面对齐 | closed | 布局工具类 + 去内联布局；动态数据 style 保留 |
+| UI-SYSTEM Wave C 交互微动效 | closed | spinner/aria-busy、hover/disabled、record 态、reduced-motion；污染 shell e2e 隔离 13210/13220/13230 |
 | UX-UI 全站视觉重做 | closed | 共享设计系统抬升（header/panel/button/metric/form/empty）；专访启动/会话/工作台/芯片；去外链 Unsplash；见 `docs/superpowers/2026-07-30-ui-visual-redesign.md` |
 | D1–D6 其余 | open（切片） | 分析见 `2026-07-30-wave-d-analysis.md`；产品痛点再开 D1.a/D2.a；见 `docs/MAINTENANCE-ROADMAP.md` |
 | 非目标 | n/a | 多租户、CRDT、完整 AWS SDK |
 | 维护路线 | 定稿 | `docs/MAINTENANCE-ROADMAP.md`（V 验证优先 → D 按需） |
-| V1 Playwright e2e | closed | 默认族 35/35 绿；端口隔离 13210/13220/13230，避免本机 3210 鉴权 API 被 reuse |
+| V1 Playwright e2e | closed | 默认族 38/38 绿（含 visual）；污染 shell 隔离（scrubShellEnv + 强制 VITE→13210）；避免本机 3210 鉴权 API 被 reuse |
 | V2 真 key compose | closed | `up --build` + 鉴权冒烟 12/12 + down 无 -v 卷保留；见 `2026-07-30-v2-compose-exercise.md` |
 | V3 live export smoke | closed | compose API export `completeness=complete`；见 `2026-07-30-v3-live-export-smoke.md` |
 | Track V Full GO（验证） | closed | V1+V2+V3 齐；产品签字仍见 DEPLOYMENT-CHECKLIST §10–11 |

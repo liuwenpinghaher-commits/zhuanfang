@@ -1,7 +1,7 @@
 # UI 系统规范（控件 · 间距 · 层级）
 
-> **状态：** Wave A/B closed · Wave C 待开  
-> **日期：** 2026-07-31  
+> **状态：** Wave A/B/C closed · Wave D 可选  
+> **日期：** 2026-08-01  
 > **真源实现：** `src/styles.css` CSS variables + 全局控件选择器  
 > **验收主题：** 亮色优先，暗色同步
 
@@ -32,6 +32,14 @@
 - [x] 主页面去内联布局样式（保留动态 width/color 数据态）
 - [x] 素材库 / 档案 / 对话 等参考结构对齐
 - [x] 视觉回归与 Docker 生产镜像更新
+
+### 1.4 Wave C 完成定义（交互微动效）
+- [x] `aria-busy` / `.btn-loading` / `.spinner` 加载态
+- [x] 主次按钮、图标钮、导航 hover / disabled 过渡
+- [x] 录音按钮 active/listening 视觉环
+- [x] `prefers-reduced-motion` 降级
+- [x] 残留静态内联样式下沉为工具类（动态 width/color/highlight 保留）
+- [x] 视觉回归基线刷新；污染 shell 下 e2e 隔离验证
 
 ---
 
@@ -168,9 +176,9 @@
 
 ## 9. 实施顺序
 
-1. **Wave A** — 全局 control tokens + 表单 CSS + 素材库参考页（本轮）  
-2. **Wave B** — 档案 / 专访 / 首页逐页去内联、对齐密度  
-3. **Wave C** — 交互微动效与状态机视觉  
-4. **Wave D** — 组件 gallery 截图 + Docker 发布检查  
+1. **Wave A** — 全局 control tokens + 表单 CSS + 素材库参考页 ✅  
+2. **Wave B** — 档案 / 专访 / 首页逐页去内联、对齐密度 ✅  
+3. **Wave C** — 交互微动效与状态机视觉 ✅  
+4. **Wave D** — 组件 gallery 截图 + Docker 发布检查（可选）  
 
 **相关：** `docs/superpowers/2026-07-30-ui-visual-redesign.md`（壳层）· `docs/superpowers/2026-07-30-ui-light-theme.md`（主题）
