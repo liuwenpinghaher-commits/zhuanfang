@@ -5791,3 +5791,9 @@ p.field-error {
     max-width: 100%;
   }
 }
+
+.record-row.feature-row.is-highlight,
+.record-row.is-highlight {
+  outline: 2px solid color-mix(in srgb, var(--action-primary) 55%, transparent);
+  outline-offset: 2px;
+}
