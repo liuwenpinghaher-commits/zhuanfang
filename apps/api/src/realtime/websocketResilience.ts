@@ -36,7 +36,7 @@ const WEB_SOCKET_OPEN = 1;
 const LOG_REASON_MAX_BYTES = 160;
 const CLOSE_REASON_MAX_BYTES = 123;
 const REDACTED_REASON = "[REDACTED]";
-const SENSITIVE_REASON_MARKER = /(?:\b(?:authorization|token|cookie|transcript(?:ion)?|instructions?|secret)\b|\bpcm(?:[\s_.-]*(?:audio|buffer))?\b|\b[a-z0-9_-]*api[\s_-]*key\b|\binput[\s_.-]*audio[\s_.-]*buffer\b|\b(?:bearer|basic)\s+[a-z0-9+/_=-]+|令牌|口令|密钥|逐字稿)/i;
+const SENSITIVE_REASON_MARKER = /(?:\b(?:authorization|token|cookie|transcript(?:ion)?|instructions?|secret|pcm)\b|\bapi\s+key\b|\binput\s+audio\s+buffer\b|\b(?:bearer|basic)\s+[a-z0-9]+|令牌|口令|密钥|逐字稿)/i;
 
 export function attachWebSocketHeartbeat(
   socket: HeartbeatSocket,
@@ -102,8 +102,19 @@ export function sanitizeWebSocketCloseReason(reason: string): string {
 
 function sanitizeLogReason(reason: string): string {
   const withoutLineBreaks = reason.replace(/[\r\n]+/g, " ");
-  if (SENSITIVE_REASON_MARKER.test(withoutLineBreaks)) return REDACTED_REASON;
+  if (SENSITIVE_REASON_MARKER.test(normalizeSensitiveDetectionText(withoutLineBreaks))) {
+    return REDACTED_REASON;
+  }
   return truncateUtf8(withoutLineBreaks, LOG_REASON_MAX_BYTES);
+}
+
+function normalizeSensitiveDetectionText(value: string): string {
+  return value
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[^A-Za-z0-9\u4e00-\u9fff]+/g, " ")
+    .toLowerCase()
+    .trim();
 }
 
 function truncateUtf8(value: string, maxBytes: number): string {
