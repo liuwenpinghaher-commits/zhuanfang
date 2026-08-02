@@ -3,7 +3,9 @@ services:
     build:
       context: .
       args:
+        # 公网经 80 路径反代时设 VITE_BASE=/zhuanfang/ 与同源 API 前缀
         VITE_PRODUCT_API_BASE_URL: ${VITE_PRODUCT_API_BASE_URL:-}
+        VITE_BASE: ${VITE_BASE:-/}
     image: zhuanfang:local
     ports:
       - "${PORT:-3210}:3210"

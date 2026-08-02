@@ -490,12 +490,16 @@ export interface CreateVoiceRequest {
 }
 
 export function getProductApiBaseUrl() {
-  return import.meta.env.VITE_PRODUCT_API_BASE_URL ?? "http://127.0.0.1:3210";
+  // 空字符串表示同源（生产 compose / 子路径反代）；仅 undefined 才回退本机 :3210
+  const raw = import.meta.env.VITE_PRODUCT_API_BASE_URL;
+  if (raw === undefined || raw === null) return "http://127.0.0.1:3210";
+  return String(raw);
 }
 
 /**
  * Derive the realtime voice WebSocket origin from the configured product API base.
  * Never hardcode :3210 when a non-default HTTP API port is configured.
+ * Supports absolute URL and same-origin relative base (e.g. "/zhuanfang").
  */
 export function deriveRealtimeApiWsBaseUrl(productApiBaseUrl = getProductApiBaseUrl()): string {
   const raw = (productApiBaseUrl || "").trim();
@@ -504,14 +508,27 @@ export function deriveRealtimeApiWsBaseUrl(productApiBaseUrl = getProductApiBase
   }
   if (raw) {
     try {
-      const u = new URL(raw);
+      const base =
+        typeof location !== "undefined" && location.origin
+          ? location.origin
+          : "http://127.0.0.1:3210";
+      const u = new URL(raw, base);
       const wsProto = u.protocol === "https:" ? "wss:" : "ws:";
+      // 相对路径部署时 WS 走同 host + 路径前缀（nginx /zhuanfang/ 已 Upgrade）
+      if (raw.startsWith("/")) {
+        return `${wsProto}//${u.host}${u.pathname.replace(/\/$/, "")}`;
+      }
       return `${wsProto}//${u.host}`;
     } catch {
       /* fall through */
     }
   }
   if (typeof location !== "undefined" && location.hostname) {
+    // 同源空 base：优先当前 host（经 80 反代），不再默认 :3210（公网常被安全组拦截）
+    if (!raw) {
+      const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
+      return `${wsProto}//${location.host}`;
+    }
     return `ws://${location.hostname}:3210`;
   }
   return "ws://127.0.0.1:3210";

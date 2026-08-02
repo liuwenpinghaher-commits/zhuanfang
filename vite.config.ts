@@ -67,6 +67,8 @@ function serveVadRuntimeModules(): Plugin {
 }
 
 export default defineConfig({
+  // 子路径部署（如 /zhuanfang/）时由 VITE_BASE 注入；默认根路径
+  base: process.env.VITE_BASE || "/",
   plugins: [serveVadRuntimeModules(), react()],
   resolve: {
     // The package root points at a pre-bundled monolithic ESM file that cannot be
