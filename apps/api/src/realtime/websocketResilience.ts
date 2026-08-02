@@ -36,7 +36,7 @@ const WEB_SOCKET_OPEN = 1;
 const LOG_REASON_MAX_BYTES = 160;
 const CLOSE_REASON_MAX_BYTES = 123;
 const REDACTED_REASON = "[REDACTED]";
-const SENSITIVE_REASON_MARKER = /(?:\b(?:authorization|token|cookie|transcript(?:ion)?|instructions?|secret|pcm)\b|\bapi\s+key\b|\binput\s+audio\s+buffer\b|\b(?:bearer|basic)\s+[a-z0-9]+|令牌|口令|密钥|逐字稿)/i;
+const SENSITIVE_REASON_MARKER = /(?:\b(?:authorization|token|cookie|transcript(?:ion)?|instructions?|secret|pcm)\b|\bapi\s*key\b|\binput\s+audio(?:\s+buffer)?\b|\baudio\s+payload\b|\b(?:bearer|basic)\s+[a-z0-9]+|令牌|口令|密钥|逐字稿)/i;
 
 export function attachWebSocketHeartbeat(
   socket: HeartbeatSocket,
