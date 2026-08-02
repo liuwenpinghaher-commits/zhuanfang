@@ -13,7 +13,7 @@ export interface AsrConnectionEvent {
   reason?: string;
 }
 
-const NON_RECOVERABLE_CLOSE_CODES = new Set([4001, 4003]);
+const NON_RECOVERABLE_CLOSE_CODES = new Set([1000, 4001, 4003]);
 
 export function isRecoverableAsrCloseCode(code: number | undefined): boolean {
   return code == null || !NON_RECOVERABLE_CLOSE_CODES.has(code);
