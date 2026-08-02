@@ -16,12 +16,9 @@ async function activeInterview(page: Page) {
 test("会中 ASR 断开后恢复同一专访，partial 先确认再写入", async ({ context }) => {
   test.setTimeout(60_000);
   await installFakeMic(context);
-  await context.addInitScript(() => {
-    // 本用例只验证 ASR socket 恢复；生产 VAD 资源由同任务的 smoke:voice-static
-    // 针对真实生产静态服务断言，这里走受支持的能量 VAD 降级路径。
-    Object.defineProperty(AudioContext.prototype, "audioWorklet", { get: () => undefined });
-  });
   const page = await context.newPage();
+  const pageErrors: Error[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error));
   let asrConnections = 0;
 
   await page.routeWebSocket(
@@ -59,16 +56,21 @@ test("会中 ASR 断开后恢复同一专访，partial 先确认再写入", asyn
   await page.getByRole("button", { name: /一键开始|开始专访/ }).click();
   await expect(page.getByLabel("开始录音")).toBeVisible({ timeout: 15_000 });
   const sessionIdBefore = (await activeInterview(page)).id;
+  await page.evaluate(() => {
+    const testWindow = window as unknown as { __viteErrorOverlaySeen?: boolean };
+    testWindow.__viteErrorOverlaySeen = Boolean(document.querySelector("vite-error-overlay"));
+    new MutationObserver(() => {
+      if (document.querySelector("vite-error-overlay")) testWindow.__viteErrorOverlaySeen = true;
+    }).observe(document.documentElement, { childList: true, subtree: true });
+  });
 
   await page.getByLabel("开始录音").click();
   await expect(page.getByText("语音连接恢复中，请稍候")).toBeVisible();
   await expect(page.getByText("等待确认的转写")).toBeVisible();
+  await expect(page.locator("vite-error-overlay")).toHaveCount(0);
   expect((await activeInterview(page)).turns.filter((turn) => turn.role === "user")).toHaveLength(0);
 
   await page.getByLabel("等待确认的语音转写").fill("确认后的完整表达");
-  // Vite 开发态覆盖层不属于产品 UI；点击其外部关闭它。Esc 是应用级停止录音快捷键。
-  await page.mouse.click(1, 1);
-  await expect(page.locator("vite-error-overlay")).toBeHidden();
   await page.getByRole("button", { name: "确认并提交" }).click();
   await expect.poll(
     async () => (await activeInterview(page)).turns.filter((turn) => turn.role === "user").length,
@@ -76,4 +78,8 @@ test("会中 ASR 断开后恢复同一专访，partial 先确认再写入", asyn
   ).toBe(1);
   expect((await activeInterview(page)).id).toBe(sessionIdBefore);
   await expect.poll(() => asrConnections).toBe(2);
+  expect(await page.evaluate(() => (
+    window as unknown as { __viteErrorOverlaySeen?: boolean }
+  ).__viteErrorOverlaySeen)).toBe(false);
+  expect(pageErrors).toEqual([]);
 });
