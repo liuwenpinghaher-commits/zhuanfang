@@ -772,6 +772,232 @@ describe("createBrowserAsrSource — onclose before proxy.connected triggers rec
     const wsInstance = harness.wsInstances[0];
     expect(() => wsInstance.onclose?.()).not.toThrow();
 
+    // A ready socket now starts its recovery policy on an unexpected close;
+    // terminate this source so that policy cannot outlive this harness.
+    source.stop();
+
     harness.teardown();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 2: a live microphone graph survives ASR socket replacement.
+// ---------------------------------------------------------------------------
+
+interface MockSocketHandle {
+  socket: WebSocket;
+  sent: string[];
+  open(): void;
+  message(payload: unknown): void;
+  error(): void;
+  close(code?: number, reason?: string): void;
+}
+
+function buildMidSessionRecoveryHarness() {
+  const sockets: MockSocketHandle[] = [];
+  const trackStop = vi.fn();
+  const stream = { getTracks: () => [{ kind: "audio", stop: trackStop }] } as unknown as MediaStream;
+  const getMicStream = vi.fn(async () => stream);
+  const wait = vi.fn(async () => undefined);
+  const random = vi.fn(() => 0);
+  const audioContextConstructor = vi.fn();
+  const originalWebSocket = (globalThis as Record<string, unknown>).WebSocket;
+  const originalAudioContext = (globalThis as Record<string, unknown>).AudioContext;
+
+  (globalThis as Record<string, unknown>).WebSocket = class MockWebSocket {
+    readyState = 0;
+    onopen: (() => void) | null = null;
+    onmessage: ((event: { data: string }) => void) | null = null;
+    onerror: (() => void) | null = null;
+    onclose: ((event: CloseEvent) => void) | null = null;
+    constructor(_url: string) {
+      const socket = this;
+      const sent: string[] = [];
+      sockets.push({
+        socket: socket as unknown as WebSocket,
+        sent,
+        open: () => {
+          socket.readyState = 1;
+          socket.onopen?.();
+        },
+        message: (payload) => socket.onmessage?.({ data: JSON.stringify(payload) }),
+        error: () => socket.onerror?.(),
+        close: (code = 1006, reason = "network") => {
+          socket.readyState = 3;
+          socket.onclose?.({ code, reason } as CloseEvent);
+        },
+      });
+      (this as unknown as { send: (message: string) => void }).send = (message) => sent.push(message);
+    }
+    send(_message: string) { /* replaced per instance */ }
+    close(_code?: number, _reason?: string) { /* server close is driven by the handle */ }
+    addEventListener = vi.fn();
+    removeEventListener = vi.fn();
+  };
+
+  const audioCtx = {
+    sampleRate: 16000,
+    state: "running",
+    destination: {},
+    createMediaStreamSource: vi.fn(() => ({ disconnect: vi.fn(), connect: vi.fn() })),
+    createScriptProcessor: vi.fn(() => ({ disconnect: vi.fn(), connect: vi.fn(), onaudioprocess: null })),
+    createAnalyser: vi.fn(() => ({ fftSize: 1024, frequencyBinCount: 512, getByteFrequencyData: vi.fn(), disconnect: vi.fn() })),
+    close: vi.fn().mockResolvedValue(undefined),
+  };
+  (globalThis as Record<string, unknown>).AudioContext = class MockAudioContext {
+    constructor() {
+      audioContextConstructor();
+      return audioCtx;
+    }
+  };
+
+  return {
+    sockets, getMicStream, wait, random, audioContextConstructor, trackStop,
+    teardown() {
+      (globalThis as Record<string, unknown>).WebSocket = originalWebSocket;
+      (globalThis as Record<string, unknown>).AudioContext = originalAudioContext;
+    },
+  };
+}
+
+async function connectRecoverySocket(
+  source: ReturnType<typeof createBrowserAsrSource>,
+  sockets: MockSocketHandle[],
+  index: number,
+) {
+  const starting = index === 0 ? source.start() : Promise.resolve();
+  await vi.waitFor(() => expect(sockets.length).toBeGreaterThan(index));
+  sockets[index].open();
+  sockets[index].message({ type: "proxy.connected" });
+  await starting;
+}
+
+describe("createBrowserAsrSource — 会中 ASR 恢复", () => {
+  let harness: ReturnType<typeof buildMidSessionRecoveryHarness>;
+
+  beforeEach(() => {
+    harness = buildMidSessionRecoveryHarness();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    harness.teardown();
+    vi.restoreAllMocks();
+  });
+
+  function sourceWith(overrides: Partial<Parameters<typeof createBrowserAsrSource>[0]> = {}) {
+    const source = createBrowserAsrSource({
+      asrWsUrl: "ws://test/asr",
+      getMicStream: harness.getMicStream,
+      enableSileroVad: false,
+      wait: harness.wait,
+      random: harness.random,
+      midSessionReconnectBaseDelayMs: 500,
+      ...overrides,
+    });
+    const handlers = defaultHandlers();
+    source.register(handlers);
+    return { source, handlers };
+  }
+
+  it("ready 后异常关闭会重连且不重建麦克风图", async () => {
+    const states = vi.fn();
+    const { source } = sourceWith({ onConnectionStateChange: states });
+    await connectRecoverySocket(source, harness.sockets, 0);
+
+    harness.sockets[0].close(1006, "network");
+    await vi.waitFor(() => expect(harness.sockets).toHaveLength(2));
+    harness.sockets[1].open();
+    harness.sockets[1].message({ type: "proxy.connected" });
+
+    await vi.waitFor(() => expect(states).toHaveBeenLastCalledWith(expect.objectContaining({ state: "ready" })));
+    expect(harness.getMicStream).toHaveBeenCalledTimes(1);
+    expect(harness.audioContextConstructor).toHaveBeenCalledTimes(1);
+    expect(harness.wait).toHaveBeenCalledWith(500);
+    expect(harness.sockets[1].sent.map((value) => JSON.parse(value)).filter((message) => message.type === "session.update")).toHaveLength(1);
+  });
+
+  it("会中耗尽五次重连后才通知连接丢失", async () => {
+    const states = vi.fn();
+    const onConnectionLost = vi.fn();
+    const { source } = sourceWith({ onConnectionStateChange: states, onConnectionLost });
+    await connectRecoverySocket(source, harness.sockets, 0);
+
+    harness.sockets[0].close(1006, "network");
+    await vi.waitFor(() => expect(harness.sockets).toHaveLength(2));
+    for (let index = 1; index <= 5; index++) {
+      harness.sockets[index].close(1006, "network");
+      if (index < 5) {
+        await vi.waitFor(() => expect(harness.sockets).toHaveLength(index + 2));
+      }
+    }
+
+    await vi.waitFor(() => expect(states).toHaveBeenLastCalledWith(expect.objectContaining({ state: "exhausted", code: 1006 })));
+    expect(onConnectionLost).toHaveBeenCalledTimes(1);
+    expect(harness.getMicStream).toHaveBeenCalledTimes(1);
+  });
+
+  it("stop 和不可恢复关闭均不触发新的 socket", async () => {
+    const states = vi.fn();
+    const { source } = sourceWith({ onConnectionStateChange: states });
+    await connectRecoverySocket(source, harness.sockets, 0);
+    source.stop();
+    harness.sockets[0].close(1000, "cascade stop");
+    await Promise.resolve();
+    expect(harness.sockets).toHaveLength(1);
+
+    const second = sourceWith({ onConnectionStateChange: states }).source;
+    const secondStarted = second.start();
+    await vi.waitFor(() => expect(harness.sockets).toHaveLength(2));
+    harness.sockets[1].open();
+    harness.sockets[1].message({ type: "proxy.connected" });
+    await secondStarted;
+    harness.sockets[1].close(4001, "unauthorized");
+    await vi.waitFor(() => expect(states).toHaveBeenLastCalledWith(expect.objectContaining({ state: "exhausted", code: 4001 })));
+    expect(harness.sockets).toHaveLength(2);
+  });
+
+  it("error 与 close 成对触发只恢复一次", async () => {
+    const { source } = sourceWith();
+    await connectRecoverySocket(source, harness.sockets, 0);
+    harness.sockets[0].error();
+    harness.sockets[0].close(1006, "after error");
+    await vi.waitFor(() => expect(harness.sockets).toHaveLength(2));
+    expect(harness.getMicStream).toHaveBeenCalledTimes(1);
+    expect(harness.wait).toHaveBeenCalledTimes(1);
+  });
+
+  it("断线前 partial 进入 recovery review，已完成 final 不重复", async () => {
+    const onRecoveryTranscript = vi.fn();
+    const { source, handlers } = sourceWith({ onRecoveryTranscript });
+    await connectRecoverySocket(source, harness.sockets, 0);
+    harness.sockets[0].message({ type: "conversation.item.input_audio_transcription.delta", text: "还没有说", stash: "完" });
+    harness.sockets[0].close(1006, "network");
+
+    expect(onRecoveryTranscript).toHaveBeenCalledWith({
+      text: "还没有说完",
+      reason: "语音连接中断，尾段尚未由识别服务确认",
+      code: 1006,
+    });
+    await vi.waitFor(() => expect(harness.sockets).toHaveLength(2));
+    harness.sockets[1].open();
+    harness.sockets[1].message({ type: "proxy.connected" });
+    harness.sockets[1].message({ type: "conversation.item.input_audio_transcription.completed", transcript: "新的最终句" });
+    harness.sockets[1].close(1006, "network");
+    expect(handlers.onTranscriptDelta).toHaveBeenCalledWith("新的最终句", true);
+    expect(onRecoveryTranscript).toHaveBeenCalledTimes(1);
+  });
+
+  it("旧 socket 的迟到事件不能污染新 socket", async () => {
+    const { source, handlers } = sourceWith();
+    await connectRecoverySocket(source, harness.sockets, 0);
+    harness.sockets[0].close(1006, "network");
+    await vi.waitFor(() => expect(harness.sockets).toHaveLength(2));
+    harness.sockets[1].open();
+    harness.sockets[1].message({ type: "proxy.connected" });
+    harness.sockets[0].message({ type: "conversation.item.input_audio_transcription.delta", text: "旧文本", stash: "" });
+    harness.sockets[0].close(1006, "late");
+    expect(handlers.onTranscriptDelta).not.toHaveBeenCalledWith("旧文本", false);
+    expect(harness.sockets).toHaveLength(2);
   });
 });

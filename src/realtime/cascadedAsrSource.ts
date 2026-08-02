@@ -16,6 +16,12 @@ import type { ExpressionState } from "../domain/types";
 import { createExpressionStateDetector, type ExpressionStateInput } from "./expressionStateDetector";
 import { createSpeechFeatureTracker, spectralCentroid } from "./speechFeatures";
 import { createSileroVadController, type SileroVadController } from "./sileroVad";
+import {
+  computeAsrReconnectDelayMs,
+  isRecoverableAsrCloseCode,
+  type AsrConnectionEvent,
+  type AsrConnectionState,
+} from "./asrConnectionLifecycle";
 
 /** Session-update payload for text-only (ASR) mode. */
 function buildAsrSessionUpdate(instructions: string, silenceDurationMs = 900) {
@@ -82,6 +88,18 @@ export interface CreateBrowserAsrSourceOptions {
    * 用户并收尾(启动期失败仍走原 reject+重试路径,不经此回调)。
    */
   onConnectionLost?: (err: Error) => void;
+  /** Reports the ASR connection lifecycle without exposing transcript or audio. */
+  onConnectionStateChange?: (event: AsrConnectionEvent) => void;
+  /** Preserves an unconfirmed provider partial for the caller's review boundary. */
+  onRecoveryTranscript?: (item: { text: string; reason: string; code?: number }) => void;
+  /** Mid-session reconnect budget. Defaults to five replacement sockets. */
+  maxMidSessionReconnectAttempts?: number;
+  /** Exponential mid-session reconnect base delay in ms. Defaults to 500. */
+  midSessionReconnectBaseDelayMs?: number;
+  /** Injectable delay primitive used by the reconnection policy. */
+  wait?: (ms: number) => Promise<void>;
+  /** Injectable entropy source used by the reconnect jitter policy. */
+  random?: () => number;
 }
 
 export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): AsrSource {
@@ -95,6 +113,12 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
     maxReconnectAttempts = 2,
     baseReconnectDelayMs = 500,
     onConnectionLost,
+    onConnectionStateChange,
+    onRecoveryTranscript,
+    maxMidSessionReconnectAttempts = 5,
+    midSessionReconnectBaseDelayMs = 500,
+    wait = (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+    random = Math.random,
   } = opts;
 
   // P2-22:中途断连只上报一次(onerror 与 onclose 常成对触发)。
@@ -114,6 +138,10 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
   let analyser: AnalyserNode | null = null;
   let freqData: Uint8Array<ArrayBuffer> | null = null;
   let closed = false;
+  let lifecycle: AsrConnectionState | "idle" = "idle";
+  let socketGeneration = 0;
+  let recoveryTask: Promise<void> | null = null;
+  let latestProviderPartial = "";
 
   // Expression / feature tracking (same as bailianWebsocket)
   const expressionDetector = createExpressionStateDetector();
@@ -135,6 +163,26 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
     hasRepetition: false,
     hasFalseStart: false
   };
+
+  function emitConnectionState(
+    state: AsrConnectionState,
+    attempt: number,
+    code?: number,
+    reason?: string,
+  ) {
+    lifecycle = state;
+    try {
+      onConnectionStateChange?.({
+        state,
+        attempt,
+        maxAttempts: state === "connecting" ? maxReconnectAttempts : maxMidSessionReconnectAttempts,
+        code,
+        reason,
+      });
+    } catch {
+      // UI telemetry must never break the live audio path.
+    }
+  }
 
   function updateSemanticFlags(text: string) {
     latestPartialTranscript = text;
@@ -246,7 +294,7 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
     frameMs = Math.round((4096 / audioCtx.sampleRate) * 1000);
 
     processor.onaudioprocess = (e) => {
-      if (closed || !ws || ws.readyState !== WebSocket.OPEN) return;
+      if (closed || lifecycle !== "ready" || !ws || ws.readyState !== WebSocket.OPEN) return;
 
       const inputData = e.inputBuffer.getChannelData(0);
       // Encode PCM16 as base64 and send to proxy
@@ -282,6 +330,194 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
     processor.connect(audioCtx.destination);
   }
 
+  type SocketFailure = Error & { code?: number; reason?: string };
+
+  function socketFailure(message: string, code?: number, reason?: string): SocketFailure {
+    return Object.assign(new Error(message), { code, reason });
+  }
+
+  function flushProviderPartial(code?: number) {
+    if (!latestProviderPartial) return;
+    try {
+      onRecoveryTranscript?.({
+        text: latestProviderPartial,
+        reason: "语音连接中断，尾段尚未由识别服务确认",
+        code,
+      });
+    } catch {
+      // The recovery boundary is best-effort and must not suppress reconnect.
+    }
+    latestProviderPartial = "";
+  }
+
+  function exhaustMidSession(code?: number, reason?: string) {
+    if (closed || lifecycle === "exhausted" || lifecycle === "stopped") return;
+    emitConnectionState("exhausted", maxMidSessionReconnectAttempts, code, reason);
+    stopMic();
+    notifyConnectionLost(socketFailure("语音识别连接已断开", code, reason));
+  }
+
+  async function recoverMidSession(code?: number, reason?: string) {
+    flushProviderPartial(code);
+    let lastCode = code;
+    let lastReason = reason;
+
+    for (let attempt = 1; attempt <= maxMidSessionReconnectAttempts; attempt++) {
+      if (closed) return;
+      emitConnectionState("reconnecting", attempt, lastCode, lastReason);
+      await wait(computeAsrReconnectDelayMs(attempt, midSessionReconnectBaseDelayMs, random));
+      if (closed) return;
+      try {
+        await connectSocket("recovery");
+        return;
+      } catch (error) {
+        const failure = error as SocketFailure;
+        lastCode = failure.code;
+        lastReason = failure.reason ?? failure.message;
+        if (!isRecoverableAsrCloseCode(lastCode)) {
+          exhaustMidSession(lastCode, lastReason);
+          return;
+        }
+      }
+    }
+    exhaustMidSession(lastCode, lastReason);
+  }
+
+  function handleReadySocketTermination(code?: number, reason?: string) {
+    if (closed || (recoveryTask && lifecycle !== "ready")) return;
+    if (!isRecoverableAsrCloseCode(code)) {
+      if (code === 1000) {
+        emitConnectionState("stopped", 0, code, reason);
+        stopMic();
+      } else {
+        exhaustMidSession(code, reason);
+      }
+      return;
+    }
+    const task = recoverMidSession(code, reason);
+    let wrappedTask: Promise<void>;
+    wrappedTask = task.finally(() => {
+      if (recoveryTask === wrappedTask) recoveryTask = null;
+    });
+    recoveryTask = wrappedTask;
+  }
+
+  function connectSocket(mode: "initial" | "recovery"): Promise<void> {
+    const generation = ++socketGeneration;
+    const socket = new WebSocket(asrWsUrl);
+    ws = socket;
+    let ready = false;
+    let settled = false;
+    let terminationHandled = false;
+    const isCurrent = () => !closed && ws === socket && generation === socketGeneration;
+
+    return new Promise<void>((resolve, reject) => {
+      const terminate = (event: { code?: number; reason?: string }) => {
+        if (terminationHandled || !isCurrent()) return;
+        terminationHandled = true;
+        if (ws === socket) ws = null;
+        if (!ready) {
+          settled = true;
+          reject(socketFailure(
+            event.reason || "ASR WebSocket closed before ready",
+            event.code,
+            event.reason,
+          ));
+          return;
+        }
+        handleReadySocketTermination(event.code, event.reason);
+      };
+
+      socket.onopen = () => {
+        if (!isCurrent()) return;
+        socket.send(JSON.stringify(buildAsrSessionUpdate(instructions, silenceDurationMs)));
+      };
+
+      socket.onmessage = (event) => {
+        if (!isCurrent()) return;
+        let msg: Record<string, unknown>;
+        try {
+          msg = JSON.parse(event.data as string);
+        } catch {
+          return;
+        }
+        const type = msg.type as string | undefined;
+        switch (type) {
+          case "proxy.connected":
+            if (settled) return;
+            ready = true;
+            settled = true;
+            latestProviderPartial = "";
+            emitConnectionState("ready", 0);
+            resolve();
+            break;
+          case "input_audio_buffer.speech_started":
+            handlers?.onSpeechStarted();
+            break;
+          case "input_audio_buffer.speech_stopped":
+            handlers?.onSpeechStopped(lowEnergyFrames * frameMs);
+            break;
+          case "conversation.item.input_audio_transcription.delta": {
+            const rawText = msg.text;
+            const rawStash = msg.stash;
+            const textIsValid = rawText === undefined || typeof rawText === "string";
+            const stashIsValid = rawStash === undefined || typeof rawStash === "string";
+            if (!textIsValid || !stashIsValid) {
+              console.warn(JSON.stringify({ event: "asr_invalid_delta", textType: typeof rawText, stashType: typeof rawStash }));
+              break;
+            }
+            const text = ((rawText as string | undefined) ?? "") + ((rawStash as string | undefined) ?? "");
+            if (!text) {
+              console.warn(JSON.stringify({ event: "asr_empty_transcript" }));
+              break;
+            }
+            latestProviderPartial = text;
+            updateSemanticFlags(text);
+            handlers?.onTranscriptDelta(text, false);
+            break;
+          }
+          case "conversation.item.input_audio_transcription.completed": {
+            const transcript = msg.transcript as string | undefined;
+            if (transcript) {
+              latestProviderPartial = "";
+              updateSemanticFlags(transcript);
+              handlers?.onTranscriptDelta(transcript, true);
+            }
+            break;
+          }
+          case "error": {
+            const errMsg = (msg.error as { message?: string } | undefined)?.message ?? "ASR error";
+            terminate({ reason: errMsg });
+            break;
+          }
+        }
+      };
+      socket.onerror = () => terminate({ reason: "ASR WebSocket error" });
+      socket.onclose = (event) => terminate({ code: event?.code, reason: event?.reason });
+    });
+  }
+
+  async function connectWithInitialRetries() {
+    let lastError: Error = new Error("ASR start failed");
+    for (let attempt = 0; attempt <= maxReconnectAttempts; attempt++) {
+      if (closed) return;
+      if (attempt > 0 && baseReconnectDelayMs > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, baseReconnectDelayMs * attempt));
+      }
+      if (closed) return;
+      try {
+        await connectSocket("initial");
+        return;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        if (attempt < maxReconnectAttempts) {
+          console.warn(JSON.stringify({ event: "asr_reconnect", attempt: attempt + 1, maxReconnectAttempts, error: lastError.message }));
+        }
+      }
+    }
+    throw lastError;
+  }
+
   return {
     register(h: AsrEventHandlers) {
       handlers = h;
@@ -292,167 +528,29 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
     },
 
     async start() {
-      if (!handlers) {
-        throw new Error("AsrSource: register() must be called before start()");
+      if (!handlers) throw new Error("AsrSource: register() must be called before start()");
+      if (lifecycle !== "idle") return;
+      closed = false;
+      emitConnectionState("connecting", 0);
+      await startMic();
+      try {
+        await connectWithInitialRetries();
+      } catch (error) {
+        stopMic();
+        emitConnectionState("exhausted", maxReconnectAttempts);
+        throw error;
       }
-
-      // attemptConnect: one connection attempt. On failure, stopMic first.
-      // Returns void on success; throws on failure.
-      const attemptConnect = async (): Promise<void> => {
-        await startMic();
-
-        return new Promise<void>((resolve, reject) => {
-          const socket = new WebSocket(asrWsUrl);
-          ws = socket;
-          // Track whether the Promise has been settled (resolved or rejected).
-          // Guards against double-settle: onclose must not reject if onerror already did,
-          // and post-connect onclose (normal session teardown) must not reject either.
-          let settled = false;
-
-          socket.onopen = () => {
-            // Text-only session: the model will transcribe but not generate audio
-            socket.send(JSON.stringify(buildAsrSessionUpdate(instructions, silenceDurationMs)));
-          };
-
-          socket.onmessage = (event) => {
-            if (closed) return;
-            let msg: Record<string, unknown>;
-            try {
-              msg = JSON.parse(event.data as string);
-            } catch {
-              return;
-            }
-
-            const type = msg.type as string | undefined;
-
-            switch (type) {
-              case "proxy.connected":
-                // Proxy is ready — resolve so startListening() can proceed
-                settled = true;
-                resolve();
-                break;
-
-              case "input_audio_buffer.speech_started":
-                handlers?.onSpeechStarted();
-                break;
-
-              case "input_audio_buffer.speech_stopped": {
-                // Measure silence since last high-energy frame
-                const silenceMs = lowEnergyFrames * frameMs;
-                handlers?.onSpeechStopped(silenceMs);
-                break;
-              }
-
-              case "conversation.item.input_audio_transcription.delta": {
-                // Type guard: text and stash must both be strings (or absent → treat as "").
-                // Non-string values (number, null, object, etc.) indicate a malformed delta;
-                // skip silently and emit a structured warning so ops can detect schema drift.
-                const rawText = msg.text;
-                const rawStash = msg.stash;
-                const textIsValid = rawText === undefined || typeof rawText === "string";
-                const stashIsValid = rawStash === undefined || typeof rawStash === "string";
-                if (!textIsValid || !stashIsValid) {
-                  console.warn(JSON.stringify({
-                    event: "asr_invalid_delta",
-                    textType: typeof rawText,
-                    stashType: typeof rawStash,
-                  }));
-                  break;
-                }
-                const text = ((rawText as string | undefined) ?? "") + ((rawStash as string | undefined) ?? "");
-                if (!text) {
-                  console.warn(JSON.stringify({ event: "asr_empty_transcript" }));
-                  break;
-                }
-                updateSemanticFlags(text);
-                // Cumulative partial — orchestrator REPLACES the partial with it.
-                handlers?.onTranscriptDelta(text, false);
-                break;
-              }
-
-              case "conversation.item.input_audio_transcription.completed": {
-                const transcript = msg.transcript as string | undefined;
-                if (transcript) {
-                  updateSemanticFlags(transcript);
-                  // Finalized segment — orchestrator commits it.
-                  handlers?.onTranscriptDelta(transcript, true);
-                }
-                break;
-              }
-
-              case "error": {
-                const errMsg = (msg.error as { message?: string } | undefined)?.message ?? "ASR error";
-                if (!settled && !closed) {
-                  settled = true;
-                  reject(new Error(errMsg));
-                }
-                break;
-              }
-            }
-          };
-
-          socket.onerror = () => {
-            if (!settled && !closed) {
-              settled = true;
-              reject(new Error("ASR WebSocket error"));
-            } else if (settled) {
-              notifyConnectionLost(new Error("ASR 连接错误(会话中途)"));
-            }
-          };
-
-          socket.onclose = () => {
-            ws = null;
-            // If the socket closes before proxy.connected was received (not yet settled)
-            // and we did not initiate the close ourselves (closed flag), treat it as a
-            // connection failure so the outer retry loop can reconnect.
-            if (!settled && !closed) {
-              settled = true;
-              reject(new Error("ASR WebSocket closed before ready"));
-            } else if (settled) {
-              // 审计修复(P2-22):会话中途断连不再静默——语音输入已死,必须让用户知道。
-              notifyConnectionLost(new Error("语音识别连接已断开"));
-            }
-          };
-        });
-      };
-
-      // Retry loop: on failure always stopMic first (prevent mic leak),
-      // then retry up to maxReconnectAttempts times with linear backoff.
-      let lastError: Error = new Error("ASR start failed");
-      for (let attempt = 0; attempt <= maxReconnectAttempts; attempt++) {
-        if (closed) return; // stop() called during retry — bail out cleanly
-        if (attempt > 0 && baseReconnectDelayMs > 0) {
-          await new Promise<void>((r) => setTimeout(r, baseReconnectDelayMs * attempt));
-        }
-        if (closed) return;
-        try {
-          await attemptConnect();
-          return; // success — done
-        } catch (err) {
-          // P0-7: always release the mic on failure to prevent mic leak
-          stopMic();
-          lastError = err instanceof Error ? err : new Error(String(err));
-          if (attempt < maxReconnectAttempts) {
-            console.warn(JSON.stringify({
-              event: "asr_reconnect",
-              attempt: attempt + 1,
-              maxReconnectAttempts,
-              error: lastError.message,
-            }));
-          }
-        }
-      }
-      // All attempts exhausted — propagate the last error
-      throw lastError;
     },
 
     stop() {
+      if (closed) return;
       closed = true;
-      stopMic();
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.close(1000, "cascade stop");
-      }
+      socketGeneration++;
+      const socket = ws;
       ws = null;
+      stopMic();
+      emitConnectionState("stopped", 0, 1000, "cascade stop");
+      if (socket && socket.readyState === WebSocket.OPEN) socket.close(1000, "cascade stop");
     },
 
     getExpressionState(): ExpressionState {
@@ -460,7 +558,6 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
     },
 
     hasRecentUserEnergyEvidence(): boolean {
-      // Blend energy-VAD + neural Silero speech probability (soft if Silero failed).
       if (sileroSpeechProb > 0.35) return true;
       return Date.now() - lastHighEnergyAtMs <= 1_500;
     }
