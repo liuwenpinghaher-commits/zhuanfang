@@ -107,6 +107,50 @@ describe("buildRealtimeProxyLog", () => {
     expect(Buffer.byteLength(payload.reason ?? "", "utf8")).toBeLessThanOrEqual(160);
     expect(payload).toMatchObject({ code: 1011, phase: "ready", durationMs: 1234 });
   });
+
+  it.each([
+    ['JSON transcript', '{"transcript":"用户原话"}'],
+    ['JSON token', '{"token":"secret-value"}'],
+    ['JSON Authorization Basic', '{"Authorization":"Basic abc123"}'],
+    ['供应商 API key', 'DASHSCOPE_API_KEY=真实密钥'],
+    ['中文密钥', '密钥=真实密钥'],
+    ['JSON cookie', '{"cookie":"session=abc"}'],
+    ['JSON instructions', '{"instructions":"系统提示"}'],
+    ['JSON PCM', '{"PCM":"base64-audio"}'],
+    ['PCM underscore 变体', 'pcm_audio=base64-audio'],
+    ['input audio buffer 变体', 'input-audio-buffer: raw-audio'],
+    ['inputAudioBuffer camelCase', '{"inputAudioBuffer":"raw-audio"}'],
+    ['供应商 API Key 空格变体', 'DashScope API Key: abc123'],
+    ['中文令牌', '令牌=abc123'],
+    ['中文逐字稿', '逐字稿=用户原话'],
+    ['Bearer auth', 'Bearer abc123'],
+    ['Basic auth', 'Basic abc123']
+  ])("命中敏感标记后整段 reason 归一为 [REDACTED]：%s", (_label, reason) => {
+    const payload = buildRealtimeProxyLog({
+      event: "realtime_proxy_upstream_error",
+      sessionId: "rtv-sensitive",
+      direction: "upstream",
+      reason,
+      phase: "ready"
+    });
+
+    expect(payload.reason).toBe("[REDACTED]");
+  });
+
+  it("非敏感 reason 仍移除 CRLF 并按 UTF-8 截到 160 字节", () => {
+    const payload = buildRealtimeProxyLog({
+      event: "realtime_proxy_upstream_closed",
+      sessionId: "rtv-safe",
+      direction: "upstream",
+      reason: `temporary\r\nupstream close ${"界".repeat(100)}`,
+      phase: "ready"
+    });
+
+    expect(payload.reason).toMatch(/^temporary upstream close/);
+    expect(payload.reason).not.toMatch(/[\r\n]/);
+    expect(Buffer.byteLength(payload.reason ?? "", "utf8")).toBeLessThanOrEqual(160);
+    expect(payload.reason).not.toContain("�");
+  });
 });
 
 describe("WebSocket close sanitization", () => {
