@@ -29,3 +29,6 @@ agent/*.pyc
 # macOS
 .DS_Store
 **/.DS_Store
+
+.deploy-artifact/
+zhuanfang-deploy.tgz
