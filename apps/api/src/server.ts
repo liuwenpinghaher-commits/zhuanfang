@@ -372,9 +372,15 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     void server.register(fastifyStatic, { root: staticDir });
     // SPA history fallback: serve index.html for non-/api GET routes so deep-link refresh
     // (e.g. /podcast) doesn't 404. /api/* still falls through to a JSON 404.
+    // Do NOT fall back asset-like paths (esp. /vad/* worklet/onnx/wasm) to index.html —
+    // AudioWorklet.addModule would then load HTML and throw AbortError.
     server.setNotFoundHandler((request, reply) => {
       if (request.method === "GET" && !request.url.startsWith("/api/")) {
-        return reply.sendFile("index.html");
+        const pathOnly = request.url.split("?")[0] ?? request.url;
+        if (isSpaHistoryPath(pathOnly)) {
+          return reply.sendFile("index.html");
+        }
+        return reply.code(404).type("text/plain").send("Not found");
       }
       return reply.code(404).send({ error: "Not found" });
     });
@@ -973,6 +979,22 @@ function registerProductionAuth(server: ReturnType<typeof Fastify>, env: Record<
 // R7:默认工厂只构造内存仓库。持久化(surreal 热态 + 三冷层)需异步连接,无法在同步的 buildApiServer
 // 装配期建立,只能由 startServer 经 createSurrealStores 打开共享连接后注入。故这四个默认工厂不再看
 // dbPath——真实 dbPath 也不落盘,持久化一律走 surreal 档的显式注入路径。
+/**
+ * Paths that should receive SPA index.html on unknown GET (client-side routes).
+ * Asset URLs (.js/.wasm/.onnx/…) must 404 as plain text so browsers don't try to
+ * execute HTML as an AudioWorklet module.
+ */
+export function isSpaHistoryPath(pathname: string): boolean {
+  const path = (pathname.split("?")[0] || "/").replace(/\/+$/, "") || "/";
+  if (path.startsWith("/api")) return false;
+  if (path.startsWith("/vad")) return false;
+  if (path.startsWith("/assets")) return false;
+  // Any remaining file extension → real static miss, not a history route.
+  const base = path.split("/").pop() || "";
+  if (base.includes(".") && !base.startsWith(".")) return false;
+  return true;
+}
+
 function createDefaultProductStateRepository() {
   return createInMemoryProductStateRepository();
 }
