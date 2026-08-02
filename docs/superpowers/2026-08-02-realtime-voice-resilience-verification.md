@@ -62,6 +62,28 @@ git diff --check
   exit 0
 ```
 
+合并到本地 `main` 后再次执行同一组门禁：
+
+```text
+npm run typecheck
+  exit 0
+
+REAL_PROVIDER_SMOKE=off npm test -- --run
+  166 passed files
+  1750 passed tests, 6 skipped tests
+
+npm run build
+  exit 0
+
+npx playwright test tests/e2e/voice-resilience.spec.ts --project=chromium
+  4 passed
+
+npm run smoke:voice-static -- http://127.0.0.1:3210
+  voice_static_smoke_pass
+```
+
+合并后本地环境启用了比隔离工作树更多的测试，因此通过数与 skipped 数不同；两轮均为 exit 0。
+
 ## Docker 与真实浏览器证据
 
 - compose project：`10`；容器：`10-zhuanfang-1`。
