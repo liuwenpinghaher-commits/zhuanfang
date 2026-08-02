@@ -68,17 +68,40 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
   // can still dispatch late lifecycle events after a replacement socket opens;
   // those events must never settle the replacement utterance.
   let activeSpeak: {
+    generation: number;
     socket: WebSocket;
     resolve: () => void;
     reject: (error: TtsPlaybackInterruptedError) => void;
     cleanup: () => void;
   } | null = null;
+  let nextSpeakGeneration = 0;
+  let pendingSpeak: {
+    generation: number;
+    cancelled: boolean;
+    socket: WebSocket | null;
+    cancellation: Promise<void>;
+    cancel: () => void;
+    interruption: Promise<never>;
+    interruptionError: TtsPlaybackInterruptedError | null;
+    interrupt: (error: TtsPlaybackInterruptedError) => void;
+  } | null = null;
 
-  function resolveActiveSpeak(socket?: WebSocket) {
-    if (!activeSpeak || (socket && activeSpeak.socket !== socket)) return;
+  function isCurrentSpeak(generation: number) {
+    return pendingSpeak?.generation === generation && !pendingSpeak.cancelled;
+  }
+
+  function clearPendingSpeak(generation: number) {
+    if (pendingSpeak?.generation === generation) pendingSpeak = null;
+  }
+
+  function resolveActiveSpeak(socket?: WebSocket, generation?: number) {
+    if (!activeSpeak
+      || (socket && activeSpeak.socket !== socket)
+      || (generation !== undefined && activeSpeak.generation !== generation)) return;
     const current = activeSpeak;
     activeSpeak = null;
     current.cleanup();
+    clearPendingSpeak(current.generation);
     current.resolve();
   }
 
@@ -87,15 +110,25 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
     const current = activeSpeak;
     activeSpeak = null;
     current.cleanup();
+    clearPendingSpeak(current.generation);
     current.reject(new TtsPlaybackInterruptedError(message, code));
+  }
+
+  function cancelPendingSpeak() {
+    const current = pendingSpeak;
+    if (!current || current.cancelled) return;
+    current.cancelled = true;
+    current.cancel();
+    resolveActiveSpeak(undefined, current.generation);
+    if (current.socket?.readyState === WebSocket.CONNECTING) {
+      try { current.socket.close(1000, "tts speak cancelled"); } catch { /* already closed */ }
+    }
+    clearPendingSpeak(current.generation);
   }
 
   function getAudioContext(): AudioContext {
     if (!audioCtx || audioCtx.state === "closed") {
       audioCtx = new AudioContext();
-    }
-    if (audioCtx.state === "suspended") {
-      audioCtx.resume().catch(() => { /* best-effort */ });
     }
     return audioCtx;
   }
@@ -164,32 +197,62 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
     leftoverByte = null;
   }
 
-  function openWs(): Promise<WebSocket> {
+  function openWs(attempt: NonNullable<typeof pendingSpeak>): Promise<WebSocket> {
     return new Promise((resolve, reject) => {
       if (ws && ws.readyState === WebSocket.OPEN) {
+        attempt.socket = ws;
         resolve(ws);
         return;
       }
       const socket = new WebSocket(ttsWsUrl);
+      attempt.socket = socket;
       socket.binaryType = "arraybuffer";
       socket.onopen = () => {
+        if (!isCurrentSpeak(attempt.generation)) {
+          try { socket.close(1000, "stale tts connection"); } catch { /* already closed */ }
+          resolve(socket);
+          return;
+        }
         ws = socket;
         resolve(socket);
       };
       socket.onerror = () => {
-        const message = "TTS WebSocket interrupted";
-        reject(new TtsPlaybackInterruptedError(message));
-        rejectActiveSpeak(socket, message);
+        const error = new TtsPlaybackInterruptedError("TTS WebSocket interrupted");
+        if (isCurrentSpeak(attempt.generation)) attempt.interrupt(error);
+        reject(error);
+        rejectActiveSpeak(socket, error.message);
       };
       socket.onclose = (event) => {
         if (ws === socket) ws = null;
-        rejectActiveSpeak(socket, event.reason || "TTS WebSocket interrupted", event.code);
+        const error = new TtsPlaybackInterruptedError(event.reason || "TTS WebSocket interrupted", event.code);
+        if (isCurrentSpeak(attempt.generation)) attempt.interrupt(error);
+        reject(error);
+        rejectActiveSpeak(socket, error.message, error.code);
       };
     });
   }
 
   return {
     async speak(segments: string[], speakVoice?: string, prosody?: SpeechProsody): Promise<void> {
+      let cancel!: () => void;
+      const cancellation = new Promise<void>((resolve) => { cancel = resolve; });
+      let rejectInterruption!: (error: TtsPlaybackInterruptedError) => void;
+      const interruption = new Promise<never>((_resolve, reject) => { rejectInterruption = reject; });
+      const attempt = {
+        generation: ++nextSpeakGeneration,
+        cancelled: false,
+        socket: null as WebSocket | null,
+        cancellation,
+        cancel,
+        interruption,
+        interruptionError: null as TtsPlaybackInterruptedError | null,
+        interrupt(error: TtsPlaybackInterruptedError) {
+          if (this.cancelled || this.interruptionError) return;
+          this.interruptionError = error;
+          rejectInterruption(error);
+        },
+      };
+      pendingSpeak = attempt;
       // Fresh utterance: reset scheduling + decode state.
       stopped = false;
       nextStartTime = 0;
@@ -199,19 +262,41 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
 
       let socket: WebSocket;
       try {
-        socket = await openWs();
+        const opened = await Promise.race([
+          openWs(attempt).then((value) => ({ value })),
+          attempt.cancellation.then(() => null),
+          attempt.interruption,
+        ]);
+        if (!opened || !isCurrentSpeak(attempt.generation)) return;
+        if (attempt.interruptionError) throw attempt.interruptionError;
+        socket = opened.value;
       } catch (error) {
+        if (attempt.cancelled || !isCurrentSpeak(attempt.generation)) return;
+        clearPendingSpeak(attempt.generation);
         if (error instanceof TtsPlaybackInterruptedError) throw error;
         throw new TtsPlaybackInterruptedError(error instanceof Error ? error.message : "TTS WebSocket interrupted");
       }
-      if (stopped) return;
+      if (!isCurrentSpeak(attempt.generation)) return;
       const ctx = getAudioContext();
       // Ensure the context is actually RUNNING before we schedule against
       // ctx.currentTime — a suspended context reports currentTime ~0, which would
       // schedule every chunk in the past and garble playback once it resumes.
-      if (ctx.state !== "running") {
-        try { await ctx.resume(); } catch { /* best-effort */ }
+      try {
+        if (ctx.state !== "running") {
+          await Promise.race([
+            ctx.resume().catch(() => { /* best-effort */ }),
+            attempt.cancellation,
+            attempt.interruption,
+          ]);
+        }
+      } catch (error) {
+        if (attempt.cancelled || !isCurrentSpeak(attempt.generation)) return;
+        clearPendingSpeak(attempt.generation);
+        if (error instanceof TtsPlaybackInterruptedError) throw error;
+        throw new TtsPlaybackInterruptedError(error instanceof Error ? error.message : "TTS playback interrupted");
       }
+      if (!isCurrentSpeak(attempt.generation)) return;
+      if (attempt.interruptionError) throw attempt.interruptionError;
 
       return new Promise<void>((resolve, reject) => {
         let doneReceived = false;
@@ -222,7 +307,7 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
           if (drainPoll !== null) { clearInterval(drainPoll); drainPoll = null; }
         };
 
-        activeSpeak = { socket, resolve, reject, cleanup };
+        activeSpeak = { generation: attempt.generation, socket, resolve, reject, cleanup };
 
         // Resolve once every scheduled buffer has finished playing.
         const resolveWhenDrained = () => {
@@ -298,6 +383,7 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
 
     stop() {
       stopPlayback();
+      cancelPendingSpeak();
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "cancel" }));
       }
@@ -314,6 +400,7 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
     // recreate fresh resources if the sink is somehow reused.
     close() {
       stopPlayback();
+      cancelPendingSpeak();
       // Resolve any in-flight speak() before we drop the socket it's listening on.
       resolveActiveSpeak();
       if (ws) {

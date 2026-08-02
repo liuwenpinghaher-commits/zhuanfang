@@ -1,21 +1,35 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBrowserTtsSink } from "./cascadedTtsSink";
 
 interface MockTtsSocket {
   sent: string[];
+  closeCalls: Array<{ code?: number; reason?: string }>;
   open(): void;
   message(data: string | ArrayBuffer): void;
   close(code?: number, reason?: string): void;
   error(): void;
 }
 
+interface MockAudioContextControl {
+  state: AudioContextState;
+  blockResume: boolean;
+  resumeCalls: number;
+  releaseBlockedResumes(): void;
+}
+
 let sockets: MockTtsSocket[] = [];
+let audioContexts: MockAudioContextControl[] = [];
+let nextAudioContextSuspended = false;
+let nextAudioContextResumeBlocked = false;
 let restoreWebSocket: (() => void) | null = null;
 let restoreAudioContext: (() => void) | null = null;
 
 beforeEach(() => {
   sockets = [];
+  audioContexts = [];
+  nextAudioContextSuspended = false;
+  nextAudioContextResumeBlocked = false;
   const originalWebSocket = globalThis.WebSocket;
   const originalAudioContext = globalThis.AudioContext;
 
@@ -31,6 +45,7 @@ beforeEach(() => {
     onclose: ((event: CloseEvent) => void) | null = null;
     private readonly listeners = new Map<string, Set<(event: MessageEvent) => void>>();
     sent: string[] = [];
+    closeCalls: Array<{ code?: number; reason?: string }> = [];
 
     constructor(_url: string) {
       sockets.push(this);
@@ -62,6 +77,7 @@ beforeEach(() => {
     }
 
     close(code = 1006, reason = "interrupted") {
+      this.closeCalls.push({ code, reason });
       this.readyState = TestWebSocket.CLOSED;
       this.onclose?.({ code, reason } as CloseEvent);
     }
@@ -71,18 +87,50 @@ beforeEach(() => {
     }
   }
 
-  const audioContext = {
-    state: "running",
-    currentTime: 0,
-    destination: {},
-    resume: async () => undefined,
-    close: async () => undefined,
-    createBuffer: () => ({ getChannelData: () => new Float32Array(), duration: 0 }),
-    createBufferSource: () => ({ connect: () => undefined, start: () => undefined, stop: () => undefined }),
-  };
-
   globalThis.WebSocket = TestWebSocket as unknown as typeof WebSocket;
-  globalThis.AudioContext = class { constructor() { return audioContext; } } as unknown as typeof AudioContext;
+  globalThis.AudioContext = class {
+    constructor() {
+      const blockedResumeResolvers: Array<() => void> = [];
+      const control: MockAudioContextControl & {
+        currentTime: number;
+        destination: object;
+        resume(): Promise<void>;
+        close(): Promise<void>;
+        createBuffer(): { getChannelData(): Float32Array; duration: number };
+        createBufferSource(): { connect(): void; start(): void; stop(): void };
+      } = {
+        state: nextAudioContextSuspended ? "suspended" : "running",
+        blockResume: nextAudioContextResumeBlocked,
+        resumeCalls: 0,
+        currentTime: 0,
+        destination: {},
+        resume() {
+          this.resumeCalls += 1;
+          if (!this.blockResume) {
+            this.state = "running";
+            return Promise.resolve();
+          }
+          return new Promise<void>((resolve) => {
+            blockedResumeResolvers.push(resolve);
+          });
+        },
+        close() {
+          this.state = "closed";
+          return Promise.resolve();
+        },
+        releaseBlockedResumes() {
+          if (this.state !== "closed") this.state = "running";
+          for (const resolve of blockedResumeResolvers.splice(0)) resolve();
+        },
+        createBuffer: () => ({ getChannelData: () => new Float32Array(), duration: 0 }),
+        createBufferSource: () => ({ connect: () => undefined, start: () => undefined, stop: () => undefined }),
+      };
+      audioContexts.push(control);
+      nextAudioContextSuspended = false;
+      nextAudioContextResumeBlocked = false;
+      return control;
+    }
+  } as unknown as typeof AudioContext;
   restoreWebSocket = () => { globalThis.WebSocket = originalWebSocket; };
   restoreAudioContext = () => { globalThis.AudioContext = originalAudioContext; };
 });
@@ -95,6 +143,20 @@ afterEach(() => {
 });
 
 describe("createBrowserTtsSink", () => {
+  async function expectSettled(promise: Promise<void>) {
+    let settled = false;
+    void promise.then(() => { settled = true; }, () => { settled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(true);
+  }
+
+  function sentSpeakSegments(socket: MockTtsSocket): string[][] {
+    return socket.sent
+      .map((value) => JSON.parse(value))
+      .filter((value) => value.type === "speak")
+      .map((value) => value.segments);
+  }
+
   it("中途 close 拒绝当前 speak，下一轮创建新 socket且不重发旧 segments", async () => {
     const sink = createBrowserTtsSink("ws://test/tts", "voice");
     const first = sink.speak(["第一轮"]);
@@ -106,7 +168,7 @@ describe("createBrowserTtsSink", () => {
     const second = sink.speak(["第二轮"]);
     expect(sockets).toHaveLength(2);
     sockets[1].open();
-    await Promise.resolve();
+    await vi.waitFor(() => expect(sentSpeakSegments(sockets[1])).toEqual([["第二轮"]]));
     let secondSettled = false;
     void second.then(() => { secondSettled = true; }, () => { secondSettled = true; });
     sockets[0].close(1006, "late old-socket close");
@@ -143,11 +205,69 @@ describe("createBrowserTtsSink", () => {
     const sink = createBrowserTtsSink("ws://test/tts");
     const speaking = sink.speak(["只发送一次"]);
     sockets[0].open();
-    await Promise.resolve();
+    await vi.waitFor(() => expect(sentSpeakSegments(sockets[0])).toEqual([["只发送一次"]]));
     sink.close?.();
     sink.close?.();
     await expect(speaking).resolves.toBeUndefined();
     expect(sockets).toHaveLength(1);
     expect(sockets[0].sent.filter((value) => JSON.parse(value).type === "speak")).toHaveLength(1);
+  });
+
+  it.each(["stop", "close"] as const)("socket CONNECTING 时 %s 立即取消，迟到 open 不发送旧 segments", async (action) => {
+    const sink = createBrowserTtsSink("ws://test/tts");
+    const first = sink.speak(["连接中的旧轮"]);
+    const oldSocket = sockets[0];
+
+    if (action === "stop") sink.stop();
+    else sink.close?.();
+
+    await expectSettled(first);
+    expect(oldSocket.closeCalls.length).toBeGreaterThan(0);
+
+    const second = sink.speak(["新的有效轮次"]);
+    expect(sockets).toHaveLength(2);
+    oldSocket.open();
+    await Promise.resolve();
+    expect(sentSpeakSegments(oldSocket)).toEqual([]);
+
+    sockets[1].open();
+    await vi.waitFor(() => expect(sentSpeakSegments(sockets[1])).toEqual([["新的有效轮次"]]));
+    sockets[1].message(JSON.stringify({ type: "tts.done" }));
+    await second;
+    expect(sentSpeakSegments(sockets[1])).toEqual([["新的有效轮次"]]);
+  });
+
+  it.each(["stop", "close"] as const)("AudioContext resume 等待时 %s 立即取消，旧 continuation 不影响新轮", async (action) => {
+    nextAudioContextSuspended = true;
+    nextAudioContextResumeBlocked = true;
+    const sink = createBrowserTtsSink("ws://test/tts");
+    const first = sink.speak(["等待 resume 的旧轮"]);
+    const oldSocket = sockets[0];
+    oldSocket.open();
+    await vi.waitFor(() => expect(audioContexts).toHaveLength(1));
+    const oldContext = audioContexts[0];
+    await vi.waitFor(() => expect(oldContext.resumeCalls).toBeGreaterThan(0));
+
+    if (action === "stop") sink.stop();
+    else sink.close?.();
+
+    await expectSettled(first);
+    expect(sentSpeakSegments(oldSocket)).toEqual([]);
+
+    if (action === "stop") oldContext.blockResume = false;
+    const second = sink.speak(["resume 后的新轮"]);
+    const newSocket = action === "stop" ? oldSocket : sockets[1];
+    if (action === "close") newSocket.open();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    oldContext.releaseBlockedResumes();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sentSpeakSegments(oldSocket)).not.toContainEqual(["等待 resume 的旧轮"]);
+    expect(sentSpeakSegments(newSocket)).toEqual([["resume 后的新轮"]]);
+
+    newSocket.message(JSON.stringify({ type: "tts.done" }));
+    await second;
   });
 });
