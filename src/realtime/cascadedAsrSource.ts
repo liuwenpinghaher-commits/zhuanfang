@@ -533,6 +533,10 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
       closed = false;
       emitConnectionState("connecting", 0);
       await startMic();
+      if (closed) {
+        stopMic();
+        return;
+      }
       try {
         await connectWithInitialRetries();
       } catch (error) {

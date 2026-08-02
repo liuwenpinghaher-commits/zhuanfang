@@ -835,13 +835,16 @@ function buildMidSessionRecoveryHarness() {
     removeEventListener = vi.fn();
   };
 
+  const sourceNode = { disconnect: vi.fn(), connect: vi.fn() };
+  const processor = { disconnect: vi.fn(), connect: vi.fn(), onaudioprocess: null };
+  const analyser = { fftSize: 1024, frequencyBinCount: 512, getByteFrequencyData: vi.fn(), disconnect: vi.fn() };
   const audioCtx = {
     sampleRate: 16000,
     state: "running",
     destination: {},
-    createMediaStreamSource: vi.fn(() => ({ disconnect: vi.fn(), connect: vi.fn() })),
-    createScriptProcessor: vi.fn(() => ({ disconnect: vi.fn(), connect: vi.fn(), onaudioprocess: null })),
-    createAnalyser: vi.fn(() => ({ fftSize: 1024, frequencyBinCount: 512, getByteFrequencyData: vi.fn(), disconnect: vi.fn() })),
+    createMediaStreamSource: vi.fn(() => sourceNode),
+    createScriptProcessor: vi.fn(() => processor),
+    createAnalyser: vi.fn(() => analyser),
     close: vi.fn().mockResolvedValue(undefined),
   };
   (globalThis as Record<string, unknown>).AudioContext = class MockAudioContext {
@@ -853,6 +856,7 @@ function buildMidSessionRecoveryHarness() {
 
   return {
     sockets, getMicStream, wait, random, audioContextConstructor, trackStop,
+    audioCtx, sourceNode, processor,
     teardown() {
       (globalThis as Record<string, unknown>).WebSocket = originalWebSocket;
       (globalThis as Record<string, unknown>).AudioContext = originalAudioContext;
@@ -955,6 +959,36 @@ describe("createBrowserAsrSource — 会中 ASR 恢复", () => {
     harness.sockets[1].close(4001, "unauthorized");
     await vi.waitFor(() => expect(states).toHaveBeenLastCalledWith(expect.objectContaining({ state: "exhausted", code: 4001 })));
     expect(harness.sockets).toHaveLength(2);
+  });
+
+  it("start 等待麦克风期间 stop 会清理迟到创建的音频图", async () => {
+    const states = vi.fn();
+    const delayedTrackStop = vi.fn();
+    const delayedStream = {
+      getTracks: () => [{ kind: "audio", stop: delayedTrackStop }],
+    } as unknown as MediaStream;
+    let resolveStream!: (stream: MediaStream) => void;
+    const streamPromise = new Promise<MediaStream>((resolve) => {
+      resolveStream = resolve;
+    });
+    const delayedGetMicStream = vi.fn(() => streamPromise);
+    const { source } = sourceWith({
+      getMicStream: delayedGetMicStream,
+      onConnectionStateChange: states,
+    });
+
+    const started = source.start();
+    await vi.waitFor(() => expect(delayedGetMicStream).toHaveBeenCalledOnce());
+    source.stop();
+    resolveStream(delayedStream);
+
+    await expect(started).resolves.toBeUndefined();
+    expect(delayedTrackStop).toHaveBeenCalledOnce();
+    expect(harness.processor.disconnect).toHaveBeenCalledOnce();
+    expect(harness.sourceNode.disconnect).toHaveBeenCalledOnce();
+    expect(harness.audioCtx.close).toHaveBeenCalledOnce();
+    expect(harness.sockets).toHaveLength(0);
+    expect(states).toHaveBeenLastCalledWith(expect.objectContaining({ state: "stopped" }));
   });
 
   it("error 与 close 成对触发只恢复一次", async () => {
