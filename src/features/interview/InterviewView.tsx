@@ -5,6 +5,8 @@ import { HeaderBlock } from "../../components/HeaderBlock";
 import type { buildInterviewCard, buildRealtimeTurnState } from "../../domain/engine";
 import { INTERVIEW_STRATEGY_LABELS, PLAYBOOK_DRIVEN_STRATEGIES } from "../../domain/engine";
 import type { InterviewControlAction, InterviewMode, InterviewSession } from "../../domain/types";
+import type { TranscriptReviewItem } from "../../realtime/cascadedPipeline";
+import type { VoiceUiStatus } from "../../realtime/vadWorkletCapability";
 import { formatRealtimePhase, interviewControlGroups } from "../../ui";
 
 interface InterviewViewProps {
@@ -15,9 +17,9 @@ interface InterviewViewProps {
   recording: boolean;
   realtimeState: ReturnType<typeof buildRealtimeTurnState> | null;
   audioLevel: number;
-  voiceStatus: "idle" | "connecting" | "listening" | "speaking" | "interrupted";
+  voiceStatus: VoiceUiStatus;
   liveUserTranscript: string;
-  voiceReviewItem?: { text: string; reason: string } | null;
+  voiceReviewItem?: TranscriptReviewItem | null;
   voiceTransport: "webrtc" | "websocket" | "livekit" | null;
   onInput: (value: string) => void;
   onStart: (mode?: InterviewMode, searchBriefId?: string, topicHint?: string) => void;
@@ -274,8 +276,19 @@ export function InterviewView({
                   {voiceStatus === "listening" && <><span className="status-dot listening" />聆听中 · 说完稍等片刻</>}
                   {voiceStatus === "speaking" && <><span className="status-dot speaking" />AI 正在回应</>}
                   {voiceStatus === "interrupted" && <><span className="status-dot interrupted" />已打断</>}
+                  {voiceStatus === "reconnecting" && <><span className="status-dot connecting" />语音连接恢复中，请稍候</>}
+                  {voiceStatus === "degraded" && <><span className="status-dot interrupted" />语音兼容模式 · 可继续专访</>}
                   {voiceStatus === "idle" && <><span className="status-dot idle" />等待语音</>}
                 </div>
+              </div>
+            </div>
+          )}
+
+          {voiceStatus === "exhausted" && (
+            <div className="voice-review" role="status" aria-live="polite">
+              <div className="voice-review-heading">
+                <strong>语音连接未恢复，已保留本场文字专访</strong>
+                <span>可直接打字继续，或重新点击「语音」建立新连接。</span>
               </div>
             </div>
           )}
@@ -290,7 +303,11 @@ export function InterviewView({
             <div className="voice-review" data-testid="voice-review" role="alert">
               <div className="voice-review-heading">
                 <strong>等待确认的转写</strong>
-                <span>可能混入刚才的 AI 语音，尚未写入专访</span>
+                <span>
+                  {voiceReviewItem.source === "recovery"
+                    ? "连接中断前的尾段尚未确认，尚未写入专访"
+                    : "可能混入刚才的 AI 语音，尚未写入专访"}
+                </span>
               </div>
               <textarea
                 aria-label="等待确认的语音转写"

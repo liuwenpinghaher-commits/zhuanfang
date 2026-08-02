@@ -54,11 +54,17 @@ import {
   type BailianRealtimeWebsocketConnection
 } from "./realtime/bailianWebsocket";
 import { createLivekitVoiceSession, type LivekitVoiceSession } from "./realtime/livekitVoice";
-import { connectCascadedPipeline, type CascadedPipeline, type TtsSink } from "./realtime/cascadedPipeline";
+import {
+  connectCascadedPipeline,
+  type CascadedPipeline,
+  type TranscriptReviewItem,
+  type TtsSink
+} from "./realtime/cascadedPipeline";
 import { createBrowserAsrSource } from "./realtime/cascadedAsrSource";
 import { createBrowserTtsSink } from "./realtime/cascadedTtsSink";
 import { pcmS16leMonoToWav } from "./realtime/pcmWav";
 import { createSessionAudioRecorder, type SessionAudioRecorder } from "./realtime/sessionAudioRecorder";
+import { probeVadWorkletCapability, type VoiceUiStatus } from "./realtime/vadWorkletCapability";
 import { deriveRealtimeWsBaseUrl } from "./realtime/wsBaseUrl";
 import {
   dedupeGeneratedArtifacts,
@@ -259,9 +265,9 @@ export default function App() {
   // again replaces. A ref (not state) so accumulation never triggers a re-render race.
   const assistantTranscriptTurnRef = useRef<number>(-1);
   const [audioLevel, setAudioLevel] = useState(0);
-  const [voiceStatus, setVoiceStatus] = useState<"idle" | "connecting" | "listening" | "speaking" | "interrupted">("idle");
+  const [voiceStatus, setVoiceStatus] = useState<VoiceUiStatus>("idle");
   const [liveUserTranscript, setLiveUserTranscript] = useState("");
-  const [voiceReviewItem, setVoiceReviewItem] = useState<{ text: string; reason: string } | null>(null);
+  const [voiceReviewItem, setVoiceReviewItem] = useState<TranscriptReviewItem | null>(null);
   const [guidanceState, setGuidanceState] = useState<{
     active: boolean;
     kind: string | null;
@@ -2646,6 +2652,9 @@ export default function App() {
       closeRealtimeVoiceSession();
       return;
     }
+    if (voiceStatus === "exhausted") {
+      closeRealtimeVoiceSession();
+    }
     // P3-19:连接建立窗口内的二次触发直接短路(停止路径在上方,幂等 close,无需守卫)。
     if (togglingRef.current) return;
     togglingRef.current = true;
@@ -2666,6 +2675,8 @@ export default function App() {
           // Cascade pipeline: real ASR (text-only omni WS) → LLM HTTP → CosyVoice TTS WS
           try {
             setVoiceStatus("connecting");
+            const vadCapability = await probeVadWorkletCapability();
+            let asrWasReconnecting = false;
             const baseWsUrl = deriveRealtimeWsBaseUrl(getProductApiBaseUrl());
             const asrWsUrl = `${baseWsUrl}/api/realtime-voice/ws/${voiceSession.sessionId}`;
             const ttsWsUrl = `${baseWsUrl}/api/realtime-voice/ws/tts/${voiceSession.sessionId}`;
@@ -2674,11 +2685,30 @@ export default function App() {
             const asr = createBrowserAsrSource({
               asrWsUrl,
               instructions: voiceSession.sessionUpdate.session.instructions,
-              // 审计修复(P2-22):中途断连如实上报并收尾——此前 UI 停在"聆听"假象,用户
-              // 继续说话被静默丢帧,只能自己困惑几十秒后手动重开。
-              onConnectionLost: () => {
-                setNotice(buildNotice("warning", "语音连接已断开", "已提交的回合仍在。可直接打字继续本场，或重新点「语音」。"));
-                closeRealtimeVoiceSession();
+              onConnectionStateChange: (event) => {
+                if (event.state === "reconnecting") {
+                  asrWasReconnecting = true;
+                  setVoiceStatus("reconnecting");
+                }
+                if (event.state === "ready") {
+                  setVoiceStatus(vadCapability.supported ? "listening" : "degraded");
+                  if (asrWasReconnecting) {
+                    setNotice(buildNotice("success", "语音连接已恢复", "可以继续口述，已确认的专访内容不受影响。"));
+                    asrWasReconnecting = false;
+                  }
+                }
+                if (event.state === "exhausted") {
+                  setRecording(false);
+                  setVoiceStatus("exhausted");
+                  ttsSinkRef.current?.close?.();
+                  ttsSinkRef.current = null;
+                }
+              },
+              onRecoveryTranscript: (item) => {
+                cascadePipelineRef.current?.reviewRecoveryTranscript(item);
+              },
+              onConnectionLost: (error) => {
+                setNotice(buildNotice("warning", "语音连接未恢复", `${error.message}。本场文字专访仍可继续。`));
               },
               // Tee the live mic into a whole-session recorder. Best-effort: guard
               // construction so a recorder failure never breaks ASR start. The
@@ -2729,7 +2759,9 @@ export default function App() {
               preSignals,
               callbacks: {
                 onStateChange: (s) => {
-                  if (s === "listening" || s === "transcribing") setVoiceStatus("listening");
+                  if (s === "listening" || s === "transcribing") {
+                    setVoiceStatus(vadCapability.supported ? "listening" : "degraded");
+                  }
                   else if (s === "thinking") setVoiceStatus("connecting");
                   else if (s === "speaking") setVoiceStatus("speaking");
                   else if (s === "interrupted") setVoiceStatus("interrupted");
@@ -2753,7 +2785,13 @@ export default function App() {
                 onTranscriptQuarantined: (item) => {
                   setLiveUserTranscript("");
                   setVoiceReviewItem(item);
-                  setNotice(buildNotice("info", "转写等待确认", "检测到内容可能来自刚才的 AI 播放，请确认、修改或丢弃后再写入专访。"));
+                  setNotice(buildNotice(
+                    "info",
+                    "转写等待确认",
+                    item.source === "recovery"
+                      ? "连接中断前的尾段尚未确认，请确认、修改或丢弃；确认前不会写入专访。"
+                      : "检测到内容可能来自刚才的 AI 播放，请确认、修改或丢弃后再写入专访。"
+                  ));
                 }
               },
               decisionOpts: {
@@ -2784,7 +2822,13 @@ export default function App() {
             // opening played while the UI was still stuck on "connecting".
             // voiceStatus is driven by the pipeline's onStateChange (speaking → listening).
             setRecording(true);
-            setNotice(buildNotice("success", "实时语音会话已就绪", "级联模式 (ASR→分析→TTS) 已连接"));
+            setNotice(buildNotice(
+              "success",
+              "实时语音会话已就绪",
+              vadCapability.supported
+                ? "级联模式 (ASR→分析→TTS) 已连接"
+                : "级联模式已连接；AudioWorklet 不可用，当前使用语音兼容模式。"
+            ));
             void pipeline.startListening(card.suggestedOpening || undefined).catch((err) => {
               setNotice(buildNotice("warning", "级联语音连接失败", err instanceof Error ? err.message : "请确认后端在线且 API key 已配置"));
             });

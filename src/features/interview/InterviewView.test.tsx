@@ -173,7 +173,7 @@ describe("InterviewView", () => {
       root?.render(<InterviewView
         card={session.card} session={session} pendingMode="organization" input="" recording
         realtimeState={null} audioLevel={0} voiceStatus="listening" liveUserTranscript="" voiceTransport="websocket"
-        voiceReviewItem={{ text: "你能讲一个具体例子吗？", reason: "与刚才 AI 语音高度相似" }}
+        voiceReviewItem={{ text: "你能讲一个具体例子吗？", reason: "与刚才 AI 语音高度相似", source: "echo" }}
         onVoiceReviewText={onVoiceReviewText} onConfirmVoiceReview={onConfirmVoiceReview}
         onDiscardVoiceReview={onDiscardVoiceReview}
         onInput={vi.fn()} onStart={vi.fn()} onSubmit={vi.fn()} onFinish={vi.fn()} onControl={vi.fn()}
@@ -190,5 +190,49 @@ describe("InterviewView", () => {
     });
     expect(onConfirmVoiceReview).toHaveBeenCalledOnce();
     expect(onDiscardVoiceReview).toHaveBeenCalledOnce();
+  });
+
+  for (const [status, copy] of [
+    ["reconnecting", "语音连接恢复中，请稍候"],
+    ["degraded", "语音兼容模式"],
+    ["exhausted", "语音连接未恢复，已保留本场文字专访"],
+  ] as const) {
+    it(`显示 ${status}`, () => {
+      const session = createSessionDraft(createInitialProductState(), "organization");
+      container = document.createElement("div");
+      document.body.appendChild(container);
+      root = createRoot(container);
+
+      act(() => {
+        root?.render(<InterviewView
+          card={session.card} session={session} pendingMode="organization" input=""
+          recording={status !== "exhausted"} realtimeState={null} audioLevel={0}
+          voiceStatus={status} liveUserTranscript="" voiceTransport="websocket"
+          onInput={vi.fn()} onStart={vi.fn()} onSubmit={vi.fn()} onFinish={vi.fn()}
+          onControl={vi.fn()} onToggleRecording={vi.fn()} onInterrupt={vi.fn()} />);
+      });
+
+      expect(container.textContent).toContain(copy);
+    });
+  }
+
+  it("recovery review 不再声称一定混入 AI 语音", () => {
+    const session = createSessionDraft(createInitialProductState(), "organization");
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    act(() => {
+      root?.render(<InterviewView
+        card={session.card} session={session} pendingMode="organization" input="" recording
+        realtimeState={null} audioLevel={0} voiceStatus="reconnecting" liveUserTranscript=""
+        voiceTransport="websocket"
+        voiceReviewItem={{ text: "未完成尾段", reason: "连接中断", source: "recovery" }}
+        onInput={vi.fn()} onStart={vi.fn()} onSubmit={vi.fn()} onFinish={vi.fn()}
+        onControl={vi.fn()} onToggleRecording={vi.fn()} onInterrupt={vi.fn()} />);
+    });
+
+    expect(container.textContent).toContain("连接中断前的尾段尚未确认");
+    expect(container.textContent).toContain("尚未写入专访");
   });
 });

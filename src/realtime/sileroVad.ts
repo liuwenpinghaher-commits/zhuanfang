@@ -20,16 +20,25 @@ export interface SileroVadController {
   readonly ready: boolean;
 }
 
-/** Same-origin asset roots (Vite `public/vad` → `/vad/…` in dev and production). */
-function vadAssetPaths(): { baseAssetPath: string; onnxWASMBasePath: string } {
+/** Same-origin VAD root (Vite `public/vad` → `/vad/…` in dev and production). */
+export function resolveVadAssetRoot(): string {
   const base =
     typeof import.meta !== "undefined" && import.meta.env?.BASE_URL
       ? String(import.meta.env.BASE_URL)
       : "/";
   const root = base.endsWith("/") ? base : `${base}/`;
+  return `${root}vad/`;
+}
+
+export function resolveVadWorkletUrl(): string {
+  return `${resolveVadAssetRoot()}vad.worklet.bundle.min.js`;
+}
+
+function vadAssetPaths(): { baseAssetPath: string; onnxWASMBasePath: string } {
+  const baseAssetPath = resolveVadAssetRoot();
   return {
-    baseAssetPath: `${root}vad/`,
-    onnxWASMBasePath: `${root}vad/ort/`
+    baseAssetPath,
+    onnxWASMBasePath: `${baseAssetPath}ort/`
   };
 }
 
