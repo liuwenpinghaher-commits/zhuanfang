@@ -184,6 +184,10 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
     }
   }
 
+  function hasTerminalLifecycle() {
+    return lifecycle === "exhausted" || lifecycle === "stopped";
+  }
+
   function updateSemanticFlags(text: string) {
     latestPartialTranscript = text;
     featureTracker.onTranscript(text, Date.now());
@@ -386,12 +390,10 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
   function handleReadySocketTermination(code?: number, reason?: string) {
     if (closed || (recoveryTask && lifecycle !== "ready")) return;
     if (!isRecoverableAsrCloseCode(code)) {
-      if (code === 1000) {
-        emitConnectionState("stopped", 0, code, reason);
-        stopMic();
-      } else {
-        exhaustMidSession(code, reason);
-      }
+      // Local stop() marks the source closed and emits stopped before closing
+      // the socket, so any termination reaching here came from the remote side.
+      // Even a remote 1000 must be visible as terminal loss, not normal user stop.
+      exhaustMidSession(code, reason);
       return;
     }
     const task = recoverMidSession(code, reason);
@@ -412,9 +414,13 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
     const isCurrent = () => !closed && ws === socket && generation === socketGeneration;
 
     return new Promise<void>((resolve, reject) => {
-      const terminate = (event: { code?: number; reason?: string }) => {
+      const terminate = (event: { code?: number; reason?: string; closeSocket?: boolean }) => {
         if (terminationHandled || !isCurrent()) return;
         terminationHandled = true;
+        if (event.closeSocket
+          && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+          try { socket.close(1011, "asr provider error"); } catch { /* already closing/closed */ }
+        }
         if (ws === socket) ws = null;
         if (!ready) {
           settled = true;
@@ -487,12 +493,12 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
           }
           case "error": {
             const errMsg = (msg.error as { message?: string } | undefined)?.message ?? "ASR error";
-            terminate({ reason: errMsg });
+            terminate({ reason: errMsg, closeSocket: true });
             break;
           }
         }
       };
-      socket.onerror = () => terminate({ reason: "ASR WebSocket error" });
+      socket.onerror = () => terminate({ reason: "ASR WebSocket error", closeSocket: true });
       socket.onclose = (event) => terminate({ code: event?.code, reason: event?.reason });
     });
   }
@@ -510,6 +516,8 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
         return;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
+        const failure = error as SocketFailure;
+        if (!isRecoverableAsrCloseCode(failure.code)) break;
         if (attempt < maxReconnectAttempts) {
           console.warn(JSON.stringify({ event: "asr_reconnect", attempt: attempt + 1, maxReconnectAttempts, error: lastError.message }));
         }
@@ -532,16 +540,18 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
       if (lifecycle !== "idle") return;
       closed = false;
       emitConnectionState("connecting", 0);
-      await startMic();
-      if (closed) {
-        stopMic();
-        return;
-      }
       try {
+        await startMic();
+        if (closed) {
+          stopMic();
+          return;
+        }
         await connectWithInitialRetries();
       } catch (error) {
         stopMic();
-        emitConnectionState("exhausted", maxReconnectAttempts);
+        if (!hasTerminalLifecycle()) {
+          emitConnectionState("exhausted", maxReconnectAttempts);
+        }
         throw error;
       }
     },

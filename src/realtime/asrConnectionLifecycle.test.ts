@@ -15,9 +15,11 @@ describe("ASR 会中重连策略", () => {
     expect(computeAsrReconnectDelayMs(3, 500, () => 1)).toBe(2400);
   });
 
-  it("4001 不可恢复，1006 和临时上游关闭可恢复", () => {
+  it("配置、鉴权与协议关闭不可恢复，网络和临时上游关闭可恢复", () => {
     expect(isRecoverableAsrCloseCode(4001)).toBe(false);
     expect(isRecoverableAsrCloseCode(1000)).toBe(false);
+    expect(isRecoverableAsrCloseCode(1007)).toBe(false);
+    expect(isRecoverableAsrCloseCode(1008)).toBe(false);
     expect(isRecoverableAsrCloseCode(1006)).toBe(true);
     expect(isRecoverableAsrCloseCode(1011)).toBe(true);
   });

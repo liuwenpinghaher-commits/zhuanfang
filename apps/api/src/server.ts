@@ -38,12 +38,14 @@ import {
 } from "./providers/bailian";
 import {
   createBailianStreamingTtsClient,
-  type BailianStreamingTtsClient
+  type BailianStreamingTtsClient,
+  type BailianStreamingTtsOptions
 } from "./providers/bailian-streaming-tts";
 import { isAuthGuardActive, isAuthorized, readCookieToken } from "./auth";
 import { createLlmBudget } from "./llm-budget";
 import { createRateLimiter, rateLimitBucket } from "./rate-limit";
 import { resolveRequestTimeoutMs } from "./request-timeout";
+import { resolveBailianApiKey } from "./runtime-secrets";
 import { registerAssetRoutes } from "./routes/assets";
 import { registerCorpusRoutes } from "./routes/corpus";
 import { registerHealthRoutes } from "./routes/health";
@@ -79,6 +81,7 @@ interface BuildApiServerOptions {
   bailianRealtimeVoiceClient?: BailianRealtimeVoiceClient;
   bailianTranscriptionClient?: BailianAudioTranscriptionClient;
   streamingTtsClient?: BailianStreamingTtsClient;
+  streamingTtsClientFactory?: (options: BailianStreamingTtsOptions) => BailianStreamingTtsClient;
   embeddingClient?: BailianEmbeddingClient;
   /** 测试/嵌入场景可覆盖；生产默认比底层百炼请求超时多 5 秒，用于清理与结构化响应。 */
   interviewTurnTimeoutMs?: number;
@@ -468,10 +471,12 @@ function refreshRuntimeProviderClients(
   // Streaming TTS client for the TTS WebSocket proxy (browser ↔ CosyVoice).
   // If no API key is configured, the proxy will reject upgrades with 4001 at
   // connect time — safe to leave undefined here.
-  const ttsApiKey = env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY;
+  const ttsApiKey = resolveBailianApiKey(env);
   providerClients.streamingTtsClient =
     options.streamingTtsClient ??
-    (ttsApiKey ? createBailianStreamingTtsClient({ apiKey: ttsApiKey }) : undefined);
+    (ttsApiKey
+      ? (options.streamingTtsClientFactory ?? createBailianStreamingTtsClient)({ apiKey: ttsApiKey })
+      : undefined);
 }
 
 // Global write serialization. Every mutating endpoint is a read-modify-write on the single

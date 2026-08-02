@@ -109,6 +109,7 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
     if (stopped || !activeSpeak || activeSpeak.socket !== socket) return;
     const current = activeSpeak;
     activeSpeak = null;
+    clearScheduledPlayback(false);
     current.cleanup();
     clearPendingSpeak(current.generation);
     current.reject(new TtsPlaybackInterruptedError(message, code));
@@ -193,13 +194,14 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
     source.onended = () => { scheduledSources.delete(source); };
   }
 
-  function stopPlayback() {
-    stopped = true;
+  function clearScheduledPlayback(terminal: boolean) {
+    stopped = terminal;
     for (const source of scheduledSources) {
       try { source.stop(); } catch { /* already stopped */ }
     }
     scheduledSources.clear();
     nextStartTime = 0;
+    firstChunkOfUtterance = true;
     leftoverByte = null;
   }
 
@@ -392,7 +394,7 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
     },
 
     stop() {
-      stopPlayback();
+      clearScheduledPlayback(true);
       cancelPendingSpeak();
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "cancel" }));
@@ -409,7 +411,7 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
     // second close() is a no-op, and a later getAudioContext()/openWs() can
     // recreate fresh resources if the sink is somehow reused.
     close() {
-      stopPlayback();
+      clearScheduledPlayback(true);
       cancelPendingSpeak();
       // Resolve any in-flight speak() before we drop the socket it's listening on.
       resolveActiveSpeak();

@@ -453,6 +453,183 @@ describe("connectCascadedPipeline", () => {
     pipeline.close();
   });
 
+  it("recovery 待确认期间冻结新连接转写，确认后按旧尾段再新内容的顺序提交", async () => {
+    const pipeline = connectCascadedPipeline(makeOpts());
+    await pipeline.startListening();
+
+    asr.pushDelta("旧连接前半段，", true);
+    pipeline.reviewRecoveryTranscript({ text: "未确认旧尾段", reason: "连接中断", code: 1006 });
+
+    asr.pushSpeechStarted();
+    asr.pushDelta("新连接继续内容。", true);
+    asr.pushSpeechStopped(1_000);
+    await Promise.resolve();
+
+    expect(userTranscripts.at(-1)?.text).toBe("旧连接前半段，");
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+
+    pipeline.confirmQuarantinedTranscript("确认旧尾段，");
+    await vi.waitFor(() => expect(sendUserTurn.fn).toHaveBeenCalledOnce());
+    expect(sendUserTurn.fn.mock.calls[0][0]).toBe("旧连接前半段，确认旧尾段，新连接继续内容。");
+    pipeline.close();
+  });
+
+  it("recovery 待确认期间再次断线会逐项确认，不会把后续 partial 静默当 final", async () => {
+    const onTranscriptQuarantined = vi.fn();
+    const base = makeOpts();
+    const pipeline = connectCascadedPipeline({
+      ...base,
+      callbacks: { ...base.callbacks, onTranscriptQuarantined },
+    });
+    await pipeline.startListening();
+
+    asr.pushDelta("旧连接前半段，", true);
+    pipeline.reviewRecoveryTranscript({ text: "首个待确认尾段，", reason: "首次断线", code: 1006 });
+
+    asr.pushSpeechStarted();
+    asr.pushDelta("新连接已确认段，", true);
+    asr.pushDelta("第二连接未完成");
+    pipeline.reviewRecoveryTranscript({ text: "第二连接未完成尾段。", reason: "再次断线", code: 1006 });
+
+    asr.pushSpeechStarted();
+    asr.pushDelta("第三连接继续。", true);
+    asr.pushSpeechStopped(1_000);
+
+    expect(onTranscriptQuarantined).toHaveBeenCalledTimes(1);
+    expect(onTranscriptQuarantined).toHaveBeenLastCalledWith({
+      text: "首个待确认尾段，",
+      reason: "首次断线",
+      source: "recovery",
+    });
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+
+    pipeline.confirmQuarantinedTranscript("确认首个尾段，");
+    expect(onTranscriptQuarantined).toHaveBeenCalledTimes(2);
+    expect(onTranscriptQuarantined).toHaveBeenLastCalledWith({
+      text: "第二连接未完成尾段。",
+      reason: "再次断线",
+      source: "recovery",
+    });
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+
+    pipeline.confirmQuarantinedTranscript("确认第二尾段。");
+    await vi.waitFor(() => expect(sendUserTurn.fn).toHaveBeenCalledOnce());
+    expect(sendUserTurn.fn.mock.calls[0][0]).toBe(
+      "旧连接前半段，确认首个尾段，新连接已确认段，确认第二尾段。第三连接继续。"
+    );
+    pipeline.close();
+  });
+
+  it("连续断线 partial 逐项丢弃时仍保留其间和之后的 provider final", async () => {
+    const onTranscriptQuarantined = vi.fn();
+    const base = makeOpts();
+    const pipeline = connectCascadedPipeline({
+      ...base,
+      callbacks: { ...base.callbacks, onTranscriptQuarantined },
+    });
+    await pipeline.startListening();
+
+    asr.pushDelta("原始 final，", true);
+    pipeline.reviewRecoveryTranscript({ text: "丢弃第一尾段，", reason: "首次断线", code: 1006 });
+    asr.pushDelta("中间 final，", true);
+    asr.pushDelta("第二 partial");
+    pipeline.reviewRecoveryTranscript({ text: "丢弃第二尾段。", reason: "再次断线", code: 1006 });
+    asr.pushDelta("之后 final。", true);
+    asr.pushSpeechStopped(1_000);
+
+    pipeline.discardQuarantinedTranscript();
+    expect(onTranscriptQuarantined).toHaveBeenCalledTimes(2);
+    expect(onTranscriptQuarantined).toHaveBeenLastCalledWith({
+      text: "丢弃第二尾段。",
+      reason: "再次断线",
+      source: "recovery",
+    });
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+
+    pipeline.discardQuarantinedTranscript();
+    await vi.waitFor(() => expect(sendUserTurn.fn).toHaveBeenCalledOnce());
+    expect(sendUserTurn.fn.mock.calls[0][0]).toBe("原始 final，中间 final，之后 final。");
+    pipeline.close();
+  });
+
+  it("三次连续断线按发生顺序逐项确认且不丢失 final", async () => {
+    const quarantined: string[] = [];
+    const base = makeOpts();
+    const pipeline = connectCascadedPipeline({
+      ...base,
+      callbacks: {
+        ...base.callbacks,
+        onTranscriptQuarantined: (item) => quarantined.push(item.text),
+      },
+    });
+    await pipeline.startListening();
+
+    asr.pushDelta("开头 final，", true);
+    pipeline.reviewRecoveryTranscript({ text: "尾段一，", reason: "断线一", code: 1006 });
+    asr.pushDelta("区间一 final，", true);
+    asr.pushDelta("partial 二");
+    pipeline.reviewRecoveryTranscript({ text: "尾段二，", reason: "断线二", code: 1006 });
+    asr.pushDelta("区间二 final，", true);
+    asr.pushDelta("partial 三");
+    pipeline.reviewRecoveryTranscript({ text: "尾段三，", reason: "断线三", code: 1006 });
+    asr.pushDelta("末尾 final。", true);
+    asr.pushSpeechStopped(1_000);
+
+    expect(quarantined).toEqual(["尾段一，"]);
+    pipeline.confirmQuarantinedTranscript("确认一，");
+    expect(quarantined).toEqual(["尾段一，", "尾段二，"]);
+    pipeline.confirmQuarantinedTranscript("确认二，");
+    expect(quarantined).toEqual(["尾段一，", "尾段二，", "尾段三，"]);
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+    pipeline.confirmQuarantinedTranscript("确认三，");
+
+    await vi.waitFor(() => expect(sendUserTurn.fn).toHaveBeenCalledOnce());
+    expect(sendUserTurn.fn.mock.calls[0][0]).toBe(
+      "开头 final，确认一，区间一 final，确认二，区间二 final，确认三，末尾 final。"
+    );
+    pipeline.close();
+  });
+
+  it("recovery 暂存期间再次开口会取消旧 speech_stopped，不能在仍说话时误提交", async () => {
+    const pipeline = connectCascadedPipeline(makeOpts());
+    await pipeline.startListening();
+    asr.pushDelta("旧连接内容，", true);
+    pipeline.reviewRecoveryTranscript({ text: "未确认尾段", reason: "连接中断", code: 1006 });
+
+    asr.pushSpeechStarted();
+    asr.pushDelta("新连接第一段，", true);
+    asr.pushSpeechStopped(1_000);
+    asr.pushSpeechStarted();
+    asr.pushDelta("我还没有说完");
+
+    pipeline.confirmQuarantinedTranscript("确认尾段，");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+    expect(userTranscripts.at(-1)?.text).toBe("旧连接内容，确认尾段，新连接第一段，我还没有说完");
+    pipeline.close();
+  });
+
+  it("recovery 暂存中 speech_stopped 后再次开口，即使还没有新 delta 也不误提交", async () => {
+    const pipeline = connectCascadedPipeline(makeOpts());
+    await pipeline.startListening();
+    asr.pushDelta("旧连接内容，", true);
+    pipeline.reviewRecoveryTranscript({ text: "未确认尾段", reason: "连接中断", code: 1006 });
+    asr.pushSpeechStarted();
+    asr.pushDelta("新连接第一段。", true);
+    asr.pushSpeechStopped(1_000);
+    asr.pushSpeechStarted();
+
+    pipeline.confirmQuarantinedTranscript("确认尾段，");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+    expect(userTranscripts.at(-1)?.text).toBe("旧连接内容，确认尾段，新连接第一段。");
+    pipeline.close();
+  });
+
   it("丢弃 recovery partial 后保留已 final 的当前表达", async () => {
     const pipeline = connectCascadedPipeline(makeOpts());
     await pipeline.startListening();

@@ -60,6 +60,7 @@ import {
   type TranscriptReviewItem,
   type TtsSink
 } from "./realtime/cascadedPipeline";
+import { runVoiceReviewAction } from "./realtime/voiceReviewAction";
 import { createBrowserAsrSource } from "./realtime/cascadedAsrSource";
 import { createBrowserTtsSink } from "./realtime/cascadedTtsSink";
 import { pcmS16leMonoToWav } from "./realtime/pcmWav";
@@ -3357,16 +3358,20 @@ export default function App() {
               const item = voiceReviewItemRef.current;
               const pipeline = cascadePipelineRef.current;
               if (!item?.text.trim() || !pipeline) return;
-              pipeline.confirmQuarantinedTranscript(item.text.trim());
-              voiceReviewItemRef.current = null;
-              setVoiceReviewItem(null);
+              runVoiceReviewAction({
+                ref: voiceReviewItemRef,
+                clearRendered: () => setVoiceReviewItem(null),
+                action: (current) => pipeline.confirmQuarantinedTranscript(current.text.trim()),
+              });
             }}
             onDiscardVoiceReview={() => {
               const pipeline = cascadePipelineRef.current;
               if (!pipeline) return;
-              pipeline.discardQuarantinedTranscript();
-              voiceReviewItemRef.current = null;
-              setVoiceReviewItem(null);
+              runVoiceReviewAction({
+                ref: voiceReviewItemRef,
+                clearRendered: () => setVoiceReviewItem(null),
+                action: () => pipeline.discardQuarantinedTranscript(),
+              });
             }}
             submitting={submittingTurn}
             retryAvailable={failedTurnContent !== null && failedTurnContent === interviewInput}

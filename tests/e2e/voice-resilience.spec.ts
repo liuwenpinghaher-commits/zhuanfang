@@ -45,7 +45,7 @@ function expectPlainNotFound(response: RawHttpResponse, path: string) {
 
 async function activeInterview(page: Page) {
   const state = await (await page.request.get(`${API}/api/state`)).json() as {
-    sessions?: Array<{ id: string; status: string; turns: Array<{ role: string }> }>;
+    sessions?: Array<{ id: string; status: string; turns: Array<{ role: string; content: string }> }>;
   };
   const session = state.sessions?.find((item) => item.status === "active");
   if (!session) throw new Error("active interview session not found");
@@ -151,4 +151,84 @@ test("会中 ASR 断开后恢复同一专访，partial 先确认再写入", asyn
     window as unknown as { __viteErrorOverlaySeen?: boolean }
   ).__viteErrorOverlaySeen)).toBe(false);
   expect(pageErrors).toEqual([]);
+});
+
+test("连续两次 ASR 断线的 partial 在真实 UI 中逐项确认且只提交一次", async ({ context }) => {
+  test.setTimeout(60_000);
+  await installFakeMic(context);
+  const page = await context.newPage();
+  let asrConnections = 0;
+
+  await page.routeWebSocket(
+    (url) => /\/api\/realtime-voice\/ws\/rtv-/.test(url.pathname) && !url.pathname.includes("/tts/"),
+    (ws) => {
+      asrConnections += 1;
+      const connection = asrConnections;
+      ws.onMessage((message) => {
+        const parsed = JSON.parse(String(message)) as { type?: string };
+        if (parsed.type !== "session.update") return;
+        ws.send(JSON.stringify({ type: "proxy.connected" }));
+        if (connection === 1) {
+          ws.send(JSON.stringify({
+            type: "conversation.item.input_audio_transcription.delta",
+            text: "第一断线",
+            stash: "尾段",
+          }));
+          void ws.close({ code: 1011, reason: "first fault" });
+          return;
+        }
+        if (connection === 2) {
+          ws.send(JSON.stringify({
+            type: "conversation.item.input_audio_transcription.completed",
+            transcript: "中间 final，",
+          }));
+          ws.send(JSON.stringify({
+            type: "conversation.item.input_audio_transcription.delta",
+            text: "第二断线",
+            stash: "尾段",
+          }));
+          void ws.close({ code: 1011, reason: "second fault" });
+          return;
+        }
+        ws.send(JSON.stringify({
+          type: "conversation.item.input_audio_transcription.completed",
+          transcript: "末尾 final。",
+        }));
+        ws.send(JSON.stringify({ type: "input_audio_buffer.speech_stopped" }));
+      });
+    },
+  );
+  await page.routeWebSocket((url) => url.pathname.includes("/api/realtime-voice/ws/tts/"), (ws) => {
+    ws.onMessage((message) => {
+      if ((JSON.parse(String(message)) as { type?: string }).type === "speak") {
+        ws.send(JSON.stringify({ type: "tts.done" }));
+      }
+    });
+  });
+
+  await resetDemoState(page);
+  await page.getByRole("button", { name: "今日访谈台" }).click();
+  await page.getByRole("button", { name: /一键开始|开始专访/ }).click();
+  await expect(page.getByLabel("开始录音")).toBeVisible({ timeout: 15_000 });
+  await page.getByLabel("开始录音").click();
+
+  const reviewInput = page.getByLabel("等待确认的语音转写");
+  await expect(reviewInput).toHaveValue("第一断线尾段");
+  await expect.poll(() => asrConnections).toBe(3);
+  expect((await activeInterview(page)).turns.filter((turn) => turn.role === "user")).toHaveLength(0);
+
+  await reviewInput.fill("确认第一尾段，");
+  await page.getByRole("button", { name: "确认并提交" }).click();
+  await expect(reviewInput).toBeVisible();
+  await expect(reviewInput).toHaveValue("第二断线尾段");
+  expect((await activeInterview(page)).turns.filter((turn) => turn.role === "user")).toHaveLength(0);
+
+  await reviewInput.fill("确认第二尾段，");
+  await page.getByRole("button", { name: "确认并提交" }).click();
+  await expect.poll(
+    async () => (await activeInterview(page)).turns.filter((turn) => turn.role === "user").length,
+    { timeout: 20_000 },
+  ).toBe(1);
+  const userTurn = (await activeInterview(page)).turns.find((turn) => turn.role === "user");
+  expect(userTurn?.content).toBe("确认第一尾段，中间 final，确认第二尾段，末尾 final。");
 });

@@ -2,11 +2,19 @@ import { describe, expect, it, vi, type Mock } from "vitest";
 import {
   createBailianAudioTranscriptionClient,
   createBailianAudioTranscriptionClientFromEnv,
+  createBailianChatClientFromEnv,
   createBailianCharacterInterviewClient,
+  createBailianCharacterInterviewClientFromEnv,
+  createBailianEmbeddingClientFromEnv,
   createBailianPodcastAudioClient,
+  createBailianPodcastAudioClientFromEnv,
   createBailianRealtimeVoiceClient,
-  createBailianSearchClient
+  createBailianRealtimeVoiceClientFromEnv,
+  createBailianSearchClient,
+  createBailianSearchClientFromEnv,
+  createBailianVoiceEnrollmentClientFromEnv,
 } from "./bailian";
+import { resolveBailianApiKey } from "../runtime-secrets";
 import { createInitialProductState, createSessionDraft } from "../../../../src/domain/engine";
 
 type FetchMock = Mock<(input: string, init?: RequestInit) => Promise<Response>>;
@@ -764,6 +772,30 @@ describe("bailian provider client", () => {
 // ---------------------------------------------------------------------------
 
 describe("createBailianAudioTranscriptionClientFromEnv — maxPollTotalMs from env (P1-11)", () => {
+  it("所有 Bailian provider factory 都拒绝仅空白字符的密钥", () => {
+    const blankEnv = { DASHSCOPE_API_KEY: "   ", BAILIAN_API_KEY: "\t" };
+
+    expect(createBailianSearchClientFromEnv(blankEnv)).toBeUndefined();
+    expect(createBailianCharacterInterviewClientFromEnv(blankEnv)).toBeUndefined();
+    expect(createBailianChatClientFromEnv(blankEnv)).toBeUndefined();
+    expect(createBailianRealtimeVoiceClientFromEnv(blankEnv)).toBeUndefined();
+    expect(createBailianPodcastAudioClientFromEnv(blankEnv)).toBeUndefined();
+    expect(createBailianAudioTranscriptionClientFromEnv(blankEnv)).toBeUndefined();
+    expect(createBailianVoiceEnrollmentClientFromEnv(blankEnv)).toBeUndefined();
+    expect(createBailianEmbeddingClientFromEnv(blankEnv)).toBeNull();
+  });
+
+  it("主密钥为空白时使用 trim 后的备用密钥", () => {
+    expect(resolveBailianApiKey({
+      DASHSCOPE_API_KEY: "   ",
+      BAILIAN_API_KEY: "  backup-test-key  ",
+    })).toBe("backup-test-key");
+    expect(createBailianSearchClientFromEnv({
+      DASHSCOPE_API_KEY: "   ",
+      BAILIAN_API_KEY: "backup-test-key",
+    })).toBeDefined();
+  });
+
   it("returns undefined when DASHSCOPE_API_KEY and BAILIAN_API_KEY are both absent", () => {
     const client = createBailianAudioTranscriptionClientFromEnv({});
     expect(client).toBeUndefined();

@@ -67,6 +67,10 @@ class FakeRealtimeUpstream extends EventEmitter {
     this.emit("close", code, Buffer.from(reason));
   }
 
+  message(payload: unknown) {
+    this.emit("message", Buffer.from(JSON.stringify(payload)));
+  }
+
   send(data: Buffer | string) {
     this.sent.push(data.toString());
   }
@@ -360,6 +364,8 @@ describe("realtime-voice /interrupt route", () => {
         env: {
           DASHSCOPE_API_KEY: "dummy-key",
           BAILIAN_REALTIME_TRANSPORT: "websocket",
+          BAILIAN_REALTIME_MODEL: "   ",
+          BAILIAN_REALTIME_FALLBACK_MODEL: "",
           BAILIAN_REALTIME_VOICE: "Cherry"
         }
       });
@@ -377,7 +383,9 @@ describe("realtime-voice /interrupt route", () => {
       expect(config).toMatchObject({
         apiKeyConfigured: true,
         configured: true,
-        transport: "websocket"
+        transport: "websocket",
+        model: "qwen3.5-omni-flash-realtime",
+        fallbackModel: "qwen3-omni-flash-realtime"
       });
       expect(session.status).toBe("ready");
       expect(session.sessionUpdate.session.voice).toBe("Cherry");
@@ -926,6 +934,266 @@ describe("realtime-voice 会话 TTL 滑动续期与活跃 WS 豁免(N-14/P3-20)"
 });
 
 describe("realtime-voice ASR WebSocket proxy resilience", () => {
+  it("空白 API key 不创建 upstream，并以 4001 拒绝 ASR WebSocket", async () => {
+    const testApp = Fastify();
+    const createRealtimeUpstream = vi.fn();
+    await registerRealtimeVoiceRoutes(testApp, {
+      env: { DASHSCOPE_API_KEY: "   ", BAILIAN_API_KEY: "\t" },
+      createRealtimeUpstream,
+    } as never);
+    await testApp.ready();
+    const config = (await testApp.inject({ method: "GET", url: "/api/realtime-voice/config" })).json();
+    expect(config).toMatchObject({ configured: false, apiKeyConfigured: false });
+    const sessionRes = await testApp.inject({ method: "POST", url: "/api/realtime-voice/sessions", payload: {} });
+    expect(sessionRes.json().status).toBe("not-configured");
+    const { sessionId } = sessionRes.json() as { sessionId: string };
+
+    await testApp.listen({ port: 0, host: "127.0.0.1" });
+    const port = (testApp.server.address() as { port: number }).port;
+    const { WebSocket: WsClient } = require("ws") as typeof import("ws");
+    const ws = new WsClient(`ws://127.0.0.1:${port}/api/realtime-voice/ws/${sessionId}`);
+    try {
+      await expect(waitForWsClose(ws)).resolves.toEqual({ code: 4001, reason: "API key not configured" });
+      expect(createRealtimeUpstream).not.toHaveBeenCalled();
+    } finally {
+      if (ws.readyState !== WsClient.CLOSED) ws.terminate();
+      await testApp.close();
+    }
+  });
+
+  it("空白主 key 时 ASR upstream 使用有效备用 key", async () => {
+    const testApp = Fastify();
+    const upstream = new FakeRealtimeUpstream();
+    const createRealtimeUpstream = vi.fn((_url: string, options: { headers?: { Authorization?: string } }) => {
+      expect(options.headers?.Authorization).toBe("Bearer backup-test-key");
+      return upstream;
+    });
+    await registerRealtimeVoiceRoutes(testApp, {
+      env: { DASHSCOPE_API_KEY: "   ", BAILIAN_API_KEY: " backup-test-key " },
+      createRealtimeUpstream,
+      heartbeatIntervalMs: 10_000,
+      heartbeatMaxMissedPongs: 2,
+    } as never);
+    await testApp.ready();
+    const sessionRes = await testApp.inject({ method: "POST", url: "/api/realtime-voice/sessions", payload: {} });
+    const { sessionId } = sessionRes.json() as { sessionId: string };
+    await testApp.listen({ port: 0, host: "127.0.0.1" });
+    const port = (testApp.server.address() as { port: number }).port;
+    const { WebSocket: WsClient } = require("ws") as typeof import("ws");
+    const ws = new WsClient(`ws://127.0.0.1:${port}/api/realtime-voice/ws/${sessionId}`);
+    try {
+      await once(ws, "open");
+      await vi.waitFor(() => expect(createRealtimeUpstream).toHaveBeenCalledOnce());
+    } finally {
+      if (ws.readyState !== WsClient.CLOSED) ws.terminate();
+      await testApp.close();
+    }
+  });
+
+  it("上游 session.created 前不误报 ready，并在握手完成后转发排队的 session.update", async () => {
+    const testApp = Fastify();
+    const upstream = new FakeRealtimeUpstream();
+    await registerRealtimeVoiceRoutes(testApp, {
+      env: { DASHSCOPE_API_KEY: "test-secret" },
+      createRealtimeUpstream: () => upstream,
+      heartbeatIntervalMs: 10_000,
+      heartbeatMaxMissedPongs: 2
+    } as never);
+    await testApp.ready();
+    const sessionRes = await testApp.inject({
+      method: "POST",
+      url: "/api/realtime-voice/sessions",
+      payload: {}
+    });
+    const { sessionId } = sessionRes.json() as { sessionId: string };
+    await testApp.listen({ port: 0, host: "127.0.0.1" });
+    const port = (testApp.server.address() as { port: number }).port;
+    const { WebSocket: WsClient } = require("ws") as typeof import("ws");
+    const ws = new WsClient(`ws://127.0.0.1:${port}/api/realtime-voice/ws/${sessionId}`);
+    const browserMessages: string[] = [];
+    ws.on("message", (data: Buffer) => browserMessages.push(data.toString()));
+
+    try {
+      await once(ws, "open");
+      ws.send(JSON.stringify({ type: "session.update", session: { modalities: ["text"] } }));
+      upstream.open();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(browserMessages).not.toContain(JSON.stringify({ type: "proxy.connected" }));
+      expect(upstream.sent).toEqual([]);
+
+      upstream.message({ type: "session.created" });
+      await vi.waitFor(() => {
+        expect(browserMessages).toContain(JSON.stringify({ type: "proxy.connected" }));
+        expect(upstream.sent).toContain(JSON.stringify({
+          type: "session.update",
+          session: { modalities: ["text"] }
+        }));
+      });
+    } finally {
+      if (ws.readyState !== WsClient.CLOSED) ws.terminate();
+      await testApp.close();
+    }
+  });
+
+  it("主模型握手前失败时仅切换一次 fallback，并保留排队的 session.update", async () => {
+    const testApp = Fastify();
+    const primary = new FakeRealtimeUpstream();
+    const fallback = new FakeRealtimeUpstream();
+    const requestedUrls: string[] = [];
+    const upstreams = [primary, fallback];
+    await registerRealtimeVoiceRoutes(testApp, {
+      env: {
+        DASHSCOPE_API_KEY: "test-secret",
+        BAILIAN_REALTIME_MODEL: "primary-realtime",
+        BAILIAN_REALTIME_FALLBACK_MODEL: "fallback-realtime"
+      },
+      createRealtimeUpstream: (url: string) => {
+        requestedUrls.push(url);
+        const upstream = upstreams.shift();
+        if (!upstream) throw new Error("fallback 之后不应再次建连");
+        return upstream;
+      },
+      heartbeatIntervalMs: 10_000,
+      heartbeatMaxMissedPongs: 2
+    } as never);
+    await testApp.ready();
+    const sessionRes = await testApp.inject({ method: "POST", url: "/api/realtime-voice/sessions", payload: {} });
+    const { sessionId } = sessionRes.json() as { sessionId: string };
+    await testApp.listen({ port: 0, host: "127.0.0.1" });
+    const port = (testApp.server.address() as { port: number }).port;
+    const { WebSocket: WsClient } = require("ws") as typeof import("ws");
+    const ws = new WsClient(`ws://127.0.0.1:${port}/api/realtime-voice/ws/${sessionId}`);
+    const browserMessages: string[] = [];
+    ws.on("message", (data: Buffer) => browserMessages.push(data.toString()));
+
+    try {
+      await once(ws, "open");
+      ws.send(JSON.stringify({ type: "session.update", session: { modalities: ["text"] } }));
+      primary.open();
+      primary.remoteClose(1007, "Model not found");
+
+      await vi.waitFor(() => expect(requestedUrls).toHaveLength(2));
+      expect(requestedUrls[0]).toContain("model=primary-realtime");
+      expect(requestedUrls[1]).toContain("model=fallback-realtime");
+      expect(browserMessages).not.toContain(JSON.stringify({ type: "proxy.connected" }));
+      for (const event of ["message", "error", "close", "pong"]) {
+        expect(primary.listenerCount(event)).toBe(0);
+      }
+
+      fallback.open();
+      fallback.message({ type: "session.created" });
+      await vi.waitFor(() => {
+        expect(browserMessages).toContain(JSON.stringify({ type: "proxy.connected" }));
+        expect(fallback.sent).toContain(JSON.stringify({
+          type: "session.update",
+          session: { modalities: ["text"] }
+        }));
+      });
+
+      const closed = waitForWsClose(ws);
+      fallback.remoteClose(1007, "fallback model unavailable");
+      await expect(closed).resolves.toEqual({ code: 1007, reason: "fallback model unavailable" });
+      expect(requestedUrls).toHaveLength(2);
+    } finally {
+      if (ws.readyState !== WsClient.CLOSED) ws.terminate();
+      await testApp.close();
+    }
+  });
+
+  it("主模型迟迟没有 session.created 时按握手超时切换 fallback", async () => {
+    const testApp = Fastify();
+    const primary = new FakeRealtimeUpstream();
+    const fallback = new FakeRealtimeUpstream();
+    const upstreams = [primary, fallback];
+    await registerRealtimeVoiceRoutes(testApp, {
+      env: {
+        DASHSCOPE_API_KEY: "test-secret",
+        BAILIAN_REALTIME_MODEL: "slow-primary",
+        BAILIAN_REALTIME_FALLBACK_MODEL: "working-fallback"
+      },
+      createRealtimeUpstream: () => {
+        const upstream = upstreams.shift();
+        if (!upstream) throw new Error("握手超时后只能 fallback 一次");
+        return upstream;
+      },
+      realtimeHandshakeTimeoutMs: 20,
+      heartbeatIntervalMs: 10_000,
+      heartbeatMaxMissedPongs: 2
+    } as never);
+    await testApp.ready();
+    const sessionRes = await testApp.inject({ method: "POST", url: "/api/realtime-voice/sessions", payload: {} });
+    const { sessionId } = sessionRes.json() as { sessionId: string };
+    await testApp.listen({ port: 0, host: "127.0.0.1" });
+    const port = (testApp.server.address() as { port: number }).port;
+    const { WebSocket: WsClient } = require("ws") as typeof import("ws");
+    const ws = new WsClient(`ws://127.0.0.1:${port}/api/realtime-voice/ws/${sessionId}`);
+
+    try {
+      await once(ws, "open");
+      primary.open();
+      await vi.waitFor(() => expect(upstreams).toHaveLength(0), { timeout: 500, interval: 5 });
+      expect(primary.terminateCalls).toBe(1);
+      fallback.open();
+      const message = once(ws, "message");
+      fallback.message({ type: "session.created" });
+      await expect(message).resolves.toEqual([
+        expect.any(Buffer),
+        false
+      ]);
+    } finally {
+      if (ws.readyState !== WsClient.CLOSED) ws.terminate();
+      await testApp.close();
+    }
+  });
+
+  it("主模型 ready 前先发 provider error 时由代理内部 fallback，不提前透传给浏览器", async () => {
+    const testApp = Fastify();
+    const primary = new FakeRealtimeUpstream();
+    const fallback = new FakeRealtimeUpstream();
+    const upstreams = [primary, fallback];
+    await registerRealtimeVoiceRoutes(testApp, {
+      env: {
+        DASHSCOPE_API_KEY: "test-secret",
+        BAILIAN_REALTIME_MODEL: "rejected-primary",
+        BAILIAN_REALTIME_FALLBACK_MODEL: "working-fallback"
+      },
+      createRealtimeUpstream: () => {
+        const upstream = upstreams.shift();
+        if (!upstream) throw new Error("provider error 只能触发一次 fallback");
+        return upstream;
+      },
+      heartbeatIntervalMs: 10_000,
+      heartbeatMaxMissedPongs: 2
+    } as never);
+    await testApp.ready();
+    const sessionRes = await testApp.inject({ method: "POST", url: "/api/realtime-voice/sessions", payload: {} });
+    const { sessionId } = sessionRes.json() as { sessionId: string };
+    await testApp.listen({ port: 0, host: "127.0.0.1" });
+    const port = (testApp.server.address() as { port: number }).port;
+    const { WebSocket: WsClient } = require("ws") as typeof import("ws");
+    const ws = new WsClient(`ws://127.0.0.1:${port}/api/realtime-voice/ws/${sessionId}`);
+    const browserMessages: string[] = [];
+    ws.on("message", (data: Buffer) => browserMessages.push(data.toString()));
+
+    try {
+      await once(ws, "open");
+      primary.open();
+      primary.message({ type: "error", error: { message: "Model not found" } });
+      await vi.waitFor(() => expect(upstreams).toHaveLength(0));
+      expect(browserMessages.some((message) => message.includes('"type":"error"'))).toBe(false);
+
+      fallback.open();
+      fallback.message({ type: "session.created" });
+      await vi.waitFor(() => {
+        expect(browserMessages).toContain(JSON.stringify({ type: "proxy.connected" }));
+      });
+    } finally {
+      if (ws.readyState !== WsClient.CLOSED) ws.terminate();
+      await testApp.close();
+    }
+  });
+
   it("安全透传 upstream 1011 与 reason，并清理日志和全部 upstream listener", async () => {
     const testApp = Fastify();
     const upstream = new FakeRealtimeUpstream();
@@ -958,7 +1226,10 @@ describe("realtime-voice ASR WebSocket proxy resilience", () => {
     try {
       const closeResult = await Promise.race([
         new Promise<{ code: number; reason: string }>((resolve, reject) => {
-          ws.on("open", () => upstream.open());
+          ws.on("open", () => {
+            upstream.open();
+            upstream.message({ type: "session.created" });
+          });
           ws.on("message", (data: Buffer) => {
             if (!data.toString().includes("proxy.connected")) return;
             now = 2_234;
@@ -990,6 +1261,38 @@ describe("realtime-voice ASR WebSocket proxy resilience", () => {
       if (ws.readyState !== WsClient.CLOSED) ws.terminate();
       await testApp.close();
       infoSpy.mockRestore();
+    }
+  });
+
+  it("upstream 1006 经真实代理映射为 browser 1011，不能伪装成正常 1000", async () => {
+    const testApp = Fastify();
+    const upstream = new FakeRealtimeUpstream();
+    await registerRealtimeVoiceRoutes(testApp, {
+      env: { DASHSCOPE_API_KEY: "test-secret" },
+      createRealtimeUpstream: () => upstream,
+      heartbeatIntervalMs: 10_000,
+      heartbeatMaxMissedPongs: 2
+    } as never);
+    await testApp.ready();
+    const sessionRes = await testApp.inject({ method: "POST", url: "/api/realtime-voice/sessions", payload: {} });
+    const { sessionId } = sessionRes.json() as { sessionId: string };
+    await testApp.listen({ port: 0, host: "127.0.0.1" });
+    const port = (testApp.server.address() as { port: number }).port;
+    const { WebSocket: WsClient } = require("ws") as typeof import("ws");
+    const ws = new WsClient(`ws://127.0.0.1:${port}/api/realtime-voice/ws/${sessionId}`);
+
+    try {
+      const closed = waitForWsClose(ws);
+      await once(ws, "open");
+      upstream.open();
+      upstream.message({ type: "session.created" });
+      await once(ws, "message");
+      upstream.remoteClose(1006, "abnormal network loss");
+
+      await expect(closed).resolves.toEqual({ code: 1011, reason: "abnormal network loss" });
+    } finally {
+      if (ws.readyState !== WsClient.CLOSED) ws.terminate();
+      await testApp.close();
     }
   });
 
@@ -1312,6 +1615,54 @@ describe("realtime-voice TTS WebSocket proxy (/api/realtime-voice/ws/tts/:sessio
     });
   });
 
+  it("cancel 后旧合成迟到回调不能污染已经开始的下一轮", async () => {
+    type StreamHandlers = Parameters<BailianStreamingTtsClient["synthesizeStream"]>[1];
+    const streams: Array<{ handlers: StreamHandlers; signal?: AbortSignal }> = [];
+    const testApp = Fastify();
+    await registerRealtimeVoiceRoutes(testApp, {
+      streamingTtsClient: {
+        async synthesizeStream(_input, handlers, signal) {
+          streams.push({ handlers, signal });
+        }
+      }
+    });
+    await testApp.ready();
+    const sessionRes = await testApp.inject({ method: "POST", url: "/api/realtime-voice/sessions", payload: {} });
+    const { sessionId } = sessionRes.json() as { sessionId: string };
+    await testApp.listen({ port: 0, host: "127.0.0.1" });
+    const port = (testApp.server.address() as { port: number }).port;
+    const { WebSocket: WsClient } = require("ws") as typeof import("ws");
+    const ws = new WsClient(`ws://127.0.0.1:${port}/api/realtime-voice/ws/tts/${sessionId}`);
+    const binaryFrames: string[] = [];
+    const textFrames: string[] = [];
+    ws.on("message", (data: Buffer, isBinary: boolean) => {
+      if (isBinary) binaryFrames.push(data.toString());
+      else textFrames.push(data.toString());
+    });
+
+    try {
+      await once(ws, "open");
+      ws.send(JSON.stringify({ type: "speak", segments: ["旧轮"] }));
+      await vi.waitFor(() => expect(streams).toHaveLength(1));
+      ws.send(JSON.stringify({ type: "cancel" }));
+      ws.send(JSON.stringify({ type: "speak", segments: ["新轮"] }));
+      await vi.waitFor(() => expect(streams).toHaveLength(2));
+      expect(streams[0].signal?.aborted).toBe(true);
+
+      streams[0].handlers.onAudio(Buffer.from("old-audio"));
+      streams[0].handlers.onComplete();
+      streams[1].handlers.onAudio(Buffer.from("new-audio"));
+      streams[1].handlers.onComplete();
+
+      await vi.waitFor(() => expect(binaryFrames).toContain("new-audio"));
+      expect(binaryFrames).toEqual(["new-audio"]);
+      expect(textFrames.filter((frame) => frame.includes("tts.done"))).toHaveLength(1);
+    } finally {
+      if (ws.readyState !== WsClient.CLOSED) ws.terminate();
+      await testApp.close();
+    }
+  });
+
   it("closes with 4001 when no TTS client is provided and no API key env var is set (after session create)", async () => {
     const originalKey = process.env.DASHSCOPE_API_KEY;
     const originalBailian = process.env.BAILIAN_API_KEY;
@@ -1348,6 +1699,26 @@ describe("realtime-voice TTS WebSocket proxy (/api/realtime-voice/ws/tts/:sessio
         ws.on("error", () => { /* ignore upgrade-rejection errors */ });
       });
     });
+  });
+
+  it("空白 API key 不构造 TTS client，并以 4001 拒绝 WebSocket", async () => {
+    const testApp = Fastify();
+    await registerRealtimeVoiceRoutes(testApp, {
+      env: { DASHSCOPE_API_KEY: "   ", BAILIAN_API_KEY: "\t" },
+    });
+    await testApp.ready();
+    const sessionRes = await testApp.inject({ method: "POST", url: "/api/realtime-voice/sessions", payload: {} });
+    const { sessionId } = sessionRes.json() as { sessionId: string };
+    await testApp.listen({ port: 0, host: "127.0.0.1" });
+    const port = (testApp.server.address() as { port: number }).port;
+    const { WebSocket: WsClient } = require("ws") as typeof import("ws");
+    const ws = new WsClient(`ws://127.0.0.1:${port}/api/realtime-voice/ws/tts/${sessionId}`);
+    try {
+      await expect(waitForWsClose(ws)).resolves.toEqual({ code: 4001, reason: "API key not configured" });
+    } finally {
+      if (ws.readyState !== WsClient.CLOSED) ws.terminate();
+      await testApp.close();
+    }
   });
 
   it("为 TTS 浏览器 socket 安装可注入的心跳并在关闭后停止", async () => {

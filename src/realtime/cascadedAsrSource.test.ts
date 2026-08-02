@@ -614,6 +614,29 @@ describe("createBrowserAsrSource — P0-7: stopMic on failure + finite reconnect
     harness.teardown();
   });
 
+  it("取得麦克风后 AudioContext 初始化失败会释放轨道并进入 exhausted", async () => {
+    const harness = buildReconnectHarness(() => "connected");
+    const states = vi.fn();
+    (globalThis as Record<string, unknown>).AudioContext = class FailingAudioContext {
+      constructor() {
+        throw new Error("AudioContext init failed");
+      }
+    };
+    const source = createBrowserAsrSource({
+      asrWsUrl: "ws://test/asr",
+      getMicStream: harness.getMicStream,
+      enableSileroVad: false,
+      onConnectionStateChange: states,
+    });
+    source.register(defaultHandlers());
+
+    await expect(source.start()).rejects.toThrow("AudioContext init failed");
+    expect(harness.trackStops[0]?.[0]).toHaveBeenCalledOnce();
+    expect(states).toHaveBeenLastCalledWith(expect.objectContaining({ state: "exhausted" }));
+    expect(harness.wsInstances).toHaveLength(0);
+    harness.teardown();
+  });
+
   it("retries up to maxReconnectAttempts times then rejects", async () => {
     let callCount = 0;
     const harness = buildReconnectHarness(() => {
@@ -795,6 +818,7 @@ interface MockSocketHandle {
 
 function buildMidSessionRecoveryHarness() {
   const sockets: MockSocketHandle[] = [];
+  const clientCloseCalls: Array<{ code?: number; reason?: string }> = [];
   const trackStop = vi.fn();
   const stream = { getTracks: () => [{ kind: "audio", stop: trackStop }] } as unknown as MediaStream;
   const getMicStream = vi.fn(async () => stream);
@@ -805,6 +829,8 @@ function buildMidSessionRecoveryHarness() {
   const originalAudioContext = (globalThis as Record<string, unknown>).AudioContext;
 
   (globalThis as Record<string, unknown>).WebSocket = class MockWebSocket {
+    static CONNECTING = 0;
+    static OPEN = 1;
     readyState = 0;
     onopen: (() => void) | null = null;
     onmessage: ((event: { data: string }) => void) | null = null;
@@ -830,7 +856,10 @@ function buildMidSessionRecoveryHarness() {
       (this as unknown as { send: (message: string) => void }).send = (message) => sent.push(message);
     }
     send(_message: string) { /* replaced per instance */ }
-    close(_code?: number, _reason?: string) { /* server close is driven by the handle */ }
+    close(code?: number, reason?: string) {
+      clientCloseCalls.push({ code, reason });
+      this.readyState = 2;
+    }
     addEventListener = vi.fn();
     removeEventListener = vi.fn();
   };
@@ -855,7 +884,7 @@ function buildMidSessionRecoveryHarness() {
   };
 
   return {
-    sockets, getMicStream, wait, random, audioContextConstructor, trackStop,
+    sockets, clientCloseCalls, getMicStream, wait, random, audioContextConstructor, trackStop,
     audioCtx, sourceNode, processor,
     teardown() {
       (globalThis as Record<string, unknown>).WebSocket = originalWebSocket;
@@ -903,6 +932,36 @@ describe("createBrowserAsrSource — 会中 ASR 恢复", () => {
     source.register(handlers);
     return { source, handlers };
   }
+
+  it("初始握手遇到 1007 配置错误立即停止，不重复建立相同错误连接", async () => {
+    const states = vi.fn();
+    const { source } = sourceWith({
+      onConnectionStateChange: states,
+      maxReconnectAttempts: 2,
+      baseReconnectDelayMs: 0,
+    });
+    const started = source.start();
+    await vi.waitFor(() => expect(harness.sockets).toHaveLength(1));
+    harness.sockets[0].open();
+    harness.sockets[0].close(1007, "Model not found");
+
+    try {
+      const result = await Promise.race([
+        started.then(
+          () => ({ kind: "resolved" as const, message: "" }),
+          (error: Error) => ({ kind: "rejected" as const, message: error.message }),
+        ),
+        new Promise<{ kind: "timeout"; message: string }>((resolve) => {
+          setTimeout(() => resolve({ kind: "timeout", message: "" }), 50);
+        }),
+      ]);
+      expect(result).toEqual({ kind: "rejected", message: "Model not found" });
+      expect(harness.sockets).toHaveLength(1);
+      expect(states).toHaveBeenLastCalledWith(expect.objectContaining({ state: "exhausted" }));
+    } finally {
+      source.stop();
+    }
+  });
 
   it("ready 后异常关闭会重连且不重建麦克风图", async () => {
     const states = vi.fn();
@@ -961,6 +1020,21 @@ describe("createBrowserAsrSource — 会中 ASR 恢复", () => {
     expect(harness.sockets).toHaveLength(2);
   });
 
+  it("只有本地 stop 是正常停止，远端 1000 必须终止会话而非留下录音假象", async () => {
+    const states = vi.fn();
+    const onConnectionLost = vi.fn();
+    const { source } = sourceWith({ onConnectionStateChange: states, onConnectionLost });
+    await connectRecoverySocket(source, harness.sockets, 0);
+
+    harness.sockets[0].close(1000, "upstream ended unexpectedly");
+
+    await vi.waitFor(() => expect(states).toHaveBeenLastCalledWith(expect.objectContaining({
+      state: "exhausted",
+      code: 1000,
+    })));
+    expect(onConnectionLost).toHaveBeenCalledOnce();
+  });
+
   it("start 等待麦克风期间 stop 会清理迟到创建的音频图", async () => {
     const states = vi.fn();
     const delayedTrackStop = vi.fn();
@@ -999,6 +1073,19 @@ describe("createBrowserAsrSource — 会中 ASR 恢复", () => {
     await vi.waitFor(() => expect(harness.sockets).toHaveLength(2));
     expect(harness.getMicStream).toHaveBeenCalledTimes(1);
     expect(harness.wait).toHaveBeenCalledTimes(1);
+  });
+
+  it("provider error 消息恢复前主动关闭旧 socket，避免代理会话和心跳泄漏", async () => {
+    const { source } = sourceWith();
+    await connectRecoverySocket(source, harness.sockets, 0);
+
+    harness.sockets[0].message({ type: "error", error: { message: "provider failed" } });
+
+    await vi.waitFor(() => expect(harness.sockets).toHaveLength(2));
+    expect(harness.clientCloseCalls).toContainEqual({
+      code: 1011,
+      reason: "asr provider error",
+    });
   });
 
   it("断线前 partial 进入 recovery review，已完成 final 不重复", async () => {

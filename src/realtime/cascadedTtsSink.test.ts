@@ -18,8 +18,14 @@ interface MockAudioContextControl {
   releaseBlockedResumes(): void;
 }
 
+interface MockAudioSourceControl {
+  startCalls: number;
+  stopCalls: number;
+}
+
 let sockets: MockTtsSocket[] = [];
 let audioContexts: MockAudioContextControl[] = [];
+let audioSources: MockAudioSourceControl[] = [];
 let nextAudioContextSuspended = false;
 let nextAudioContextResumeBlocked = false;
 let restoreWebSocket: (() => void) | null = null;
@@ -28,6 +34,7 @@ let restoreAudioContext: (() => void) | null = null;
 beforeEach(() => {
   sockets = [];
   audioContexts = [];
+  audioSources = [];
   nextAudioContextSuspended = false;
   nextAudioContextResumeBlocked = false;
   const originalWebSocket = globalThis.WebSocket;
@@ -123,7 +130,21 @@ beforeEach(() => {
           for (const resolve of blockedResumeResolvers.splice(0)) resolve();
         },
         createBuffer: () => ({ getChannelData: () => new Float32Array(), duration: 0 }),
-        createBufferSource: () => ({ connect: () => undefined, start: () => undefined, stop: () => undefined }),
+        createBufferSource: () => {
+          const source: MockAudioSourceControl & {
+            connect(): void;
+            start(): void;
+            stop(): void;
+          } = {
+            startCalls: 0,
+            stopCalls: 0,
+            connect: () => undefined,
+            start() { this.startCalls += 1; },
+            stop() { this.stopCalls += 1; },
+          };
+          audioSources.push(source);
+          return source;
+        },
       };
       audioContexts.push(control);
       nextAudioContextSuspended = false;
@@ -215,6 +236,29 @@ describe("createBrowserTtsSink", () => {
     await Promise.resolve();
     sockets[0].error();
     await expect(speaking).rejects.toMatchObject({ name: "TtsPlaybackInterruptedError" });
+  });
+
+  it("异常 close 会停止已排队音频且下一轮仍可播放", async () => {
+    const sink = createBrowserTtsSink("ws://test/tts");
+    const first = sink.speak(["第一轮已有音频"]);
+    sockets[0].open();
+    await vi.waitFor(() => expect(sentSpeakSegments(sockets[0])).toEqual([["第一轮已有音频"]]));
+    sockets[0].message(new Uint8Array([0, 0]).buffer);
+    expect(audioSources).toHaveLength(1);
+    expect(audioSources[0]).toMatchObject({ startCalls: 1, stopCalls: 0 });
+
+    sockets[0].close(1011, "upstream interrupted");
+    await expect(first).rejects.toMatchObject({ name: "TtsPlaybackInterruptedError", code: 1011 });
+    expect(audioSources[0].stopCalls).toBe(1);
+
+    const second = sink.speak(["第二轮正常播放"]);
+    sockets[1].open();
+    await vi.waitFor(() => expect(sentSpeakSegments(sockets[1])).toEqual([["第二轮正常播放"]]));
+    sockets[1].message(new Uint8Array([0, 0]).buffer);
+    expect(audioSources).toHaveLength(2);
+    expect(audioSources[1]).toMatchObject({ startCalls: 1, stopCalls: 0 });
+    sink.stop();
+    await second;
   });
 
   it("close 幂等且不会重播 active segments", async () => {

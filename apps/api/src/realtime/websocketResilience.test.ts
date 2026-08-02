@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   attachWebSocketHeartbeat,
   buildRealtimeProxyLog,
+  mapUpstreamCloseCodeForBrowser,
   sanitizeWebSocketCloseCode,
   sanitizeWebSocketCloseReason
 } from "./websocketResilience";
@@ -172,6 +173,19 @@ describe("buildRealtimeProxyLog", () => {
 });
 
 describe("WebSocket close sanitization", () => {
+  it("关闭 reason 命中密钥、逐字稿或音频标记时整段脱敏", () => {
+    expect(sanitizeWebSocketCloseReason("Bearer secret transcript=用户原话")).toBe("[REDACTED]");
+    expect(sanitizeWebSocketCloseReason("input_audio_buffer=base64-pcm")).toBe("[REDACTED]");
+  });
+
+  it("上游保留或非法异常码映射为可传输的 1011，而非正常停止 1000", () => {
+    expect(mapUpstreamCloseCodeForBrowser(1006)).toBe(1011);
+    expect(mapUpstreamCloseCodeForBrowser(1005)).toBe(1011);
+    expect(mapUpstreamCloseCodeForBrowser(999)).toBe(1011);
+    expect(mapUpstreamCloseCodeForBrowser(1000)).toBe(1000);
+    expect(mapUpstreamCloseCodeForBrowser(4001)).toBe(4001);
+  });
+
   it("保留合法标准码与应用码，拒绝保留码和越界码", () => {
     expect(sanitizeWebSocketCloseCode(1000)).toBe(1000);
     expect(sanitizeWebSocketCloseCode(1011)).toBe(1011);

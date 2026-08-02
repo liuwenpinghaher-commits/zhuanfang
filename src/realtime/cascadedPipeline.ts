@@ -19,6 +19,10 @@ import { decideTurn } from "./turnEngine";
 import { assessTurnCompleteness, type Completeness } from "./turnCompleteness";
 import { createBackchannelPicker } from "./backchannel";
 import { createTurnAssembler } from "./turnAssembler";
+import {
+  createRecoveryTranscriptBuffer,
+  type BufferedRecoveryTranscript,
+} from "./recoveryTranscriptBuffer";
 
 // ---------------------------------------------------------------------------
 // Public interfaces — shared between orchestrator, tests and Task 5 wiring
@@ -222,6 +226,7 @@ export function connectCascadedPipeline(
     echoWindowMs,
     similarityThreshold: echoSimilarityThreshold
   });
+  const recoveryTranscriptBuffer = createRecoveryTranscriptBuffer();
 
   let state: CascadePipelineState = "idle";
   let closed = false;
@@ -247,6 +252,10 @@ export function connectCascadedPipeline(
   let stableCommitTimer: ReturnType<typeof setTimeout> | null = null;
   let surfacedQuarantineKey = "";
   let activeReview: TranscriptReviewItem | null = null;
+  const queuedRecoveryReviews: Array<{
+    item: { text: string; reason: string; code?: number };
+    before: BufferedRecoveryTranscript | null;
+  }> = [];
 
   function surfaceQuarantine(item: TranscriptReviewItem) {
     const key = `${item.source}\n${item.text}\n${item.reason}`;
@@ -275,6 +284,8 @@ export function connectCascadedPipeline(
     turnAssembler.reset();
     surfacedQuarantineKey = "";
     activeReview = null;
+    queuedRecoveryReviews.length = 0;
+    recoveryTranscriptBuffer.clear();
     speechStoppedAt = 0;
     sttFinalAtMs = 0;
     clearMaxWaitTimer();
@@ -673,50 +684,111 @@ export function connectCascadedPipeline(
     resetTurn();
   }
 
+  function processTranscriptDelta(text: string, isFinal: boolean) {
+    if (closed || micSuppressed) return; // ignore the AI's own echoed transcription
+    const assembled = turnAssembler.ingest({
+      text,
+      isFinal,
+      atMs: Date.now(),
+      hasUserEnergyEvidence: asr.hasRecentUserEnergyEvidence?.() ?? true
+    });
+    if (assembled.action === "quarantine") {
+      surfaceQuarantine({ text: assembled.transcript, reason: assembled.reason, source: "echo" });
+      return;
+    }
+    if (isFinal) {
+      // Finalized segment: commit it and clear the in-progress partial.
+      committedTranscript += text;
+      partialTranscript = "";
+      if (!sttFinalAtMs) sttFinalAtMs = Date.now();
+    } else {
+      // Cumulative delta: REPLACE the partial (appending duplicates every word,
+      // since each delta already carries the full text-so-far for this segment).
+      partialTranscript = text;
+    }
+    setState("transcribing");
+    callbacks.onUserTranscript(committedTranscript + partialTranscript, false);
+  }
+
+  function processSpeechStarted() {
+    if (closed || micSuppressed) return; // echo: AI is speaking, ignore its own voice
+    // NB: call handleSpeechStarted BEFORE setState("listening") so that
+    // the barge-in check (state === "thinking" | "speaking") still fires.
+    const didBargeIn = handleSpeechStarted();
+    if (!didBargeIn) {
+      // Wasn't in thinking/speaking — just transition to listening normally.
+      setState("listening");
+    } else {
+      // Barge-in set state to "interrupted"; now move to listening
+      // so new speech accumulates cleanly.
+      setState("listening");
+    }
+  }
+
+  function processSpeechStopped(silenceMs: number) {
+    if (closed) return;
+    void handleSpeechStopped(silenceMs);
+  }
+
+  function replayBufferedRecoveryTranscript(buffered: BufferedRecoveryTranscript | null) {
+    if (!buffered) return false;
+    const hasBufferedEvents = buffered.speechStarted
+      || Boolean(buffered.committed)
+      || Boolean(buffered.partial)
+      || buffered.speechStoppedSilenceMs !== null;
+    if (buffered.speechStarted) processSpeechStarted();
+    if (buffered.committed) processTranscriptDelta(buffered.committed, true);
+    if (buffered.partial) processTranscriptDelta(buffered.partial, false);
+    if (buffered.speechStoppedSilenceMs !== null) {
+      processSpeechStopped(buffered.speechStoppedSilenceMs);
+    }
+    return hasBufferedEvents;
+  }
+
+  function releaseBufferedRecoveryTranscript() {
+    return replayBufferedRecoveryTranscript(recoveryTranscriptBuffer.release());
+  }
+
+  function queueNextRecoveryReview(item: { text: string; reason: string; code?: number }) {
+    const before = recoveryTranscriptBuffer.release();
+    if (before) {
+      // The latest provider partial is represented by the review item itself and
+      // must never be replayed as authoritative transcript. A preceding final is
+      // safe and remains ordered before this review boundary.
+      before.partial = "";
+      before.speechStoppedSilenceMs = null;
+    }
+    queuedRecoveryReviews.push({ item, before });
+    recoveryTranscriptBuffer.begin();
+  }
+
+  function advanceRecoveryReview(): boolean {
+    const next = queuedRecoveryReviews.shift();
+    if (!next) return false;
+    replayBufferedRecoveryTranscript(next.before);
+    surfacedQuarantineKey = "";
+    surfaceQuarantine({
+      text: next.item.text,
+      reason: next.item.reason,
+      source: "recovery",
+    });
+    callbacks.onUserTranscript(`${committedTranscript}${partialTranscript}`, false);
+    return true;
+  }
+
   // ── Register ASR handlers ──────────────────────────────────────────────────
   asr.register({
     onTranscriptDelta(text: string, isFinal: boolean) {
-      if (closed || micSuppressed) return; // ignore the AI's own echoed transcription
-      const assembled = turnAssembler.ingest({
-        text,
-        isFinal,
-        atMs: Date.now(),
-        hasUserEnergyEvidence: asr.hasRecentUserEnergyEvidence?.() ?? true
-      });
-      if (assembled.action === "quarantine") {
-        surfaceQuarantine({ text: assembled.transcript, reason: assembled.reason, source: "echo" });
-        return;
-      }
-      if (isFinal) {
-        // Finalized segment: commit it and clear the in-progress partial.
-        committedTranscript += text;
-        partialTranscript = "";
-        if (!sttFinalAtMs) sttFinalAtMs = Date.now();
-      } else {
-        // Cumulative delta: REPLACE the partial (appending duplicates every word,
-        // since each delta already carries the full text-so-far for this segment).
-        partialTranscript = text;
-      }
-      setState("transcribing");
-      callbacks.onUserTranscript(committedTranscript + partialTranscript, false);
+      if (recoveryTranscriptBuffer.captureTranscript(text, isFinal)) return;
+      processTranscriptDelta(text, isFinal);
     },
     onSpeechStarted() {
-      if (closed || micSuppressed) return; // echo: AI is speaking, ignore its own voice
-      // NB: call handleSpeechStarted BEFORE setState("listening") so that
-      // the barge-in check (state === "thinking" | "speaking") still fires.
-      const didBargeIn = handleSpeechStarted();
-      if (!didBargeIn) {
-        // Wasn't in thinking/speaking — just transition to listening normally.
-        setState("listening");
-      } else {
-        // Barge-in set state to "interrupted"; now move to listening
-        // so new speech accumulates cleanly.
-        setState("listening");
-      }
+      if (recoveryTranscriptBuffer.captureSpeechStarted()) return;
+      processSpeechStarted();
     },
     onSpeechStopped(silenceMs: number) {
-      if (closed) return;
-      void handleSpeechStopped(silenceMs);
+      if (recoveryTranscriptBuffer.captureSpeechStopped(silenceMs)) return;
+      processSpeechStopped(silenceMs);
     },
   });
 
@@ -752,6 +824,14 @@ export function connectCascadedPipeline(
 
     reviewRecoveryTranscript(item: { text: string; reason: string; code?: number }) {
       if (closed) return;
+      if (activeReview?.source === "recovery") {
+        // Every interrupted provider partial remains a separate human-review
+        // boundary. Checkpoint only the safe final events before it, keep the
+        // current review visible, and queue this partial for later review.
+        queueNextRecoveryReview(item);
+        return;
+      }
+      recoveryTranscriptBuffer.begin();
       partialTranscript = "";
       turnAssembler.confirmQuarantined(committedTranscript, Date.now());
       clearMaxWaitTimer();
@@ -767,11 +847,12 @@ export function connectCascadedPipeline(
       if (activeReview?.source === "recovery") {
         const confirmedTranscript = `${committedTranscript}${text.trim()}`;
         turnAssembler.confirmQuarantined(confirmedTranscript, Date.now());
-        surfacedQuarantineKey = "";
-        activeReview = null;
         committedTranscript = confirmedTranscript;
         partialTranscript = "";
-        requestStableCommit(true);
+        if (advanceRecoveryReview()) return;
+        surfacedQuarantineKey = "";
+        activeReview = null;
+        if (!releaseBufferedRecoveryTranscript()) requestStableCommit(true);
         return;
       }
       turnAssembler.confirmQuarantined(text, Date.now());
@@ -785,10 +866,13 @@ export function connectCascadedPipeline(
     discardQuarantinedTranscript() {
       if (activeReview?.source === "recovery") {
         turnAssembler.confirmQuarantined(committedTranscript, Date.now());
+        if (advanceRecoveryReview()) return;
         surfacedQuarantineKey = "";
         activeReview = null;
         partialTranscript = "";
-        callbacks.onUserTranscript(committedTranscript, false);
+        if (!releaseBufferedRecoveryTranscript()) {
+          callbacks.onUserTranscript(committedTranscript, false);
+        }
         return;
       }
       resetTurn();
@@ -797,6 +881,8 @@ export function connectCascadedPipeline(
 
     close() {
       closed = true;
+      queuedRecoveryReviews.length = 0;
+      recoveryTranscriptBuffer.clear();
       clearMaxWaitTimer();
       if (stableCommitTimer !== null) { clearTimeout(stableCommitTimer); stableCommitTimer = null; }
       if (echoGuardTimer !== null) { clearTimeout(echoGuardTimer); echoGuardTimer = null; }

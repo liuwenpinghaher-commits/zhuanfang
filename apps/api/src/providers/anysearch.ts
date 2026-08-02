@@ -1,5 +1,6 @@
 import type { SearchBriefInput, SearchProviderId, SourceHighlight } from "../../../../src/domain/types";
 import { fetchWithTimeout, resolveRequestTimeoutMs } from "../request-timeout";
+import { normalizeConfiguredSecret } from "../runtime-secrets";
 
 export const ANYSEARCH_DEFAULT_BASE_URL = "https://api.anysearch.com";
 
@@ -143,7 +144,7 @@ function classifyAvailabilityError(error: unknown): string {
 }
 
 export function createAnySearchClientFromEnv(env: Record<string, string | undefined> = process.env): AnySearchClient | undefined {
-  const apiKey = env.ANYSEARCH_API_KEY;
+  const apiKey = normalizeConfiguredSecret(env.ANYSEARCH_API_KEY);
   const allowAnonymous = env.ANYSEARCH_ALLOW_ANONYMOUS === "true";
   if (!apiKey && !allowAnonymous) {
     return undefined;

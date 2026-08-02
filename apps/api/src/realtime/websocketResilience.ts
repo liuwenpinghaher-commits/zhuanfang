@@ -96,8 +96,13 @@ export function sanitizeWebSocketCloseCode(code: number): number {
   return code === 1004 || code === 1005 || code === 1006 ? 1000 : code;
 }
 
+export function mapUpstreamCloseCodeForBrowser(code: number): number {
+  const sanitized = sanitizeWebSocketCloseCode(code);
+  return sanitized === 1000 && code !== 1000 ? 1011 : sanitized;
+}
+
 export function sanitizeWebSocketCloseReason(reason: string): string {
-  return truncateUtf8(reason, CLOSE_REASON_MAX_BYTES);
+  return truncateUtf8(sanitizeLogReason(reason), CLOSE_REASON_MAX_BYTES);
 }
 
 function sanitizeLogReason(reason: string): string {

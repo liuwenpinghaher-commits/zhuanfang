@@ -2,7 +2,9 @@ import type { FastifyInstance } from "fastify";
 import {
   BAILIAN_PODCAST_TTS_MODEL,
   BAILIAN_PODCAST_TTS_VOICE,
+  BAILIAN_REALTIME_FALLBACK_MODEL,
   BAILIAN_REALTIME_MODEL,
+  resolveBailianRealtimeModels,
   BAILIAN_ROLE_PLAY_MODEL,
   BAILIAN_TRANSCRIPTION_MODEL,
   BAILIAN_LATEST_PLUS_MODEL
@@ -20,6 +22,7 @@ import type {
 import { writeEnvFileUpdates, type RuntimeEnv } from "../env";
 import { getRuntimeMetricsSnapshot } from "../observability/runtime-metrics";
 import type { ProductStateRepository } from "../product-state-repository";
+import { normalizeConfiguredSecret, resolveBailianApiKey } from "../runtime-secrets";
 
 type CapabilityStatus = "ready" | "degraded" | "needs-key" | "needs-endpoint" | "disabled";
 type CapabilityKind = "runtime" | "storage" | "search" | "llm" | "voice";
@@ -145,6 +148,14 @@ const runtimeSettingDefinitions: RuntimeSettingDefinition[] = [
     description: "用于沉浸式实时专访的 Qwen-Omni Realtime 模型。",
     valueKind: "string",
     defaultValue: BAILIAN_REALTIME_MODEL
+  },
+  {
+    key: "BAILIAN_REALTIME_FALLBACK_MODEL",
+    section: "models",
+    label: "双向实时语音备用模型",
+    description: "主模型在 ready 前被拒绝或握手超时时仅尝试一次的备用 Realtime 模型。",
+    valueKind: "string",
+    defaultValue: BAILIAN_REALTIME_FALLBACK_MODEL
   },
   {
     key: "BAILIAN_BASE_URL",
@@ -401,13 +412,15 @@ export async function registerSystemRoutes(
     const state = repository.getState();
     const env = options.env ?? process.env;
     const generatedAt = new Date().toISOString();
-    const dashscopeKeyConfigured = Boolean(env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY);
-    const anySearchKeyConfigured = Boolean(env.ANYSEARCH_API_KEY);
+    const bailianApiKey = resolveBailianApiKey(env);
+    const dashscopeKeyConfigured = Boolean(bailianApiKey);
+    const anySearchKeyConfigured = Boolean(normalizeConfiguredSecret(env.ANYSEARCH_API_KEY));
     const anySearchAnonymous = env.ANYSEARCH_ALLOW_ANONYMOUS === "true";
     const anySearchAvailability = options.anySearchClient?.getAvailability?.() ?? { status: "unknown" as const };
     const realtimeEndpointConfigured = true; // default public DashScope WebRTC; BAILIAN_REALTIME_WEBRTC_ENDPOINT optional override
     const realtimeTransport = env.BAILIAN_REALTIME_TRANSPORT === "webrtc" ? "webrtc" : "websocket";
 
+    const realtimeModels = resolveBailianRealtimeModels(env);
     const capabilities: SystemCapability[] = [
       {
         id: "product-api",
@@ -517,13 +530,13 @@ export async function registerSystemRoutes(
         id: "embedding",
         kind: "llm",
         label: "向量嵌入（记忆/知识召回）",
-        status: options.embeddingConfigured || Boolean(env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY) || (env.EMBEDDING_PROVIDER ?? "").trim().toLowerCase() === "local"
+        status: options.embeddingConfigured || Boolean(bailianApiKey) || (env.EMBEDDING_PROVIDER ?? "").trim().toLowerCase() === "local"
           ? "ready"
           : "needs-key",
         active: true,
         detail: (env.EMBEDDING_PROVIDER ?? "").trim().toLowerCase() === "local"
           ? "本地 embedding（EMBEDDING_PROVIDER=local）已启用。"
-          : (env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY)
+          : bailianApiKey
             ? "云端 embedding 可用（DashScope/百炼 key）。"
             : "未配置 embedding：chat/interview 语义召回会受限（关键词仍可用）。",
         requiredEnv: (env.EMBEDDING_PROVIDER ?? "").trim().toLowerCase() === "local" ? ["EMBEDDING_PROVIDER"] : ["DASHSCOPE_API_KEY"],
@@ -583,7 +596,7 @@ export async function registerSystemRoutes(
         active: dashscopeKeyConfigured,
         detail: buildRealtimeDetail(dashscopeKeyConfigured, realtimeEndpointConfigured, realtimeTransport),
         requiredEnv: ["DASHSCOPE_API_KEY"],
-        model: env.BAILIAN_REALTIME_MODEL ?? BAILIAN_REALTIME_MODEL,
+        model: realtimeModels.model,
         // Reuse the resolved transport (defaults to websocket) so the descriptor doesn't
         // claim "ready" on a websocket assumption while displaying "webrtc".
         transport: realtimeTransport,
@@ -655,7 +668,9 @@ function buildRuntimeConfigResponse(options: SystemRouteOptions) {
 
 function buildRuntimeSetting(definition: RuntimeSettingDefinition, env: RuntimeEnv) {
   const rawValue = env[definition.key];
-  const configured = rawValue !== undefined && rawValue !== "";
+  const normalizedValue = typeof rawValue === "string" ? rawValue.trim() : rawValue;
+  const configured = normalizedValue !== undefined && normalizedValue !== "";
+  const effectiveValue = normalizedValue === "" ? undefined : normalizedValue;
   return {
     key: definition.key,
     section: definition.section,
@@ -665,8 +680,8 @@ function buildRuntimeSetting(definition: RuntimeSettingDefinition, env: RuntimeE
     secret: Boolean(definition.secret),
     required: Boolean(definition.required),
     configured,
-    value: definition.secret ? null : rawValue ?? definition.defaultValue ?? "",
-    maskedValue: definition.secret ? maskSecretValue(rawValue) : undefined,
+    value: definition.secret ? null : effectiveValue ?? definition.defaultValue ?? "",
+    maskedValue: definition.secret ? maskSecretValue(normalizeConfiguredSecret(rawValue)) : undefined,
     defaultValue: definition.defaultValue,
     options: definition.options,
     restartRequired: Boolean(definition.restartRequired)

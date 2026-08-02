@@ -16,7 +16,15 @@ async function assertAsset(path, expectedMime) {
 
 await assertAsset("/vad/vad.worklet.bundle.min.js", "javascript");
 await assertAsset("/vad/silero_vad_v5.onnx", "application");
-await assertAsset("/vad/ort/ort-wasm-simd-threaded.mjs", "javascript");
+for (const variant of [
+  "ort-wasm-simd-threaded",
+  "ort-wasm-simd-threaded.asyncify",
+  "ort-wasm-simd-threaded.jsep",
+  "ort-wasm-simd-threaded.jspi",
+]) {
+  await assertAsset(`/vad/ort/${variant}.mjs`, "javascript");
+  await assertAsset(`/vad/ort/${variant}.wasm`, "application/wasm");
+}
 
 const missing = await fetch(new URL("/vad/definitely-missing.worklet.js", baseUrl));
 const missingBody = await missing.text();

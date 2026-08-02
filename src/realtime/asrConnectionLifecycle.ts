@@ -13,7 +13,10 @@ export interface AsrConnectionEvent {
   reason?: string;
 }
 
-const NON_RECOVERABLE_CLOSE_CODES = new Set([1000, 4001, 4003]);
+// 1007/1008 represent protocol/configuration failures. Reopening the same
+// socket cannot heal them and only creates a reconnect loop that looks like a
+// flaky microphone to the user.
+const NON_RECOVERABLE_CLOSE_CODES = new Set([1000, 1007, 1008, 4001, 4003]);
 
 export function isRecoverableAsrCloseCode(code: number | undefined): boolean {
   return code == null || !NON_RECOVERABLE_CLOSE_CODES.has(code);

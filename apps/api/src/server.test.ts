@@ -236,6 +236,108 @@ expect(response.json()).toMatchObject({ ok: true, ready: true, service: "intervi
     expect(JSON.stringify(body)).not.toContain("secret-dashscope-key");
   });
 
+  it("空白 secret 在配置、能力与 provider 初始化中统一视为未配置", async () => {
+    const server = buildApiServer({
+      env: {
+        DASHSCOPE_API_KEY: "   ",
+        BAILIAN_API_KEY: "\t",
+        ANYSEARCH_API_KEY: " \n ",
+      }
+    });
+
+    const configResponse = await server.inject({ method: "GET", url: "/api/system/config" });
+    const secretSettings = configResponse.json().sections
+      .find((section: { id?: string }) => section.id === "secrets")
+      ?.settings as Array<{ key: string; configured: boolean; maskedValue: string }>;
+    expect(secretSettings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "DASHSCOPE_API_KEY", configured: false, maskedValue: "未配置" }),
+      expect.objectContaining({ key: "BAILIAN_API_KEY", configured: false, maskedValue: "未配置" }),
+      expect.objectContaining({ key: "ANYSEARCH_API_KEY", configured: false, maskedValue: "未配置" }),
+    ]));
+
+    const capabilitiesResponse = await server.inject({ method: "GET", url: "/api/system/capabilities" });
+    const capabilities = capabilitiesResponse.json().capabilities as Array<{ id: string; status: string; configured?: boolean }>;
+    const byId = (id: string) => capabilities.find((capability) => capability.id === id);
+    expect(byId("bailian-responses")?.status).toBe("needs-key");
+    expect(byId("bailian-cosyvoice")?.status).toBe("needs-key");
+    expect(byId("bailian-sensevoice")?.status).toBe("needs-key");
+    expect(byId("bailian-character")?.status).toBe("needs-key");
+    expect(byId("bailian-realtime")?.status).toBe("needs-key");
+    expect(byId("embedding")?.status).toBe("needs-key");
+    expect(byId("anysearch")).toMatchObject({ status: "needs-key", configured: false });
+    await server.close();
+  });
+
+  it("空白主密钥不会阻断有效备用密钥的系统能力与实时语音配置", async () => {
+    const streamingTtsClientFactory = vi.fn(() => ({
+      async synthesizeStream() {
+        return undefined;
+      }
+    }));
+    const server = buildApiServer({
+      env: {
+        DASHSCOPE_API_KEY: "   ",
+        BAILIAN_API_KEY: "backup-test-key",
+      },
+      streamingTtsClientFactory,
+    });
+
+    const configSections = (await server.inject({ method: "GET", url: "/api/system/config" })).json().sections;
+    const secretSettings = configSections.find((section: { id?: string }) => section.id === "secrets")
+      ?.settings as Array<{ key: string; configured: boolean; maskedValue: string; value: unknown }>;
+    expect(secretSettings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "DASHSCOPE_API_KEY", configured: false, maskedValue: "未配置", value: null }),
+      expect.objectContaining({ key: "BAILIAN_API_KEY", configured: true, maskedValue: "已配置（••••）", value: null }),
+    ]));
+    const capabilities = (await server.inject({ method: "GET", url: "/api/system/capabilities" }))
+      .json().capabilities as Array<{ id: string; status: string }>;
+    expect(capabilities.find((item) => item.id === "bailian-realtime")?.status).toBe("ready");
+    expect(capabilities.find((item) => item.id === "bailian-cosyvoice")?.status).toBe("ready");
+    const realtimeConfig = (await server.inject({ method: "GET", url: "/api/realtime-voice/config" })).json();
+    expect(realtimeConfig).toMatchObject({ configured: true, apiKeyConfigured: true });
+    expect(streamingTtsClientFactory).toHaveBeenCalledWith({ apiKey: "backup-test-key" });
+    await server.close();
+  });
+
+  it("system capabilities 与实时会话共享空白模型的默认解析", async () => {
+    const server = buildApiServer({
+      env: {
+        DASHSCOPE_API_KEY: "test-key",
+        BAILIAN_REALTIME_MODEL: "   ",
+        BAILIAN_REALTIME_FALLBACK_MODEL: ""
+      }
+    });
+
+    const response = await server.inject({ method: "GET", url: "/api/system/capabilities" });
+    const realtime = response.json().capabilities.find(
+      (item: { id?: string }) => item.id === "bailian-realtime"
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(realtime).toMatchObject({
+      model: "qwen3.5-omni-flash-realtime",
+      status: "ready"
+    });
+
+    const configResponse = await server.inject({ method: "GET", url: "/api/system/config" });
+    const modelSettings = configResponse.json().sections
+      .find((section: { id?: string }) => section.id === "models")
+      ?.settings as Array<{ key: string; configured: boolean; value: string }>;
+    expect(modelSettings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        key: "BAILIAN_REALTIME_MODEL",
+        configured: false,
+        value: "qwen3.5-omni-flash-realtime"
+      }),
+      expect.objectContaining({
+        key: "BAILIAN_REALTIME_FALLBACK_MODEL",
+        configured: false,
+        value: "qwen3-omni-flash-realtime"
+      })
+    ]));
+    await server.close();
+  });
+
   it("updates runtime configuration, persists it to env file, and refreshes provider health", async () => {
     const envFilePath = createEnvPath();
     writeFileSync(envFilePath, "# local runtime config\n");
@@ -1056,8 +1158,8 @@ it("renders podcast audio through Bailian CosyVoice when the audio client is con
     expect(JSON.stringify(response.json())).not.toContain("secret-that-must-not-leak");
     expect(response.json()).toMatchObject({
       provider: "bailian",
-      model: "qwen3.5-omni-plus-realtime",
-      fallbackModel: "qwen3.5-omni-flash-realtime",
+      model: "qwen3.5-omni-flash-realtime",
+      fallbackModel: "qwen3-omni-flash-realtime",
       transport: "websocket",
       fallbackTransport: "websocket",
       vad: "server_vad",
@@ -1080,7 +1182,7 @@ it("renders podcast audio through Bailian CosyVoice when the audio client is con
       bailianRealtimeVoiceClient: {
         async createWebrtcAnswer(input) {
           expect(input).toEqual({
-            model: "qwen3.5-omni-plus-realtime",
+            model: "qwen3.5-omni-flash-realtime",
             offerSdp: "offer-sdp"
           });
           return "answer-sdp";
@@ -1100,7 +1202,7 @@ it("renders podcast audio through Bailian CosyVoice when the audio client is con
     expect(JSON.stringify(sessionResponse.json())).not.toContain("Bearer");
     expect(sessionResponse.json()).toMatchObject({
       provider: "bailian",
-      model: "qwen3.5-omni-plus-realtime",
+      model: "qwen3.5-omni-flash-realtime",
       transport: "websocket",
       status: "ready",
       sessionUpdate: {

@@ -6,11 +6,15 @@ import { isAuthGuardActive, isAuthorized, readCookieToken } from "../auth";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   attachWebSocketHeartbeat,
-  buildRealtimeProxyLog,
-  sanitizeWebSocketCloseCode,
-  sanitizeWebSocketCloseReason
+  buildRealtimeProxyLog
 } from "../realtime/websocketResilience";
-import type { BailianRealtimeVoiceClient, BailianVoiceEnrollmentClient, BailianEmbeddingClient } from "../providers/bailian";
+import { connectRealtimeAsrProxy } from "../realtime/asrProxyConnection";
+import {
+  resolveBailianRealtimeModels,
+  type BailianRealtimeVoiceClient,
+  type BailianVoiceEnrollmentClient,
+  type BailianEmbeddingClient
+} from "../providers/bailian";
 import { COSYVOICE_PRESET_VOICES } from "../voice-presets";
 import {
   createBailianStreamingTtsClient,
@@ -20,6 +24,7 @@ import {
 import type { ProductStateRepository } from "../product-state-repository";
 import { replaceStateDurable } from "../product-state-repository";
 import { asNativeRecall } from "../recall/native-recall-capability";
+import { resolveBailianApiKey } from "../runtime-secrets";
 import { prefetchRecall } from "../recall/prefetch-recall";
 import {
   applyMidSessionCardRefresh,
@@ -80,6 +85,7 @@ interface RealtimeVoiceRouteOptions {
   createRealtimeUpstream?: (url: string, options: { headers: Record<string, string> }) => WebSocket;
   heartbeatIntervalMs?: number;
   heartbeatMaxMissedPongs?: number;
+  realtimeHandshakeTimeoutMs?: number;
   now?: () => number;
 }
 
@@ -145,6 +151,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
   const runtimeEnv = options.env ?? process.env;
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? 15_000;
   const heartbeatMaxMissedPongs = options.heartbeatMaxMissedPongs ?? 2;
+  const realtimeHandshakeTimeoutMs = options.realtimeHandshakeTimeoutMs ?? 10_000;
   const now = options.now ?? Date.now;
   const createRealtimeUpstream = options.createRealtimeUpstream ??
     ((url: string, init: { headers: Record<string, string> }) => new WebSocket(url, init));
@@ -692,6 +699,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
         let phase: "connecting" | "ready" | "closing" = "connecting";
         let cleaned = false;
         let abortController = new AbortController();
+        let synthesisGeneration = 0;
         let disposeHeartbeat: () => void = () => undefined;
 
         const writeProxyLog = (event: string, code?: number, reason?: string) => {
@@ -712,6 +720,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
           phase = "closing";
           disposeHeartbeat();
           abortController.abort();
+          synthesisGeneration += 1;
           ws.off("message", onBrowserMessage);
           ws.off("close", onBrowserClose);
           ws.off("error", onBrowserError);
@@ -719,7 +728,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
         }
         // Resolve TTS client: prefer injected (tests / server.ts wires one)
         // then fall back to constructing from env at upgrade time.
-        const apiKey = runtimeEnv.DASHSCOPE_API_KEY ?? runtimeEnv.BAILIAN_API_KEY;
+        const apiKey = resolveBailianApiKey(runtimeEnv);
         const ttsClient: BailianStreamingTtsClient | undefined =
           options.streamingTtsClient ??
           (apiKey ? createBailianStreamingTtsClient({ apiKey }) : undefined);
@@ -756,6 +765,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
 
           if (msg.type === "cancel") {
             abortController.abort();
+            synthesisGeneration += 1;
             abortController = new AbortController();
             return;
           }
@@ -776,6 +786,10 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
             abortController.abort();
             abortController = new AbortController();
             const signal = abortController.signal;
+            const generation = ++synthesisGeneration;
+            const isCurrentSynthesis = () => !cleaned
+              && generation === synthesisGeneration
+              && !signal.aborted;
 
             // Tell the browser how to decode the binary frames that follow: raw
             // PCM (s16le, mono) at the streaming sample rate. The sink plays these
@@ -789,17 +803,17 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
                 { segments, voice, prosody },
                 {
                   onAudio: (chunk) => {
-                    if (ws.readyState === WebSocket.OPEN) {
+                    if (isCurrentSynthesis() && ws.readyState === WebSocket.OPEN) {
                       ws.send(chunk);
                     }
                   },
                   onComplete: () => {
-                    if (ws.readyState === WebSocket.OPEN) {
+                    if (isCurrentSynthesis() && ws.readyState === WebSocket.OPEN) {
                       ws.send(JSON.stringify({ type: "tts.done" }));
                     }
                   },
                   onError: (e) => {
-                    if (ws.readyState === WebSocket.OPEN) {
+                    if (isCurrentSynthesis() && ws.readyState === WebSocket.OPEN) {
                       ws.send(JSON.stringify({ type: "error", message: e.message }));
                     }
                   }
@@ -846,188 +860,41 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       // N-14:登记活跃 WS,连接存活期间该会话不判过期(长访谈 ASR 通道整场开着)。
       // close 监听立即注册,任何早退(如无 key close)也能配平计数。
       addActiveWs(sessionId);
-      const startedAt = now();
-      let phase: "connecting" | "ready" | "closing" = "connecting";
-      let dashscopeWs: WebSocket | null = null;
-      let cleaned = false;
-      let disposeBrowserHeartbeat: () => void = () => undefined;
-      let disposeUpstreamHeartbeat: () => void = () => undefined;
-
-      const writeProxyLog = (
-        event: string,
-        direction: "browser" | "upstream",
-        code?: number,
-        reason?: string
-      ) => {
-        console.info(JSON.stringify(buildRealtimeProxyLog({
-          event,
-          sessionId,
-          direction,
-          code,
-          reason,
-          phase,
-          durationMs: Math.max(0, now() - startedAt)
-        })));
-      };
-
-      function removeProxyListeners() {
-        ws.off("message", onBrowserMessage);
-        ws.off("close", onBrowserClose);
-        ws.off("error", onBrowserError);
-        if (!dashscopeWs) return;
-        dashscopeWs.off("open", onUpstreamOpen);
-        dashscopeWs.off("message", onUpstreamMessage);
-        dashscopeWs.off("error", onUpstreamError);
-        dashscopeWs.off("close", onUpstreamClose);
-      }
-
-      function closeUpstreamForBrowser() {
-        if (!dashscopeWs) return;
-        if (dashscopeWs.readyState === WebSocket.OPEN) {
-          dashscopeWs.close(1000, "client disconnected");
-        } else if (dashscopeWs.readyState === WebSocket.CONNECTING) {
-          dashscopeWs.terminate();
-        }
-      }
-
-      function cleanup(options: {
-        closeBrowser?: { code: number; reason: string };
-        closeUpstream?: boolean;
-      } = {}) {
-        if (cleaned) return;
-        cleaned = true;
-        phase = "closing";
-        disposeBrowserHeartbeat();
-        disposeUpstreamHeartbeat();
-        removeProxyListeners();
-        if (options.closeBrowser && ws.readyState === WebSocket.OPEN) {
-          ws.close(
-            sanitizeWebSocketCloseCode(options.closeBrowser.code),
-            sanitizeWebSocketCloseReason(options.closeBrowser.reason)
-          );
-        }
-        if (options.closeUpstream) closeUpstreamForBrowser();
-        removeActiveWs(sessionId);
-      }
-
-      function onBrowserMessage(data: Buffer) {
-        if (cleaned) return;
-        touchSession(sessionId);
-        if (dashscopeWs?.readyState === WebSocket.OPEN) {
-          dashscopeWs.send(data.toString());
-        }
-      }
-
-      function onBrowserClose(code: number, reason: Buffer) {
-        if (cleaned) return;
-        writeProxyLog("realtime_proxy_browser_closed", "browser", code, reason.toString());
-        cleanup({ closeUpstream: true });
-      }
-
-      function onBrowserError(error: Error) {
-        if (cleaned) return;
-        writeProxyLog("realtime_proxy_browser_error", "browser", undefined, error.message);
-        cleanup({ closeUpstream: true });
-      }
-
-      function onUpstreamOpen() {
-        if (cleaned) return;
-        phase = "ready";
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "proxy.connected" }));
-        }
-      }
-
-      function onUpstreamMessage(data: Buffer) {
-        if (cleaned) return;
-        if (ws.readyState === WebSocket.OPEN) ws.send(data.toString());
-      }
-
-      function onUpstreamError(error: Error) {
-        if (cleaned) return;
-        writeProxyLog("realtime_proxy_upstream_error", "upstream", undefined, error.message);
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({
-            type: "error",
-            error: { type: "proxy_error", message: "Upstream connection failed." }
-          }));
-        }
-        cleanup({
-          closeBrowser: { code: 1011, reason: "upstream connection error" },
-          closeUpstream: true
-        });
-      }
-
-      function onUpstreamClose(code: number, reason: Buffer) {
-        if (cleaned) return;
-        const closeReason = reason.toString() || "dashscope closed";
-        writeProxyLog("realtime_proxy_upstream_closed", "upstream", code, closeReason);
-        cleanup({ closeBrowser: { code, reason: closeReason } });
-      }
-
-      ws.on("message", onBrowserMessage);
-      ws.on("close", onBrowserClose);
-      ws.on("error", onBrowserError);
-      disposeBrowserHeartbeat = attachWebSocketHeartbeat(ws, {
-        intervalMs: heartbeatIntervalMs,
-        maxMissedPongs: heartbeatMaxMissedPongs,
-        onTimeout: () => {
-          if (cleaned) return;
-          writeProxyLog("realtime_proxy_heartbeat_timeout", "browser");
-          cleanup({ closeUpstream: true });
-        }
-      });
-
-      const apiKey = runtimeEnv.DASHSCOPE_API_KEY ?? runtimeEnv.BAILIAN_API_KEY;
+      const apiKey = resolveBailianApiKey(runtimeEnv);
       if (!apiKey) {
         ws.close(4001, "API key not configured");
-        cleanup();
+        removeActiveWs(sessionId);
         return;
       }
-
-      const model = record.model;
-      const dashscopeUrl = `wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=${encodeURIComponent(model)}`;
-
-      try {
-        dashscopeWs = createRealtimeUpstream(dashscopeUrl, {
-          headers: { Authorization: `Bearer ${apiKey}` }
-        });
-        dashscopeWs.on("open", onUpstreamOpen);
-        dashscopeWs.on("message", onUpstreamMessage);
-        dashscopeWs.on("error", onUpstreamError);
-        dashscopeWs.on("close", onUpstreamClose);
-        disposeUpstreamHeartbeat = attachWebSocketHeartbeat(dashscopeWs, {
-          intervalMs: heartbeatIntervalMs,
-          maxMissedPongs: heartbeatMaxMissedPongs,
-          onTimeout: () => {
-            if (cleaned) return;
-            writeProxyLog("realtime_proxy_heartbeat_timeout", "upstream");
-            cleanup({ closeBrowser: { code: 1011, reason: "upstream heartbeat timeout" } });
-          }
-        });
-      } catch (err) {
-        writeProxyLog(
-          "realtime_proxy_upstream_error",
-          "upstream",
-          undefined,
-          err instanceof Error ? err.message : "unknown"
-        );
-        cleanup({ closeBrowser: { code: 4002, reason: "Failed to connect to DashScope" } });
-      }
+      connectRealtimeAsrProxy({
+        browser: ws,
+        sessionId,
+        apiKey,
+        primaryModel: record.model,
+        fallbackModel: record.fallbackModel,
+        createUpstream: createRealtimeUpstream,
+        heartbeatIntervalMs,
+        heartbeatMaxMissedPongs,
+        handshakeTimeoutMs: realtimeHandshakeTimeoutMs,
+        now,
+        onBrowserActivity: () => touchSession(sessionId),
+        onClosed: () => removeActiveWs(sessionId),
+      });
     });
   });
 }
 
 function buildRealtimeVoiceConfig(env: Record<string, string | undefined>): RealtimeVoiceConfig {
-  const apiKeyConfigured = Boolean(env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY);
+  const apiKeyConfigured = Boolean(resolveBailianApiKey(env));
   // Public DashScope WebRTC signaling is always available; env override is optional (no whitelist).
   const webrtcEndpointConfigured = true;
   const transport = normalizeTransport(env.BAILIAN_REALTIME_TRANSPORT);
   const configured = apiKeyConfigured;
+  const { model, fallbackModel } = resolveBailianRealtimeModels(env);
   return {
     provider: "bailian",
-    model: env.BAILIAN_REALTIME_MODEL ?? "qwen3.5-omni-plus-realtime",
-    fallbackModel: env.BAILIAN_REALTIME_FALLBACK_MODEL ?? "qwen3.5-omni-flash-realtime",
+    model,
+    fallbackModel,
     transport,
     fallbackTransport: "websocket",
     vad: normalizeVad(env.BAILIAN_REALTIME_VAD),

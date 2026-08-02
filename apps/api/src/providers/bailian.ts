@@ -5,6 +5,7 @@ import { buildAppliedPlaybookRulesBlock, buildBoundariesBlock, buildCorrectionsB
 import { sanitizeExternalMaterialList } from "../../../../src/domain/utils";
 import { resolveRequestTimeoutMs } from "../request-timeout";
 import { normalizeCosyVoiceId } from "../voice-presets";
+import { resolveBailianApiKey } from "../runtime-secrets";
 
 export const BAILIAN_DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 export const BAILIAN_DEFAULT_AUDIO_BASE_URL = "https://dashscope.aliyuncs.com";
@@ -15,13 +16,24 @@ export const BAILIAN_ROLE_PLAY_MODEL = "qwen-plus-character";
 export const BAILIAN_PODCAST_TTS_MODEL = "cosyvoice-v3-plus";
 // cosyvoice-v3-plus requires v3-series voices (longanyang/longanhuan_v3); v1/v2 voices return engine error 418.
 export const BAILIAN_PODCAST_TTS_VOICE = "longanyang";
-export const BAILIAN_REALTIME_MODEL = "qwen3.5-omni-plus-realtime";
+export const BAILIAN_REALTIME_MODEL = "qwen3.5-omni-flash-realtime";
+export const BAILIAN_REALTIME_FALLBACK_MODEL = "qwen3-omni-flash-realtime";
 export const BAILIAN_TRANSCRIPTION_MODEL = "sensevoice-v1";
 // General-purpose text model for server-side synthesis (diary, review, corpus, intel).
 // qwen-plus is fast (~0.8s) and supports JSON mode — verified live. Kept separate from
 // BAILIAN_SEARCH_MODEL (qwen3.7-plus, ~9s) so synthesis never inherits the slow search model.
 export const BAILIAN_GENERAL_MODEL = "qwen-plus";
 export const BAILIAN_EMBEDDING_MODEL = "text-embedding-v3";
+
+export function resolveBailianRealtimeModels(env: Record<string, string | undefined>): {
+  model: string;
+  fallbackModel: string;
+} {
+  return {
+    model: env.BAILIAN_REALTIME_MODEL?.trim() || BAILIAN_REALTIME_MODEL,
+    fallbackModel: env.BAILIAN_REALTIME_FALLBACK_MODEL?.trim() || BAILIAN_REALTIME_FALLBACK_MODEL,
+  };
+}
 
 // ── Per-request timeouts (P1-09) ──────────────────────────────────────────────
 // Hard wall-clock caps so a half-dead DashScope connection (TCP connected but
@@ -851,7 +863,7 @@ export function createBailianAudioTranscriptionClient(
 }
 
 export function createBailianSearchClientFromEnv(env: Record<string, string | undefined> = process.env): BailianSearchClient | undefined {
-  const apiKey = env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY;
+  const apiKey = resolveBailianApiKey(env);
   if (!apiKey) {
     return undefined;
   }
@@ -866,7 +878,7 @@ export function createBailianSearchClientFromEnv(env: Record<string, string | un
 export function createBailianCharacterInterviewClientFromEnv(
   env: Record<string, string | undefined> = process.env
 ): BailianCharacterInterviewClient | undefined {
-  const apiKey = env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY;
+  const apiKey = resolveBailianApiKey(env);
   if (!apiKey) {
     return undefined;
   }
@@ -882,7 +894,7 @@ export function createBailianCharacterInterviewClientFromEnv(
 export function createBailianChatClientFromEnv(
   env: Record<string, string | undefined> = process.env
 ): BailianChatClient | undefined {
-  const apiKey = env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY;
+  const apiKey = resolveBailianApiKey(env);
   if (!apiKey) {
     return undefined;
   }
@@ -897,7 +909,7 @@ export function createBailianChatClientFromEnv(
 export function createBailianRealtimeVoiceClientFromEnv(
   env: Record<string, string | undefined> = process.env
 ): BailianRealtimeVoiceClient | undefined {
-  const apiKey = (env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY)?.trim();
+  const apiKey = resolveBailianApiKey(env);
   if (!apiKey) {
     return undefined;
   }
@@ -914,7 +926,7 @@ export function createBailianRealtimeVoiceClientFromEnv(
 export function createBailianPodcastAudioClientFromEnv(
   env: Record<string, string | undefined> = process.env
 ): BailianPodcastAudioClient | undefined {
-  const apiKey = env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY;
+  const apiKey = resolveBailianApiKey(env);
   if (!apiKey) {
     return undefined;
   }
@@ -936,7 +948,7 @@ export function createBailianPodcastAudioClientFromEnv(
 export function createBailianAudioTranscriptionClientFromEnv(
   env: Record<string, string | undefined> = process.env
 ): BailianAudioTranscriptionClient | undefined {
-  const apiKey = env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY;
+  const apiKey = resolveBailianApiKey(env);
   if (!apiKey) {
     return undefined;
   }
@@ -1496,7 +1508,7 @@ export function createBailianVoiceEnrollmentClient(options: {
 export function createBailianVoiceEnrollmentClientFromEnv(
   env: Record<string, string | undefined> = process.env
 ): BailianVoiceEnrollmentClient | undefined {
-  const apiKey = env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY;
+  const apiKey = resolveBailianApiKey(env);
   if (!apiKey) return undefined;
 
   return createBailianVoiceEnrollmentClient({
@@ -1570,7 +1582,7 @@ export function createBailianEmbeddingClient(
 export function createBailianEmbeddingClientFromEnv(
   env: Record<string, string | undefined> = process.env
 ): BailianEmbeddingClient | null {
-  const apiKey = env.DASHSCOPE_API_KEY ?? env.BAILIAN_API_KEY;
+  const apiKey = resolveBailianApiKey(env);
   if (!apiKey) {
     return null;
   }
