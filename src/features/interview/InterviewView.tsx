@@ -6,7 +6,7 @@ import type { buildInterviewCard, buildRealtimeTurnState } from "../../domain/en
 import { INTERVIEW_STRATEGY_LABELS, PLAYBOOK_DRIVEN_STRATEGIES } from "../../domain/engine";
 import type { InterviewControlAction, InterviewMode, InterviewSession } from "../../domain/types";
 import type { TranscriptReviewItem } from "../../realtime/cascadedPipeline";
-import type { VoiceUiStatus } from "../../realtime/vadWorkletCapability";
+import type { VoiceUiStatus } from "../../realtime/voiceTransportLifecycle";
 import { formatRealtimePhase, interviewControlGroups } from "../../ui";
 
 interface InterviewViewProps {

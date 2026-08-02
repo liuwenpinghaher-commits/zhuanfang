@@ -64,7 +64,12 @@ import { createBrowserAsrSource } from "./realtime/cascadedAsrSource";
 import { createBrowserTtsSink } from "./realtime/cascadedTtsSink";
 import { pcmS16leMonoToWav } from "./realtime/pcmWav";
 import { createSessionAudioRecorder, type SessionAudioRecorder } from "./realtime/sessionAudioRecorder";
-import { probeVadWorkletCapability, type VoiceUiStatus } from "./realtime/vadWorkletCapability";
+import { probeVadWorkletCapability } from "./realtime/vadWorkletCapability";
+import {
+  createVoiceTransportStateGuard,
+  terminateVoicePipelineAfterExhaustion,
+  type VoiceUiStatus
+} from "./realtime/voiceTransportLifecycle";
 import { deriveRealtimeWsBaseUrl } from "./realtime/wsBaseUrl";
 import {
   dedupeGeneratedArtifacts,
@@ -247,6 +252,7 @@ export default function App() {
   const [livekitVoiceSession, setLivekitVoiceSession] = useState<LivekitVoiceSession | null>(null);
   // Cascade pipeline instance — held in a ref so closing it doesn't trigger re-render.
   const cascadePipelineRef = useRef<CascadedPipeline | null>(null);
+  const voiceTransportStateGuardRef = useRef(createVoiceTransportStateGuard());
   // Whole-session voice recorder — held in a ref so its lifecycle is decoupled from
   // render. Only set when the cascade ASR tees us a live mic stream (voice path);
   // null on the text path so we naturally skip recording. Recording is best-effort:
@@ -268,6 +274,7 @@ export default function App() {
   const [voiceStatus, setVoiceStatus] = useState<VoiceUiStatus>("idle");
   const [liveUserTranscript, setLiveUserTranscript] = useState("");
   const [voiceReviewItem, setVoiceReviewItem] = useState<TranscriptReviewItem | null>(null);
+  const voiceReviewItemRef = useRef<TranscriptReviewItem | null>(null);
   const [guidanceState, setGuidanceState] = useState<{
     active: boolean;
     kind: string | null;
@@ -1457,6 +1464,9 @@ export default function App() {
   }, [voiceStatus, realtimeState?.shouldInterrupt]);
 
   function closeRealtimeVoiceSession() {
+    // Invalidate callbacks before closing resources: pipeline.close() may synchronously
+    // emit a final state, and an older pipeline must never mutate a newer voice session.
+    voiceTransportStateGuardRef.current.invalidate();
     if (livekitVoiceSession) {
       livekitVoiceSession.close();
       setLivekitVoiceSession(null);
@@ -1464,10 +1474,9 @@ export default function App() {
     realtimeVoiceConnection?.close();
     setRealtimeVoiceConnection(null);
     setRealtimeVoiceSession(null);
-    if (cascadePipelineRef.current) {
-      cascadePipelineRef.current.close();
-      cascadePipelineRef.current = null;
-    }
+    const cascadePipeline = cascadePipelineRef.current;
+    cascadePipelineRef.current = null;
+    cascadePipeline?.close();
     // Drop the host TTS sink ref. The pipeline.close() above already closed the
     // sink (releasing its WS + AudioContext); we just clear the handle so a torn-
     // down session can't leak a stale sink (and its recorded PCM) into the next.
@@ -1485,6 +1494,7 @@ export default function App() {
     setRecording(false);
     setAudioLevel(0);
     setVoiceStatus("idle");
+    voiceReviewItemRef.current = null;
     setVoiceReviewItem(null);
   }
 
@@ -2677,6 +2687,7 @@ export default function App() {
             setVoiceStatus("connecting");
             const vadCapability = await probeVadWorkletCapability();
             let asrWasReconnecting = false;
+            const voiceEpoch = voiceTransportStateGuardRef.current.beginSession();
             const baseWsUrl = deriveRealtimeWsBaseUrl(getProductApiBaseUrl());
             const asrWsUrl = `${baseWsUrl}/api/realtime-voice/ws/${voiceSession.sessionId}`;
             const ttsWsUrl = `${baseWsUrl}/api/realtime-voice/ws/tts/${voiceSession.sessionId}`;
@@ -2687,10 +2698,12 @@ export default function App() {
               instructions: voiceSession.sessionUpdate.session.instructions,
               onConnectionStateChange: (event) => {
                 if (event.state === "reconnecting") {
+                  if (!voiceTransportStateGuardRef.current.transition(voiceEpoch, event.state)) return;
                   asrWasReconnecting = true;
                   setVoiceStatus("reconnecting");
                 }
                 if (event.state === "ready") {
+                  if (!voiceTransportStateGuardRef.current.transition(voiceEpoch, event.state)) return;
                   setVoiceStatus(vadCapability.supported ? "listening" : "degraded");
                   if (asrWasReconnecting) {
                     setNotice(buildNotice("success", "语音连接已恢复", "可以继续口述，已确认的专访内容不受影响。"));
@@ -2698,22 +2711,47 @@ export default function App() {
                   }
                 }
                 if (event.state === "exhausted") {
-                  setRecording(false);
-                  setVoiceStatus("exhausted");
-                  ttsSinkRef.current?.close?.();
-                  ttsSinkRef.current = null;
+                  const pendingReview = voiceReviewItemRef.current;
+                  const result = terminateVoicePipelineAfterExhaustion({
+                    epoch: voiceEpoch,
+                    guard: voiceTransportStateGuardRef.current,
+                    pipelineRef: cascadePipelineRef,
+                    ttsRef: ttsSinkRef,
+                    pendingReview,
+                    updateInterviewInput: (merge) => setInterviewInput(merge),
+                    clearReview: () => {
+                      voiceReviewItemRef.current = null;
+                      setVoiceReviewItem(null);
+                    },
+                    setRecording,
+                    setVoiceStatus,
+                    clearLiveTranscript: () => setLiveUserTranscript("")
+                  });
+                  if (!result.terminated) return;
+                  if (result.preservedReview) setFailedTurnContent(null);
+                  setNotice(buildNotice(
+                    "warning",
+                    "语音连接未恢复",
+                    result.noticeDetail
+                  ));
                 }
               },
               onRecoveryTranscript: (item) => {
+                if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
                 cascadePipelineRef.current?.reviewRecoveryTranscript(item);
               },
               onConnectionLost: (error) => {
+                if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
                 setNotice(buildNotice("warning", "语音连接未恢复", `${error.message}。本场文字专访仍可继续。`));
               },
               // Tee the live mic into a whole-session recorder. Best-effort: guard
               // construction so a recorder failure never breaks ASR start. The
               // recording is uploaded at /end (see finishInterview).
               onMicStream: (stream) => {
+                if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) {
+                  stream.getTracks().forEach((track) => track.stop());
+                  return;
+                }
                 try {
                   const recorder = createSessionAudioRecorder(stream);
                   recorder.start();
@@ -2733,13 +2771,16 @@ export default function App() {
 
             // sendUserTurn: POST to /api/interview-sessions/:id/turns, return assistantText
             const sendUserTurn = async (text: string, signal: AbortSignal) => {
-              if (!interviewId) {
+              if (!interviewId || !voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) {
                 return { assistantText: "" };
               }
               // P0-D: forward the pipeline's barge-in signal so an interrupted turn
               // aborts the server LLM call rather than running to completion (which
               // would overwrite the user's newly-started turn and waste budget).
               const r = await productApiClient.sendInterviewTurn(interviewId, { content: text }, signal);
+              if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) {
+                return { assistantText: "" };
+              }
               setSession(r.session);
               adoptServerState(r.state);
               setApiPersistenceEnabled(true);
@@ -2759,6 +2800,7 @@ export default function App() {
               preSignals,
               callbacks: {
                 onStateChange: (s) => {
+                  if (!voiceTransportStateGuardRef.current.allowsPipelineState(voiceEpoch)) return;
                   if (s === "listening" || s === "transcribing") {
                     setVoiceStatus(vadCapability.supported ? "listening" : "degraded");
                   }
@@ -2768,6 +2810,7 @@ export default function App() {
                   else if (s === "idle") setVoiceStatus("idle");
                 },
                 onUserTranscript: (text, isFinal) => {
+                  if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
                   // Live transcript chip only. The final user turn is persisted
                   // authoritatively by sendUserTurn → sendInterviewTurn (which adds
                   // BOTH the user turn and the assistant reply). Recording it again
@@ -2780,10 +2823,13 @@ export default function App() {
                   // (百炼角色扮演追问 + 语音助手回应).
                 },
                 onError: (err) => {
+                  if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
                   setNotice(buildNotice("warning", "级联语音错误", err.message));
                 },
                 onTranscriptQuarantined: (item) => {
+                  if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
                   setLiveUserTranscript("");
+                  voiceReviewItemRef.current = item;
                   setVoiceReviewItem(item);
                   setNotice(buildNotice(
                     "info",
@@ -2809,6 +2855,7 @@ export default function App() {
                 ? (text: string, signal: AbortSignal) => productApiClient.classifyTurnComplete(interviewId, text, signal)
                 : undefined,
               onDecision: (trace) => {
+                if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
                 console.debug("[cascade decision]", trace);
                 if (interviewId) void productApiClient.logCascadeDecision(interviewId, trace);
               },
@@ -2830,6 +2877,7 @@ export default function App() {
                 : "级联模式已连接；AudioWorklet 不可用，当前使用语音兼容模式。"
             ));
             void pipeline.startListening(card.suggestedOpening || undefined).catch((err) => {
+              if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
               setNotice(buildNotice("warning", "级联语音连接失败", err instanceof Error ? err.message : "请确认后端在线且 API key 已配置"));
             });
             return;
@@ -3294,14 +3342,26 @@ export default function App() {
             onControl={applyInterviewControl}
             onToggleRecording={toggleRealtimeRecording}
             onInterrupt={interruptAssistant}
-            onVoiceReviewText={(text) => setVoiceReviewItem((item) => item ? { ...item, text } : item)}
+            onVoiceReviewText={(text) => {
+              const item = voiceReviewItemRef.current;
+              if (!item) return;
+              const nextItem = { ...item, text };
+              voiceReviewItemRef.current = nextItem;
+              setVoiceReviewItem(nextItem);
+            }}
             onConfirmVoiceReview={() => {
-              if (!voiceReviewItem?.text.trim()) return;
-              cascadePipelineRef.current?.confirmQuarantinedTranscript(voiceReviewItem.text.trim());
+              const item = voiceReviewItemRef.current;
+              const pipeline = cascadePipelineRef.current;
+              if (!item?.text.trim() || !pipeline) return;
+              pipeline.confirmQuarantinedTranscript(item.text.trim());
+              voiceReviewItemRef.current = null;
               setVoiceReviewItem(null);
             }}
             onDiscardVoiceReview={() => {
-              cascadePipelineRef.current?.discardQuarantinedTranscript();
+              const pipeline = cascadePipelineRef.current;
+              if (!pipeline) return;
+              pipeline.discardQuarantinedTranscript();
+              voiceReviewItemRef.current = null;
               setVoiceReviewItem(null);
             }}
             submitting={submittingTurn}

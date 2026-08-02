@@ -4,16 +4,6 @@ export type VadWorkletCapability =
   | { supported: true }
   | { supported: false; reason: "fetch" | "mime" | "execution" | "unsupported" };
 
-export type VoiceUiStatus =
-  | "idle"
-  | "connecting"
-  | "listening"
-  | "speaking"
-  | "interrupted"
-  | "reconnecting"
-  | "degraded"
-  | "exhausted";
-
 interface VadWorkletProbeDeps {
   fetchImpl: typeof fetch;
   createAudioContext: () => AudioContext;
