@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Fastify, { type FastifyInstance } from "fastify";
 import { createServer } from "node:http";
+import { EventEmitter, once } from "node:events";
 import { createInitialProductState } from "../../../../src/domain/engine";
 import {
   createInMemoryProductStateRepository,
@@ -43,6 +44,44 @@ function buildAssistantSession(content: string): InterviewSession {
     realtimeSignals: [],
     startedAt: new Date().toISOString()
   } as InterviewSession;
+}
+
+class FakeRealtimeUpstream extends EventEmitter {
+  readyState = 0;
+  readonly sent: string[] = [];
+  readonly closeCalls: Array<{ code: number; reason: string }> = [];
+  pingCalls = 0;
+  terminateCalls = 0;
+
+  open() {
+    this.readyState = 1;
+    this.emit("open");
+  }
+
+  remoteClose(code: number, reason: string) {
+    this.readyState = 3;
+    this.emit("close", code, Buffer.from(reason));
+  }
+
+  send(data: Buffer | string) {
+    this.sent.push(data.toString());
+  }
+
+  ping() {
+    this.pingCalls += 1;
+    queueMicrotask(() => this.emit("pong"));
+  }
+
+  terminate() {
+    this.terminateCalls += 1;
+    this.readyState = 3;
+  }
+
+  close(code = 1000, reason = "") {
+    this.closeCalls.push({ code, reason });
+    this.readyState = 3;
+    this.emit("close", code, Buffer.from(reason));
+  }
 }
 
 describe("realtime-voice /interrupt route", () => {
@@ -768,6 +807,129 @@ describe("realtime-voice 会话 TTL 滑动续期与活跃 WS 豁免(N-14/P3-20)"
   });
 });
 
+describe("realtime-voice ASR WebSocket proxy resilience", () => {
+  it("安全透传 upstream 1011 与 reason，并清理日志和全部 upstream listener", async () => {
+    const testApp = Fastify();
+    const upstream = new FakeRealtimeUpstream();
+    let now = 1_000;
+    let factoryHeaders: Record<string, string> | undefined;
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    await registerRealtimeVoiceRoutes(testApp, {
+      env: { DASHSCOPE_API_KEY: "test-secret" },
+      createRealtimeUpstream: (_url: string, init: { headers: Record<string, string> }) => {
+        factoryHeaders = init.headers;
+        return upstream;
+      },
+      heartbeatIntervalMs: 10_000,
+      heartbeatMaxMissedPongs: 2,
+      now: () => now
+    } as never);
+    await testApp.ready();
+    const sessionRes = await testApp.inject({
+      method: "POST",
+      url: "/api/realtime-voice/sessions",
+      payload: {}
+    });
+    const { sessionId } = sessionRes.json() as { sessionId: string };
+    await testApp.listen({ port: 0, host: "127.0.0.1" });
+    const port = (testApp.server.address() as { port: number }).port;
+    const { WebSocket: WsClient } = require("ws") as typeof import("ws");
+    const ws = new WsClient(`ws://127.0.0.1:${port}/api/realtime-voice/ws/${sessionId}`);
+
+    try {
+      const closeResult = await Promise.race([
+        new Promise<{ code: number; reason: string }>((resolve, reject) => {
+          ws.on("open", () => upstream.open());
+          ws.on("message", (data: Buffer) => {
+            if (!data.toString().includes("proxy.connected")) return;
+            now = 2_234;
+            upstream.remoteClose(1011, "temporary upstream close");
+          });
+          ws.on("close", (code: number, reason: Buffer) => resolve({ code, reason: reason.toString() }));
+          ws.on("error", reject);
+        }),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("ASR proxy 未使用 injected upstream")), 500))
+      ]);
+
+      expect(closeResult).toEqual({ code: 1011, reason: "temporary upstream close" });
+      expect(factoryHeaders).toEqual({ Authorization: "Bearer test-secret" });
+      const logs = infoSpy.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
+      expect(logs).toContainEqual({
+        event: "realtime_proxy_upstream_closed",
+        sessionId,
+        direction: "upstream",
+        code: 1011,
+        reason: "temporary upstream close",
+        phase: "ready",
+        durationMs: 1234
+      });
+      expect(JSON.stringify(logs)).not.toMatch(/Authorization|Bearer|transcript|input_audio_buffer|test-secret/);
+      for (const event of ["open", "message", "error", "close", "pong"]) {
+        expect(upstream.listenerCount(event)).toBe(0);
+      }
+    } finally {
+      if (ws.readyState !== WsClient.CLOSED) ws.terminate();
+      await testApp.close();
+      infoSpy.mockRestore();
+    }
+  });
+
+  it("同时为浏览器和 upstream 安装心跳，浏览器关闭时按约定关闭 upstream", async () => {
+    const testApp = Fastify();
+    const upstream = new FakeRealtimeUpstream();
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    await registerRealtimeVoiceRoutes(testApp, {
+      env: { DASHSCOPE_API_KEY: "test-secret" },
+      createRealtimeUpstream: () => upstream,
+      heartbeatIntervalMs: 10,
+      heartbeatMaxMissedPongs: 2
+    } as never);
+    await testApp.ready();
+    const sessionRes = await testApp.inject({
+      method: "POST",
+      url: "/api/realtime-voice/sessions",
+      payload: {}
+    });
+    const { sessionId } = sessionRes.json() as { sessionId: string };
+    await testApp.listen({ port: 0, host: "127.0.0.1" });
+    const port = (testApp.server.address() as { port: number }).port;
+    const { WebSocket: WsClient } = require("ws") as typeof import("ws");
+    const ws = new WsClient(`ws://127.0.0.1:${port}/api/realtime-voice/ws/${sessionId}`);
+
+    try {
+      await once(ws, "open");
+      upstream.open();
+      await Promise.all([
+        once(ws, "ping"),
+        vi.waitFor(() => expect(upstream.pingCalls).toBeGreaterThan(0), { timeout: 500, interval: 5 })
+      ]);
+
+      const closed = once(ws, "close");
+      ws.close(1000, "user done");
+      await closed;
+
+      await vi.waitFor(() => expect(upstream.closeCalls).toHaveLength(1), { timeout: 500, interval: 5 });
+      expect(upstream.closeCalls).toEqual([{ code: 1000, reason: "client disconnected" }]);
+      for (const event of ["open", "message", "error", "close", "pong"]) {
+        expect(upstream.listenerCount(event)).toBe(0);
+      }
+      const logs = infoSpy.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
+      expect(logs).toContainEqual(expect.objectContaining({
+        event: "realtime_proxy_browser_closed",
+        sessionId,
+        direction: "browser",
+        code: 1000,
+        reason: "user done"
+      }));
+    } finally {
+      if (ws.readyState !== WsClient.CLOSED) ws.terminate();
+      await testApp.close();
+      infoSpy.mockRestore();
+    }
+  });
+});
+
 describe("realtime-voice TTS WebSocket proxy (/api/realtime-voice/ws/tts/:sessionId)", () => {
   /**
    * Browser↔proxy message contract (documented here for reference):
@@ -950,6 +1112,56 @@ describe("realtime-voice TTS WebSocket proxy (/api/realtime-voice/ws/tts/:sessio
         ws.on("error", () => { /* ignore upgrade-rejection errors */ });
       });
     });
+  });
+
+  it("为 TTS 浏览器 socket 安装可注入的心跳并在关闭后停止", async () => {
+    const testApp = Fastify();
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    await registerRealtimeVoiceRoutes(testApp, {
+      streamingTtsClient: {
+        async synthesizeStream() {
+          return undefined;
+        }
+      },
+      heartbeatIntervalMs: 10,
+      heartbeatMaxMissedPongs: 2,
+      now: () => 1_000
+    } as never);
+    await testApp.ready();
+    const sessionRes = await testApp.inject({
+      method: "POST",
+      url: "/api/realtime-voice/sessions",
+      payload: {}
+    });
+    const { sessionId } = sessionRes.json() as { sessionId: string };
+    await testApp.listen({ port: 0, host: "127.0.0.1" });
+    const port = (testApp.server.address() as { port: number }).port;
+    const { WebSocket: WsClient } = require("ws") as typeof import("ws");
+    const ws = new WsClient(`ws://127.0.0.1:${port}/api/realtime-voice/ws/tts/${sessionId}`);
+
+    try {
+      await Promise.race([
+        once(ws, "ping"),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("TTS proxy 未发送心跳")), 250))
+      ]);
+      ws.close(1000, "done");
+      await once(ws, "close");
+      await vi.waitFor(() => expect(infoSpy).toHaveBeenCalled(), { timeout: 500, interval: 5 });
+      const logs = infoSpy.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
+      expect(logs).toContainEqual({
+        event: "realtime_proxy_browser_closed",
+        sessionId,
+        direction: "browser",
+        code: 1000,
+        reason: "done",
+        phase: "ready",
+        durationMs: 0
+      });
+    } finally {
+      if (ws.readyState !== WsClient.CLOSED) ws.terminate();
+      await testApp.close();
+      infoSpy.mockRestore();
+    }
   });
 });
 

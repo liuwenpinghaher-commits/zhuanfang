@@ -4,6 +4,12 @@ import type { IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
 import { isAuthGuardActive, isAuthorized, readCookieToken } from "../auth";
 import { WebSocketServer, WebSocket } from "ws";
+import {
+  attachWebSocketHeartbeat,
+  buildRealtimeProxyLog,
+  sanitizeWebSocketCloseCode,
+  sanitizeWebSocketCloseReason
+} from "../realtime/websocketResilience";
 import type { BailianRealtimeVoiceClient, BailianVoiceEnrollmentClient, BailianEmbeddingClient } from "../providers/bailian";
 import { COSYVOICE_PRESET_VOICES } from "../voice-presets";
 import {
@@ -71,6 +77,10 @@ interface RealtimeVoiceRouteOptions {
    * write preHandler, so final merge must re-enter writeGate (re-read+merge inside).
    */
   writeGate?: { runExclusive<T>(label: string, fn: () => Promise<T> | T): Promise<T> };
+  createRealtimeUpstream?: (url: string, options: { headers: Record<string, string> }) => WebSocket;
+  heartbeatIntervalMs?: number;
+  heartbeatMaxMissedPongs?: number;
+  now?: () => number;
 }
 
 interface RealtimeVoiceSessionPayload {
@@ -133,6 +143,11 @@ async function embedRecallQuery(
 export async function registerRealtimeVoiceRoutes(server: FastifyInstance, options: RealtimeVoiceRouteOptions = {}) {
   const sessions = new Map<string, RealtimeVoiceSessionRecord>();
   const runtimeEnv = options.env ?? process.env;
+  const heartbeatIntervalMs = options.heartbeatIntervalMs ?? 15_000;
+  const heartbeatMaxMissedPongs = options.heartbeatMaxMissedPongs ?? 2;
+  const now = options.now ?? Date.now;
+  const createRealtimeUpstream = options.createRealtimeUpstream ??
+    ((url: string, init: { headers: Record<string, string> }) => new WebSocket(url, init));
 
   // 审计修复(P1-5):TTL 改为滑动续期——此前只在创建时设 10 分钟且从不续期,而产品核心场景
   // 就是长访谈:>10min 后 /interrupt 静默失效(截断跳过但仍回 interrupted:true → 归档失真)、
@@ -673,7 +688,35 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
         // N-14:登记活跃 WS,连接存活期间该会话不判过期(长访谈 TTS 通道整场开着)。
         // 专门的 close 监听立即注册,确保任何早退路径(如无 key close)也能配平计数,不泄漏。
         addActiveWs(sessionId);
-        ws.on("close", () => removeActiveWs(sessionId));
+        const startedAt = now();
+        let phase: "connecting" | "ready" | "closing" = "connecting";
+        let cleaned = false;
+        let abortController = new AbortController();
+        let disposeHeartbeat: () => void = () => undefined;
+
+        const writeProxyLog = (event: string, code?: number, reason?: string) => {
+          console.info(JSON.stringify(buildRealtimeProxyLog({
+            event,
+            sessionId,
+            direction: "browser",
+            code,
+            reason,
+            phase,
+            durationMs: Math.max(0, now() - startedAt)
+          })));
+        };
+
+        function cleanup() {
+          if (cleaned) return;
+          cleaned = true;
+          phase = "closing";
+          disposeHeartbeat();
+          abortController.abort();
+          ws.off("message", onBrowserMessage);
+          ws.off("close", onBrowserClose);
+          ws.off("error", onBrowserError);
+          removeActiveWs(sessionId);
+        }
         // Resolve TTS client: prefer injected (tests / server.ts wires one)
         // then fall back to constructing from env at upgrade time.
         const apiKey = runtimeEnv.DASHSCOPE_API_KEY ?? runtimeEnv.BAILIAN_API_KEY;
@@ -681,14 +724,28 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
           options.streamingTtsClient ??
           (apiKey ? createBailianStreamingTtsClient({ apiKey }) : undefined);
 
+        ws.on("close", onBrowserClose);
+        ws.on("error", onBrowserError);
+        disposeHeartbeat = attachWebSocketHeartbeat(ws, {
+          intervalMs: heartbeatIntervalMs,
+          maxMissedPongs: heartbeatMaxMissedPongs,
+          onTimeout: () => {
+            if (cleaned) return;
+            writeProxyLog("realtime_proxy_heartbeat_timeout");
+            cleanup();
+          }
+        });
+
         if (!ttsClient) {
           ws.close(4001, "API key not configured");
           return;
         }
 
-        let abortController = new AbortController();
+        const activeTtsClient = ttsClient;
+        phase = "ready";
 
-        ws.on("message", (data: Buffer) => {
+        function onBrowserMessage(data: Buffer) {
+          if (cleaned) return;
           touchSession(sessionId);   // N-14:每帧滑动续期,长访谈 TTS 流量不再让会话过期。
           let msg: { type?: string; segments?: unknown; voice?: unknown; prosody?: unknown };
           try {
@@ -727,7 +784,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
               ws.send(JSON.stringify({ type: "tts.start", format: "pcm", sampleRate: STREAMING_TTS_SAMPLE_RATE }));
             }
 
-            ttsClient
+            activeTtsClient
               .synthesizeStream(
                 { segments, voice, prosody },
                 {
@@ -754,15 +811,21 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
                 // message — nothing more to do here.
               });
           }
-        });
+        }
 
-        ws.on("close", () => {
-          abortController.abort();
-        });
+        function onBrowserClose(code: number, reason: Buffer) {
+          if (cleaned) return;
+          writeProxyLog("realtime_proxy_browser_closed", code, reason.toString());
+          cleanup();
+        }
 
-        ws.on("error", () => {
-          abortController.abort();
-        });
+        function onBrowserError(error: Error) {
+          if (cleaned) return;
+          writeProxyLog("realtime_proxy_browser_error", undefined, error.message);
+          cleanup();
+        }
+
+        ws.on("message", onBrowserMessage);
       });
       return;
     }
@@ -783,78 +846,173 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       // N-14:登记活跃 WS,连接存活期间该会话不判过期(长访谈 ASR 通道整场开着)。
       // close 监听立即注册,任何早退(如无 key close)也能配平计数。
       addActiveWs(sessionId);
-      ws.on("close", () => removeActiveWs(sessionId));
+      const startedAt = now();
+      let phase: "connecting" | "ready" | "closing" = "connecting";
+      let dashscopeWs: WebSocket | null = null;
+      let cleaned = false;
+      let disposeBrowserHeartbeat: () => void = () => undefined;
+      let disposeUpstreamHeartbeat: () => void = () => undefined;
+
+      const writeProxyLog = (
+        event: string,
+        direction: "browser" | "upstream",
+        code?: number,
+        reason?: string
+      ) => {
+        console.info(JSON.stringify(buildRealtimeProxyLog({
+          event,
+          sessionId,
+          direction,
+          code,
+          reason,
+          phase,
+          durationMs: Math.max(0, now() - startedAt)
+        })));
+      };
+
+      function removeProxyListeners() {
+        ws.off("message", onBrowserMessage);
+        ws.off("close", onBrowserClose);
+        ws.off("error", onBrowserError);
+        if (!dashscopeWs) return;
+        dashscopeWs.off("open", onUpstreamOpen);
+        dashscopeWs.off("message", onUpstreamMessage);
+        dashscopeWs.off("error", onUpstreamError);
+        dashscopeWs.off("close", onUpstreamClose);
+      }
+
+      function closeUpstreamForBrowser() {
+        if (!dashscopeWs) return;
+        if (dashscopeWs.readyState === WebSocket.OPEN) {
+          dashscopeWs.close(1000, "client disconnected");
+        } else if (dashscopeWs.readyState === WebSocket.CONNECTING) {
+          dashscopeWs.terminate();
+        }
+      }
+
+      function cleanup(options: {
+        closeBrowser?: { code: number; reason: string };
+        closeUpstream?: boolean;
+      } = {}) {
+        if (cleaned) return;
+        cleaned = true;
+        phase = "closing";
+        disposeBrowserHeartbeat();
+        disposeUpstreamHeartbeat();
+        removeProxyListeners();
+        if (options.closeBrowser && ws.readyState === WebSocket.OPEN) {
+          ws.close(
+            sanitizeWebSocketCloseCode(options.closeBrowser.code),
+            sanitizeWebSocketCloseReason(options.closeBrowser.reason)
+          );
+        }
+        if (options.closeUpstream) closeUpstreamForBrowser();
+        removeActiveWs(sessionId);
+      }
+
+      function onBrowserMessage(data: Buffer) {
+        if (cleaned) return;
+        touchSession(sessionId);
+        if (dashscopeWs?.readyState === WebSocket.OPEN) {
+          dashscopeWs.send(data.toString());
+        }
+      }
+
+      function onBrowserClose(code: number, reason: Buffer) {
+        if (cleaned) return;
+        writeProxyLog("realtime_proxy_browser_closed", "browser", code, reason.toString());
+        cleanup({ closeUpstream: true });
+      }
+
+      function onBrowserError(error: Error) {
+        if (cleaned) return;
+        writeProxyLog("realtime_proxy_browser_error", "browser", undefined, error.message);
+        cleanup({ closeUpstream: true });
+      }
+
+      function onUpstreamOpen() {
+        if (cleaned) return;
+        phase = "ready";
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "proxy.connected" }));
+        }
+      }
+
+      function onUpstreamMessage(data: Buffer) {
+        if (cleaned) return;
+        if (ws.readyState === WebSocket.OPEN) ws.send(data.toString());
+      }
+
+      function onUpstreamError(error: Error) {
+        if (cleaned) return;
+        writeProxyLog("realtime_proxy_upstream_error", "upstream", undefined, error.message);
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: "error",
+            error: { type: "proxy_error", message: "Upstream connection failed." }
+          }));
+        }
+        cleanup({
+          closeBrowser: { code: 1011, reason: "upstream connection error" },
+          closeUpstream: true
+        });
+      }
+
+      function onUpstreamClose(code: number, reason: Buffer) {
+        if (cleaned) return;
+        const closeReason = reason.toString() || "dashscope closed";
+        writeProxyLog("realtime_proxy_upstream_closed", "upstream", code, closeReason);
+        cleanup({ closeBrowser: { code, reason: closeReason } });
+      }
+
+      ws.on("message", onBrowserMessage);
+      ws.on("close", onBrowserClose);
+      ws.on("error", onBrowserError);
+      disposeBrowserHeartbeat = attachWebSocketHeartbeat(ws, {
+        intervalMs: heartbeatIntervalMs,
+        maxMissedPongs: heartbeatMaxMissedPongs,
+        onTimeout: () => {
+          if (cleaned) return;
+          writeProxyLog("realtime_proxy_heartbeat_timeout", "browser");
+          cleanup({ closeUpstream: true });
+        }
+      });
+
       const apiKey = runtimeEnv.DASHSCOPE_API_KEY ?? runtimeEnv.BAILIAN_API_KEY;
       if (!apiKey) {
         ws.close(4001, "API key not configured");
+        cleanup();
         return;
       }
 
       const model = record.model;
       const dashscopeUrl = `wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=${encodeURIComponent(model)}`;
 
-      let dashscopeWs: WebSocket | null = null;
-      let closed = false;
-
-      function cleanup() {
-        if (closed) return;
-        closed = true;
-        if (dashscopeWs && dashscopeWs.readyState === WebSocket.OPEN) {
-          dashscopeWs.close(1000, "client disconnected");
-        }
-      }
-
       try {
-        dashscopeWs = new WebSocket(dashscopeUrl, {
+        dashscopeWs = createRealtimeUpstream(dashscopeUrl, {
           headers: { Authorization: `Bearer ${apiKey}` }
         });
-
-        dashscopeWs.on("open", () => {
-          if (closed) return;
-          ws.send(JSON.stringify({ type: "proxy.connected" }));
-        });
-
-        dashscopeWs.on("message", (data: Buffer) => {
-          if (closed) return;
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(data.toString());
+        dashscopeWs.on("open", onUpstreamOpen);
+        dashscopeWs.on("message", onUpstreamMessage);
+        dashscopeWs.on("error", onUpstreamError);
+        dashscopeWs.on("close", onUpstreamClose);
+        disposeUpstreamHeartbeat = attachWebSocketHeartbeat(dashscopeWs, {
+          intervalMs: heartbeatIntervalMs,
+          maxMissedPongs: heartbeatMaxMissedPongs,
+          onTimeout: () => {
+            if (cleaned) return;
+            writeProxyLog("realtime_proxy_heartbeat_timeout", "upstream");
+            cleanup({ closeBrowser: { code: 1011, reason: "upstream heartbeat timeout" } });
           }
-        });
-
-        dashscopeWs.on("error", (err: Error) => {
-          if (closed) return;
-          ws.send(JSON.stringify({
-            type: "error",
-            error: { type: "proxy_error", message: err.message }
-          }));
-          cleanup();
-        });
-
-        dashscopeWs.on("close", (code: number, reason: Buffer) => {
-          if (closed) return;
-          // P3-21:透传上游关闭码(钳到可发送区间)+ 截断 reason 到 123 字节,不再硬编码 1000/抛 RangeError。
-          ws.close(sanitizeCloseCode(code), truncateCloseReason(reason.toString() || "dashscope closed"));
-          cleanup();
-        });
-
-        ws.on("message", (data: Buffer) => {
-          if (closed) return;
-          touchSession(sessionId);   // N-14:每帧滑动续期,长访谈 ASR 流量不再让会话过期。
-          if (dashscopeWs && dashscopeWs.readyState === WebSocket.OPEN) {
-            dashscopeWs.send(data.toString());
-          }
-        });
-
-        ws.on("close", () => {
-          cleanup();
-        });
-
-        ws.on("error", () => {
-          cleanup();
         });
       } catch (err) {
-        // P3-21:连接失败 message 可能超 123 字节 → 截断,避免 ws.close 抛 RangeError 掩盖真实错误。
-        ws.close(4002, truncateCloseReason(`Failed to connect to DashScope: ${err instanceof Error ? err.message : "unknown"}`));
+        writeProxyLog(
+          "realtime_proxy_upstream_error",
+          "upstream",
+          undefined,
+          err instanceof Error ? err.message : "unknown"
+        );
+        cleanup({ closeBrowser: { code: 4002, reason: "Failed to connect to DashScope" } });
       }
     });
   });
@@ -1019,22 +1177,6 @@ function getSessionId(params: unknown) {
   }
   const id = (params as { id?: unknown }).id;
   return typeof id === "string" && id ? id : undefined;
-}
-
-// P3-21:WS 关闭码只有 1000 与 3000–4999 可由应用主动发送(1005/1006/1015 等为本地保留码,
-// 发送会抛)。透传上游码时先钳到可发送区间,不可发送的(如 1006 异常关闭)回落 1000——码的
-// 语义信息由 reason 保留。
-function sanitizeCloseCode(code: number): number {
-  return code === 1000 || (code >= 3000 && code <= 4999) ? code : 1000;
-}
-// P3-21:WS 关闭 reason 上限 123 字节(UTF-8);超长 ws.close 会抛 RangeError。按字节安全截断,
-// 回退到不切碎多字节字符的边界。
-function truncateCloseReason(reason: string): string {
-  const buf = Buffer.from(reason, "utf8");
-  if (buf.length <= 123) return reason;
-  let end = 123;
-  while (end > 0 && (buf[end] & 0xc0) === 0x80) end -= 1;
-  return buf.subarray(0, end).toString("utf8");
 }
 
 function normalizeObject<T>(value: unknown): Partial<T> {
