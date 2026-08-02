@@ -1,8 +1,8 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildApiServer, isDirectCliExecution, createGracefulShutdown } from "./server";
+import { buildApiServer, isDirectCliExecution, createGracefulShutdown, isSpaHistoryPath } from "./server";
 import {
   createFakeChatClient,
   createFakeEmbeddingClient,
@@ -1430,6 +1430,21 @@ it("renders podcast audio through Bailian CosyVoice when the audio client is con
     });
   });
 
+  describe("isSpaHistoryPath", () => {
+    it("allows SPA client routes and rejects asset-like paths", () => {
+      expect(isSpaHistoryPath("/")).toBe(true);
+      expect(isSpaHistoryPath("/notes")).toBe(true);
+      expect(isSpaHistoryPath("/notes/")).toBe(true);
+      expect(isSpaHistoryPath("/podcast?x=1")).toBe(true);
+
+      expect(isSpaHistoryPath("/api/health")).toBe(false);
+      expect(isSpaHistoryPath("/vad/vad.worklet.bundle.min.js")).toBe(false);
+      expect(isSpaHistoryPath("/vad/missing.js")).toBe(false);
+      expect(isSpaHistoryPath("/assets/index-abc.js")).toBe(false);
+      expect(isSpaHistoryPath("/favicon.ico")).toBe(false);
+    });
+  });
+
   describe("PRODUCT_STATIC_DIR static file serving (P0-4)", () => {
     it("serves index.html from PRODUCT_STATIC_DIR when env is set", async () => {
       const staticDir = mkdtempSync(join(tmpdir(), "interview-static-"));
@@ -1467,7 +1482,46 @@ it("renders podcast audio through Bailian CosyVoice when the audio client is con
       const response = await server.inject({ method: "GET", url: "/api/health" });
 
       expect(response.statusCode).toBe(200);
-expect(response.json()).toMatchObject({ ok: true, ready: true, service: "interview-product-api" });
+      expect(response.json()).toMatchObject({ ok: true, ready: true, service: "interview-product-api" });
+    });
+
+    it("serves VAD worklet JS as javascript, not SPA HTML fallback", async () => {
+      const staticDir = mkdtempSync(join(tmpdir(), "interview-static-"));
+      tempDirs.push(staticDir);
+      mkdirSync(join(staticDir, "vad"), { recursive: true });
+      writeFileSync(join(staticDir, "index.html"), "<html><body>spa shell</body></html>");
+      writeFileSync(
+        join(staticDir, "vad", "vad.worklet.bundle.min.js"),
+        "// vad worklet fixture\nclass V {}\n"
+      );
+
+      const server = buildApiServer({
+        env: { PRODUCT_STATIC_DIR: staticDir }
+      });
+
+      const hit = await server.inject({ method: "GET", url: "/vad/vad.worklet.bundle.min.js" });
+      expect(hit.statusCode).toBe(200);
+      expect(hit.headers["content-type"] ?? "").toMatch(/javascript|ecmascript|text\/plain/i);
+      expect(hit.body).toContain("vad worklet fixture");
+      expect(hit.body).not.toContain("spa shell");
+
+      const miss = await server.inject({ method: "GET", url: "/vad/missing.worklet.js" });
+      expect(miss.statusCode).toBe(404);
+      expect(miss.body).not.toContain("spa shell");
+    });
+
+    it("SPA fallback still serves index.html for history routes", async () => {
+      const staticDir = mkdtempSync(join(tmpdir(), "interview-static-"));
+      tempDirs.push(staticDir);
+      writeFileSync(join(staticDir, "index.html"), "<html><body>spa shell</body></html>");
+
+      const server = buildApiServer({
+        env: { PRODUCT_STATIC_DIR: staticDir }
+      });
+
+      const response = await server.inject({ method: "GET", url: "/notes" });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("spa shell");
     });
   });
 });

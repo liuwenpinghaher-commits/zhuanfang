@@ -61,12 +61,24 @@ function main() {
   rmSync(outRoot, { recursive: true, force: true });
   mkdirSync(outOrt, { recursive: true });
 
-  for (const f of ["silero_vad_v5.onnx", "silero_vad_legacy.onnx"]) {
+  // Models + AudioWorklet bundle (MicVAD loads baseAssetPath + "vad.worklet.bundle.min.js").
+  // Without the worklet file, audioWorklet.addModule receives SPA index.html → AbortError.
+  const vadRootFiles = [
+    "silero_vad_v5.onnx",
+    "silero_vad_legacy.onnx",
+    "vad.worklet.bundle.min.js",
+    "vad.worklet.bundle.dev.js"
+  ];
+  const copiedVad = [];
+  for (const f of vadRootFiles) {
     const src = join(vadDist, f);
     if (!existsSync(src)) {
+      // dev bundle is optional; min worklet + models are required for production voice.
+      if (f === "vad.worklet.bundle.dev.js") continue;
       throw new Error(`missing ${f} under ${vadDist}`);
     }
     cpSync(src, join(outRoot, f));
+    copiedVad.push(f);
   }
 
   // ORT 1.17+ wasm/jsep bundles used by vad-web MicVAD.
@@ -112,7 +124,7 @@ function main() {
         event: "vad_assets_copied",
         outRoot,
         ortDist,
-        models: ["silero_vad_v5.onnx", "silero_vad_legacy.onnx"],
+        vadFiles: copiedVad,
         ortFiles: copiedOrt
       },
       null,
