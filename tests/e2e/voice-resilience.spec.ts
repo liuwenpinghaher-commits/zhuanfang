@@ -1,8 +1,47 @@
+import { readFile } from "node:fs/promises";
+import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
+import { resolve } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { installFakeMic } from "./fakeMic";
 import { resetDemoState } from "./helpers";
 
 const API = "http://127.0.0.1:13210";
+const WEB_HOST = "127.0.0.1";
+const WEB_PORT = 13220;
+
+type RawHttpResponse = {
+  statusCode: number;
+  headers: IncomingHttpHeaders;
+  body: Buffer;
+};
+
+function rawHttpGet(path: string): Promise<RawHttpResponse> {
+  return new Promise((resolveResponse, reject) => {
+    const request = httpRequest({
+      hostname: WEB_HOST,
+      port: WEB_PORT,
+      method: "GET",
+      path,
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk: Buffer) => chunks.push(chunk));
+      response.on("end", () => resolveResponse({
+        statusCode: response.statusCode ?? 0,
+        headers: response.headers,
+        body: Buffer.concat(chunks),
+      }));
+    });
+    request.on("error", reject);
+    request.setTimeout(10_000, () => request.destroy(new Error(`raw HTTP request timed out: ${path}`)));
+    request.end();
+  });
+}
+
+function expectPlainNotFound(response: RawHttpResponse, path: string) {
+  expect(response.statusCode, path).toBe(404);
+  expect(response.headers["content-type"], path).toMatch(/^text\/plain(?:;|$)/i);
+  expect(response.body.toString("utf8"), path).toBe("Not found");
+}
 
 async function activeInterview(page: Page) {
   const state = await (await page.request.get(`${API}/api/state`)).json() as {
@@ -12,6 +51,36 @@ async function activeInterview(page: Page) {
   if (!session) throw new Error("active interview session not found");
   return session;
 }
+
+test("开发态 VAD runtime 对 raw 编码路径穿越返回专用纯文本 404", async () => {
+  const traversalPaths = [
+    "/vad/ort/%2e%2e%2fpackage.json",
+    "/vad/ort/%252e%252e%252fpackage.json",
+    "/vad/ort/..%2fpackage.json",
+    "/vad/ort/%2e%2e/package.json",
+  ];
+
+  for (const path of traversalPaths) {
+    expectPlainNotFound(await rawHttpGet(path), path);
+  }
+});
+
+test("开发态 VAD runtime 原样返回白名单模块且不存在文件为纯文本 404", async () => {
+  const moduleNames = [
+    "ort-wasm-simd-threaded.mjs",
+    "ort-wasm-simd-threaded.jsep.mjs",
+  ];
+
+  for (const moduleName of moduleNames) {
+    const response = await rawHttpGet(`/vad/ort/${moduleName}`);
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-type"]).toMatch(/(?:application|text)\/javascript/i);
+    expect(response.body).toEqual(await readFile(resolve("public", "vad", "ort", moduleName)));
+  }
+
+  const missingPath = "/vad/ort/ort-wasm-not-present.mjs";
+  expectPlainNotFound(await rawHttpGet(missingPath), missingPath);
+});
 
 test("会中 ASR 断开后恢复同一专访，partial 先确认再写入", async ({ context }) => {
   test.setTimeout(60_000);

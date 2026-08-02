@@ -16,12 +16,14 @@ function serveVadRuntimeModules(): Plugin {
       const runtimeRoot = resolve(server.config.publicDir, "vad", "ort");
 
       server.middlewares.use(async (request, response, next) => {
-        const pathname = new URL(request.url ?? "/", "http://vite.local").pathname;
-        if (!pathname.startsWith(VAD_ORT_MODULE_PREFIX)) return next();
+        const rawUrl = request.url ?? "/";
+        const queryIndex = rawUrl.indexOf("?");
+        const rawPath = queryIndex === -1 ? rawUrl : rawUrl.slice(0, queryIndex);
+        if (!rawPath.startsWith(VAD_ORT_MODULE_PREFIX)) return next();
 
         let moduleName: string;
         try {
-          moduleName = decodeURIComponent(pathname.slice(VAD_ORT_MODULE_PREFIX.length));
+          moduleName = decodeURIComponent(rawPath.slice(VAD_ORT_MODULE_PREFIX.length));
         } catch {
           response.statusCode = 404;
           response.setHeader("Content-Type", "text/plain; charset=utf-8");
@@ -31,7 +33,11 @@ function serveVadRuntimeModules(): Plugin {
 
         const modulePath = resolve(runtimeRoot, moduleName);
         if (
-          !VAD_ORT_MODULE_BASENAME.test(moduleName)
+          moduleName.includes("/")
+          || moduleName.includes("\\")
+          || moduleName.includes("%")
+          || moduleName.includes("..")
+          || !VAD_ORT_MODULE_BASENAME.test(moduleName)
           || modulePath !== `${runtimeRoot}${sep}${moduleName}`
         ) {
           response.statusCode = 404;
