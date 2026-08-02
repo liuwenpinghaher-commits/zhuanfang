@@ -117,6 +117,8 @@ export interface CascadedPipelineCallbacks {
   onUserTranscript: (text: string, isFinal: boolean) => void;
   onAssistantText: (text: string) => void;
   onError: (e: Error) => void;
+  /** TTS playback stopped unexpectedly; the assistant text remains available. */
+  onTtsPlaybackInterrupted?: (e: Error) => void;
   /** Stage-2 TTFA probe */
   onLatency?: (sample: {
     ttfaMs: number;
@@ -353,6 +355,14 @@ export function connectCascadedPipeline(
     }, ECHO_GUARD_MS);
   }
 
+  function reportTtsPlaybackInterrupted(error: unknown) {
+    if (closed || (error as DOMException)?.name === "AbortError") return;
+    const interruption = error instanceof Error ? error : new Error(String(error));
+    callbacks.onTtsPlaybackInterrupted?.(interruption);
+    releaseMicAfterGuard();
+    setState("listening");
+  }
+
   // ── Barge-in ──────────────────────────────────────────────────────────────
   /**
    * Called when ASR fires speech_started.
@@ -431,7 +441,7 @@ export function connectCascadedPipeline(
       const text = pickBackchannel(expressionState, currentPreSignals?.depthDirection?.guidance);
       const startedAtMs = Date.now();
       suppressMic();
-      try { await tts.speak([text]); } catch { /* stopped */ }
+      try { await tts.speak([text]); } catch (error) { reportTtsPlaybackInterrupted(error); }
       turnAssembler.noteTtsPlayback({ text, startedAtMs, endedAtMs: Date.now() });
       releaseMicAfterGuard();
       return;
@@ -494,8 +504,15 @@ export function connectCascadedPipeline(
     let pendingText = "";
     let firstSpeakStarted = false;
     let ttsStartedAtMs = 0;
+    let ttsPlaybackInterrupted = false;
+    const handleTtsFailure = (error: unknown) => {
+      if (closed || ctrl.signal.aborted) return;
+      ttsPlaybackInterrupted = true;
+      reportTtsPlaybackInterrupted(error);
+    };
 
     const flushCompletedSentences = async (forceAll = false) => {
+      if (ttsPlaybackInterrupted) return;
       const source = stripSpokenAsides(pendingText);
       // Match splitSentences logic for complete clauses ending with 。！？\n
       // Hard stops: 。！？\n ; soft clause stops: ，、；;, when length>=8 (token-level-ish TTFA)
@@ -540,7 +557,8 @@ export function connectCascadedPipeline(
           if (!closed && !ctrl.signal.aborted) {
             spokenText = lastPlannedSpokenText;
           }
-        } catch {
+        } catch (error) {
+          handleTtsFailure(error);
           return;
         }
       }
@@ -585,6 +603,12 @@ export function connectCascadedPipeline(
 
     if (closed || ctrl.signal.aborted) return;
 
+    if (ttsPlaybackInterrupted) {
+      if (assistantText) callbacks.onAssistantText(assistantText);
+      resetTurn();
+      return;
+    }
+
     const spokenSource = stripSpokenAsides(assistantText);
     const prosody = providedProsody ?? deriveSpeechProsody(assistantText);
     if (spokenSentences.length === 0) {
@@ -597,8 +621,8 @@ export function connectCascadedPipeline(
         const startedAtMs = Date.now();
         try {
           await tts.speak([filler]);
-        } catch {
-          /* barge-in */
+        } catch (error) {
+          handleTtsFailure(error);
         } finally {
           turnAssembler.noteTtsPlayback({ text: filler, startedAtMs, endedAtMs: Date.now() });
           releaseMicAfterGuard();
@@ -625,8 +649,8 @@ export function connectCascadedPipeline(
       try {
         await tts.speak(sentences, undefined, prosody);
         if (!closed && !ctrl.signal.aborted) spokenText = spokenSource;
-      } catch {
-        /* barge-in */
+      } catch (error) {
+        handleTtsFailure(error);
       } finally {
         turnAssembler.noteTtsPlayback({ text: spokenSource, startedAtMs: ttsStartedAtMs, endedAtMs: Date.now() });
         releaseMicAfterGuard();
@@ -704,7 +728,7 @@ export function connectCascadedPipeline(
         setState("speaking");
         suppressMic();
         const startedAtMs = Date.now();
-        try { await tts.speak([openingText.trim()]); } catch { /* stopped */ }
+        try { await tts.speak([openingText.trim()]); } catch (error) { reportTtsPlaybackInterrupted(error); }
         turnAssembler.noteTtsPlayback({ text: openingText.trim(), startedAtMs, endedAtMs: Date.now() });
         releaseMicAfterGuard();
         if (!closed) setState("listening");

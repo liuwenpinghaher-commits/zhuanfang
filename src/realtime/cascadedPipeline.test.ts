@@ -19,6 +19,7 @@ import type {
   AsrEventHandlers,
 } from "./cascadedPipeline";
 import { connectCascadedPipeline } from "./cascadedPipeline";
+import { TtsPlaybackInterruptedError } from "./cascadedTtsSink";
 import type { ExpressionState } from "../domain/types";
 
 // ---------------------------------------------------------------------------
@@ -784,5 +785,59 @@ describe("connectCascadedPipeline", () => {
     expect((tts as any).closeCalls).toBe(1);
     // stop() is still called before close() (so in-flight speak() resolves).
     expect((tts as any).stopCalls).toBeGreaterThanOrEqual(1);
+  });
+
+  it("TTS 中断保留文字、回到 listening 且不关闭 ASR", async () => {
+    const onTtsPlaybackInterrupted = vi.fn();
+    const base = makeOpts();
+    const interruptedTts: TtsSink = {
+      ...tts,
+      speak: vi.fn().mockRejectedValueOnce(new TtsPlaybackInterruptedError("播放中断", 1011)),
+    };
+    const asrStop = vi.spyOn(asr, "stop");
+    const pipeline = connectCascadedPipeline({
+      ...base,
+      tts: interruptedTts,
+      callbacks: { ...base.callbacks, onTtsPlaybackInterrupted } as never,
+    });
+    await pipeline.startListening();
+    asr.pushDelta("完整用户表达", true);
+    asr.pushSpeechStopped(900);
+
+    await vi.waitFor(() => expect(interruptedTts.speak).toHaveBeenCalled());
+    await vi.waitFor(() => expect(onTtsPlaybackInterrupted).toHaveBeenCalledOnce());
+    expect(assistantTexts).toContain(FIXED_ASSISTANT_TEXT);
+    expect(stateChanges.at(-1)).toBe("listening");
+    expect(asrStop).not.toHaveBeenCalled();
+
+    pipeline.close();
+  });
+
+  it("流式播放中断后不继续发送同一轮剩余 segments", async () => {
+    const onTtsPlaybackInterrupted = vi.fn();
+    const base = makeOpts();
+    const interruptedTts: TtsSink = {
+      ...tts,
+      speak: vi.fn().mockRejectedValueOnce(new TtsPlaybackInterruptedError("播放中断", 1011)),
+    };
+    const stream = vi.fn(async (_text: string, _signal: AbortSignal, onDelta: (chunk: string) => void) => {
+      onDelta("第一段。");
+      onDelta("第二段。");
+      return { assistantText: "第一段。第二段。" };
+    });
+    const pipeline = connectCascadedPipeline({
+      ...base,
+      tts: interruptedTts,
+      sendUserTurnStream: stream,
+      callbacks: { ...base.callbacks, onTtsPlaybackInterrupted } as never,
+    });
+    await pipeline.startListening();
+    asr.pushDelta("完整用户表达", true);
+    asr.pushSpeechStopped(900);
+
+    await vi.waitFor(() => expect(onTtsPlaybackInterrupted).toHaveBeenCalledOnce());
+    expect(interruptedTts.speak).toHaveBeenCalledTimes(1);
+
+    pipeline.close();
   });
 });

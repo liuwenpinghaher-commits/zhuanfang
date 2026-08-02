@@ -31,6 +31,16 @@ const DEFAULT_SAMPLE_RATE = 24000;
 // safely in the future (a just-resumed context can have currentTime ~0).
 const STARTUP_LATENCY = 0.15;
 
+export class TtsPlaybackInterruptedError extends Error {
+  readonly code?: number;
+
+  constructor(message: string, code?: number) {
+    super(message);
+    this.name = "TtsPlaybackInterruptedError";
+    this.code = code;
+  }
+}
+
 export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink {
   let ws: WebSocket | null = null;
   let audioCtx: AudioContext | null = null;
@@ -54,10 +64,31 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
   const recordedChunks: Uint8Array[] = [];
   let recordedSampleRate = DEFAULT_SAMPLE_RATE;
 
-  // Settles the in-flight speak() promise. stop()/cancel must call this so the
-  // pipeline's `await tts.speak()` always resolves (else the echo guard never
-  // releases the mic). Cleared whenever no speak() is in flight.
-  let settleActiveSpeak: (() => void) | null = null;
+  // The in-flight speak is bound to the socket that started it. A closed socket
+  // can still dispatch late lifecycle events after a replacement socket opens;
+  // those events must never settle the replacement utterance.
+  let activeSpeak: {
+    socket: WebSocket;
+    resolve: () => void;
+    reject: (error: TtsPlaybackInterruptedError) => void;
+    cleanup: () => void;
+  } | null = null;
+
+  function resolveActiveSpeak(socket?: WebSocket) {
+    if (!activeSpeak || (socket && activeSpeak.socket !== socket)) return;
+    const current = activeSpeak;
+    activeSpeak = null;
+    current.cleanup();
+    current.resolve();
+  }
+
+  function rejectActiveSpeak(socket: WebSocket, message: string, code?: number) {
+    if (stopped || !activeSpeak || activeSpeak.socket !== socket) return;
+    const current = activeSpeak;
+    activeSpeak = null;
+    current.cleanup();
+    current.reject(new TtsPlaybackInterruptedError(message, code));
+  }
 
   function getAudioContext(): AudioContext {
     if (!audioCtx || audioCtx.state === "closed") {
@@ -145,15 +176,14 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
         ws = socket;
         resolve(socket);
       };
-      socket.onerror = () => reject(new Error("TTS WebSocket failed to open"));
-      socket.onclose = () => {
+      socket.onerror = () => {
+        const message = "TTS WebSocket interrupted";
+        reject(new TtsPlaybackInterruptedError(message));
+        rejectActiveSpeak(socket, message);
+      };
+      socket.onclose = (event) => {
         if (ws === socket) ws = null;
-        // Mid-utterance disconnect: settle in-flight speak so pipeline does not hang forever.
-        if (settleActiveSpeak) {
-          const settle = settleActiveSpeak;
-          settleActiveSpeak = null;
-          settle();
-        }
+        rejectActiveSpeak(socket, event.reason || "TTS WebSocket interrupted", event.code);
       };
     });
   }
@@ -167,7 +197,14 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
       leftoverByte = null;
       sampleRate = DEFAULT_SAMPLE_RATE;
 
-      const socket = await openWs();
+      let socket: WebSocket;
+      try {
+        socket = await openWs();
+      } catch (error) {
+        if (error instanceof TtsPlaybackInterruptedError) throw error;
+        throw new TtsPlaybackInterruptedError(error instanceof Error ? error.message : "TTS WebSocket interrupted");
+      }
+      if (stopped) return;
       const ctx = getAudioContext();
       // Ensure the context is actually RUNNING before we schedule against
       // ctx.currentTime — a suspended context reports currentTime ~0, which would
@@ -183,17 +220,14 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
         const cleanup = () => {
           socket.removeEventListener("message", onMessage);
           if (drainPoll !== null) { clearInterval(drainPoll); drainPoll = null; }
-          settleActiveSpeak = null;
         };
 
-        // Allow stop() to resolve this promise even if no further frames arrive.
-        settleActiveSpeak = () => { cleanup(); resolve(); };
+        activeSpeak = { socket, resolve, reject, cleanup };
 
         // Resolve once every scheduled buffer has finished playing.
         const resolveWhenDrained = () => {
           if (stopped || ctx.currentTime >= nextStartTime - 0.02) {
-            cleanup();
-            resolve();
+            resolveActiveSpeak(socket);
             return true;
           }
           return false;
@@ -201,8 +235,7 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
 
         const onMessage = (event: MessageEvent) => {
           if (stopped) {
-            cleanup();
-            resolve();
+            resolveActiveSpeak(socket);
             return;
           }
 
@@ -245,8 +278,7 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
               drainPoll = setInterval(resolveWhenDrained, 50);
             }
           } else if (msg.type === "error") {
-            cleanup();
-            reject(new Error(msg.message ?? "TTS error"));
+            rejectActiveSpeak(socket, msg.message ?? "TTS error");
           }
           void doneReceived;
         };
@@ -270,7 +302,7 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
         ws.send(JSON.stringify({ type: "cancel" }));
       }
       // Resolve any in-flight speak() so the pipeline's await returns (releases mic).
-      if (settleActiveSpeak) settleActiveSpeak();
+      resolveActiveSpeak();
     },
 
     // P1-08: terminal teardown. stop() keeps the socket warm for the next turn;
@@ -283,7 +315,7 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
     close() {
       stopPlayback();
       // Resolve any in-flight speak() before we drop the socket it's listening on.
-      if (settleActiveSpeak) settleActiveSpeak();
+      resolveActiveSpeak();
       if (ws) {
         try {
           if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {

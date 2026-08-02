@@ -2826,6 +2826,10 @@ export default function App() {
                   if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
                   setNotice(buildNotice("warning", "级联语音错误", err.message));
                 },
+                onTtsPlaybackInterrupted: () => {
+                  if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
+                  setNotice(buildNotice("warning", "语音播放中断", "本轮语音播放中断，文字内容已保留"));
+                },
                 onTranscriptQuarantined: (item) => {
                   if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
                   setLiveUserTranscript("");
