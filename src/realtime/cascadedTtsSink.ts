@@ -114,6 +114,12 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
     current.reject(new TtsPlaybackInterruptedError(message, code));
   }
 
+  function interruptSpeakForSocket(socket: WebSocket, error: TtsPlaybackInterruptedError) {
+    const current = pendingSpeak;
+    if (current?.socket === socket && !current.cancelled) current.interrupt(error);
+    rejectActiveSpeak(socket, error.message, error.code);
+  }
+
   function cancelPendingSpeak() {
     const current = pendingSpeak;
     if (!current || current.cancelled) return;
@@ -218,16 +224,20 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
       };
       socket.onerror = () => {
         const error = new TtsPlaybackInterruptedError("TTS WebSocket interrupted");
-        if (isCurrentSpeak(attempt.generation)) attempt.interrupt(error);
+        if (ws === socket) ws = null;
+        interruptSpeakForSocket(socket, error);
         reject(error);
-        rejectActiveSpeak(socket, error.message);
+        try {
+          if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+            socket.close(1011, "tts socket error");
+          }
+        } catch { /* already closing/closed */ }
       };
       socket.onclose = (event) => {
         if (ws === socket) ws = null;
         const error = new TtsPlaybackInterruptedError(event.reason || "TTS WebSocket interrupted", event.code);
-        if (isCurrentSpeak(attempt.generation)) attempt.interrupt(error);
+        interruptSpeakForSocket(socket, error);
         reject(error);
-        rejectActiveSpeak(socket, error.message, error.code);
       };
     });
   }

@@ -150,6 +150,22 @@ describe("createBrowserTtsSink", () => {
     expect(settled).toBe(true);
   }
 
+  async function expectInterrupted(
+    promise: Promise<void>,
+    expected: { name: string; code?: number },
+  ) {
+    const outcome = await Promise.race([
+      promise.then(
+        () => ({ status: "resolved" as const }),
+        (error: unknown) => ({ status: "rejected" as const, error }),
+      ),
+      new Promise<{ status: "pending" }>((resolve) => {
+        setTimeout(() => resolve({ status: "pending" }), 0);
+      }),
+    ]);
+    expect(outcome).toMatchObject({ status: "rejected", error: expected });
+  }
+
   function sentSpeakSegments(socket: MockTtsSocket): string[][] {
     return socket.sent
       .map((value) => JSON.parse(value))
@@ -269,5 +285,41 @@ describe("createBrowserTtsSink", () => {
 
     newSocket.message(JSON.stringify({ type: "tts.done" }));
     await second;
+  });
+
+  it.each([
+    { event: "close" as const, expected: { name: "TtsPlaybackInterruptedError", code: 1011 } },
+    { event: "error" as const, expected: { name: "TtsPlaybackInterruptedError" } },
+  ])("warm socket $event 在下一轮 resume pending 时中断当前 speak", async ({ event, expected }) => {
+    const sink = createBrowserTtsSink("ws://test/tts");
+    const first = sink.speak(["建立 warm socket"]);
+    const warmSocket = sockets[0];
+    warmSocket.open();
+    await vi.waitFor(() => expect(sentSpeakSegments(warmSocket)).toEqual([["建立 warm socket"]]));
+    warmSocket.message(JSON.stringify({ type: "tts.done" }));
+    await first;
+
+    const context = audioContexts[0];
+    context.state = "suspended";
+    context.blockResume = true;
+    const resumeCallsBefore = context.resumeCalls;
+    const second = sink.speak(["resume pending 的第二轮"]);
+    await vi.waitFor(() => expect(context.resumeCalls).toBeGreaterThan(resumeCallsBefore));
+
+    if (event === "close") warmSocket.close(1011, "remote interrupted");
+    else warmSocket.error();
+
+    await expectInterrupted(second, expected);
+    context.releaseBlockedResumes();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sentSpeakSegments(warmSocket)).toEqual([["建立 warm socket"]]);
+
+    const third = sink.speak(["故障后的新轮"]);
+    expect(sockets).toHaveLength(2);
+    sockets[1].open();
+    await vi.waitFor(() => expect(sentSpeakSegments(sockets[1])).toEqual([["故障后的新轮"]]));
+    sockets[1].message(JSON.stringify({ type: "tts.done" }));
+    await third;
   });
 });
