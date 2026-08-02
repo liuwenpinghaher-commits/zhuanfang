@@ -1,5 +1,5 @@
-import { CheckCircle2, ChevronDown, ClipboardList, FileAudio2, Info, LoaderCircle, Plus, Sparkles, Trash2, Undo2, Upload, X } from "lucide-react";
-import { useRef, useState } from "react";
+import { CheckCircle2, ChevronDown, ClipboardList, FileAudio2, Info, LoaderCircle, Mic, Plus, Settings, Sparkles, Trash2, Undo2, Upload, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { CorpusImportInput, PlaybookPatch, ProductState } from "../../domain/types";
 import { ANALYSIS_DIMENSIONS, ANALYSIS_OUTPUTS, ANALYSIS_PATHS, ANALYSIS_PRINCIPLES } from "./analysisMethod";
@@ -30,6 +30,10 @@ interface CorpusLearningViewProps {
   onApprovePatch: (patchId: string, rules: string[]) => void;
   onRevertPatch: (patchId: string) => void;
   onDeleteInsight: (insightId: string) => void;
+  /** 分析成功后高亮并滚动到对应 insight。 */
+  focusInsightId?: string | null;
+  onOpenConfig?: () => void;
+  onGoInterview?: () => void;
 }
 
 export function CorpusLearningView({
@@ -53,7 +57,10 @@ export function CorpusLearningView({
   onAnalyze,
   onApprovePatch,
   onRevertPatch,
-  onDeleteInsight
+  onDeleteInsight,
+  focusInsightId = null,
+  onOpenConfig,
+  onGoInterview
 }: CorpusLearningViewProps) {
   const importById = new Map(state.corpusImports.map((item) => [item.id, item]));
   const contentLabel = mediaType === "audio" ? "音频转写稿或摘要" : "专访文本或转写稿";
@@ -61,6 +68,16 @@ export function CorpusLearningView({
   const fileRef = useRef<HTMLInputElement>(null);
   const [fileSizeLabel, setFileSizeLabel] = useState("");
   const [fileError, setFileError] = useState("");
+  const canAnalyze = content.trim().length > 0 && !analyzing && !transcribing;
+
+  useEffect(() => {
+    if (!focusInsightId) return;
+    requestAnimationFrame(() => {
+      document
+        .querySelector(`[data-corpus-insight="${focusInsightId}"]`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }, [focusInsightId, state.corpusInsights.length]);
 
   function clearSelectedFile() {
     setFileError("");
@@ -282,11 +299,15 @@ export function CorpusLearningView({
             className={analyzing ? "primary-action btn-loading" : "primary-action"}
             type="button"
             onClick={onAnalyze}
-            disabled={analyzing || transcribing}
+            disabled={!canAnalyze}
+            aria-busy={analyzing}
 >
             {analyzing ? <span className="spinner" /> : <Sparkles size={18} />}
             {analyzing ? "分析中…" : "分析并生成建议"}
           </button>
+          {!content.trim() && !analyzing && (
+            <p className="field-help">请先粘贴专访文本或生成转写稿，再开始分析。</p>
+          )}
           {analyzing && (
             <p className="corpus-stage-hint">
               正在提炼提问技法，通常需要 10-30 秒……
@@ -300,14 +321,28 @@ export function CorpusLearningView({
           <section className="panel empty-module">
             <ClipboardList size={18} />
             <p>还没有语料分析。导入一段专访文本后，会生成可解释的改进建议。</p>
+            <button
+              className="secondary-action"
+              type="button"
+              onClick={() => document.getElementById("corpus-content")?.focus()}
+            >
+              去填写样本
+            </button>
           </section>
         )}
         {state.corpusInsights.map((insight) => {
           const sourceImport = importById.get(insight.importId);
+          const isFocus = focusInsightId === insight.id;
+          const appliedCount = insight.recommendedPatches.filter((p) => p.status === "applied").length;
           return (
-          <article className="record-row feature-row" key={insight.id}>
+          <article
+            className={`record-row feature-row${isFocus ? " is-highlight" : ""}`}
+            key={insight.id}
+            data-corpus-insight={insight.id}
+          >
             <div>
               <span className="status-pill">{sourceImport?.mediaType ?? "text"} · 已分析</span>
+              {appliedCount > 0 && <span className="status-pill is-tracked">已应用 {appliedCount} 条补丁</span>}
               <h2>{insight.title}</h2>
               {sourceImport?.sourceUrl && <p className="source-url">{sourceImport.sourceUrl}</p>}
               <span className="label">{new Date(insight.createdAt).toLocaleDateString("zh-CN")}</span>
@@ -328,7 +363,14 @@ export function CorpusLearningView({
             </div>
             <div className="patch-list">
               {insight.recommendedPatches.map((patch) => (
-                <EditablePatchCard key={patch.id} patch={patch} onApprovePatch={onApprovePatch} onRevertPatch={onRevertPatch} />
+                <EditablePatchCard
+                  key={patch.id}
+                  patch={patch}
+                  onApprovePatch={onApprovePatch}
+                  onRevertPatch={onRevertPatch}
+                  onOpenConfig={onOpenConfig}
+                  onGoInterview={onGoInterview}
+                />
               ))}
             </div>
           </article>
@@ -350,9 +392,11 @@ interface EditablePatchCardProps {
   patch: PlaybookPatch;
   onApprovePatch: (patchId: string, rules: string[]) => void;
   onRevertPatch: (patchId: string) => void;
+  onOpenConfig?: () => void;
+  onGoInterview?: () => void;
 }
 
-function EditablePatchCard({ patch, onApprovePatch, onRevertPatch }: EditablePatchCardProps) {
+function EditablePatchCard({ patch, onApprovePatch, onRevertPatch, onOpenConfig, onGoInterview }: EditablePatchCardProps) {
   const applied = patch.status === "applied";
   // 回归审查 R7-F1:只有 proposed(未处置)才可编辑+应用。applied/reverted 都是终态——此前只判
   // applied,导致撤销应用后(status='reverted')卡片落回编辑器分支且"确认影响引擎"按钮启用,但
@@ -392,9 +436,21 @@ function EditablePatchCard({ patch, onApprovePatch, onRevertPatch }: EditablePat
           </ul>
           {/* 仅 applied 可撤销;reverted 是终态,无操作。 */}
           {applied && (
-            <button className="link-button" type="button" onClick={() => onRevertPatch(patch.id)}>
-              <Undo2 size={14} />撤销应用
-            </button>
+            <div className="form-actions">
+              <button className="link-button" type="button" onClick={() => onRevertPatch(patch.id)}>
+                <Undo2 size={14} />撤销应用
+              </button>
+              {onOpenConfig && (
+                <button className="secondary-action compact-action" type="button" onClick={onOpenConfig}>
+                  <Settings size={14} />查看系统配置
+                </button>
+              )}
+              {onGoInterview && (
+                <button className="secondary-action compact-action" type="button" onClick={onGoInterview}>
+                  <Mic size={14} />去实时专访验证
+                </button>
+              )}
+            </div>
           )}
         </>
       ) : (

@@ -22,6 +22,12 @@ describe("ProfileView 显性档案保存", () => {
     let resolveSave!: (state: ProductState) => void;
     const onSaveProfile = vi.fn(() => new Promise<ProductState>((resolve) => { resolveSave = resolve; }));
     renderProfile(state, onSaveProfile);
+    const nameInput = container?.querySelector("input[placeholder='你希望被怎么称呼']") as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    act(() => {
+      setter?.call(nameInput, "草稿称呼");
+      nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
     const button = findSaveButton();
 
     act(() => button.click());

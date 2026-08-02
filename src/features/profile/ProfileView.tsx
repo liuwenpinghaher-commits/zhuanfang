@@ -1,5 +1,5 @@
 import { Brain, Download, FileText, PenLine, Settings, ShieldCheck, Trash2, Upload } from "lucide-react";
-import { useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { PrivacyReport } from "../../domain/privacy";
 import type { StateExportBundle } from "../../domain/backup";
@@ -19,6 +19,8 @@ interface ProfileViewProps {
   onPurge: () => Promise<ProductState>;
   onSetProductState: (state: ProductState) => void;
   onSaveProfile: (state: ProductState) => Promise<ProductState>;
+  /** 跳转记忆治理（审批候选 / 编辑长期记忆）。 */
+  onOpenMemory?: () => void;
 }
 
 type GovernanceAction = "export" | "import" | "privacy" | "purge";
@@ -75,7 +77,8 @@ export function ProfileView({
   onPrivacyReport,
   onPurge,
   onSetProductState,
-  onSaveProfile
+  onSaveProfile,
+  onOpenMemory
 }: ProfileViewProps) {
   const [form, setForm] = useState({
     name: state.profile.name,
@@ -85,10 +88,41 @@ export function ProfileView({
     longTermGoal: state.profile.longTermGoal,
     preferredStrength: state.profile.preferredStrength
   });
+  const [profileDirty, setProfileDirty] = useState(false);
   const [profileSaved, setProfileSaved] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileSaveError, setProfileSaveError] = useState<string | null>(null);
   const [boundaryText, setBoundaryText] = useState("");
+  const [boundaryNotice, setBoundaryNotice] = useState<string | null>(null);
+  const profileDirtyRef = useRef(false);
+  profileDirtyRef.current = profileDirty;
+
+  // 远端/他处更新 profile 时：非 dirty 才同步表单，避免冲掉未保存编辑。
+  useEffect(() => {
+    if (profileDirtyRef.current) return;
+    setForm({
+      name: state.profile.name,
+      role: state.profile.role,
+      industry: state.profile.industry,
+      currentFocus: state.profile.currentFocus,
+      longTermGoal: state.profile.longTermGoal,
+      preferredStrength: state.profile.preferredStrength
+    });
+  }, [
+    state.profile.name,
+    state.profile.role,
+    state.profile.industry,
+    state.profile.currentFocus,
+    state.profile.longTermGoal,
+    state.profile.preferredStrength
+  ]);
+
+  function touchForm(next: typeof form) {
+    setForm(next);
+    setProfileDirty(true);
+    setProfileSaved(false);
+    setProfileSaveError(null);
+  }
 
   async function handleSaveProfile() {
     if (profileSaving) return;
@@ -98,6 +132,7 @@ export function ProfileView({
     try {
       await onSaveProfile(updateProfile(state, form));
       setProfileSaved(true);
+      setProfileDirty(false);
     } catch (error) {
       setProfileSaveError(error instanceof Error && error.message ? error.message : "档案保存失败，请重试。");
     } finally {
@@ -111,6 +146,7 @@ export function ProfileView({
     }
     onSetProductState(addExplicitBoundary(state, text));
     setBoundaryText("");
+    setBoundaryNotice("边界已写入档案，将随同步进入后续专访指令。");
   }
   function handleRemoveBoundary(boundary: string) {
     onSetProductState(removeExplicitBoundary(state, boundary));
@@ -256,44 +292,45 @@ export function ProfileView({
             <label className="field-stack">
               <span className="field-label">称呼</span>
               <input value={form.name} maxLength={40} placeholder="你希望被怎么称呼"
-                onChange={(e) => { setForm({ ...form, name: e.target.value }); setProfileSaved(false); }} />
+                onChange={(e) => touchForm({ ...form, name: e.target.value })} />
             </label>
             <div className="row">
               <label className="field-stack flex-1">
                 <span className="field-label">身份</span>
                 <input value={form.role} maxLength={40} placeholder="如：产品负责人"
-                  onChange={(e) => { setForm({ ...form, role: e.target.value }); setProfileSaved(false); }} />
+                  onChange={(e) => touchForm({ ...form, role: e.target.value })} />
               </label>
               <label className="field-stack flex-1">
                 <span className="field-label">行业</span>
                 <input value={form.industry} maxLength={40} placeholder="如：AI 产品 / 创业"
-                  onChange={(e) => { setForm({ ...form, industry: e.target.value }); setProfileSaved(false); }} />
+                  onChange={(e) => touchForm({ ...form, industry: e.target.value })} />
               </label>
             </div>
             <label className="field-stack">
               <span className="field-label">当前关注</span>
               <input value={form.currentFocus} maxLength={120} placeholder="这段时间你最想推进/想清楚的事"
-                onChange={(e) => { setForm({ ...form, currentFocus: e.target.value }); setProfileSaved(false); }} />
+                onChange={(e) => touchForm({ ...form, currentFocus: e.target.value })} />
             </label>
             <label className="field-stack">
               <span className="field-label">长期目标</span>
               <input value={form.longTermGoal} maxLength={120} placeholder="你想长期追踪/抵达的方向"
-                onChange={(e) => { setForm({ ...form, longTermGoal: e.target.value }); setProfileSaved(false); }} />
+                onChange={(e) => touchForm({ ...form, longTermGoal: e.target.value })} />
             </label>
             <label className="field-stack">
               <span className="field-label">追问强度</span>
               <select value={form.preferredStrength}
-                onChange={(e) => { setForm({ ...form, preferredStrength: e.target.value as InterviewStrength }); setProfileSaved(false); }}>
+                onChange={(e) => touchForm({ ...form, preferredStrength: e.target.value as InterviewStrength })}>
                 <option value="gentle">温和（gentle）</option>
                 <option value="standard">标准（standard）</option>
                 <option value="sharp">犀利（sharp）</option>
               </select>
             </label>
             <div className="row">
-              <button className="primary-action" type="button" onClick={handleSaveProfile} disabled={profileSaving} aria-busy={profileSaving}>
+              <button className="primary-action" type="button" onClick={handleSaveProfile} disabled={profileSaving || !profileDirty} aria-busy={profileSaving}>
                 {profileSaving ? "保存中…" : "保存档案"}
               </button>
-              {profileSaved && <span className="field-status is-success">已保存</span>}
+              {profileDirty && !profileSaving && <span className="field-status">有未保存更改</span>}
+              {profileSaved && !profileDirty && <span className="field-status is-success">已保存</span>}
             </div>
             {profileSaveError && <p className="field-error" role="alert">{profileSaveError}</p>}
           </div>
@@ -312,6 +349,7 @@ export function ProfileView({
             </label>
             <button className="secondary-action" type="button" onClick={handleAddBoundary} disabled={!boundaryText.trim()}>添加边界</button>
           </div>
+          {boundaryNotice && <p className="field-status is-success">{boundaryNotice}</p>}
           <ul className="clean-list">
             {state.profile.explicitBoundaries.map((boundary, idx) => (
               <li key={"boundary-" + idx} className="row-between">
@@ -357,14 +395,24 @@ export function ProfileView({
       )}
 
       <section className="panel">
-        <div className="panel-title"><Brain size={18} /><h2>系统记忆</h2></div>
+        <div className="panel-title row-between">
+          <div className="row">
+            <Brain size={18} />
+            <h2>系统记忆</h2>
+          </div>
+          {onOpenMemory && (
+            <button className="secondary-action compact-action" type="button" onClick={onOpenMemory}>
+              去记忆治理
+            </button>
+          )}
+        </div>
         <div className="memory-grid">
           <div>
             <span className="label">已确认记忆</span>
             {(() => {
               const confirmed = state.memoryRecords.filter((r) => r.status === "confirmed");
               return confirmed.length > 0
-                ? <ul>{confirmed.map((r) => <li key={r.id}>{r.text}</li>)}</ul>
+                ? <ul>{confirmed.slice(0, 5).map((r) => <li key={r.id}>{r.text}</li>)}</ul>
                 : <p className="empty-hint">暂无已确认记忆。对话结束后 AI 提取的记忆经审批后将显示在此。</p>;
             })()}
           </div>
@@ -373,7 +421,16 @@ export function ProfileView({
             {(() => {
               const pending = state.memoryCandidates.filter((c) => c.status === "pending");
               return pending.length > 0
-                ? <ul>{pending.map((c) => <li key={c.id}>{c.text}</li>)}</ul>
+                ? (
+                  <>
+                    <ul>{pending.slice(0, 5).map((c) => <li key={c.id}>{c.text}</li>)}</ul>
+                    {onOpenMemory && (
+                      <button className="text-button" type="button" onClick={onOpenMemory}>
+                        审批 {pending.length} 条候选
+                      </button>
+                    )}
+                  </>
+                )
                 : <p className="empty-hint">暂无待审批记忆候选。</p>;
             })()}
           </div>

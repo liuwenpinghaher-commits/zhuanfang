@@ -299,6 +299,8 @@ export default function App() {
   );
   const [corpusFocus, setCorpusFocus] = useState("");
   const [chatSessionId, setChatSessionId] = useState<string | null>(null);
+  /** 语料分析成功后高亮并滚到对应 insight。 */
+  const [corpusFocusInsightId, setCorpusFocusInsightId] = useState<string | null>(null);
   // 引用跳源:逐字稿引用点击后,要在双轨笔记里展开的会话 + 高亮的轮次。
   // nonce 每次点击自增,使 NotesView 的 effect 即便 sessionId/turnId 未变(连点同一引用)也重新触发滚动高亮。
   const [notesFocus, setNotesFocus] = useState<{ sessionId: string; turnId?: string; nonce: number } | null>(null);
@@ -335,6 +337,20 @@ export default function App() {
         } else if (chat) {
           setChatSessionId(chat);
         }
+      } else if (v === "config") {
+        setView("config");
+      } else if (v === "corpus") {
+        setView("corpus");
+      } else if (v === "profile") {
+        setView("profile");
+      } else if (v === "interview") {
+        setView("interview");
+      } else if (v === "search") {
+        setView("search");
+      } else if (v === "podcast") {
+        setView("podcast");
+      } else if (v === "track") {
+        setView("track");
       } else if (v === "home") {
         setView("home");
       }
@@ -1977,7 +1993,11 @@ export default function App() {
       const apiRun = await productApiClient.analyzeCorpusImport(input, corpusFocus.trim() || undefined);
       adoptServerState(apiRun.state);
       setApiPersistenceEnabled(true);
-      setNotice(buildNotice("success", "语料分析已完成", "已生成可确认的访谈策略补丁。"));
+      const newestInsight = (apiRun.state.corpusInsights || [])
+        .slice()
+        .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))[0];
+      if (newestInsight?.id) setCorpusFocusInsightId(newestInsight.id);
+      setNotice(buildNotice("success", "语料分析已完成", "已生成可解释的提问技法改进建议；可在下方审阅并确认影响引擎。"));
       setView("corpus");
     } catch (err) {
       // 失败即如实暴露——不再在后端不可达时用本地关键词模板分析冒充 LLM 分析结果。
@@ -3281,6 +3301,7 @@ export default function App() {
             transcribing={corpusTranscribing}
             analyzing={corpusAnalyzing}
             audioFileName={corpusAudioFileName}
+            focusInsightId={corpusFocusInsightId}
             onMediaType={setCorpusMediaType}
             onTitle={setCorpusTitle}
             onSourceUrl={setCorpusSourceUrl}
@@ -3293,6 +3314,8 @@ export default function App() {
             onApprovePatch={applyPlaybookPatch}
             onRevertPatch={revertPatch}
             onDeleteInsight={removeCorpusInsight}
+            onOpenConfig={() => setView("config")}
+            onGoInterview={() => setView("interview")}
           />
         )}
         {view === "podcast" && (
@@ -3580,6 +3603,7 @@ export default function App() {
             onPurge={purgeData}
             onSetProductState={setProductState}
             onSaveProfile={saveProfile}
+            onOpenMemory={() => setView("memory")}
           />
         )}
       </main>
