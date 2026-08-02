@@ -425,6 +425,46 @@ describe("connectCascadedPipeline", () => {
     pipeline.close();
   });
 
+  it("recovery partial 只进入待确认区，确认后才提交", async () => {
+    const onTranscriptQuarantined = vi.fn();
+    const base = makeOpts();
+    const pipeline = connectCascadedPipeline({
+      ...base,
+      callbacks: { ...base.callbacks, onTranscriptQuarantined },
+    });
+    await pipeline.startListening();
+
+    asr.pushDelta("前半段", true);
+    pipeline.reviewRecoveryTranscript({ text: "未确认尾段", reason: "连接中断", code: 1006 });
+
+    expect(onTranscriptQuarantined).toHaveBeenCalledWith({
+      text: "未确认尾段",
+      reason: "连接中断",
+      source: "recovery",
+    });
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+
+    pipeline.confirmQuarantinedTranscript("修改后的尾段");
+    await vi.waitFor(() => expect(sendUserTurn.fn).toHaveBeenCalledWith(
+      "前半段修改后的尾段",
+      expect.any(AbortSignal)
+    ));
+    pipeline.close();
+  });
+
+  it("丢弃 recovery partial 后保留已 final 的当前表达", async () => {
+    const pipeline = connectCascadedPipeline(makeOpts());
+    await pipeline.startListening();
+
+    asr.pushDelta("已确认前半段", true);
+    pipeline.reviewRecoveryTranscript({ text: "不要的尾段", reason: "连接中断", code: 1006 });
+    pipeline.discardQuarantinedTranscript();
+
+    expect(userTranscripts).toContainEqual({ text: "已确认前半段", isFinal: false });
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+    pipeline.close();
+  });
+
   // -------------------------------------------------------------------------
   // 3. barge-in: speech_started while speaking → TTS stopped, LLM aborted
   // -------------------------------------------------------------------------

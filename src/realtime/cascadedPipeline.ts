@@ -106,6 +106,12 @@ export type CascadePipelineState =
   | "speaking"
   | "interrupted";
 
+export interface TranscriptReviewItem {
+  text: string;
+  reason: string;
+  source: "echo" | "recovery";
+}
+
 export interface CascadedPipelineCallbacks {
   onStateChange: (s: CascadePipelineState) => void;
   onUserTranscript: (text: string, isFinal: boolean) => void;
@@ -119,7 +125,7 @@ export interface CascadedPipelineCallbacks {
     llmTtftMs?: number;
     ttsTtfbMs?: number;
   }) => void;
-  onTranscriptQuarantined?: (item: { text: string; reason: string }) => void;
+  onTranscriptQuarantined?: (item: TranscriptReviewItem) => void;
 }
 
 /** Trace emitted for each layer-0/1/2 turn decision, for logging / UI. */
@@ -171,6 +177,7 @@ export interface CascadedPipeline {
   startListening(openingText?: string): Promise<void>;
   updatePreSignals(next: InteractionPreSignals | null): void;
   interrupt(): { spokenTextSoFar: string };
+  reviewRecoveryTranscript(item: { text: string; reason: string; code?: number }): void;
   confirmQuarantinedTranscript(text: string): void;
   discardQuarantinedTranscript(): void;
   close(): void;
@@ -237,11 +244,13 @@ export function connectCascadedPipeline(
   let maxWaitTimer: ReturnType<typeof setTimeout> | null = null;
   let stableCommitTimer: ReturnType<typeof setTimeout> | null = null;
   let surfacedQuarantineKey = "";
+  let activeReview: TranscriptReviewItem | null = null;
 
-  function surfaceQuarantine(item: { text: string; reason: string }) {
-    const key = `${item.text}\n${item.reason}`;
+  function surfaceQuarantine(item: TranscriptReviewItem) {
+    const key = `${item.source}\n${item.text}\n${item.reason}`;
     if (key === surfacedQuarantineKey) return;
     surfacedQuarantineKey = key;
+    activeReview = item;
     callbacks.onTranscriptQuarantined?.(item);
   }
 
@@ -263,6 +272,7 @@ export function connectCascadedPipeline(
     partialTranscript = "";
     turnAssembler.reset();
     surfacedQuarantineKey = "";
+    activeReview = null;
     speechStoppedAt = 0;
     sttFinalAtMs = 0;
     clearMaxWaitTimer();
@@ -274,9 +284,10 @@ export function connectCascadedPipeline(
 
   function requestStableCommit(allowCommit: boolean) {
     if (closed || state === "thinking" || state === "speaking") return;
+    if (activeReview?.source === "recovery") return;
     const decision = turnAssembler.decide({ atMs: Date.now(), allowCommit, questionContext: true });
     if (decision.action === "quarantine") {
-      surfaceQuarantine({ text: decision.transcript, reason: decision.reason });
+      surfaceQuarantine({ text: decision.transcript, reason: decision.reason, source: "echo" });
       return;
     }
     if (decision.action === "commit") {
@@ -649,7 +660,7 @@ export function connectCascadedPipeline(
         hasUserEnergyEvidence: asr.hasRecentUserEnergyEvidence?.() ?? true
       });
       if (assembled.action === "quarantine") {
-        surfaceQuarantine({ text: assembled.transcript, reason: assembled.reason });
+        surfaceQuarantine({ text: assembled.transcript, reason: assembled.reason, source: "echo" });
         return;
       }
       if (isFinal) {
@@ -715,15 +726,47 @@ export function connectCascadedPipeline(
       return { spokenTextSoFar: spokenText || lastPlannedSpokenText };
     },
 
+    reviewRecoveryTranscript(item: { text: string; reason: string; code?: number }) {
+      if (closed) return;
+      partialTranscript = "";
+      turnAssembler.confirmQuarantined(committedTranscript, Date.now());
+      clearMaxWaitTimer();
+      if (stableCommitTimer !== null) {
+        clearTimeout(stableCommitTimer);
+        stableCommitTimer = null;
+      }
+      surfaceQuarantine({ text: item.text, reason: item.reason, source: "recovery" });
+      callbacks.onUserTranscript(committedTranscript, false);
+    },
+
     confirmQuarantinedTranscript(text: string) {
+      if (activeReview?.source === "recovery") {
+        const confirmedTranscript = `${committedTranscript}${text.trim()}`;
+        turnAssembler.confirmQuarantined(confirmedTranscript, Date.now());
+        surfacedQuarantineKey = "";
+        activeReview = null;
+        committedTranscript = confirmedTranscript;
+        partialTranscript = "";
+        requestStableCommit(true);
+        return;
+      }
       turnAssembler.confirmQuarantined(text, Date.now());
       surfacedQuarantineKey = "";
+      activeReview = null;
       committedTranscript = text.trim();
       partialTranscript = "";
       requestStableCommit(true);
     },
 
     discardQuarantinedTranscript() {
+      if (activeReview?.source === "recovery") {
+        turnAssembler.confirmQuarantined(committedTranscript, Date.now());
+        surfacedQuarantineKey = "";
+        activeReview = null;
+        partialTranscript = "";
+        callbacks.onUserTranscript(committedTranscript, false);
+        return;
+      }
       resetTurn();
       callbacks.onUserTranscript("", false);
     },
