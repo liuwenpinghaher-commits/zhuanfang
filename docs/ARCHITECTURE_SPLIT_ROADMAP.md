@@ -80,8 +80,9 @@ curl -sS https://www.qing.blue/zhuanfang/   # 或 compose health
 - [x] bailian 包拆 + re-export（`providers/bailian/*` + 根 `bailian.ts`）
 - [x] interview-sessions / realtime-voice helpers 下沉
 - [x] productApi types/client 分包
-- [x] App 钩子目录约定（hooks/README；App.tsx 继续渐进外提）
-- [x] 验证与提交（`server.ts` 本轮保持组装入口，避免半截 bootstrap 拆分）
+- [x] App 接入 `useOfflineProductSync`，检索/语料/playbook 动作进 hooks
+- [x] `server.ts` 写门 / CORS·错误 / 鉴权·限流 / defaults / 优雅关闭整块下沉
+- [x] 验证与提交
 
 ## 8. 完成后体量（约）
 

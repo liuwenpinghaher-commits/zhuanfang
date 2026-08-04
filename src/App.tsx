@@ -18,6 +18,9 @@ import {
   Volume2
 } from "lucide-react";
 import { FormEvent, MutableRefObject, useEffect, useMemo, useRef, useState } from "react";
+import { useOfflineProductSync } from "./hooks/useOfflineProductSync";
+import { useSearchBriefActions } from "./hooks/useSearchBriefActions";
+import { useCorpusPlaybookActions } from "./hooks/useCorpusPlaybookActions";
 import {
   buildCognitiveRadar,
   buildInterviewCard,
@@ -430,646 +433,54 @@ export default function App() {
     saveProductState(productState);
   }, [productState]);
 
-  const lastSavedContentRef = useRef<string>("");
-  const offlineOutboxRef = useRef<OfflineOutbox | null>(startupOutboxRef.current);
-  const lastSyncedStateRef = useRef<ProductState>(startupOutboxRef.current?.baseState ?? productState);
   const productStateRef = useRef(productState);
   productStateRef.current = productState;
-  const offlineObservedSignatureRef = useRef(productStateContentSignature(productState));
-  const [syncConflict, setSyncConflict] = useState<SyncConflictState | null>(null);
-  const [syncResolving, setSyncResolving] = useState(false);
-  // 连续 autosave 失败计数：成功清零；首次跨过阈值(2)时弹一次警告，避免每 300ms 刷屏，
-  // 也避免"改动早已没在保存、用户毫不知情"的零信号静默丢失。
-  const autosaveFailuresRef = useRef(0);
-  // F-05: autosave 失败后的自动重试。此前失败只能靠"下一次内容变化"才会再试,与 notice
-  // 承诺的"恢复后会自动重试"不符。现在失败后按有界指数退避主动重发当前 productState:
-  // 到点 bump nonce 让保存 effect 重跑(签名≠lastSaved 会走完整保存路径)。timer 放 ref
-  // 防重入(在途 timer 不叠加),卸载时统一清理。
-  const autosaveRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [autosaveRetryNonce, setAutosaveRetryNonce] = useState(0);
-  const reconnectFailuresRef = useRef(0);
-  const [reconnectNonce, setReconnectNonce] = useState(0);
-  // F-05 补审查 I-2:重连探测 timer 从 mount effect 的局部变量提升为共享 ref——所有
-  // "转入离线"的路径(不只是初次打开即离线)都能通过 scheduleReconnectProbe 启动探测。
-  const reconnectProbeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // F-05 补审查 I-5:outbox 落盘失败(配额/隐私模式)的内存标志。置位时持久层没有可信
-  // 副本,重连合并须以内存态兜底;另一枚用于"同一失败 streak 只提示一次",不刷屏。
-  const outboxStagingFailedRef = useRef(false);
-  const outboxStagingNoticeShownRef = useRef(false);
-  useEffect(
-    () => () => {
-      // 组件卸载时清掉在途的重试/探测 timer,避免卸载后 setState。
-      if (autosaveRetryTimerRef.current !== null) {
-        clearTimeout(autosaveRetryTimerRef.current);
-        autosaveRetryTimerRef.current = null;
-      }
-      if (reconnectProbeTimerRef.current !== null) {
-        clearTimeout(reconnectProbeTimerRef.current);
-        reconnectProbeTimerRef.current = null;
-      }
-    },
-    []
-  );
 
-  // F-05 补审查 I-2:把 mount catch 里的退避探测抽成共享入口。此前只有"初次打开即离线"
-  // 会安排探测;运行中途转离线(autosave 409 合并失败、adoptServerState/冲突裁决失败、
-  // 离线开始新访谈等)后没有任何自动重连,与「后端恢复后会自动合并同步」的文案不符。
-  // 到点 bump reconnectNonce → 复用 mount 的 getState + 三方合并路径。timer 去重:在途
-  // 探测未到点时重复调用不叠加、也不推高退避档位。
-  function scheduleReconnectProbe() {
-    if (reconnectProbeTimerRef.current !== null) return;
-    reconnectFailuresRef.current += 1;
-    const delayMs = nextBackoffMs(reconnectFailuresRef.current);
-    reconnectProbeTimerRef.current = setTimeout(() => {
-      reconnectProbeTimerRef.current = null;
-      setReconnectNonce((n) => n + 1);
-    }, delayMs);
-  }
+  const {
+    syncConflict,
+    syncResolving,
+    lastSavedContentRef,
+    offlineOutboxRef,
+    lastSyncedStateRef,
+    offlineObservedSignatureRef,
+    outboxStagingFailedRef,
+    acceptAuthoritativeState,
+    acknowledgeSavedState,
+    synchronizeOfflineOutbox,
+    stageOfflineState,
+    clearPendingSync,
+    writePendingOutbox,
+    scheduleReconnectProbe,
+    shouldProbeReconnect,
+    keepLocalConflictVersion,
+    useRemoteConflictVersion,
+    alignOfflineBaseline
+  } = useOfflineProductSync({
+    productState,
+    setProductState,
+    productStateRef,
+    apiPersistenceEnabled,
+    setApiPersistenceEnabled,
+    setNotice,
+    initialOutbox: startupOutboxRef.current
+  });
 
-  function cancelReconnectProbe() {
-    if (reconnectProbeTimerRef.current !== null) {
-      clearTimeout(reconnectProbeTimerRef.current);
-      reconnectProbeTimerRef.current = null;
-    }
-  }
-
-  // F-05 补审查 M-5:只对"再试可能自愈"的失败继续轮询——网络不可达与 5xx。4xx(401/403/
-  // 422 等)是凭据/请求问题,轮询只会无限重复同一错误,应停下等用户处理(改 token/改配置)。
-  function shouldProbeReconnect(err: unknown): boolean {
-    return isNetworkError(err) || (err instanceof ApiError && err.status >= 500);
-  }
-
-  function writePendingOutbox(next: OfflineOutbox) {
-    offlineOutboxRef.current = next;
-    if (!writeOfflineOutbox(next)) {
-      // F-05 补审查 I-5:落盘失败置内存标志(重连合并据此以内存态为 local 走三方合并,
-      // 而不是误判"无 pending"直接采纳远端);同一失败 streak 只弹一次提示——离线期间
-      // 每次编辑都会 stage,不去重会每 300ms 刷一条 danger 通知。
-      outboxStagingFailedRef.current = true;
-      if (!outboxStagingNoticeShownRef.current) {
-        outboxStagingNoticeShownRef.current = true;
-        setNotice(
-          buildNotice(
-            "danger",
-            "离线同步队列无法保存",
-            "浏览器存储空间不足或被禁用。请先导出备份，并保持本页面打开，避免未同步修改丢失。"
-          )
-        );
-      }
-      return;
-    }
-    // 写恢复成功:本轮失败 streak 结束,之后再失败会重新提示一次。
-    outboxStagingFailedRef.current = false;
-    outboxStagingNoticeShownRef.current = false;
-  }
-
-  function stageOfflineState(localState: ProductState, conflicts?: OfflineSyncConflict[]): OfflineOutbox {
-    const next = upsertOfflineOutbox({
-      existing: offlineOutboxRef.current,
-      baseState: lastSyncedStateRef.current,
-      localState,
-      ...(conflicts ? { conflicts } : {})
-    });
-    writePendingOutbox(next);
-    return next;
-  }
-
-  function clearPendingSync() {
-    offlineOutboxRef.current = null;
-    // I-5:outbox 生命周期结束,落盘失败 streak 一并归零(下轮失败重新提示)。
-    outboxStagingFailedRef.current = false;
-    outboxStagingNoticeShownRef.current = false;
-    clearOfflineOutbox();
-    setSyncConflict(null);
-  }
-
-  function acceptAuthoritativeState(state: ProductState) {
-    const signature = productStateContentSignature(state);
-    lastSavedContentRef.current = signature;
-    lastSyncedStateRef.current = state;
-    offlineObservedSignatureRef.current = signature;
-    clearPendingSync();
-    productStateRef.current = state;
-    setProductState(state);
-    setApiPersistenceEnabled(true);
-    // I-2:整状态采纳成功 = 服务端可达,重连退避归零并取消在途探测(避免恢复后再空跑一次)。
-    reconnectFailuresRef.current = 0;
-    cancelReconnectProbe();
-  }
-
-  /**
-   * 确认一次 PUT 已落库，同时保护请求在途期间产生的更晚编辑：只有当前内容仍等于本次
-   * attempted 才清 outbox；否则以本次 server 返回态为新 base，把更晚编辑继续留在 outbox。
-   */
-  function acknowledgeSavedState(serverState: ProductState, attemptedSignature: string) {
-    autosaveFailuresRef.current = 0;
-    lastSyncedStateRef.current = serverState;
-    setSyncConflict(null);
-    setApiPersistenceEnabled(true);
-    const current = productStateRef.current;
-    const currentSignature = productStateContentSignature(current);
-    if (currentSignature === attemptedSignature) {
-      // 请求在途期间没有更晚编辑：直接采纳服务端 normalize 后的完整形状，避免客户端
-      // 只合 revision 而长期停留在与服务端不同的内容结构。
-      const serverSignature = productStateContentSignature(serverState);
-      lastSavedContentRef.current = serverSignature;
-      offlineObservedSignatureRef.current = serverSignature;
-      productStateRef.current = serverState;
-      setProductState(serverState);
-      clearPendingSync();
-      return;
-    }
-
-    lastSavedContentRef.current = attemptedSignature;
-    const currentWithRevision = current.revision === serverState.revision
-      ? current
-      : { ...current, revision: serverState.revision };
-    productStateRef.current = currentWithRevision;
-    offlineObservedSignatureRef.current = currentSignature;
-    setProductState(currentWithRevision);
-
-    const pending = upsertOfflineOutbox({
-      baseState: serverState,
-      localState: currentWithRevision
-    });
-    writePendingOutbox(pending);
-  }
-
-  function presentSyncConflict(
-    outbox: OfflineOutbox,
-    remoteState: ProductState,
-    mergedState: ProductState,
-    conflicts: OfflineSyncConflict[]
-  ) {
-    const pending = upsertOfflineOutbox({
-      existing: outbox,
-      baseState: outbox.baseState,
-      localState: mergedState,
-      conflicts
-    });
-    writePendingOutbox(pending);
-    lastSyncedStateRef.current = remoteState;
-    lastSavedContentRef.current = productStateContentSignature(remoteState);
-    offlineObservedSignatureRef.current = productStateContentSignature(mergedState);
-    productStateRef.current = mergedState;
-    setProductState(mergedState);
-    setApiPersistenceEnabled(false);
-    setSyncConflict({ outbox: pending, remoteState, mergedState, conflicts });
-    setNotice(
-      buildNotice(
-        "warning",
-        "离线修改与服务器版本存在冲突",
-        `检测到 ${conflicts.length} 处同一内容被双端修改。系统已保留本地工作，等待你选择版本。`
-      )
-    );
-  }
-
-  // F-05 补审查 I-1:同步流程无并发互斥——mount 重连、autosave 409、adoptServerState
-  // (14+ 调用点)与冲突裁决可能并发触发,core 内部"读 refs → await PUT → 写 refs +
-  // setProductState"的序列一旦交错,会互相覆盖基线造成丢数据/幽灵冲突。这里用模块内
-  // 单一 in-flight promise 串行化:重入的调用排队,等在途一轮完成后再执行;排队期间
-  // outbox 可能已被前一轮清空/重写,因此执行时以 offlineOutboxRef 的现值为准。
-  const offlineSyncQueueRef = useRef<Promise<void>>(Promise.resolve());
-
-  function synchronizeOfflineOutbox(
-    inputOutbox: OfflineOutbox,
-    remoteState: ProductState,
-    retryBudget = 1,
-    isCancelled: () => boolean = () => false
-  ): Promise<void> {
-    const run = async () => {
-      if (isCancelled()) return;
-      const livePending = offlineOutboxRef.current;
-      if (!livePending) {
-        // 在途一轮已完成并清空 outbox:本次排队携带的 outbox 已过期,绝不能拿它重放
-        // (会把已合并/已裁决过的数据再推一遍)。仅当排队时的 remote 比已同步基线更新时
-        // 采纳之(它可能来自一个更晚的细粒度 route 回执)。
-        if (remoteState.revision > lastSyncedStateRef.current.revision) {
-          acceptAuthoritativeState(remoteState);
-        }
-        return;
-      }
-      // remoteState 可能比在途一轮同步后的服务端更旧:core 的 PUT 会因 stale revision 得到
-      // conflicted 回执并用服务端最新态 rebase 重试,自我纠正,无需在这里预判。
-      await synchronizeOfflineOutboxCore(livePending, remoteState, retryBudget, isCancelled);
-    };
-    const chained = offlineSyncQueueRef.current.then(run, run);
-    // 队头只记录"上一个任务已结束"并吞掉 rejection——错误由各调用者处理自己返回的那条
-    // promise,不能把上一个调用者的失败重复抛给下一个。
-    offlineSyncQueueRef.current = chained.then(
-      () => undefined,
-      () => undefined
-    );
-    return chained;
-  }
-
-  async function synchronizeOfflineOutboxCore(
-    inputOutbox: OfflineOutbox,
-    remoteState: ProductState,
-    retryBudget = 1,
-    isCancelled: () => boolean = () => false
-  ): Promise<void> {
-    let outbox = inputOutbox;
-    // 请求在途时用户仍可能继续编辑。合并前刷新 localState，保证后续 setProductState 不会
-    // 把这段更晚编辑覆盖掉；原 base 与未决 conflicts 保持不变。
-    const latestLocal = productStateRef.current;
-    if (productStateContentSignature(latestLocal) !== productStateContentSignature(outbox.localState)) {
-      outbox = upsertOfflineOutbox({
-        existing: outbox,
-        baseState: outbox.baseState,
-        localState: latestLocal
-      });
-      writePendingOutbox(outbox);
-    }
-
-    const reconciliation = reconcileOfflineOutbox(outbox, remoteState);
-    if (isCancelled()) return;
-    if (reconciliation.status === "conflict") {
-      presentSyncConflict(outbox, remoteState, reconciliation.state, reconciliation.conflicts);
-      return;
-    }
-
-    // 内容已经一致时不制造一次无意义 revision bump；直接清 outbox 并采纳远端元数据。
-    if (productStateContentSignature(reconciliation.state) === productStateContentSignature(remoteState)) {
-      acceptAuthoritativeState(remoteState);
-      return;
-    }
-
-    const attempted = { ...reconciliation.state, revision: remoteState.revision };
-    const attemptedSignature = productStateContentSignature(attempted);
-    // 先把三方合并结果同时写进 outbox 与当前 UI，再发 PUT。否则成功回执时 current 仍是
-    // “合并前的 local”，会把远端独立新增误判成请求在途的新编辑，下一轮反向删掉它。
-    outbox = upsertOfflineOutbox({
-      existing: outbox,
-      baseState: outbox.baseState,
-      localState: attempted
-    });
-    writePendingOutbox(outbox);
-    productStateRef.current = attempted;
-    offlineObservedSignatureRef.current = attemptedSignature;
-    lastSavedContentRef.current = attemptedSignature;
-    setProductState(attempted);
-    const result = await productApiClient.saveState(attempted);
-    if (isCancelled()) return;
-    if (!result.conflicted) {
-      acknowledgeSavedState(result.state, attemptedSignature);
-      setNotice(buildNotice("success", "离线修改已同步", "本地与服务器的非冲突修改已合并并保存。"));
-      return;
-    }
-
-    // getState 与 PUT 之间有新写入：把刚才的远端作为新 base 再做一次三方合并，而不是
-    // 用最新 revision 粗暴重推整包。仍有内容冲突就停下来让用户裁决。
-    const rebased = upsertOfflineOutbox({
-      baseState: remoteState,
-      localState: attempted
-    });
-    writePendingOutbox(rebased);
-    if (retryBudget > 0) {
-      // I-1:递归重试直接走 core——它是同一逻辑轮次的延续,已持有队列里的执行权;
-      // 若绕回 wrapper 会在自己身后排队,死锁。
-      await synchronizeOfflineOutboxCore(rebased, result.state, retryBudget - 1, isCancelled);
-      return;
-    }
-    const finalReconciliation = reconcileOfflineOutbox(rebased, result.state);
-    if (finalReconciliation.status === "conflict") {
-      presentSyncConflict(rebased, result.state, finalReconciliation.state, finalReconciliation.conflicts);
-      return;
-    }
-    throw new Error("同步期间服务器持续更新，已保留 outbox，稍后重试。");
-  }
-
-  useEffect(() => {
-    const signature = productStateContentSignature(productState);
-    if (!apiPersistenceEnabled) {
-      // 离线/冲突期间每次内容变化都刷新持久 outbox.localState。首次 render 的签名已在
-      // ref 中，不会把单纯打开页面误记成一次离线编辑。
-      if (signature !== offlineObservedSignatureRef.current) {
-        stageOfflineState(productState, syncConflict?.conflicts);
-        offlineObservedSignatureRef.current = signature;
-        // I-2:离线期间产生了新的未同步修改 → 确保有一枚在途重连探测(timer 去重,不叠加)。
-        // 这是所有"转离线后继续编辑"路径(搜索/播客/语料等本地降级)的兜底重连入口,
-        // 不必在每个 catch 手工接线。冲突未决时不探测:重连合并只会重放同一批冲突、
-        // 重复弹冲突通知,该状态必须等用户在冲突条里显式选边。
-        if (!syncConflict) {
-          scheduleReconnectProbe();
-        }
-      }
-      return;
-    }
-    // Only the revision changed (or nothing did) — nothing new to persist; skip to avoid the save->bump->adopt loop.
-    if (signature === lastSavedContentRef.current) {
-      return;
-    }
-    const timer = setTimeout(() => {
-      // PUT 前先落 outbox：即使请求发出后页面关闭/进程崩溃，重开仍有 base+local 可重放。
-      const pending = stageOfflineState(productState);
-      productApiClient
-        .saveState(productState)
-        .then(({ state: server, conflicted }) => {
-          // 保存请求已能送达服务端 → 取消在途的失败重试(无论本次是否 conflicted,
-          // 后续都有明确的新基线,退避重发反而会用过期内容打架)。
-          if (autosaveRetryTimerRef.current !== null) {
-            clearTimeout(autosaveRetryTimerRef.current);
-            autosaveRetryTimerRef.current = null;
-          }
-          if (conflicted) {
-            void synchronizeOfflineOutbox(pending, server).catch((err) => {
-              setApiPersistenceEnabled(false);
-              setNotice(buildNotice("warning", "同步暂未完成", err instanceof Error ? err.message : String(err)));
-              // I-2:409 后的合并同步失败也算"转离线"——可自愈类失败(网络/5xx)启动探测,
-              // 否则用户要等到下一次编辑才有机会重连,与「会自动同步」文案不符。
-              if (shouldProbeReconnect(err)) {
-                scheduleReconnectProbe();
-              }
-            });
-          } else {
-            acknowledgeSavedState(server, signature);
-          }
-        })
-        .catch((err) => {
-          // Transient error: do NOT permanently disable persistence on a network blip —
-          // but never fail silently: log every failure, surface a notice once per failure
-          // streak, and (F-05) schedule a bounded-backoff retry so recovery doesn't depend
-          // on the user happening to make another edit.
-          autosaveFailuresRef.current += 1;
-          // F-05: 这份改动确实没写进服务端——PUT 前已写入持久 outbox，自动重试/重连接手。
-          console.warn(
-            JSON.stringify({
-              event: "autosave_failed",
-              consecutiveFailures: autosaveFailuresRef.current,
-              error: String(err)
-            })
-          );
-          // N-06:治理进行中的 409(GovernanceInFlightError)是**瞬态**——治理秒级结算(360s 写门为硬顶),
-          // 视为可重试(有界退避重发),绝不撕毁持久化/误当离线。stale-revision 409 不会走到这里(saveState
-          // 在带 current 时返回 conflicted、不抛),故此处的 409 即"治理进行中/无 current 的硬错误 409"。
-          const governanceInFlight = err instanceof ApiError && err.status === 409;
-          const retryable = isNetworkError(err) || (err instanceof ApiError && err.status >= 500) || governanceInFlight;
-          if (retryable && autosaveRetryTimerRef.current === null) {
-            const delayMs = nextBackoffMs(autosaveFailuresRef.current);
-            autosaveRetryTimerRef.current = setTimeout(() => {
-              autosaveRetryTimerRef.current = null;
-              // bump nonce 触发本 effect 重跑:内容签名仍≠lastSaved,会重发当前最新 state。
-              // 若期间内容已被成功保存(签名相等),effect 会在顶部短路,不产生多余请求。
-              setAutosaveRetryNonce((n) => n + 1);
-            }, delayMs);
-          }
-          if (err instanceof ApiError && err.status === 413) {
-            setNotice(buildNotice("warning", "本地改动尚未同步到服务器", "数据体积超出服务器限制；离线 outbox 已保留，请先导出备份并清理超大内容。"));
-          } else if (governanceInFlight) {
-            // N-06:清空/导入/重置进行中——本地改动已进 outbox,治理结算后按退避自动重试同步;不误报"后端离线"。
-            setNotice(buildNotice("warning", "服务器正在执行数据治理", "清空/导入/重置进行中，你的本地改动已保留，将在其完成后自动重试同步。"));
-          } else if (autosaveFailuresRef.current === 2) {
-            setNotice(
-              buildNotice("warning", "本地改动尚未同步到服务器", "连续保存失败，请检查后端是否在运行；离线 outbox 已保存，并会按间隔自动重试。")
-            );
-          }
-        });
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [apiPersistenceEnabled, productState, autosaveRetryNonce, syncConflict]);
-
-  // N-02:权威库落库降级 banner 的数据源——低频轮询 route-agnostic 的 GET /api/health。
-  // persist.degraded 是共享异步 persistQueue 的属性,与触发它的写路由无关;轮询(而非只在 PUT
-  // 响应上采样)覆盖全部"200+异步落库"写路径:只做资产确认/记忆编辑而从不 PUT /api/state 的用户,
-  // 撞降级时也能看到 banner。mount 立即探一次 + 每 30s 一次(低频,只读、auth 豁免、不触发写/联网);
-  // 卸载清定时器。health 拉取失败(后端离线)不翻转 banner——离线本身由同步/outbox 机制提示,此处
-  // 只反映 persist 降级,避免瞬时网络抖动误清/误亮。degraded 常驻、恢复即消失。
-  useEffect(() => {
-    let cancelled = false;
-    const pollHealth = () => {
-      productApiClient
-        .getHealth()
-        .then((health) => {
-          if (cancelled) return;
-          const persist = health.persist;
-          setPersistHealth(
-            persist && persist.degraded && persist.consecutiveFailures > 0
-              ? { consecutiveFailures: persist.consecutiveFailures, ...(persist.lastErrorAt ? { lastErrorAt: persist.lastErrorAt } : {}) }
-              : null
-          );
-        })
-        .catch(() => {
-          /* 后端不可达:不翻转 banner(离线信号由同步/outbox 机制负责),保留上一次已知状态。 */
-        });
-    };
-    pollHealth(); // mount 立即探一次,不必等首个 30s 周期
-    const healthTimer = setInterval(pollHealth, 30_000);
-    return () => {
-      cancelled = true;
-      clearInterval(healthTimer);
-    };
-  }, []);
-
-  // 打开即更新：首次进入外部调研视图时自动跑一次盯梢(每会话一次,静默,失败不打扰)。
-  // 即时手动刷新走视图内的「自动盯梢」按钮;后台周期刷新走配置里的定时调度。
-  const researchAutoOpenedRef = useRef(false);
-  useEffect(() => {
-    if (view !== "search" || researchAutoOpenedRef.current || !apiPersistenceEnabled) {
-      return;
-    }
-    researchAutoOpenedRef.current = true;
-    autoRunResearch().catch(() => {});
-  }, [view, apiPersistenceEnabled]);
-
-  useEffect(() => {
-    if (view !== "config") {
-      return;
-    }
-
-    let cancelled = false;
-    productApiClient
-      .getSystemCapabilities()
-      .then((capabilities) => {
-        if (!cancelled) {
-          setSystemCapabilities(capabilities);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setSystemCapabilities(null);
-        }
-      });
-    productApiClient
-      .getSystemConfig()
-      .then((config) => {
-        if (!cancelled) {
-          setRuntimeConfig(config);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setRuntimeConfig(null);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [view]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    productApiClient
-      .getState()
-      .then(async (remoteState) => {
-        if (cancelled) return;
-        reconnectFailuresRef.current = 0;
-        // I-2:本轮 getState 已成功,清掉请求在途期间其他路径可能安排的探测,避免空跑。
-        cancelReconnectProbe();
-        let pending = offlineOutboxRef.current;
-        // 兼容上一版只写 UNSYNCED_FLAG_KEY 的现场：没有 base 快照时，以当前远端作为
-        // 基线、localStorage 当前态作为本地变更，至少保证升级后第一次重连不会丢本地工作。
-        if (!pending && hasUnsyncedLocalChanges()) {
-          pending = upsertOfflineOutbox({
-            baseState: remoteState,
-            localState: productStateRef.current
-          });
-          writePendingOutbox(pending);
-        }
-        // I-5(补审查):outbox 落盘曾失败(配额/隐私模式)→ 持久层没有可信副本,但当前内存态
-        // 就是用户的离线工作。以最近一次已同步基线为 base、内存态为 local 重建 outbox 走
-        // 三方合并,而不是掉进下面"无 pending → 无条件采纳远端"把离线修改静默覆盖。
-        if (!pending && outboxStagingFailedRef.current) {
-          pending = upsertOfflineOutbox({
-            baseState: lastSyncedStateRef.current,
-            localState: productStateRef.current
-          });
-          writePendingOutbox(pending);
-        }
-        if (!pending) {
-          acceptAuthoritativeState(remoteState);
-          return;
-        }
-        await synchronizeOfflineOutbox(pending, remoteState, 1, () => cancelled);
-      })
-      .catch((err) => {
-        // The demo remains usable when the optional local API is not running.
-        if (!cancelled) {
-          setApiPersistenceEnabled(false);
-          if (offlineOutboxRef.current) {
-            setNotice(
-              buildNotice(
-                "warning",
-                "离线修改仍在等待同步",
-                err instanceof Error ? err.message : "后端当前不可用；持久 outbox 已保留本地工作。"
-              )
-            );
-          }
-          // 初次打开即离线时 autosave effect 不会发请求，因此需要独立的连接探测。
-          // I-2/M-5:探测已抽成共享 scheduleReconnectProbe;只对可自愈失败(网络/5xx)
-          // 继续轮询——401/4xx 是凭据/配置问题,无限轮询只会重复同一错误。
-          if (shouldProbeReconnect(err)) {
-            scheduleReconnectProbe();
-          }
-        }
-      });
-
-    return () => {
-      cancelled = true;
-      // 探测 timer 由 scheduleReconnectProbe 持有(共享 ref),在卸载 effect 里统一清理;
-      // 这里不清——nonce 变化触发的重跑本身就是探测到点,timer 已经消费掉了。
-    };
-  }, [reconnectNonce]);
-
-  const suggestedTopicHint = useMemo(
-    () => resolveInterviewTopicHint(productState, activeSearchBriefId ? { searchBriefId: activeSearchBriefId } : {}),
-    [activeSearchBriefId, productState]
-  );
-  const card = useMemo(
-    () => buildInterviewCard(productState, activeSearchBriefId, suggestedTopicHint),
-    [activeSearchBriefId, productState, suggestedTopicHint]
-  );
-  const recommendedLaunch = useMemo(() => {
-    if (activeSearchBriefId) {
-      return { mode: "learning" as const, reason: "适合先消化外部材料，再回到你的真实经验" };
-    }
-    const dueDecision = productState.decisions.some((decision) =>
-      decision.status === "待复盘" &&
-      decision.confirmationStatus === "用户确认" &&
-      (!decision.reviewAt || Date.parse(decision.reviewAt) <= Date.now())
-    );
-    if (dueDecision) {
-      return { mode: "decision" as const, reason: "有已确认且到期的决策需要复盘" };
-    }
-    if (productState.themes.length > 0) {
-      return { mode: "long-term" as const, reason: "适合回访反复出现的问题" };
-    }
-    return { mode: "daily" as const, reason: "先从最近发生的一件具体事情开始" };
-  }, [activeSearchBriefId, productState.decisions, productState.themes.length]);
-  // Resume: surface every unfinished session; keeping only the newest one hid older active work.
-  const resumeCards = useMemo(() => buildInterviewResumeCards(productState), [productState]);
-  // 认知雷达是本地确定性真实计数（非 LLM 叙事），始终可算可渲染。
-  const localRadar = useMemo(() => buildCognitiveRadar(productState), [productState]);
-  // LLM 综述只认服务端产出——不可用就把真实原因暴露给用户（reviewsError），
-  // 绝不用本地确定性模板叙事顶替冒充。
-  const monthlyReview = serverReviews?.monthly ?? null;
-  const yearlyReview = serverReviews?.yearly ?? null;
-  const radar = serverReviews?.radar ?? localRadar;
-
-  // Re-fetch LLM reviews only when the asset set actually changes (not on every
-  // turn), so an interview in progress doesn't trigger repeated review calls.
-  // SWR：签名变化时保留旧结果直到新结果返回，避免「生成中」假死闪烁。
-  const reviewRequestKeyRef = useRef<string>("");
-  useEffect(() => {
-    const signature = [
-      productState.notes.length,
-      productState.points.length,
-      productState.questions.length,
-      productState.decisions.length,
-      productState.debts.length,
-      productState.themes.length
-    ].join(":");
-    const requestKey = `${signature}#${reviewsNonce}`;
-    if (requestKey === reviewRequestKeyRef.current) {
-      return;
-    }
-    reviewRequestKeyRef.current = requestKey;
-    setReviewsError(null);
-    setReviewsLoading(true);
-    let cancelled = false;
-    productApiClient
-      .getReviews()
-      .then((reviews) => {
-        if (!cancelled) {
-          setServerReviews(reviews);
-          setReviewsError(null);
-        }
-      })
-      .catch((err) => {
-        // LLM 综述失败：如实把服务端原因暴露给用户，绝不用本地模板叙事顶替。
-        // SWR：失败时保留 stale serverReviews（若有）。
-        if (!cancelled) setReviewsError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!cancelled) setReviewsLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [productState, reviewsNonce]);
-
-  // Adopt an authoritative state returned by a fine-grained route. Records it as
-  // "already saved" so the debounce effect doesn't echo the whole state back in a
-  // redundant full-state PUT (the route already persisted it server-side).
-  // 采纳服务端返回的权威 state(turn / control / createBrief / endSession 等已在服务端持久化)。
-  // 接收 server state 必须用这个而非裸 setProductState:它把内容签名记进 lastSavedContentRef,让
-  // 自动保存 effect 认出"已是最新"从而跳过 PUT。否则每次接收 server state 都会触发一次冗余 PUT 把
-  // 它原样写回去,而这个 PUT 携带的 revision 会被下一轮 turn 在服务端抢先 bump → 持续 409(stale
-  // revision)。语音访谈每轮高频出 turn 时尤其致命,也会让"结束并生成档案"与残留 PUT 互相 race。
+  /** 细粒度 route 成功回执：无 pending 则整态采纳；有 pending 则当 remote 走三方合并。 */
   function adoptServerState(next: ProductState) {
     const pending = offlineOutboxRef.current;
     if (!pending) {
       acceptAuthoritativeState(next);
       return;
     }
-    // 细粒度 route 成功不代表可以整体覆盖 pending local：先把它当新的 remote 做三方
-    // 合并；无冲突自动追写，有冲突进入同一条用户裁决 UI。
     void synchronizeOfflineOutbox(pending, next).catch((err) => {
       setApiPersistenceEnabled(false);
-      setNotice(buildNotice("warning", "服务端更新已收到，但本地同步未完成", err instanceof Error ? err.message : String(err)));
-      // I-2:转离线后启动重连探测(仅网络/5xx 类可自愈失败;M-5)。
+      setNotice(
+        buildNotice(
+          "warning",
+          "服务端更新已收到，但本地同步未完成",
+          err instanceof Error ? err.message : String(err)
+        )
+      );
       if (shouldProbeReconnect(err)) {
         scheduleReconnectProbe();
       }
@@ -1093,63 +504,48 @@ export default function App() {
     }
   }
 
-  async function keepLocalConflictVersion() {
-    if (!syncConflict || syncResolving) return;
-    setSyncResolving(true);
-    // 用户已显式选“保留本地”：当前界面态可能在冲突条出现后又继续编辑，因此以 ref
-    // 中的最新 local 为准；以看到的 remote 为新 base，清掉旧 conflicts 后重新走安全 PUT。
-    const resolved = upsertOfflineOutbox({
-      baseState: syncConflict.remoteState,
-      localState: productStateRef.current
-    });
-    writePendingOutbox(resolved);
-    setSyncConflict(null);
-    try {
-      await synchronizeOfflineOutbox(resolved, syncConflict.remoteState, 1);
-    } catch (err) {
-      setApiPersistenceEnabled(false);
-      setNotice(buildNotice("warning", "本地版本尚未同步", err instanceof Error ? err.message : String(err)));
-      // I-2:用户已选"保留本地"但推送失败——outbox 仍持有裁决结果,启动探测在恢复后自动重推。
-      if (shouldProbeReconnect(err)) {
-        scheduleReconnectProbe();
-      }
-    } finally {
-      setSyncResolving(false);
-    }
-  }
 
-  async function useRemoteConflictVersion() {
-    if (!syncConflict || syncResolving) return;
-    setSyncResolving(true);
-    try {
-      // 冲突条可能已停留一段时间；用户选远端时重新读取，不能采纳冲突发生时的过期快照。
-      const latestRemote = await productApiClient.getState();
-      // I-3(补审查):"采用服务器版本"会丢弃本地冲突修改(含冲突条出现后的继续编辑)。
-      // 丢弃前把当前本地态备份进 localStorage 最后防线(backupUnsyncedState 此前零调用),
-      // 极端误操作还能从 DevTools 取回,而不是彻底不可恢复。
-      backupUnsyncedState(productStateRef.current);
-      acceptAuthoritativeState(latestRemote);
-      // P3-11:采用后仍复核指纹——若最新远端仍是示例/初始态,如实警示这很可能是灾备后的空库,
-      // 而非真实数据(本地态已备份进 localStorage 最后防线,极端误操作可从 DevTools 取回)。
-      if (isPristineDemoState(latestRemote)) {
-        setNotice(buildNotice(
-          "warning",
-          "已采用服务器版本（疑似示例/初始数据）",
-          "服务器返回的内容与首次运行的示例数据一致，后端可能被重置或损坏后重启。若这不是你预期的恢复结果，本地版本已备份，请检查后端后再决定。"
-        ));
-      } else {
-        setNotice(buildNotice("info", "已采用服务器版本", "本地冲突修改已由你明确放弃，已加载服务器最新版本。"));
-      }
-    } catch (err) {
-      setNotice(buildNotice("warning", "暂时无法采用服务器版本", "后端当前不可用；本地 outbox 与冲突状态仍保留，请稍后重试。"));
-      // I-2:后端不可达导致无法完成裁决——启动探测;恢复后用户可再点一次"采用服务器版本"。
-      if (shouldProbeReconnect(err)) {
-        scheduleReconnectProbe();
-      }
-    } finally {
-      setSyncResolving(false);
-    }
-  }
+  const {
+    retrySearchMaterial,
+    startFromBrief,
+    briefToDebt,
+    briefToPoint,
+    briefToQuestion,
+    removeSearchBrief,
+    setDefaultSearchProvider
+  } = useSearchBriefActions({
+    productState,
+    setProductState,
+    setNotice,
+    setActiveSearchBriefId,
+    launchInterview: (mode, briefId) => {
+      void launchInterview(mode, briefId);
+    },
+    createSearchMaterial: (providerId) => {
+      void createSearchMaterial(providerId);
+    },
+    searchTaskProviderId: (searchTask.providerId as SearchProviderId | undefined),
+    defaultSearchProvider: productState.systemConfig.search.activeProvider
+  });
+
+  const {
+    selectCorpusAudioFile,
+    clearCorpusAudioFile,
+    removeCorpusInsight,
+    applyPlaybookPatch,
+    revertPatch,
+    cleanupGeneratedArtifacts
+  } = useCorpusPlaybookActions({
+    productState,
+    setProductState,
+    setNotice,
+    setView: setView as any,
+    setCorpusAudioBase64,
+    setCorpusAudioFileName,
+    setCorpusMediaType: setCorpusMediaType as any,
+    setCorpusSourceUrl,
+    adoptServerState
+  });
 
   // 本地缓存损坏如实告知（loadProductState 在 useState 初始化器里发现 JSON 损坏时
   // 只能落 sessionStorage 标记）：挂载后检查标记 → 明确提示，不把"本地数据损坏"
@@ -1751,65 +1147,12 @@ export default function App() {
     }
   }
 
-  function retrySearchMaterial() {
-    return createSearchMaterial((searchTask.providerId as SearchProviderId | undefined) ?? productState.systemConfig.search.activeProvider);
-  }
 
-  function startFromBrief(briefId: string) {
-    launchInterview("learning", briefId);
-  }
 
-  function briefToDebt(briefId: string) {
-    const result = createKnowledgeDebtFromSearchBrief(productState, briefId);
-    if (!result) {
-      setNotice(buildNotice("warning", "转换失败", "未找到该搜索简报。"));
-      return;
-    }
-    setProductState(result.nextState);
-    setNotice(buildNotice("success", "已转为知识债", "已加入资产库，可在下一次专访中校验。"));
-  }
 
-  function briefToPoint(briefId: string) {
-    const result = createPointFromSearchBrief(productState, briefId);
-    if (!result) {
-      setNotice(buildNotice("warning", "转换失败", "未找到该搜索简报。"));
-      return;
-    }
-    setProductState(result.nextState);
-    setNotice(buildNotice("success", "已转为观点", "已从简报生成观点草稿，可在资产库继续打磨。"));
-  }
 
-  function briefToQuestion(briefId: string) {
-    const result = createQuestionFromSearchBrief(productState, briefId);
-    if (!result) {
-      setNotice(buildNotice("warning", "转换失败", "未找到该搜索简报。"));
-      return;
-    }
-    setProductState(result.nextState);
-    setNotice(buildNotice("success", "已转为专访问题", "已加入问题资产，可带入下一次专访。"));
-  }
 
-  function removeSearchBrief(briefId: string) {
-    if (typeof window !== "undefined" && !window.confirm("确定要删除这份搜索简报吗？已生成的访谈和资产不会被删除。")) {
-      return;
-    }
-    setProductState(deleteSearchBrief(productState, briefId));
-    setActiveSearchBriefId((current) => (current === briefId ? undefined : current));
-    setNotice(buildNotice("warning", "搜索简报已删除", "历史访谈和资产保持不变。"));
-  }
 
-  function setDefaultSearchProvider(provider: SearchProviderId) {
-    const nextConfig = {
-      ...productState.systemConfig,
-      search: { ...productState.systemConfig.search, activeProvider: provider }
-    };
-    const nextState = {
-      ...productState,
-      systemConfig: nextConfig
-    };
-    setProductState(nextState);
-    setNotice(buildNotice("success", "默认搜索 Provider 已更新", `当前默认 provider：${provider}`));
-  }
 
   async function autoBrief(themeId?: string, debtId?: string) {
     setView("search");
@@ -2061,80 +1404,15 @@ export default function App() {
     }
   }
 
-  function selectCorpusAudioFile(audioBase64: string, fileName: string) {
-    setCorpusAudioBase64(audioBase64);
-    setCorpusAudioFileName(fileName);
-    setCorpusMediaType("audio");
-    // 选了本地文件就清掉 URL，确保两种来源互斥、来源单一可预测。
-    setCorpusSourceUrl("");
-  }
 
-  function clearCorpusAudioFile() {
-    setCorpusAudioBase64("");
-    setCorpusAudioFileName("");
-  }
 
-  function removeCorpusInsight(insightId: string) {
-    if (typeof window !== "undefined" && !window.confirm("确定要删除这次语料分析吗？已应用的 PlaybookPatch 会保留为历史记录。")) {
-      return;
-    }
-    setProductState(deleteCorpusInsightBundle(productState, insightId));
-    setNotice(buildNotice("warning", "语料分析已删除", "已应用的引擎补丁仍会保留。"));
-  }
 
   // N-13:apply/revert 接后端 CAS 路由(与 confirmDecision 同款权威态语义),不再前端本地 mutate+
   // autosave 那条与后端语义分叉的平行路径。后端对非法流转响亮回 409/422 → .catch 如实提示,
   // 顺带根治 P3-01(revert 对非 applied 补丁的"假成功"):不再无脑报成功。采纳后端权威态(revision
   // 已 bump),避免下一次乐观 PUT 撞 409。
-  function applyPlaybookPatch(patchId: string, overrideRules?: string[]) {
-    productApiClient
-      .applyPlaybookPatch(patchId, overrideRules)
-      .then((next) => {
-        adoptServerState(next);
-        setNotice(buildNotice("success", "PlaybookPatch 已应用", "系统配置已记录新的访谈策略版本。"));
-        setView("config");
-      })
-      .catch((err) => {
-        const conflict = err instanceof ApiError && (err.status === 409 || err.status === 404);
-        setNotice(buildNotice(
-          "warning",
-          conflict ? "无法应用" : "操作失败",
-          conflict ? "该补丁已处置(已应用或已撤销)或不存在,不能重复应用。" : "应用补丁需要后端在线。"
-        ));
-      });
-  }
 
-  function revertPatch(patchId: string) {
-    productApiClient
-      .revertPlaybookPatch(patchId)
-      .then((next) => {
-        adoptServerState(next);
-        setNotice(buildNotice("info", "已撤销应用", "该访谈策略补丁已回退，后续访谈不再套用它。"));
-      })
-      .catch((err) => {
-        const conflict = err instanceof ApiError && (err.status === 422 || err.status === 404);
-        setNotice(buildNotice(
-          "warning",
-          conflict ? "无法撤销" : "操作失败",
-          conflict ? "只有已应用的补丁可以撤销。" : "撤销补丁需要后端在线。"
-        ));
-      });
-  }
 
-  function cleanupGeneratedArtifacts() {
-    const result = dedupeGeneratedArtifacts(productState);
-    const removedTotal = result.removed.searchBriefs + result.removed.podcastEpisodes + result.removed.corpusInsights;
-    setProductState(result.nextState);
-    setNotice(
-      removedTotal > 0
-        ? buildNotice(
-            "warning",
-            "重复生成物已清理",
-            `删除 ${result.removed.searchBriefs} 份搜索简报、${result.removed.podcastEpisodes} 条播客、${result.removed.corpusInsights} 次语料分析。`
-          )
-        : buildNotice("info", "没有发现重复生成物", "搜索简报、播客和语料分析都已保持唯一。")
-    );
-  }
 
   async function saveRuntimeConfig(updates: SystemConfigUpdateRequest) {
     setRuntimeConfigSaving(true);
