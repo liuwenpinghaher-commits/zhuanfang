@@ -7,12 +7,15 @@ import { resolveRequestTimeoutMs } from "../request-timeout";
 import { normalizeCosyVoiceId } from "../voice-presets";
 import { resolveBailianApiKey } from "../runtime-secrets";
 
-export const BAILIAN_DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+/** Default OpenAI-compatible base for text LLMs (token-plan). Audio/realtime keep DashScope URLs below. */
+export const BAILIAN_DEFAULT_BASE_URL = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1";
 export const BAILIAN_DEFAULT_AUDIO_BASE_URL = "https://dashscope.aliyuncs.com";
 /** Public DashScope WebRTC signaling URL (no workspace allowlist). Override with BAILIAN_REALTIME_WEBRTC_ENDPOINT. */
 export const BAILIAN_DEFAULT_WEBRTC_ENDPOINT = "https://dashscope.aliyuncs.com/api/v1/webrtc/realtime";
-export const BAILIAN_LATEST_PLUS_MODEL = "qwen3.7-plus";
-export const BAILIAN_ROLE_PLAY_MODEL = "qwen-plus-character";
+/** Default text LLM on token-plan (search / planning fallback). */
+export const BAILIAN_LATEST_PLUS_MODEL = "deepseek-v4-flash-0731";
+/** Default interview character text model (same token-plan text stack). */
+export const BAILIAN_ROLE_PLAY_MODEL = "deepseek-v4-flash-0731";
 export const BAILIAN_PODCAST_TTS_MODEL = "cosyvoice-v3-plus";
 // cosyvoice-v3-plus requires v3-series voices (longanyang/longanhuan_v3); v1/v2 voices return engine error 418.
 export const BAILIAN_PODCAST_TTS_VOICE = "longanyang";
@@ -20,9 +23,7 @@ export const BAILIAN_REALTIME_MODEL = "qwen3.5-omni-flash-realtime";
 export const BAILIAN_REALTIME_FALLBACK_MODEL = "qwen3-omni-flash-realtime";
 export const BAILIAN_TRANSCRIPTION_MODEL = "sensevoice-v1";
 // General-purpose text model for server-side synthesis (diary, review, corpus, intel).
-// qwen-plus is fast (~0.8s) and supports JSON mode — verified live. Kept separate from
-// BAILIAN_SEARCH_MODEL (qwen3.7-plus, ~9s) so synthesis never inherits the slow search model.
-export const BAILIAN_GENERAL_MODEL = "qwen-plus";
+export const BAILIAN_GENERAL_MODEL = "deepseek-v4-flash-0731";
 export const BAILIAN_EMBEDDING_MODEL = "text-embedding-v3";
 
 export function resolveBailianRealtimeModels(env: Record<string, string | undefined>): {

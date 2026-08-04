@@ -163,7 +163,7 @@ const runtimeSettingDefinitions: RuntimeSettingDefinition[] = [
     label: "百炼兼容模式 Base URL",
     description: "联网搜索和角色扮演 Chat/Responses API 的服务端地址。",
     valueKind: "string",
-    defaultValue: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    defaultValue: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
   },
   {
     key: "BAILIAN_AUDIO_BASE_URL",
@@ -455,7 +455,7 @@ export async function registerSystemRoutes(
         status: options.bailianSearchClient ? "ready" : "needs-key",
         active: state.systemConfig.search.activeProvider === "bailian",
         detail: options.bailianSearchClient
-          ? "已通过服务端 key 配置，可调用 qwen3.7-plus Responses web_search / web_extractor。"
+          ? "已通过服务端 key 配置，可调用 token-plan 文本模型 Responses web_search / web_extractor。"
           : "缺少 DASHSCOPE_API_KEY 或 BAILIAN_API_KEY，百炼联网搜索会降级。",
         requiredEnv: ["DASHSCOPE_API_KEY"],
         model: env.BAILIAN_SEARCH_MODEL ?? BAILIAN_LATEST_PLUS_MODEL,
@@ -518,9 +518,9 @@ export async function registerSystemRoutes(
         kind: "llm",
         label: "百炼角色扮演专访",
         status: options.bailianInterviewClient ? "ready" : "needs-key",
-        active: state.systemConfig.models.interviewModel === "qwen-plus-character",
+        active: Boolean(state.systemConfig.models.interviewModel),
         detail: options.bailianInterviewClient
-          ? "已配置 qwen-plus-character，文本专访追问可走百炼角色扮演。"
+          ? "已配置文本专访模型，可走 token-plan 追问。"
           : "缺少 DASHSCOPE_API_KEY 或 BAILIAN_API_KEY，文本专访无法调用角色扮演模型（接口 fail-loud 返回 5xx，不会用本地模板冒充 AI 追问）。",
         requiredEnv: ["DASHSCOPE_API_KEY"],
         model: env.BAILIAN_CHARACTER_MODEL ?? BAILIAN_ROLE_PLAY_MODEL,

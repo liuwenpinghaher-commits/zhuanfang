@@ -212,9 +212,9 @@ export const initialProductState: ProductState = {
       realtimeMode: "cascade"
     },
     models: {
-      planningModel: "qwen3.7-plus",
-      interviewModel: "qwen-plus-character",
-      synthesisModel: "qwen3.7-plus"
+      planningModel: "deepseek-v4-flash-0731",
+      interviewModel: "deepseek-v4-flash-0731",
+      synthesisModel: "deepseek-v4-flash-0731"
     },
     interview: {
       playbookVersion: "base-v1",

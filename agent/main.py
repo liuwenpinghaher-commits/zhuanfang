@@ -206,7 +206,7 @@ async def entrypoint(ctx: JobContext):
     session = AgentSession(
         stt=aliyun.STT(model="paraformer-realtime-v2"),
         llm=aliyun.LLM(
-            model="qwen-plus",
+            model="deepseek-v4-flash-0731",
             temperature=0.7,
         ),
         tts=aliyun.TTS(
