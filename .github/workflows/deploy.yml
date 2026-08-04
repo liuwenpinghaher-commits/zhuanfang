@@ -90,8 +90,9 @@ jobs:
               zhuanfang-deploy.tgz zhuanfang-deploy.tgz.sha256 \
               deploy-target:/tmp/
           fi
+          # checksum 文件里的路径是相对路径；必须在 /tmp 下校验
           ssh -F "$HOME/.ssh/config" -o BatchMode=yes deploy-target \
-            'test -f /tmp/zhuanfang-deploy.tgz && sha256sum -c /tmp/zhuanfang-deploy.tgz.sha256 && ls -lh /tmp/zhuanfang-deploy.tgz'
+            'cd /tmp && test -f zhuanfang-deploy.tgz && sha256sum -c zhuanfang-deploy.tgz.sha256 && ls -lh zhuanfang-deploy.tgz'
 
       - name: Extract and rebuild
         run: |
