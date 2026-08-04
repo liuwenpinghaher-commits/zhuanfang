@@ -1,6 +1,7 @@
 name: deploy-lighthouse
 
-# push main → GitHub runner 打包 → scp → 服务器解压 rebuild
+# push main → 打包精简树 → rsync 上传 → 服务器解压 rebuild
+# 不用 appleboy/scp-action（曾长时间卡住）；改用 runner 原生 rsync+ssh（与 scribe3 一致）。
 # 不经开发者本机；不依赖服务器访问 GitHub。
 on:
   push:
@@ -45,38 +46,52 @@ jobs:
                 .deploy-artifact/app/.env.local \
                 .deploy-artifact/app/.env.production.local
           tar -C .deploy-artifact -czf zhuanfang-deploy.tgz app
-          ls -lh zhuanfang-deploy.tgz
+          sha256sum zhuanfang-deploy.tgz > zhuanfang-deploy.tgz.sha256
+          ls -lh zhuanfang-deploy.tgz zhuanfang-deploy.tgz.sha256
 
-      - name: Upload tarball
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          port: ${{ secrets.DEPLOY_PORT }}
-          source: "zhuanfang-deploy.tgz"
-          target: /tmp/
-          overwrite: true
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          set -euo pipefail
+          test -n "${DEPLOY_SSH_KEY:-}"
+          test -n "${DEPLOY_HOST:-}"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          PORT="${DEPLOY_PORT:-22}"
+          # 避免交互；失败不阻断（部分机房禁 keyscan）
+          ssh-keyscan -p "$PORT" -T 10 "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          printf 'Host deploy-target\n  HostName %s\n  Port %s\n  User %s\n  IdentityFile ~/.ssh/deploy_key\n  IdentitiesOnly yes\n  StrictHostKeyChecking accept-new\n  ConnectTimeout 30\n  ServerAliveInterval 15\n  ServerAliveCountMax 8\n' \
+            "$DEPLOY_HOST" "$PORT" "${{ secrets.DEPLOY_USER }}" > ~/.ssh/config
+          chmod 600 ~/.ssh/config
+
+      - name: Upload tarball (rsync)
+        run: |
+          set -euo pipefail
+          rsync -az --partial --timeout=120 --checksum \
+            -e "ssh -F $HOME/.ssh/config" \
+            zhuanfang-deploy.tgz zhuanfang-deploy.tgz.sha256 \
+            deploy-target:/tmp/
+          ssh -F "$HOME/.ssh/config" deploy-target \
+            'test -f /tmp/zhuanfang-deploy.tgz && sha256sum -c /tmp/zhuanfang-deploy.tgz.sha256'
 
       - name: Extract and rebuild
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          port: ${{ secrets.DEPLOY_PORT }}
-          script_stop: true
-          command_timeout: 45m
-          script: |
-            set -euo pipefail
-            test -f /tmp/zhuanfang-deploy.tgz
-            test -f /opt/zhuanfang/app/.env.production.local
-            # 保留服务器生产密钥与数据卷
-            cp -a /opt/zhuanfang/app/.env.production.local /tmp/zhuanfang.env.bak
-            mkdir -p /opt/zhuanfang
-            tar -xzf /tmp/zhuanfang-deploy.tgz -C /opt/zhuanfang
-            cp -a /tmp/zhuanfang.env.bak /opt/zhuanfang/app/.env.production.local
-            chmod 600 /opt/zhuanfang/app/.env.production.local
-            chmod +x /opt/zhuanfang/app/deploy/prod/scripts/*.sh || true
-            export ZHUANFANG_REPO_DIR=/opt/zhuanfang/app
-            bash /opt/zhuanfang/app/deploy/prod/scripts/deploy.sh
+        run: |
+          set -euo pipefail
+          ssh -F "$HOME/.ssh/config" deploy-target 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          test -f /tmp/zhuanfang-deploy.tgz
+          test -f /opt/zhuanfang/app/.env.production.local
+          # 保留服务器生产密钥与数据卷
+          cp -a /opt/zhuanfang/app/.env.production.local /tmp/zhuanfang.env.bak
+          mkdir -p /opt/zhuanfang
+          tar -xzf /tmp/zhuanfang-deploy.tgz -C /opt/zhuanfang
+          cp -a /tmp/zhuanfang.env.bak /opt/zhuanfang/app/.env.production.local
+          chmod 600 /opt/zhuanfang/app/.env.production.local
+          chmod +x /opt/zhuanfang/app/deploy/prod/scripts/*.sh || true
+          export ZHUANFANG_REPO_DIR=/opt/zhuanfang/app
+          bash /opt/zhuanfang/app/deploy/prod/scripts/deploy.sh
+          REMOTE

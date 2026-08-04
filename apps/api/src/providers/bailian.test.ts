@@ -1,5 +1,8 @@
 import { describe, expect, it, vi, type Mock } from "vitest";
 import {
+  BAILIAN_DEFAULT_BASE_URL,
+  BAILIAN_LATEST_PLUS_MODEL,
+  BAILIAN_ROLE_PLAY_MODEL,
   createBailianAudioTranscriptionClient,
   createBailianAudioTranscriptionClientFromEnv,
   createBailianChatClientFromEnv,
@@ -24,7 +27,7 @@ function getLastFetchCall(mock: FetchMock): [string, RequestInit | undefined] {
 }
 
 describe("bailian provider client", () => {
-  it("uses qwen3.7-plus Responses API with built-in web tools for search briefs", async () => {
+  it("uses default text model Responses API with built-in web tools for search briefs", async () => {
     const fetchImpl = vi.fn(async () =>
       new Response(
         JSON.stringify({
@@ -63,7 +66,7 @@ describe("bailian provider client", () => {
     });
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      "https://dashscope.aliyuncs.com/compatible-mode/v1/responses",
+      `${BAILIAN_DEFAULT_BASE_URL}/responses`,
       expect.objectContaining({
         method: "POST",
         headers: {
@@ -74,7 +77,7 @@ describe("bailian provider client", () => {
     );
     const requestBody = JSON.parse(getLastFetchCall(fetchImpl as FetchMock)[1]?.body as string);
     expect(requestBody).toMatchObject({
-      model: "qwen3.7-plus",
+      model: BAILIAN_LATEST_PLUS_MODEL,
       tools: [{ type: "web_search" }, { type: "web_extractor" }, { type: "code_interpreter" }]
     });
     expect(requestBody.input).toContain("AI 产品商业化热点");
@@ -361,7 +364,7 @@ describe("bailian provider client", () => {
     });
   });
 
-  it("uses qwen-plus-character chat completions for interview follow-ups", async () => {
+  it("uses default role-play model chat completions for interview follow-ups", async () => {
     const state = createInitialProductState();
     const session = createSessionDraft(state, "decision", "standard");
     const fetchImpl = vi.fn(async () =>
@@ -390,7 +393,7 @@ describe("bailian provider client", () => {
     });
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+      `${BAILIAN_DEFAULT_BASE_URL}/chat/completions`,
       expect.objectContaining({
         method: "POST",
         headers: {
@@ -401,7 +404,7 @@ describe("bailian provider client", () => {
     );
     const requestBody = JSON.parse(getLastFetchCall(fetchImpl as FetchMock)[1]?.body as string);
     expect(requestBody).toMatchObject({
-      model: "qwen-plus-character",
+      model: BAILIAN_ROLE_PLAY_MODEL,
       messages: expect.arrayContaining([
         expect.objectContaining({ role: "system" }),
         expect.objectContaining({ role: "assistant", content: session.card.suggestedOpening }),
@@ -423,7 +426,7 @@ describe("bailian provider client", () => {
     expect(requestBody.messages[0].content).toContain("<pre_signals>");
     expect(result).toEqual({
       providerId: "bailian-character",
-      model: "qwen-plus-character",
+      model: BAILIAN_ROLE_PLAY_MODEL,
       content: "你说怕失控。我们先落到一个具体项目：如果你不兜底，最坏会发生什么？",
       intent: "百炼角色扮演追问"
     });
