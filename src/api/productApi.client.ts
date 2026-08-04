@@ -1,11 +1,56 @@
 /** Product API client factory (split from productApi.ts). */
-import type { ProductApiClient, ProductApiClientOptions } from "./productApi.types";
+import { normalizeProductState } from "../domain/storage";
+import { assessStateExportCompleteness, type StateExportBundle } from "../domain/backup";
+import type { PrivacyReport } from "../domain/privacy";
+import type {
+  ChatCitation,
+  InterviewRawMaterial,
+  InterviewSession,
+  ProductState
+} from "../domain/types";
+import type {
+  AnalyzeCorpusImportResponse,
+  AutoRunResearchResponse,
+  CreateAutoBriefResponse,
+  CreateSearchBriefResponse,
+  EndInterviewSessionResponse,
+  FetchLike,
+  GeneratePodcastEpisodeResponse,
+  GeneratePreSignalsResponse,
+  HealthResponse,
+  ImportDocumentResponse,
+  ImportReceipt,
+  InterruptRealtimeVoiceSessionResponse,
+  InterviewSessionResponse,
+  ProductApiClient,
+  ProductApiClientOptions,
+  PurgeReceipt,
+  RealtimeVoiceSessionResponse,
+  RefreshSearchBriefResponse,
+  ResetReceipt,
+  ReviewsResponse,
+  SendInterviewTurnRequest,
+  SessionAudioMeta,
+  SystemCapabilitiesResponse,
+  SystemConfigResponse,
+  SystemConfigUpdateResponse,
+  TrackSearchBriefResponse,
+  TranscribeCorpusAudioResponse,
+  VoiceInfo,
+  VoiceListResponse
+} from "./productApi.types";
 import {
-  getProductApiBaseUrl,
+  ApiError,
+  bytesToBase64,
+  createDeadlineSignal,
   deriveRealtimeApiWsBaseUrl,
-  resolveProductApiToken,
-  withAuthTokenQuery,
+  getProductApiBaseUrl,
+  InterviewTurnRequestTimeoutError,
   isNetworkError,
+  resolveClientTimeoutMs,
+  resolveProductApiToken,
+  roleQuery,
+  withAuthTokenQuery
 } from "./productApi.types";
 
 export function createProductApiClient(

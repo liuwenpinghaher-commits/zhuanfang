@@ -1,6 +1,5 @@
 /** Product API types & small helpers (split from productApi.ts). */
-import { normalizeProductState } from "../domain/storage";
-import { assessStateExportCompleteness, type StateExportBundle } from "../domain/backup";
+import type { StateExportBundle } from "../domain/backup";
 import type { PrivacyReport } from "../domain/privacy";
 import type { CapabilityTask } from "../capabilities/task";
 import type {
@@ -26,7 +25,7 @@ import type {
   YearlyReview
 } from "../domain/types";
 
-type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface ProductApiClient {
   exportState(): Promise<StateExportBundle>;
@@ -704,7 +703,7 @@ export function isNetworkError(err: unknown): boolean {
  * "Maximum call stack size exceeded" that String.fromCharCode(...wholeArray)
  * hits on multi-MB recordings (spread explodes the arg list).
  */
-function bytesToBase64(bytes: Uint8Array): string {
+export function bytesToBase64(bytes: Uint8Array): string {
   const CHUNK = 0x8000; // 32KB per fromCharCode call
   let binary = "";
   for (let i = 0; i < bytes.length; i += CHUNK) {
@@ -720,7 +719,7 @@ function bytesToBase64(bytes: Uint8Array): string {
  * an explicit role=interviewer appends the query. Keeps the interviewee contract
  * (and its tests) byte-for-byte unchanged.
  */
-function roleQuery(role?: SessionAudioRole): string {
+export function roleQuery(role?: SessionAudioRole): string {
   return role === "interviewer" ? "?role=interviewer" : "";
 }
 
@@ -733,7 +732,7 @@ export class InterviewTurnRequestTimeoutError extends Error {
   }
 }
 
-function resolveClientTimeoutMs(explicit: number | undefined, envValue: string | undefined, fallback: number): number {
+export function resolveClientTimeoutMs(explicit: number | undefined, envValue: string | undefined, fallback: number): number {
   const parsed = explicit ?? (envValue?.trim() ? Number(envValue) : Number.NaN);
   if (!Number.isFinite(parsed)) {
     return fallback;
@@ -741,7 +740,7 @@ function resolveClientTimeoutMs(explicit: number | undefined, envValue: string |
   return Math.max(1, Math.min(600_000, Math.round(parsed)));
 }
 
-function createDeadlineSignal(external: AbortSignal | undefined, timeoutMs: number) {
+export function createDeadlineSignal(external: AbortSignal | undefined, timeoutMs: number) {
   const controller = new AbortController();
   let timedOut = false;
   const abortFromExternal = () => controller.abort(external?.reason);
