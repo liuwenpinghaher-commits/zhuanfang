@@ -17,10 +17,12 @@ import {
   Upload,
   Volume2
 } from "lucide-react";
-import { FormEvent, MutableRefObject, useEffect, useMemo, useRef, useState } from "react";
+import { MutableRefObject, useEffect, useMemo, useRef, useState } from "react";
 import { useOfflineProductSync } from "./hooks/useOfflineProductSync";
 import { useSearchBriefActions } from "./hooks/useSearchBriefActions";
 import { useCorpusPlaybookActions } from "./hooks/useCorpusPlaybookActions";
+import { useInterviewSessionActions } from "./hooks/useInterviewSessionActions";
+import { useRealtimeVoiceControls } from "./hooks/useRealtimeVoiceControls";
 import {
   buildCognitiveRadar,
   buildInterviewCard,
@@ -28,52 +30,37 @@ import {
   buildRealtimeTurnState,
   buildSystemStatus,
   createQuestionFromNote,
-  createKnowledgeDebtFromSearchBrief,
-  createPointFromSearchBrief,
-  createQuestionFromSearchBrief,
   markMemoryCorrection,
-  makeId,
   receiveUserTurn,
   resolveInterviewTopicHint,
   searchProductAssets,
   toggleAssetImportance,
-  buildRealtimeVoiceInstructions,
   updateDecisionStatus,
   updateKnowledgeDebtStatus,
   updatePointStatus,
-  updateQuestionStatus
+  updateQuestionStatus,
 } from "./domain/engine";
 import { addAnnotation, removeAnnotation } from "./domain/raw-material";
 import { deleteImportSource } from "./domain/material";
 import { createIdleCapabilityTask, failCapabilityTask, startCapabilityTask } from "./capabilities/task";
-import { productApiClient, getProductApiBaseUrl, isNetworkError, ApiError, type PersistHealthLite, type PurgeReceipt, type ResetReceipt, type ReviewsResponse } from "./api/productApi";
+import { productApiClient, isNetworkError, ApiError, type PersistHealthLite, type PurgeReceipt, type ResetReceipt, type ReviewsResponse } from "./api/productApi";
 import type { ColdLayerMode, RealtimeVoiceSessionResponse, StateImportResult, SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigUpdateRequest, VoiceInfo } from "./api/productApi";
 // WebRTC omni client is incomplete (no callbacks/turn recording); the connect path is
 // downlined to WebSocket in startVoiceSession. Type kept for the connection union only.
 import type { BailianRealtimeWebrtcConnection } from "./realtime/realtimeTypes";
-import {
-  connectBailianRealtimeWebsocket,
-  type BailianRealtimeWebsocketConnection
-} from "./realtime/bailianWebsocket";
-import { createLivekitVoiceSession, type LivekitVoiceSession } from "./realtime/livekitVoice";
-import {
-  connectCascadedPipeline,
-  type CascadedPipeline,
-  type TranscriptReviewItem,
-  type TtsSink
+import type { BailianRealtimeWebsocketConnection } from "./realtime/bailianWebsocket";
+import type { LivekitVoiceSession } from "./realtime/livekitVoice";
+import type {
+  CascadedPipeline,
+  TranscriptReviewItem,
+  TtsSink
 } from "./realtime/cascadedPipeline";
 import { runVoiceReviewAction } from "./realtime/voiceReviewAction";
-import { createBrowserAsrSource } from "./realtime/cascadedAsrSource";
-import { createBrowserTtsSink } from "./realtime/cascadedTtsSink";
-import { pcmS16leMonoToWav } from "./realtime/pcmWav";
-import { createSessionAudioRecorder, type SessionAudioRecorder } from "./realtime/sessionAudioRecorder";
-import { probeVadWorkletCapability } from "./realtime/vadWorkletCapability";
+import type { SessionAudioRecorder } from "./realtime/sessionAudioRecorder";
 import {
   createVoiceTransportStateGuard,
-  terminateVoicePipelineAfterExhaustion,
   type VoiceUiStatus
 } from "./realtime/voiceTransportLifecycle";
-import { deriveRealtimeWsBaseUrl } from "./realtime/wsBaseUrl";
 import {
   dedupeGeneratedArtifacts,
   deleteCorpusInsightBundle,
@@ -125,7 +112,6 @@ import { buildTrackWorkspace } from "./domain/timeline";
 import {
   buildNotice,
   groupedNavigation,
-  interviewControlGroups,
   type AssetFilter,
   type ConfigSection,
   type UiNotice,
@@ -506,29 +492,6 @@ export default function App() {
 
 
   const {
-    retrySearchMaterial,
-    startFromBrief,
-    briefToDebt,
-    briefToPoint,
-    briefToQuestion,
-    removeSearchBrief,
-    setDefaultSearchProvider
-  } = useSearchBriefActions({
-    productState,
-    setProductState,
-    setNotice,
-    setActiveSearchBriefId,
-    launchInterview: (mode, briefId) => {
-      void launchInterview(mode, briefId);
-    },
-    createSearchMaterial: (providerId) => {
-      void createSearchMaterial(providerId);
-    },
-    searchTaskProviderId: (searchTask.providerId as SearchProviderId | undefined),
-    defaultSearchProvider: productState.systemConfig.search.activeProvider
-  });
-
-  const {
     selectCorpusAudioFile,
     clearCorpusAudioFile,
     removeCorpusInsight,
@@ -603,6 +566,143 @@ export default function App() {
   }
 
   // 引用跳源：切到对应视图并尽量精确 focus（笔记场次 / 记忆 id / 素材 / 资产 key / 主题 Track）。
+  const suggestedTopicHint = useMemo(
+    () => resolveInterviewTopicHint(productState, activeSearchBriefId ? { searchBriefId: activeSearchBriefId } : {}),
+    [activeSearchBriefId, productState]
+  );
+  const card = useMemo(
+    () => buildInterviewCard(productState, activeSearchBriefId, suggestedTopicHint),
+    [activeSearchBriefId, productState, suggestedTopicHint]
+  );
+  const recommendedLaunch = useMemo(() => {
+    if (activeSearchBriefId) {
+      return { mode: "learning" as const, reason: "适合先消化外部材料，再回到你的真实经验" };
+    }
+    const dueDecision = productState.decisions.some((decision) =>
+      decision.status === "待复盘" &&
+      decision.confirmationStatus === "用户确认" &&
+      (!decision.reviewAt || Date.parse(decision.reviewAt) <= Date.now())
+    );
+    if (dueDecision) {
+      return { mode: "decision" as const, reason: "有已确认且到期的决策需要复盘" };
+    }
+    if (productState.themes.length > 0) {
+      return { mode: "long-term" as const, reason: "适合回访反复出现的问题" };
+    }
+    return { mode: "daily" as const, reason: "先从最近发生的一件具体事情开始" };
+  }, [activeSearchBriefId, productState.decisions, productState.themes.length]);
+  // Resume: surface every unfinished session; keeping only the newest one hid older active work.
+  const resumeCards = useMemo(() => buildInterviewResumeCards(productState), [productState]);
+  // 认知雷达是本地确定性真实计数（非 LLM 叙事），始终可算可渲染。
+  const localRadar = useMemo(() => buildCognitiveRadar(productState), [productState]);
+  // LLM 综述只认服务端产出——不可用就把真实原因暴露给用户（reviewsError），
+  // 绝不用本地确定性模板叙事顶替冒充。
+  const monthlyReview = serverReviews?.monthly ?? null;
+  const yearlyReview = serverReviews?.yearly ?? null;
+  const radar = serverReviews?.radar ?? localRadar;
+
+  const {
+    closeRealtimeVoiceSession,
+    interruptAssistant,
+    toggleRealtimeRecording
+  } = useRealtimeVoiceControls({
+    session,
+    setSession,
+    productState,
+    card,
+    recording,
+    setRecording,
+    voiceStatus,
+    setVoiceStatus,
+    realtimeVoiceSession,
+    setRealtimeVoiceSession,
+    realtimeVoiceConnection,
+    setRealtimeVoiceConnection,
+    livekitVoiceSession,
+    setLivekitVoiceSession,
+    cascadePipelineRef,
+    voiceTransportStateGuardRef,
+    audioRecorderRef,
+    ttsSinkRef,
+    assistantTranscriptTurnRef,
+    voiceReviewItemRef,
+    setVoiceReviewItem,
+    setLiveUserTranscript,
+    setAudioLevel,
+    setInterviewInput,
+    setFailedTurnContent,
+    setGuidanceState,
+    setNotice,
+    setApiPersistenceEnabled,
+    togglingRef,
+    adoptServerState,
+    recordTurnFailedFallback,
+    voiceRecallRefreshSucceeded,
+    voiceRecallRefreshFailed
+  });
+
+  const {
+    continueInterview,
+    discardEmptyInterview,
+    launchInterview,
+    startInterview,
+    submitTurn,
+    finishInterview,
+    applyInterviewControl
+  } = useInterviewSessionActions({
+    productState,
+    setProductState,
+    session,
+    setSession,
+    pendingMode,
+    setPendingMode,
+    activeSearchBriefId,
+    setActiveSearchBriefId,
+    recommendedMode: recommendedLaunch.mode,
+    interviewInput,
+    setInterviewInput,
+    setFailedTurnContent,
+    setSubmittingTurn,
+    setStartingInterview,
+    setFinishingInterview,
+    setLastInterviewSummary,
+    setNotice,
+    setView,
+    setApiPersistenceEnabled,
+    startingRef,
+    finishingRef,
+    pendingSessionCreateRef,
+    audioRecorderRef,
+    ttsSinkRef,
+    cascadePipelineRef,
+    adoptServerState,
+    closeRealtimeVoiceSession,
+    scheduleReconnectProbe
+  });
+
+  const {
+    retrySearchMaterial,
+    startFromBrief,
+    briefToDebt,
+    briefToPoint,
+    briefToQuestion,
+    removeSearchBrief,
+    setDefaultSearchProvider
+  } = useSearchBriefActions({
+    productState,
+    setProductState,
+    setNotice,
+    setActiveSearchBriefId,
+    launchInterview: (mode, briefId) => {
+      void launchInterview(mode, briefId);
+    },
+    createSearchMaterial: (providerId) => {
+      void createSearchMaterial(providerId);
+    },
+    searchTaskProviderId: (searchTask.providerId as SearchProviderId | undefined),
+    defaultSearchProvider: productState.systemConfig.search.activeProvider
+  });
+
   function handleCitationClick(citation: ChatCitation) {
     const label = citation.sourceLabel ?? citation.sourceType;
     if (citation.sourceType === "transcript") {
@@ -859,56 +959,6 @@ export default function App() {
     }
   }, [voiceStatus, realtimeState?.shouldInterrupt]);
 
-  function closeRealtimeVoiceSession() {
-    // Invalidate callbacks before closing resources: pipeline.close() may synchronously
-    // emit a final state, and an older pipeline must never mutate a newer voice session.
-    voiceTransportStateGuardRef.current.invalidate();
-    if (livekitVoiceSession) {
-      livekitVoiceSession.close();
-      setLivekitVoiceSession(null);
-    }
-    realtimeVoiceConnection?.close();
-    setRealtimeVoiceConnection(null);
-    setRealtimeVoiceSession(null);
-    const cascadePipeline = cascadePipelineRef.current;
-    cascadePipelineRef.current = null;
-    cascadePipeline?.close();
-    // Drop the host TTS sink ref. The pipeline.close() above already closed the
-    // sink (releasing its WS + AudioContext); we just clear the handle so a torn-
-    // down session can't leak a stale sink (and its recorded PCM) into the next.
-    ttsSinkRef.current = null;
-    // Discard any orphan whole-session recorder (voice session torn down without a
-    // proper /end upload — e.g. new interview / purge / reset). finishInterview()
-    // already nulls the ref BEFORE calling us when it wants to upload, so reaching
-    // here with a recorder means the recording is intentionally dropped. Stop it to
-    // release the MediaRecorder; ignore the resulting blob.
-    if (audioRecorderRef.current) {
-      const orphan = audioRecorderRef.current;
-      audioRecorderRef.current = null;
-      void orphan.stop().catch(() => { /* discarded */ });
-    }
-    setRecording(false);
-    setAudioLevel(0);
-    setVoiceStatus("idle");
-    voiceReviewItemRef.current = null;
-    setVoiceReviewItem(null);
-  }
-
-  useEffect(() => {
-    if (view !== "config") return;
-    let cancelled = false;
-    setVoicesLoading(true);
-    productApiClient.listVoices().then((result) => {
-      if (!cancelled) {
-        setVoices([...result.preset, ...result.custom]);
-        setVoicesLoading(false);
-      }
-    }).catch(() => {
-      if (!cancelled) setVoicesLoading(false);
-    });
-    return () => { cancelled = true; };
-  }, [view]);
-
   async function uploadVoice(audioBase64: string, preferredName: string) {
     const voice = await productApiClient.createVoice({ audioBase64, preferredName });
     setVoices((prev) => [...prev, voice]);
@@ -936,183 +986,10 @@ export default function App() {
     setNotice(buildNotice("warning", "音色已删除", `音色 "${voiceId}" 已移除。`));
   }
 
-  async function interruptAssistant() {
-    setGuidanceState(prev => ({ ...prev, countThisTurn: 0, active: false }));
-    // Hit whichever transport is live. cascade (pipeline.interrupt) and omni
-    // (connection.interruptAssistant) have real barge-in; livekit's interrupt is a
-    // best-effort no-op (SDK-limited) but harmless. Previously only livekit was wired,
-    // so the manual 打断 button did nothing in the default cascade / omni modes.
-    let interrupted = false;
-    // Capture how much of the reply was actually spoken aloud so the server can truncate the
-    // persisted assistant turn to what the guest really heard (P0-2). Without this the session
-    // record keeps the full reply the AI never finished saying, and downstream memory/extraction
-    // treats unspoken text as spoken.
-    let spokenTextSoFar = "";
-    if (cascadePipelineRef.current) {
-      const info = cascadePipelineRef.current.interrupt();
-      spokenTextSoFar = info?.spokenTextSoFar ?? "";
-      interrupted = true;
-    }
-    const conn = realtimeVoiceConnection as
-      | { interruptAssistant?: () => Promise<{ spokenTextSoFar?: string } | null> | void }
-      | null;
-    if (conn?.interruptAssistant) {
-      const result = await conn.interruptAssistant();
-      if (result && typeof result.spokenTextSoFar === "string") {
-        spokenTextSoFar = result.spokenTextSoFar;
-      }
-      interrupted = true;
-    }
-    if (livekitVoiceSession) {
-      livekitVoiceSession.interrupt();
-      interrupted = true;
-    }
-    if (interrupted) {
-      // Persist the interruption server-side so the assistant turn is truncated to the spoken
-      // portion. Best-effort: a failure here must not break the local barge-in UX.
-      const realtimeSessionId = realtimeVoiceSession?.sessionId;
-      if (realtimeSessionId) {
-        try {
-          await productApiClient.interruptRealtimeVoiceSession(realtimeSessionId, {
-            spokenTextSoFar,
-            reason: "user_interrupt"
-          });
-        } catch (error) {
-          console.warn(JSON.stringify({ event: "interrupt_persist_failed", error: error instanceof Error ? error.message : String(error) }));
-        }
-      }
-      setVoiceStatus("interrupted");
-      setTimeout(() => setVoiceStatus("listening"), 1500);
-    }
-  }
-
   /** 打开单条主题线工作区。 */
   function openTrack(id: string) {
     setSelectedTrackId(id);
     setView("track");
-  }
-
-  /** 继续一个未完成的 active 会话:把它装回 session 并切到工作台。 */
-  function continueInterview(sessionId: string) {
-    const target = productState.sessions.find((item) => item.id === sessionId && item.status === "active");
-    if (!target) {
-      setNotice(buildNotice("warning", "无法继续", "这条未完成的专访已不存在或已结束。"));
-      return;
-    }
-    closeRealtimeVoiceSession();
-    setInterviewInput("");
-    setFailedTurnContent(null);
-    setPendingMode(target.mode);
-    setSession(target);
-    setView("interview");
-  }
-
-  async function discardEmptyInterview(sessionId: string) {
-    try {
-      const result = await productApiClient.discardInterviewSession(sessionId);
-      adoptServerState(result.state);
-      setApiPersistenceEnabled(true);
-      if (session?.id === sessionId) {
-        setSession(null);
-      }
-      setNotice(buildNotice("info", "已移除空场专访", "尚未产生对话的会话已清理。"));
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "请稍后重试。";
-      // 后端不可达时本地乐观清理空壳，避免横幅长期占位
-      if (isNetworkError(err)) {
-        setApiPersistenceEnabled(false);
-        const next = productState.sessions.find((s) => s.id === sessionId);
-        const userTurns = next?.turns.filter((turn) => turn.role === "user").length ?? 0;
-        if (next?.status === "active" && userTurns === 0) {
-          setProductState({
-            ...productState,
-            sessions: productState.sessions.filter((s) => s.id !== sessionId)
-          });
-          if (session?.id === sessionId) setSession(null);
-          setNotice(buildNotice("warning", "已在本地移除空场（尚未同步）", message));
-          return;
-        }
-      }
-      setNotice(buildNotice("danger", "无法移除空场", message));
-    }
-  }
-
-  /** 一键开始：直接传参给 startInterview，不依赖 setState 后的值。 */
-  async function launchInterview(
-    mode: InterviewMode = recommendedLaunch.mode,
-    searchBriefId = activeSearchBriefId,
-    topicHint?: string,
-    relatedThemeIds?: string[]
-  ) {
-    const activeSessions = productState.sessions.filter((item) => item.status === "active");
-    if (activeSessions.length > 0) {
-      const confirmed = window.confirm(
-        `当前还有 ${activeSessions.length} 场未完成专访。继续新建会保留这些会话，你可以稍后逐一恢复。仍要新建吗？`
-      );
-      if (!confirmed) {
-        setNotice(buildNotice("info", "已保留未完成专访", "请从页面顶部选择一场继续。"));
-        return;
-      }
-    }
-    setPendingMode(mode);
-    setActiveSearchBriefId(searchBriefId);
-    setSession(null);
-    await startInterview(mode, searchBriefId, topicHint, relatedThemeIds);
-  }
-
-  async function startInterview(
-    mode: InterviewMode = pendingMode,
-    searchBriefId = activeSearchBriefId,
-    topicHint?: string,
-    relatedThemeIds?: string[]
-  ) {
-    if (startingRef.current) return; // 已在创建中 → 跳过,避免双触发产生多个空 session
-    startingRef.current = true;
-    setStartingInterview(true);
-    const normalizedTopicHint = topicHint?.trim() || resolveInterviewTopicHint(productState, searchBriefId ? { searchBriefId } : {});
-    const normalizedThemeIds = Array.from(new Set((relatedThemeIds ?? []).filter(Boolean)));
-    const createSignature = JSON.stringify({
-      mode,
-      searchBriefId: searchBriefId || "",
-      topicHint: normalizedTopicHint,
-      relatedThemeIds: normalizedThemeIds
-    });
-    if (pendingSessionCreateRef.current?.signature !== createSignature) {
-      pendingSessionCreateRef.current = { id: makeId("session-create"), signature: createSignature };
-    }
-    const clientRequestId = pendingSessionCreateRef.current.id;
-    try {
-      const apiRun = await productApiClient.createInterviewSession({
-        mode,
-        strength: productState.profile.preferredStrength,
-        ...(searchBriefId ? { searchBriefId } : {}),
-        topicHint: normalizedTopicHint,
-        ...(normalizedThemeIds.length > 0 ? { relatedThemeIds: normalizedThemeIds } : {}),
-        clientRequestId
-      });
-      pendingSessionCreateRef.current = null;
-      setSession(apiRun.session);
-      adoptServerState(apiRun.state);
-      closeRealtimeVoiceSession();
-      setApiPersistenceEnabled(true);
-      setView("interview");
-      return;
-    } catch (err) {
-      // 失败即如实暴露——专访追问/归档都依赖服务端 LLM，离线本地草稿会话（确定性引擎
-      // 模板追问冒充 AI 追问）已剔除。后端不可达就是不能用。
-      const message = err instanceof Error && err.message ? err.message : "请检查服务后重试。";
-      if (isNetworkError(err)) {
-        setApiPersistenceEnabled(false);
-        scheduleReconnectProbe();
-        setNotice(buildNotice("danger", "无法开始专访", "后端不可达，专访功能不可用。恢复连接后请重试。"));
-      } else {
-        pendingSessionCreateRef.current = null;
-        setNotice(buildNotice("danger", "无法开始专访", message));
-      }
-    } finally {
-      startingRef.current = false;
-      setStartingInterview(false);
-    }
   }
 
   async function createSearchMaterial(provider: SearchProviderId = productState.systemConfig.search.activeProvider) {
@@ -1463,216 +1340,6 @@ export default function App() {
     setNotice(buildNotice("success", "播客默认声音已更新", `默认声音已设为：${podcastVoice}`));
   }
 
-  async function submitTurn(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!session || !interviewInput.trim()) {
-      return;
-    }
-    const content = interviewInput;
-    setInterviewInput("");
-    setSubmittingTurn(true);
-
-    try {
-      const apiRun = await productApiClient.sendInterviewTurn(session.id, { content });
-      // Use the server's authoritative session — it already carries the new
-      // user+assistant turns AND its own interactionPreSignals. (The old code
-      // spread the STALE closure `session` here, which dropped the new turns
-      // whenever the reply included pre_signals, i.e. always with the real LLM.)
-      setSession(apiRun.session);
-      setFailedTurnContent(null);
-      adoptServerState(apiRun.state);
-      setApiPersistenceEnabled(true);
-    } catch (err) {
-      // 失败即如实暴露、恢复输入让用户重试——离线本地"确定性引擎追问"已剔除。
-      const message = err instanceof Error && err.message ? err.message : "本轮未送到服务端，请重试。";
-      if (isNetworkError(err)) {
-        setApiPersistenceEnabled(false);
-      }
-      setNotice(buildNotice("danger", "本轮未送达", message));
-      setInterviewInput(content);
-      setFailedTurnContent(content);
-    } finally {
-      setSubmittingTurn(false);
-    }
-  }
-
-  async function finishInterview() {
-    if (!session) {
-      return;
-    }
-    if (finishingRef.current) return; // 防重入:/end 在途(LLM 档案抽取慢),忽略重复点击
-    // Align with the server's rule: at least one USER turn (control feedback turns
-    // don't count). Pre-checking avoids a 422 that the catch would misread as offline.
-    const userTurnCount = session.turns.filter((turn) => turn.role === "user").length;
-    if (userTurnCount === 0) {
-      setNotice(buildNotice("warning", "还不能结束", "先回答至少一轮，再结束并生成档案。"));
-      return;
-    }
-
-    finishingRef.current = true;
-    setFinishingInterview(true);
-    try {
-      const endedSessionId = session.id;
-      const apiRun = await productApiClient.endInterviewSession(endedSessionId);
-      // The /end response is already the authoritative LIGHT state (turns
-      // offloaded to cold storage). Adopt it so the autosave effect doesn't PUT
-      // the (now empty) turns back and re-inflate the just-offloaded session.
-      adoptServerState(apiRun.state);
-      setApiPersistenceEnabled(true);
-      // Whole-session voice recording: stop it BEFORE closeRealtimeVoiceSession()
-      // tears down the mic tracks (MediaRecorder needs the live stream to flush its
-      // final chunk), then upload. Best-effort — a failed upload only warns; it must
-      // not block ending the interview. On the text path the ref is null → skipped.
-      // 「本场不保存」(doNotSave) 的会话：两路音频（受访者麦克风 + 主持人 TTS）一律
-      // 不上传——用户明确要求不落盘，录音仍需 stop 以释放 MediaRecorder，但直接丢弃。
-      const skipAudioUpload = session.doNotSave === true;
-      if (skipAudioUpload) {
-        console.info(JSON.stringify({ event: "audio_upload_skipped_do_not_save", sessionId: endedSessionId }));
-      }
-      const recorder = audioRecorderRef.current;
-      audioRecorderRef.current = null;
-      if (recorder) {
-        if (skipAudioUpload) {
-          void recorder.stop().catch(() => { /* discarded */ });
-        } else {
-          void recorder
-            .stop()
-            .then(({ blob, durationMs, recordingStartedAt }) =>
-              productApiClient.uploadSessionAudio(endedSessionId, blob, durationMs, recordingStartedAt)
-            )
-            .catch(() =>
-              setNotice(buildNotice("warning", "录音未保存", "本场语音录音上传失败，不影响笔记与资产。"))
-            );
-        }
-      }
-      // Host (interviewer) TTS audio: drain the sink's side-channel PCM tap, wrap
-      // as WAV, upload as role=interviewer. Best-effort and non-blocking — a
-      // failure only warns to console. No recordingStartedAt: the host audio is
-      // stitched-together AI speech with no continuous timeline, so per-turn seek
-      // doesn't apply (the viewer plays it as one continuous track). The sink ref
-      // is cleared by closeRealtimeVoiceSession() below; read it before that.
-      const ttsSink = ttsSinkRef.current;
-      if (!skipAudioUpload && ttsSink?.getRecordedPcm) {
-        const rec = ttsSink.getRecordedPcm();
-        if (rec && rec.pcm.length > 0) {
-          const wav = pcmS16leMonoToWav(rec.pcm, rec.sampleRate);
-          void productApiClient
-            .uploadSessionAudio(endedSessionId, wav, undefined, undefined, "interviewer")
-            .catch((err: unknown) => {
-              console.warn(JSON.stringify({
-                event: "interviewer_audio_upload_failed",
-                error: err instanceof Error ? err.message : String(err),
-              }));
-            });
-        }
-      }
-      setSession(null);
-      closeRealtimeVoiceSession();
-      // Journey honesty (R-P1-04 / doNotSave):
-      // - doNotSave must not claim "档案已生成"
-      // - pending HITL candidates must not feel "already remembered" across sessions
-      const pendingCount = Number(apiRun.pendingMemoryCandidateCount ?? 0);
-      const needsHitl =
-        apiRun.longTermRecallRequiresApproval === true || pendingCount > 0;
-      if (skipAudioUpload) {
-        setLastInterviewSummary({
-          noteTitle: "本场不保存",
-          pendingMemory: 0,
-          destination: "notes",
-          doNotSave: true,
-          finishedAt: new Date().toISOString()
-        });
-        setNotice(
-          buildNotice(
-            "info",
-            "专访已结束（本场不保存）",
-            "按你的选择，本场未写入长期资产与录音；对话仅作当次体验。"
-          )
-        );
-        setView("home");
-      } else if (needsHitl) {
-        setLastInterviewSummary({
-          noteTitle: apiRun.note?.title ?? "本场笔记",
-          pendingMemory: pendingCount,
-          destination: "memory",
-          doNotSave: false,
-          finishedAt: new Date().toISOString()
-        });
-        setNotice(
-          buildNotice(
-            "success",
-            "专访档案已生成",
-            pendingCount > 0
-              ? `双轨笔记已更新。另有 ${pendingCount} 条记忆待确认后才会进入跨会话召回——请在「记忆治理」审核。`
-              : "双轨笔记已更新。长期记忆需你确认后才会进入跨会话召回。"
-          )
-        );
-        setView("home");
-      } else {
-        setLastInterviewSummary({
-          noteTitle: apiRun.note?.title ?? "本场笔记",
-          pendingMemory: 0,
-          destination: "notes",
-          doNotSave: false,
-          finishedAt: new Date().toISOString()
-        });
-        setNotice(
-          buildNotice(
-            "success",
-            "专访档案已生成",
-            `「${apiRun.note?.title ?? "本场笔记"}」已写入双轨笔记；可在下方「上场摘要」或笔记/资产中继续。`
-          )
-        );
-        setView("home");
-      }
-      return;
-    } catch (err) {
-      // 已结束(409)/会话不存在(404):这场专访其实已经收尾(常见于 /end 调 LLM 较慢时用户
-      // 重复点"结束")。视为成功跳转,绝不误报"结束失败"再诱导继续点。
-      if (err instanceof ApiError && (err.status === 409 || err.status === 404)) {
-        setSession(null);
-        closeRealtimeVoiceSession();
-        setNotice(buildNotice("info", "专访已结束", "这场专访已经收尾，已为你跳转到笔记。"));
-        setView("notes");
-        return;
-      }
-      // 失败即如实暴露——会话保持打开可重试，离线本地确定性 finalize（模板轻量档案）已剔除。
-      const message = err instanceof Error && err.message ? err.message : "请稍后重试。本次未生成档案。";
-      if (isNetworkError(err)) {
-        setApiPersistenceEnabled(false);
-        setNotice(buildNotice("danger", "结束失败", "后端不可达，无法归档。会话已保留，恢复连接后请重试。"));
-      } else {
-        setNotice(buildNotice("danger", "结束失败", `${message}`));
-      }
-    } finally {
-      finishingRef.current = false;
-      setFinishingInterview(false);
-    }
-  }
-
-  async function applyInterviewControl(action: InterviewControlAction) {
-    if (!session) {
-      return;
-    }
-    const controlLabel =
-      interviewControlGroups.flatMap((group) => group.actions).find((option) => option.id === action)?.label ?? "访谈控制";
-
-    try {
-      const apiRun = await productApiClient.applyInterviewControl(session.id, { action });
-      setSession(apiRun.session);
-      adoptServerState(apiRun.state);
-      setApiPersistenceEnabled(true);
-      setNotice(buildNotice("info", "访谈控制已应用", `下一轮会按「${controlLabel}」调整。`));
-    } catch (err) {
-      // 失败即如实暴露——离线本地控制分叉已剔除（会话是服务端权威的，本地改了也不生效）。
-      const message = err instanceof Error && err.message ? err.message : "请稍后重试。";
-      if (isNetworkError(err)) {
-        setApiPersistenceEnabled(false);
-      }
-      setNotice(buildNotice("danger", "控制未生效", message));
-    }
-  }
-
   function saveNoteQuestion(noteId: string, index: number) {
     const note = productState.notes.find((item) => item.id === noteId);
     const questionText = note?.nextQuestions[index]?.trim() ?? "";
@@ -1933,465 +1600,6 @@ export default function App() {
     // F-03:文案由上方分流决定——只有服务端确认全部清空才是成功文案。
     setNotice(notice);
     setView("home");
-  }
-
-  async function toggleRealtimeRecording() {
-    if (recording) {
-      closeRealtimeVoiceSession();
-      return;
-    }
-    if (voiceStatus === "exhausted") {
-      closeRealtimeVoiceSession();
-    }
-    // P3-19:连接建立窗口内的二次触发直接短路(停止路径在上方,幂等 close,无需守卫)。
-    if (togglingRef.current) return;
-    togglingRef.current = true;
-
-    try {
-      const voiceSession = await productApiClient.createRealtimeVoiceSession({
-        ...(session ? { interviewSessionId: session.id } : {}),
-        instructions: buildRealtimeVoiceInstructions(session, card, productState.memoryCorrections ?? []),
-        voice: productState.systemConfig.voice.defaultVoice
-      });
-      setRealtimeVoiceSession(voiceSession);
-      setApiPersistenceEnabled(true);
-
-      if (voiceSession.status === "ready") {
-        const voiceMode = productState.systemConfig.voice.realtimeMode ?? "cascade";
-
-        if (voiceMode === "cascade") {
-          // Cascade pipeline: real ASR (text-only omni WS) → LLM HTTP → CosyVoice TTS WS
-          try {
-            setVoiceStatus("connecting");
-            const vadCapability = await probeVadWorkletCapability();
-            let asrWasReconnecting = false;
-            const voiceEpoch = voiceTransportStateGuardRef.current.beginSession();
-            const baseWsUrl = deriveRealtimeWsBaseUrl(getProductApiBaseUrl());
-            const asrWsUrl = `${baseWsUrl}/api/realtime-voice/ws/${voiceSession.sessionId}`;
-            const ttsWsUrl = `${baseWsUrl}/api/realtime-voice/ws/tts/${voiceSession.sessionId}`;
-            const interviewId = session?.id ?? "";
-
-            const asr = createBrowserAsrSource({
-              asrWsUrl,
-              instructions: voiceSession.sessionUpdate.session.instructions,
-              onConnectionStateChange: (event) => {
-                if (event.state === "reconnecting") {
-                  if (!voiceTransportStateGuardRef.current.transition(voiceEpoch, event.state)) return;
-                  asrWasReconnecting = true;
-                  setVoiceStatus("reconnecting");
-                }
-                if (event.state === "ready") {
-                  if (!voiceTransportStateGuardRef.current.transition(voiceEpoch, event.state)) return;
-                  setVoiceStatus(vadCapability.supported ? "listening" : "degraded");
-                  if (asrWasReconnecting) {
-                    setNotice(buildNotice("success", "语音连接已恢复", "可以继续口述，已确认的专访内容不受影响。"));
-                    asrWasReconnecting = false;
-                  }
-                }
-                if (event.state === "exhausted") {
-                  const pendingReview = voiceReviewItemRef.current;
-                  const result = terminateVoicePipelineAfterExhaustion({
-                    epoch: voiceEpoch,
-                    guard: voiceTransportStateGuardRef.current,
-                    pipelineRef: cascadePipelineRef,
-                    ttsRef: ttsSinkRef,
-                    pendingReview,
-                    updateInterviewInput: (merge) => setInterviewInput(merge),
-                    clearReview: () => {
-                      voiceReviewItemRef.current = null;
-                      setVoiceReviewItem(null);
-                    },
-                    setRecording,
-                    setVoiceStatus,
-                    clearLiveTranscript: () => setLiveUserTranscript("")
-                  });
-                  if (!result.terminated) return;
-                  if (result.preservedReview) setFailedTurnContent(null);
-                  setNotice(buildNotice(
-                    "warning",
-                    "语音连接未恢复",
-                    result.noticeDetail
-                  ));
-                }
-              },
-              onRecoveryTranscript: (item) => {
-                if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
-                cascadePipelineRef.current?.reviewRecoveryTranscript(item);
-              },
-              onConnectionLost: (error) => {
-                if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
-                setNotice(buildNotice("warning", "语音连接未恢复", `${error.message}。本场文字专访仍可继续。`));
-              },
-              // Tee the live mic into a whole-session recorder. Best-effort: guard
-              // construction so a recorder failure never breaks ASR start. The
-              // recording is uploaded at /end (see finishInterview).
-              onMicStream: (stream) => {
-                if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) {
-                  stream.getTracks().forEach((track) => track.stop());
-                  return;
-                }
-                try {
-                  const recorder = createSessionAudioRecorder(stream);
-                  recorder.start();
-                  audioRecorderRef.current = recorder;
-                } catch (err) {
-                  audioRecorderRef.current = null;
-                  console.warn(JSON.stringify({
-                    event: "session_recorder_start_failed",
-                    error: err instanceof Error ? err.message : String(err),
-                  }));
-                }
-              }
-            });
-            const tts = createBrowserTtsSink(ttsWsUrl, productState.systemConfig.voice.defaultVoice);
-            // Hold the sink so finishInterview() can drain its host-audio PCM tap.
-            ttsSinkRef.current = tts;
-
-            // sendUserTurn: POST to /api/interview-sessions/:id/turns, return assistantText
-            const sendUserTurn = async (text: string, signal: AbortSignal) => {
-              if (!interviewId || !voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) {
-                return { assistantText: "" };
-              }
-              // P0-D: forward the pipeline's barge-in signal so an interrupted turn
-              // aborts the server LLM call rather than running to completion (which
-              // would overwrite the user's newly-started turn and waste budget).
-              const r = await productApiClient.sendInterviewTurn(interviewId, { content: text }, signal);
-              if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) {
-                return { assistantText: "" };
-              }
-              setSession(r.session);
-              adoptServerState(r.state);
-              setApiPersistenceEnabled(true);
-              if (r.preSignals) cascadePipelineRef.current?.updatePreSignals(r.preSignals);
-              const lastTurn = r.session.turns.at(-1);
-              // The server already stripped （…）asides from content and distilled the manner into
-              // turn.prosody — forward it so the voice keeps its emotion.
-              return { assistantText: lastTurn?.content ?? "", prosody: lastTurn?.prosody };
-            };
-
-            const preSignals = session?.interactionPreSignals ?? null;
-
-            const pipeline = connectCascadedPipeline({
-              asr,
-              tts,
-              sendUserTurn,
-              preSignals,
-              callbacks: {
-                onStateChange: (s) => {
-                  if (!voiceTransportStateGuardRef.current.allowsPipelineState(voiceEpoch)) return;
-                  if (s === "listening" || s === "transcribing") {
-                    setVoiceStatus(vadCapability.supported ? "listening" : "degraded");
-                  }
-                  else if (s === "thinking") setVoiceStatus("connecting");
-                  else if (s === "speaking") setVoiceStatus("speaking");
-                  else if (s === "interrupted") setVoiceStatus("interrupted");
-                  else if (s === "idle") setVoiceStatus("idle");
-                },
-                onUserTranscript: (text, isFinal) => {
-                  if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
-                  // Live transcript chip only. The final user turn is persisted
-                  // authoritatively by sendUserTurn → sendInterviewTurn (which adds
-                  // BOTH the user turn and the assistant reply). Recording it again
-                  // here was double-logging every turn (语音用户输入 + 用户表达).
-                  setLiveUserTranscript(isFinal ? "" : text);
-                },
-                onAssistantText: () => {
-                  // No-op: sendUserTurn already called setSession(r.session) with the
-                  // assistant turn. Recording it again here double-logged the reply
-                  // (百炼角色扮演追问 + 语音助手回应).
-                },
-                onError: (err) => {
-                  if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
-                  setNotice(buildNotice("warning", "级联语音错误", err.message));
-                },
-                onTtsPlaybackInterrupted: () => {
-                  if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
-                  setNotice(buildNotice("warning", "语音播放中断", "本轮语音播放中断，文字内容已保留"));
-                },
-                onTranscriptQuarantined: (item) => {
-                  if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
-                  setLiveUserTranscript("");
-                  voiceReviewItemRef.current = item;
-                  setVoiceReviewItem(item);
-                  setNotice(buildNotice(
-                    "info",
-                    "转写等待确认",
-                    item.source === "recovery"
-                      ? "连接中断前的尾段尚未确认，请确认、修改或丢弃；确认前不会写入专访。"
-                      : "检测到内容可能来自刚才的 AI 播放，请确认、修改或丢弃后再写入专访。"
-                  ));
-                }
-              },
-              decisionOpts: {
-                finalStabilityMs: 450,
-                echoWindowMs: 1_500,
-                echoSimilarityThreshold: 0.8,
-                ...(productState.systemConfig.voice.minBargeInMs != null
-                  ? { minBargeInMs: productState.systemConfig.voice.minBargeInMs }
-                  : {}),
-                ...(productState.systemConfig.voice.endpointingMode
-                  ? { endpointingMode: productState.systemConfig.voice.endpointingMode }
-                  : {})
-              },
-              classifyEndpoint: interviewId
-                ? (text: string, signal: AbortSignal) => productApiClient.classifyTurnComplete(interviewId, text, signal)
-                : undefined,
-              onDecision: (trace) => {
-                if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
-                console.debug("[cascade decision]", trace);
-                if (interviewId) void productApiClient.logCascadeDecision(interviewId, trace);
-              },
-            });
-
-            cascadePipelineRef.current = pipeline;
-
-            // Render the recording UI IMMEDIATELY. The opening playback + mic open
-            // run in the BACKGROUND (not awaited): awaiting startListening here froze
-            // the page for the whole ~9s opening before setRecording ran, and the
-            // opening played while the UI was still stuck on "connecting".
-            // voiceStatus is driven by the pipeline's onStateChange (speaking → listening).
-            setRecording(true);
-            setNotice(buildNotice(
-              "success",
-              "实时语音会话已就绪",
-              vadCapability.supported
-                ? "级联模式 (ASR→分析→TTS) 已连接"
-                : "级联模式已连接；AudioWorklet 不可用，当前使用语音兼容模式。"
-            ));
-            void pipeline.startListening(card.suggestedOpening || undefined).catch((err) => {
-              if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
-              setNotice(buildNotice("warning", "级联语音连接失败", err instanceof Error ? err.message : "请确认后端在线且 API key 已配置"));
-            });
-            return;
-          } catch (err) {
-            setNotice(buildNotice("warning", "级联语音连接失败", err instanceof Error ? err.message : "请确认后端在线且 API key 已配置"));
-            return;
-          }
-        }
-
-        if (voiceMode === "livekit") {
-          // LiveKit cascaded pipeline (browser → LiveKit server → Python agent → DashScope)
-          try {
-            setVoiceStatus("connecting");
-            const sessionId = voiceSession.sessionId;
-            const interviewId = session?.id ?? "";
-            // 走 productApi 的 authedFetch（getLivekitToken）：production bearer 鉴权下
-            // 裸 fetch 不带 Authorization 恒 401。失败仍抛错 → 下方 catch 提示连接失败。
-            const { token, serverUrl } = await productApiClient.getLivekitToken(sessionId, interviewId);
-
-            const livekitSession = await createLivekitVoiceSession({
-              serverUrl: serverUrl ?? "ws://127.0.0.1:7880",
-              token,
-              interviewSessionId: interviewId,
-              callbacks: {
-                onStateChange: (state) => {
-                  if (state === "connected") setVoiceStatus("listening");
-                  if (state === "disconnected") { setRecording(false); setVoiceStatus("idle"); }
-                },
-                onUserTranscript: (text, isFinal) => {
-                  setLiveUserTranscript(text);
-                  if (!isFinal || !text.trim()) return;
-                  // Record on the server session to keep it authoritative (no fork).
-                  productApiClient
-                    .recordInterviewTurn(interviewId, { role: "user", content: text })
-                    .then((r) => setSession(r.session))
-                    .catch((err) => recordTurnFailedFallback(text, err));
-                  // Phase 8: regenerate pre_signals for the next turn (voice path).
-                  if (interviewId) {
-                    productApiClient
-                      .generateInterviewPreSignals(interviewId)
-                      .then((res) => {
-                        setSession((prev) => (prev ? { ...prev, interactionPreSignals: res.preSignals } : prev));
-                      })
-                      .catch(() => {
-                        // keep existing signals on failure
-                      });
-                  }
-                  // 🔴-1 (honest scope): NO per-turn instruction refresh here. The
-                  // LiveKit cascade's instructions live in the Python agent
-                  // (agent-context), not in a client-side session.update — so memory
-                  // recall freshness on this path depends on whether that Python agent
-                  // re-fetches /api/realtime-voice/agent-context each turn (that side's
-                  // concern). This task fixed ONLY the bailian omni (WS/WebRTC) path,
-                  // which DOES refresh via connection.updateInstructions above.
-                },
-                onAssistantTranscript: (text, isFinal) => {
-                  if (!isFinal || !text.trim()) return;
-                  setVoiceStatus("speaking");
-                  setSession((prev) =>
-                    prev ? appendAssistantTranscriptFinal(prev, text, assistantTranscriptTurnRef) : prev
-                  );
-                },
-                onAudioLevel: (level) => setAudioLevel(level),
-                onError: (err) => {
-                  setNotice(buildNotice("warning", "语音连接失败", err.message));
-                },
-              },
-            });
-
-            // Publish the microphone — without this the agent never hears the user.
-            await livekitSession.startListening();
-            setLivekitVoiceSession(livekitSession);
-            setRecording(true);
-            setVoiceStatus("listening");
-            setNotice(
-              buildNotice(
-                "success",
-                "实时语音会话已就绪",
-                "LiveKit 级联 (Paraformer→Qwen→CosyVoice) 已连接"
-              )
-            );
-            return;
-          } catch {
-            setNotice(buildNotice("warning", "LiveKit 连接失败", "请确认 LiveKit Server 和 Python Agent 已启动"));
-            return;
-          }
-        }
-
-        // Bailian mode (default): direct DashScope omni via WebSocket proxy
-        // or WebRTC — single hop, integrated STT+LLM+TTS with server VAD.
-        try {
-          setVoiceStatus("connecting");
-          // Augment the session with the scripted opening line (sourced from the
-          // interview card's suggestedOpening). The WS path uses this to send an
-          // initial response.create so the AI proactively opens with the prepared
-          // tracking-point question rather than improvising small-talk.
-          const sessionWithOpening = {
-            ...voiceSession,
-            ...(card.suggestedOpening ? { openingLine: card.suggestedOpening } : {})
-          };
-          if (voiceSession.transport === "webrtc") {
-            // ponytail: the WebRTC omni client is incomplete (no transcript/audio/turn
-            // callbacks, no DataChannel parsing) — it would connect but record nothing.
-            // Until it's finished, fall back to the working WebSocket path.
-            console.warn(JSON.stringify({ event: "webrtc_incomplete_fallback_to_ws" }));
-            setNotice(buildNotice("info", "已改用 WebSocket 实时语音", "WebRTC 通道尚未完整支持，已自动切换。"));
-          }
-          const connection = await connectBailianRealtimeWebsocket(sessionWithOpening, {
-                productApiBaseUrl: deriveRealtimeWsBaseUrl(getProductApiBaseUrl()),
-                preSignals: session?.interactionPreSignals,
-                onAudioLevel: (level) => setAudioLevel(level),
-                onSpeechStart: () => setVoiceStatus("listening"),
-                onSpeechEnd: () => setVoiceStatus("speaking"),
-                onGuidance: (text) => {
-                  // Light up the in-conversation guidance indicator (the visual badge
-                  // in InterviewView), and whisper short guidance via SpeechSynthesis.
-                  setGuidanceState(prev => ({
-                    active: true,
-                    kind: "nudge",
-                    text,
-                    countThisTurn: prev.countThisTurn + 1,
-                    lastTimestamp: new Date().toISOString()
-                  }));
-                  if (text.length < 40) {
-                    try {
-                      const utterance = new SpeechSynthesisUtterance(text);
-                      utterance.lang = "zh-CN";
-                      utterance.rate = 1.1;
-                      utterance.volume = 0.7;
-                      speechSynthesis.cancel();
-                      speechSynthesis.speak(utterance);
-                    } catch { /* SpeechSynthesis not available */ }
-                  }
-                },
-                onUserTranscript: (text, isFinal) => {
-                  setLiveUserTranscript(text);
-                  if (!isFinal || !text.trim()) return;
-                  // Record on the server session to keep it authoritative (no fork).
-                  const voiceSid = session?.id ?? "";
-                  if (voiceSid) {
-                    productApiClient
-                      .recordInterviewTurn(voiceSid, { role: "user", content: text })
-                      .then((r) => setSession(r.session))
-                      .catch((err) => recordTurnFailedFallback(text, err));
-                  } else {
-                    setSession((prev) => (prev ? receiveUserTurn(prev, text) : prev));
-                  }
-                  // Phase 8: regenerate pre_signals for the next turn and push
-                  // them into the live connection (the voice model can't emit them).
-                  if (voiceSid) {
-                    productApiClient
-                      .generateInterviewPreSignals(voiceSid)
-                      .then((res) => {
-                        voiceRecallRefreshSucceeded();
-                        setSession((prev) => (prev ? { ...prev, interactionPreSignals: res.preSignals } : prev));
-                        if ("updatePreSignals" in connection) connection.updatePreSignals(res.preSignals);
-                      })
-                      .catch((err) => voiceRecallRefreshFailed("pre_signals", err));
-                    // 🔴-1: recompute the omni voice model's instructions against THIS
-                    // turn's utterance so its memory recall tracks the conversation
-                    // (the realtime session set instructions only once at open — an
-                    // opening-time snapshot). Push the refreshed string via
-                    // session.update. Non-blocking（实时策略）但失败可观测,
-                    // 连续失败会向用户提示（见 voiceRecallRefreshFailed）。
-                    productApiClient
-                      .refreshVoiceInstructions(voiceSid, text)
-                      .then((res) => {
-                        voiceRecallRefreshSucceeded();
-                        if ("updateInstructions" in connection) connection.updateInstructions(res.instructions);
-                      })
-                      .catch((err) => voiceRecallRefreshFailed("voice_instructions", err));
-                  }
-                },
-                onAssistantTranscript: (text, isFinal) => {
-                  if (!isFinal || !text.trim()) return;
-                  setSession((prev) =>
-                    prev ? appendAssistantTranscriptFinal(prev, text, assistantTranscriptTurnRef) : prev
-                  );
-                },
-                // 重连过程对用户可见（此前 3 次重连期间 UI 仍显示"聆听中"，用户不知连接已断）。
-                onReconnecting: (attempt, maxAttempts) => {
-                  setVoiceStatus("connecting");
-                  setNotice(buildNotice("warning", "语音连接中断", `正在重连（第 ${attempt}/${maxAttempts} 次）…`));
-                },
-                onReconnected: () => {
-                  setVoiceStatus("listening");
-                  setNotice(buildNotice("success", "语音连接已恢复", "可以继续对话。"));
-                },
-                onError: (err) => {
-                  setNotice(buildNotice("warning", "语音连接异常", err.message));
-                }
-              });
-          setRealtimeVoiceConnection(connection);
-          setRecording(true);
-          setVoiceStatus("listening");
-          setNotice(
-            buildNotice(
-              "success",
-              "实时语音会话已就绪",
-              `${voiceSession.model} · WebSocket 已连接`
-            )
-          );
-        } catch {
-          setNotice(
-            buildNotice(
-              "warning",
-              "语音连接失败",
-              "百炼 WebSocket 连接失败。"
-            )
-          );
-          return;
-        }
-      } else {
-        setRecording(false);
-        setNotice(
-          buildNotice(
-            "warning",
-            "实时语音未完全配置",
-            "请检查 API Key 配置。"
-          )
-        );
-      }
-      return;
-    } catch {
-      setApiPersistenceEnabled(false);
-    } finally {
-      // P3-19:连接流程 settle(成功就绪 / 失败 / 早返回)后复位,让后续开关正常工作。
-      togglingRef.current = false;
-    }
-
-    setRealtimeVoiceSession(null);
-    setNotice(buildNotice("warning", "实时语音不可用", "Product API 不可用，无法开始语音专访，请检查服务后重试。"));
   }
 
   return (

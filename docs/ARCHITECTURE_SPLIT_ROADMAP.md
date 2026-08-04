@@ -72,7 +72,7 @@ curl -sS https://www.qing.blue/zhuanfang/   # 或 compose health
 | `apps/api/src/routes/interview-sessions.ts` | ~1251 |
 | `apps/api/src/routes/realtime-voice.ts` | ~1147 |
 | `src/api/productApi.ts` | ~1542 |
-| `src/App.tsx` | ~3796 |
+| `src/App.tsx` | ~3796（拆前；拆后见 §8） |
 
 ## 7. Checklist
 
@@ -82,6 +82,7 @@ curl -sS https://www.qing.blue/zhuanfang/   # 或 compose health
 - [x] productApi types/client 分包
 - [x] App 接入 `useOfflineProductSync`，检索/语料/playbook 动作进 hooks
 - [x] `server.ts` 写门 / CORS·错误 / 鉴权·限流 / defaults / 优雅关闭整块下沉
+- [x] App 访谈生命周期 / 实时语音开关进 hooks（`useInterviewSessionActions` / `useRealtimeVoiceControls`）
 - [x] 验证与提交
 
 ## 8. 完成后体量（约）
@@ -97,3 +98,6 @@ curl -sS https://www.qing.blue/zhuanfang/   # 或 compose health
 | `routes/realtime-voice-helpers.ts` | ~412 |
 | `src/api/productApi.ts` | 3（re-export） |
 | `productApi.types.ts` / `.client.ts` | ~772 / ~780 |
+| `src/App.tsx` | ~2280（hooks 下沉后） |
+| `useInterviewSessionActions.ts` | ~430 |
+| `useRealtimeVoiceControls.ts` | ~680 |
