@@ -1,4 +1,4 @@
-import type { InterviewSession, ProductState } from "../../../src/domain/types";
+import type { InterviewSession, ProductState } from "../../../../src/domain/types";
 import {
   createInMemoryProductStateRepository,
   type ProductStateRepository,
@@ -38,7 +38,7 @@ export function createUserScopedProductStateRepository(options: {
       return resolve().getInterviewSession(id);
     },
     getGovernanceGeneration() {
-      return resolve().getGovernanceGeneration?.();
+      return resolve().getGovernanceGeneration?.() ?? 0;
     },
     confirmPersisted() {
       return resolve().confirmPersisted?.() ?? Promise.resolve();

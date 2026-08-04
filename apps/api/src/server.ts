@@ -971,9 +971,10 @@ function registerRuntimeBootstrap(server: ReturnType<typeof Fastify>, env: Recor
 function registerAuthRoutes(server: ReturnType<typeof Fastify>, env: Record<string, string | undefined>) {
   ensureBootstrapUsers(env);
 
-  server.post<{ Body: { username?: string; password?: string } }>("/api/auth/login", async (request, reply) => {
-    const username = String(request.body?.username ?? "").trim();
-    const password = String(request.body?.password ?? "");
+  server.post("/api/auth/login", async (request: FastifyRequest, reply: FastifyReply) => {
+    const body = (request.body ?? {}) as { username?: string; password?: string };
+    const username = String(body.username ?? "").trim();
+    const password = String(body.password ?? "");
     if (!username || !password) {
       return reply.code(400).send({ error: "username and password required" });
     }
@@ -997,7 +998,7 @@ function registerAuthRoutes(server: ReturnType<typeof Fastify>, env: Record<stri
     return { ok: true, username };
   });
 
-  server.post("/api/auth/logout", async (request, reply) => {
+  server.post("/api/auth/logout", async (request: FastifyRequest, reply: FastifyReply) => {
     const secure =
       (env.PRODUCT_SESSION_SECURE ?? "").trim() === "1" || request.protocol === "https";
     reply.header("Set-Cookie", sessionCookieHeader("", { clear: true, secure }));
@@ -1005,7 +1006,7 @@ function registerAuthRoutes(server: ReturnType<typeof Fastify>, env: Record<stri
     return { ok: true };
   });
 
-  server.get("/api/auth/me", async (request, reply) => {
+  server.get("/api/auth/me", async (request: FastifyRequest, reply: FastifyReply) => {
     const principal = resolvePrincipal(env, {
       authHeader: typeof request.headers.authorization === "string" ? request.headers.authorization : undefined,
       cookieHeader: typeof request.headers.cookie === "string" ? request.headers.cookie : undefined
