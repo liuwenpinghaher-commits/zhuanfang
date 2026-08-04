@@ -12,7 +12,6 @@ import {
   Play,
   Search,
   Settings,
-  ShieldCheck,
   SlidersHorizontal,
   Sun,
   Upload,
@@ -3177,10 +3176,6 @@ export default function App() {
               </small>
             </span>
           </button>
-          <div className="sidebar-status">
-            <ShieldCheck size={18} aria-hidden />
-            <span>本地演示数据，用户可随时重置和修正记忆。</span>
-          </div>
         </div>
       </aside>
 
