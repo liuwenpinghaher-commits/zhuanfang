@@ -136,13 +136,30 @@ export async function registerMemoryCandidateRoutes(
         : {};
     const mode =
       body.mode === "add" || body.mode === "merge" ? (body.mode as "add" | "merge") : "merge";
+    // Explicit override only — never silent confirm of conflict-marked / correction-clashing candidates.
+    const force = body.force === true;
     const nextState = approveMemoryCandidate(state, candidate.id, {
       ...(embedding ? { embedding, embeddingProvider: options.embeddingClient?.providerId } : {}),
       // Consolidation summaries carry the keeper's importance; honor it over the reviewScore band.
       ...(candidate.importance != null ? { importance: candidate.importance } : {}),
-      mode
+      mode,
+      force
     });
     const reviewedCandidate = findCandidate(nextState, candidate.id);
+    // Domain returns pending + memory_candidate_approve_blocked when silent confirm is refused.
+    const stillPending = !reviewedCandidate || reviewedCandidate.status === "pending";
+    if (stillPending) {
+      const persisted = /*durable*/await replaceStateDurable(repository, nextState);
+      return reply.code(409).send({
+        error:
+          "候选与用户修正或笔记冲突，已拦截确认（未写入长期记忆）。请拒绝、改写后重审，或在知悉风险后显式 force 确认。",
+        blocked: true,
+        candidate: reviewedCandidate,
+        state: persisted,
+        embeddingReady: false,
+        vectorRecallAvailable: false
+      });
+    }
     // Merge path may update an existing record without sourceCandidateId=this candidate.
     const record =
       nextState.memoryRecords.find((item) => item.sourceCandidateId === candidate.id) ??
@@ -150,6 +167,15 @@ export async function registerMemoryCandidateRoutes(
         ? nextState.memoryRecords.find((item) => item.id === candidate.similarToRecordId)
         : undefined) ??
       nextState.memoryRecords.find((item) => item.text === candidate.text);
+    if (!record) {
+      // Approved status without a durable record is a product invariant break — fail loud.
+      return reply.code(500).send({
+        error: "候选已标为已确认，但未找到对应长期记忆记录，未持久化。请重试或联系维护。",
+        candidate: reviewedCandidate,
+        embeddingReady: false,
+        vectorRecallAvailable: false
+      });
+    }
     const persisted = /*durable*/await replaceStateDurable(repository, nextState);
     const embeddingReady = Boolean(embedding && embedding.length > 0);
 

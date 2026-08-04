@@ -6,6 +6,7 @@
 import type { Dispatch, FormEvent, MutableRefObject, SetStateAction } from "react";
 import { ApiError, isNetworkError, productApiClient } from "../api/productApi";
 import { makeId, resolveInterviewTopicHint } from "../domain/engine";
+import { buildInterviewEndPresentation } from "../domain/session-end-presentation";
 import { pcmS16leMonoToWav } from "../realtime/pcmWav";
 import type { CascadedPipeline, TtsSink } from "../realtime/cascadedPipeline";
 import type { SessionAudioRecorder } from "../realtime/sessionAudioRecorder";
@@ -329,62 +330,21 @@ export function useInterviewSessionActions(args: UseInterviewSessionActionsArgs)
       }
       setSession(null);
       closeRealtimeVoiceSession();
-      // Journey honesty (R-P1-04 / doNotSave):
-      // - doNotSave must not claim "档案已生成"
-      // - pending HITL candidates must not feel "already remembered" across sessions
-      const pendingCount = Number(apiRun.pendingMemoryCandidateCount ?? 0);
-      const needsHitl = apiRun.longTermRecallRequiresApproval === true || pendingCount > 0;
-      if (skipAudioUpload) {
-        setLastInterviewSummary({
-          noteTitle: "本场不保存",
-          pendingMemory: 0,
-          destination: "notes",
-          doNotSave: true,
-          finishedAt: new Date().toISOString()
-        });
-        setNotice(
-          buildNotice(
-            "info",
-            "专访已结束（本场不保存）",
-            "按你的选择，本场未写入长期资产与录音；对话仅作当次体验。"
-          )
-        );
-        setView("home");
-      } else if (needsHitl) {
-        setLastInterviewSummary({
-          noteTitle: apiRun.note?.title ?? "本场笔记",
-          pendingMemory: pendingCount,
-          destination: "memory",
-          doNotSave: false,
-          finishedAt: new Date().toISOString()
-        });
-        setNotice(
-          buildNotice(
-            "success",
-            "专访档案已生成",
-            pendingCount > 0
-              ? `双轨笔记已更新。另有 ${pendingCount} 条记忆待确认后才会进入跨会话召回——请在「记忆治理」审核。`
-              : "双轨笔记已更新。长期记忆需你确认后才会进入跨会话召回。"
-          )
-        );
-        setView("home");
-      } else {
-        setLastInterviewSummary({
-          noteTitle: apiRun.note?.title ?? "本场笔记",
-          pendingMemory: 0,
-          destination: "notes",
-          doNotSave: false,
-          finishedAt: new Date().toISOString()
-        });
-        setNotice(
-          buildNotice(
-            "success",
-            "专访档案已生成",
-            `「${apiRun.note?.title ?? "本场笔记"}」已写入双轨笔记；可在下方「上场摘要」或笔记/资产中继续。`
-          )
-        );
-        setView("home");
-      }
+      // Journey honesty (R-P1-04 / doNotSave): pure presentation rules — doNotSave never claims archive.
+      const presentation = buildInterviewEndPresentation({
+        doNotSave: skipAudioUpload,
+        pendingMemoryCandidateCount: Number(apiRun.pendingMemoryCandidateCount ?? 0),
+        longTermRecallRequiresApproval: apiRun.longTermRecallRequiresApproval === true,
+        noteTitle: apiRun.note?.title
+      });
+      setLastInterviewSummary({
+        ...presentation.lastSummary,
+        finishedAt: new Date().toISOString()
+      });
+      setNotice(
+        buildNotice(presentation.noticeKind, presentation.noticeTitle, presentation.noticeBody)
+      );
+      setView("home");
       return;
     } catch (err) {
       // 已结束(409)/会话不存在(404):这场专访其实已经收尾(常见于 /end 调 LLM 较慢时用户

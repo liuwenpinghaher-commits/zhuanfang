@@ -128,15 +128,101 @@ export function conflictsWithExplicitCorrection(
       return false;
     }
 
+    // Candidate that itself negates the absolute/prerequisite claim is alignment, not conflict.
+    const candidateNegatesClaim =
+      /不是.{0,28}(?:结构性?前提|准入门槛|缺一不可)|而不是.{0,28}(?:结构性?前提|准入门槛|缺一不可)|并非.{0,20}(?:前提|门槛)/.test(
+        candidate.text
+      ) || isExplicitCorrection(candidate.text);
+
     const prerequisiteClaim = /结构性?前提|缺一不可|准入门槛|必须.{0,12}(?:满足|具备|准备好)/.test(candidate.text);
     const prerequisiteCorrection = /不是.{0,28}(?:前提|准入门槛)|不(?:需要|应当).{0,20}(?:满足|具备)|不是.{0,20}必须.{0,20}满足/.test(rawCorrection);
-    if (prerequisiteClaim && prerequisiteCorrection && sharedConceptCount(candidateText, correction) >= 2) {
+    if (
+      prerequisiteClaim &&
+      prerequisiteCorrection &&
+      !candidateNegatesClaim &&
+      sharedConceptCount(candidateText, correction) >= 2
+    ) {
       return true;
     }
 
     const candidateIsAbsolute = /总是|永远|所有|完全|必须|从不|绝不|根本|一律|缺一不可/.test(candidate.text);
+    if (candidateNegatesClaim) {
+      return false;
+    }
     return candidateIsAbsolute && sharedConceptCount(candidateText, correction) >= 3;
   });
+}
+
+/**
+ * Collect human-authored correction strings that must block silent long-term confirm:
+ * memoryCorrections + dual-track learnedTrack lines that read as explicit corrections.
+ */
+export function collectConflictCorrectionTexts(input: {
+  memoryCorrections?: Array<{ text?: string } | string>;
+  learnedTrack?: string[];
+}): string[] {
+  const fromCorrections = (input.memoryCorrections ?? []).map((item) =>
+    typeof item === "string" ? item : item.text ?? ""
+  );
+  const fromLearned = (input.learnedTrack ?? []).filter((line) => isExplicitCorrection(line));
+  return [...fromCorrections, ...fromLearned].map((t) => t.trim()).filter(Boolean);
+}
+
+const CONFLICT_REVIEW_SIGNALS = new Set(["与笔记/用户修正冲突", "不可静默确认"]);
+const CONFLICT_REASON_SUFFIX = "与用户显式修正或笔记「我学到了什么」冲突，需拒绝或改写后再确认。";
+
+/**
+ * Annotate a pending candidate when it conflicts with note corrections / explicit corrections.
+ * Does not auto-reject; surfaces suggestedUpdate="conflict" for HITL and approve gate.
+ * When text no longer conflicts (e.g. after user edit), clears conflict flags so approve can proceed.
+ */
+export function annotateCandidateConflict<T extends CorrectionAwareCandidate & {
+  suggestedUpdate?: string;
+  reason?: string;
+  reviewSignals?: string[];
+}>(
+  candidate: T,
+  corrections: string[]
+): T {
+  if (!conflictsWithExplicitCorrection(candidate, corrections)) {
+    if (candidate.suggestedUpdate !== "conflict") {
+      return candidate;
+    }
+    // Edit path: conflict resolved — drop conflict markers so silent confirm is allowed again.
+    const cleanedSignals = (candidate.reviewSignals ?? []).filter((s) => !CONFLICT_REVIEW_SIGNALS.has(s));
+    const cleanedReason = (candidate.reason ?? "")
+      .split(/(?<=[。．.])\s*/)
+      .map((part) => part.trim())
+      .filter((part) => part && !part.includes(CONFLICT_REASON_SUFFIX.slice(0, 12)))
+      .join("");
+    return {
+      ...candidate,
+      suggestedUpdate: "add",
+      reason: cleanedReason || "已根据你的修改重新评分，可再次确认。",
+      reviewSignals: cleanedSignals.length > 0 ? cleanedSignals : ["已改写·待确认"]
+    };
+  }
+  const signals = Array.from(
+    new Set([...(candidate.reviewSignals ?? []), "与笔记/用户修正冲突", "不可静默确认"])
+  );
+  const reasonParts = [candidate.reason, CONFLICT_REASON_SUFFIX].filter(Boolean);
+  const reason = reasonParts.join(candidate.reason?.includes(CONFLICT_REASON_SUFFIX) ? "" : " ");
+  return {
+    ...candidate,
+    suggestedUpdate: "conflict",
+    reason,
+    reviewSignals: signals
+  };
+}
+
+/** True when approve must refuse without force (conflict surface or explicit correction clash). */
+export function shouldBlockSilentMemoryConfirm(
+  candidate: CorrectionAwareCandidate & { suggestedUpdate?: string; status?: string },
+  corrections: string[]
+): boolean {
+  if (candidate.status && candidate.status !== "pending") return true;
+  if (candidate.suggestedUpdate === "conflict") return true;
+  return conflictsWithExplicitCorrection(candidate, corrections);
 }
 
 function isExplicitCorrection(text: string) {

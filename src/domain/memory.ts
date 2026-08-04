@@ -8,7 +8,12 @@ import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent } from "./ut
 import { computeRecordThemeIds, formatMemoryGraphTargetLabel, tokenizeMemoryGraphText } from "./context-pack";
 import { cosineSimilarity } from "./vector";
 
-import { withMemoryCandidateReview } from "./memoryReview";
+import {
+  annotateCandidateConflict,
+  collectConflictCorrectionTexts,
+  shouldBlockSilentMemoryConfirm,
+  withMemoryCandidateReview
+} from "./memoryReview";
 
 /** Cosine threshold above which a candidate is a near-duplicate of an existing record (both embedded). */
 const DEDUP_COSINE_THRESHOLD = 0.88;
@@ -288,11 +293,34 @@ export function approveMemoryCandidate(
     importance?: number;
     /** merge (default): update near-duplicate keeper with candidate content; add: always create new record */
     mode?: "merge" | "add";
+    /**
+     * Force confirm even when the candidate is marked conflict / clashes with corrections.
+     * Default false — conflicting candidates must not silently become confirmed.
+     */
+    force?: boolean;
+    /** Extra correction strings (e.g. note learnedTrack); defaults include state.memoryCorrections. */
+    corrections?: string[];
   } = {}
 ): ProductState {
   const candidate = state.memoryCandidates.find((item) => item.id === candidateId);
   if (!candidate || candidate.status !== "pending") {
     return state;
+  }
+
+  const correctionTexts = [
+    ...(opts.corrections ?? []),
+    ...(state.memoryCorrections ?? []).map((c) => c.text).filter(Boolean)
+  ];
+  if (!opts.force && shouldBlockSilentMemoryConfirm(candidate, correctionTexts)) {
+    return withAuditEvent(cloneState(state), {
+      type: "memory_candidate_approve_blocked",
+      label: "候选记忆确认被拦截（冲突）",
+      detail: candidate.text,
+      severity: "warning",
+      entityType: "memory_candidate",
+      entityId: candidate.id,
+      createdAt: nowIso()
+    });
   }
 
   const reviewedAt = nowIso();
@@ -498,15 +526,26 @@ export function updateMemoryCandidateText(state: ProductState, candidateId: stri
   }
 
   const updatedAt = nowIso();
+  const corrections = collectConflictCorrectionTexts({
+    memoryCorrections: state.memoryCorrections
+  });
+  // Rescore + re-run conflict discipline so suggestedUpdate=conflict can clear after a fix,
+  // or re-flag if the edit still clashes with user corrections.
+  const rescored = withMemoryCandidateReview(
+    {
+      ...candidate,
+      text: revisedText,
+      // Force recompute of conflict flag from the new text (do not preserve stale "conflict").
+      suggestedUpdate: candidate.suggestedUpdate === "conflict" ? "add" : candidate.suggestedUpdate
+    },
+    { preserveExisting: false }
+  );
+  const reannotated = annotateCandidateConflict(rescored, corrections);
+
   const nextState: ProductState = {
     ...cloneState(state),
     memoryCandidates: state.memoryCandidates.map((item) =>
-      item.id === candidate.id
-        ? withMemoryCandidateReview({
-            ...item,
-            text: revisedText
-          }, { preserveExisting: false })
-        : item
+      item.id === candidate.id ? reannotated : item
     )
   };
 

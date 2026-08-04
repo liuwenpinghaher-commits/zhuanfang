@@ -64,6 +64,31 @@ describe("product api client", () => {
     expect(result.profile.name).toBe("Mia");
   });
 
+  it("approveMemoryCandidate 409 blocked: returns body.state (revision) instead of throw-only", async () => {
+    // Server conflict-block persists bumped revision; client must adopt so next PUT is not stale.
+    const serverState = { ...createInitialProductState(), revision: 42 };
+    const errorBody = {
+      error: "候选与用户修正或笔记冲突，已拦截确认（未写入长期记忆）。",
+      blocked: true,
+      candidate: { id: "c1", status: "pending" },
+      state: serverState,
+      embeddingReady: false,
+      vectorRecallAvailable: false
+    };
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify(errorBody), { status: 409 }));
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+
+    const result = await client.approveMemoryCandidate("c1");
+
+    expect(result.blocked).toBe(true);
+    expect(result.state.revision).toBe(42);
+    expect(result.embeddingReady).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://127.0.0.1:8787/api/memory-candidates/c1/approve",
+      expect.objectContaining({ method: "POST" })
+    );
+  });
+
   it("F-03: resetState 500 部分失败时 ApiError 携带解析后的 body(state+resetReceipt 可取)", async () => {
     const state = createInitialProductState();
     const errorBody = {

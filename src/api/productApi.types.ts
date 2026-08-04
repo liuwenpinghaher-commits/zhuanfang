@@ -77,12 +77,13 @@ export interface ProductApiClient {
   revertPlaybookPatch(id: string): Promise<ProductState>;
   approveMemoryCandidate(
     id: string,
-    opts?: { mode?: "merge" | "add" }
+    opts?: { mode?: "merge" | "add"; force?: boolean }
   ): Promise<{
     state: ProductState;
     embeddingReady?: boolean;
     vectorRecallAvailable?: boolean;
     warning?: string;
+    blocked?: boolean;
   }>;
   rejectMemoryCandidate(id: string, reviewNote?: string): Promise<ProductState>;
   consolidateMemory(): Promise<{ state: ProductState; deprecated: number }>;

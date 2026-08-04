@@ -14,7 +14,11 @@ import type {
 
 import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent } from "./utils";
 import { checkAxioms } from "./axioms";
-import { withMemoryCandidateReview } from "./memoryReview";
+import {
+  annotateCandidateConflict,
+  collectConflictCorrectionTexts,
+  withMemoryCandidateReview
+} from "./memoryReview";
 import { addProfileSuggestions, type ProfileSuggestionInput } from "./profile";
 import { buildInterviewQualityReport, planMemoryUpdate, tokenizeMemoryGraphText } from "./engine";
 import { uniqueStrings } from "./signals";
@@ -25,20 +29,24 @@ import { resolveEvidenceAnchors, stampFinalizeAnchors } from "./raw-material";
  * against already-confirmed memories, so the HITL reviewer sees "似已有记忆 X".
  * Pure: candidates carry no embedding at finalize time, so planMemoryUpdate uses
  * its token-overlap fallback. Never mutates the store — only annotates candidates.
+ * Realization Must-set: also surface conflicts vs memoryCorrections + note learnedTrack.
  */
 function annotateCandidatesWithDedupHint(
   candidates: MemoryCandidate[],
-  records: ProductState["memoryRecords"]
+  records: ProductState["memoryRecords"],
+  corrections: string[] = []
 ): MemoryCandidate[] {
-  if (!records || records.length === 0) {
-    return candidates;
-  }
   return candidates.map((candidate) => {
-    const plan = planMemoryUpdate({ text: candidate.text }, records);
-    if (plan.op === "update" && plan.similarToRecordId) {
-      return { ...candidate, suggestedUpdate: "update", similarToRecordId: plan.similarToRecordId };
+    let next: MemoryCandidate = candidate;
+    if (records && records.length > 0) {
+      const plan = planMemoryUpdate({ text: candidate.text }, records);
+      if (plan.op === "update" && plan.similarToRecordId) {
+        next = { ...candidate, suggestedUpdate: "update", similarToRecordId: plan.similarToRecordId };
+      } else {
+        next = { ...candidate, suggestedUpdate: "add" };
+      }
     }
-    return { ...candidate, suggestedUpdate: "add" };
+    return annotateCandidateConflict(next, corrections);
   });
 }
 
@@ -189,7 +197,15 @@ export function mergeFinalizedState(
   nextState.notes = [finalNote, ...nextState.notes];
   if (providedCandidates && providedCandidates.length > 0) {
     // Use externally provided candidates (from LLM extraction over the real conversation).
-    const annotated = annotateCandidatesWithDedupHint(providedCandidates, nextState.memoryRecords);
+    const corrections = collectConflictCorrectionTexts({
+      memoryCorrections: nextState.memoryCorrections,
+      learnedTrack: finalNote.learnedTrack
+    });
+    const annotated = annotateCandidatesWithDedupHint(
+      providedCandidates,
+      nextState.memoryRecords,
+      corrections
+    );
     const anchored = stampFinalizeAnchors(annotated, session.id, session.turns);
     nextState.memoryCandidates = [...anchored, ...(nextState.memoryCandidates ?? [])];
   }

@@ -840,14 +840,33 @@ export default function App() {
                 warning?: string;
                 embeddingReady?: boolean;
                 vectorRecallAvailable?: boolean;
+                blocked?: boolean;
+                candidate?: { status?: string };
+                record?: unknown;
               })
             : null;
         const state = payload ? payload.state : (next as ProductState);
         adoptServerState(state);
-        // R-P2-06: surface approve embedding warnings instead of silent success.
-        if (payload?.warning) {
+        // Conflict approve must never look like success (domain may leave candidate pending).
+        if (payload?.blocked === true) {
+          setNotice(
+            buildNotice(
+              "warning",
+              "确认已拦截",
+              "候选与用户修正冲突，未写入长期记忆。请拒绝或改写后再确认。"
+            )
+          );
+          return;
+        }
+        const confirmed =
+          payload?.record != null ||
+          payload?.candidate?.status === "approved" ||
+          // Non-approve memory actions return bare ProductState (no payload wrapper fields).
+          !payload;
+        // R-P2-06: surface approve embedding warnings only after a real confirm.
+        if (payload?.warning && confirmed) {
           setNotice(buildNotice("warning", "已处理，但需注意", payload.warning));
-        } else if (payload && payload.embeddingReady === false) {
+        } else if (payload && payload.embeddingReady === false && confirmed && payload.record != null) {
           setNotice(
             buildNotice(
               "warning",
@@ -859,10 +878,28 @@ export default function App() {
       })
       .catch((err) => {
         const conflict = err instanceof ApiError && (err.status === 409 || err.status === 422 || err.status === 404);
+        const body =
+          err instanceof ApiError && err.body && typeof err.body === "object"
+            ? (err.body as { error?: unknown; state?: ProductState; blocked?: boolean })
+            : null;
+        const serverError = body && typeof body.error === "string" ? body.error.trim() : "";
+        const isApproveBlock =
+          conflict &&
+          (body?.blocked === true || serverError.includes("冲突") || serverError.includes("拦截"));
+        // If a 409 body still carries authoritative state (revision bump), adopt it so the
+        // next optimistic PUT does not race on a stale client revision. approveMemoryCandidate
+        // normally returns blocked+state without throw; this is a safety net for other callers.
+        if (body?.state && typeof body.state === "object" && "revision" in body.state) {
+          adoptServerState(body.state as ProductState);
+        }
         setNotice(buildNotice(
           "warning",
-          conflict ? "操作未生效" : "操作失败",
-          conflict ? "该记忆的状态已变化(可能已被处理或清理),请刷新后重试。" : "记忆治理需要后端在线。"
+          isApproveBlock ? "确认已拦截" : conflict ? "操作未生效" : "操作失败",
+          isApproveBlock
+            ? serverError || "候选与用户修正冲突，未写入长期记忆。请拒绝或改写后再确认。"
+            : conflict
+              ? serverError || "该记忆的状态已变化(可能已被处理或清理),请刷新后重试。"
+              : "记忆治理需要后端在线。"
         ));
         throw err;
       });

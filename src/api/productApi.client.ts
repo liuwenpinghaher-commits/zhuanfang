@@ -302,24 +302,53 @@ export function createProductApiClient(
       return normalizeProductState(response.state);
     },
     async approveMemoryCandidate(id, opts) {
-      const response = (await requestJson(`/api/memory-candidates/${id}/approve`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ mode: opts?.mode ?? "merge" })
-      })) as {
-        state: ProductState;
-        embeddingReady?: boolean;
-        vectorRecallAvailable?: boolean;
-        warning?: string;
-      };
-      return {
-        state: normalizeProductState(response.state),
-        ...(response.embeddingReady !== undefined ? { embeddingReady: response.embeddingReady } : {}),
-        ...(response.vectorRecallAvailable !== undefined
-          ? { vectorRecallAvailable: response.vectorRecallAvailable }
-          : {}),
-        ...(response.warning ? { warning: response.warning } : {})
-      };
+      // Conflict block persists bumped revision + audit on the server (HTTP 409 + body.state).
+      // Must return that state to the UI for adoptServerState — never throw-only, or the next
+      // optimistic PUT /api/state races with a stale client revision.
+      try {
+        const response = (await requestJson(`/api/memory-candidates/${id}/approve`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            mode: opts?.mode ?? "merge",
+            ...(opts?.force === true ? { force: true } : {})
+          })
+        })) as {
+          state: ProductState;
+          embeddingReady?: boolean;
+          vectorRecallAvailable?: boolean;
+          warning?: string;
+          blocked?: boolean;
+        };
+        return {
+          state: normalizeProductState(response.state),
+          ...(response.embeddingReady !== undefined ? { embeddingReady: response.embeddingReady } : {}),
+          ...(response.vectorRecallAvailable !== undefined
+            ? { vectorRecallAvailable: response.vectorRecallAvailable }
+            : {}),
+          ...(response.warning ? { warning: response.warning } : {}),
+          ...(response.blocked === true ? { blocked: true } : {})
+        };
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 409 && err.body && typeof err.body === "object") {
+          const body = err.body as {
+            state?: unknown;
+            blocked?: boolean;
+            error?: unknown;
+            embeddingReady?: boolean;
+            vectorRecallAvailable?: boolean;
+          };
+          if (body.state && (body.blocked === true || String(body.error ?? "").includes("冲突") || String(body.error ?? "").includes("拦截"))) {
+            return {
+              state: normalizeProductState(body.state),
+              blocked: true,
+              embeddingReady: body.embeddingReady === true,
+              vectorRecallAvailable: body.vectorRecallAvailable === true
+            };
+          }
+        }
+        throw err;
+      }
     },
     async rejectMemoryCandidate(id, reviewNote) {
       const response = (await requestJson(`/api/memory-candidates/${id}/reject`, {

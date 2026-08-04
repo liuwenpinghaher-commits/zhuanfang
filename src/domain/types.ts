@@ -415,6 +415,7 @@ export interface AuditEvent {
     | "memory_referenced"
     | "memory_candidate_updated"
     | "memory_candidate_approved"
+    | "memory_candidate_approve_blocked"
     | "memory_candidate_rejected"
     | "memory_record_updated"
     | "memory_record_deprecated"

@@ -121,6 +121,30 @@
 | 2026-08-01 页面经营台会话收口（主题线+笔记+素材库） | **closed · archived** · tip `93e855b2` · 见 `2026-08-01-session-final-report.md` · ARCHIVE §0.10 |
 | 资产对话经营台（真新对话/跳源/grounding/预填/开专访） | **closed · archived · PASS** · `8806ce12` · 见 optimization-report + `2026-08-01-asset-chat-workflow-smoke.md` |
 
+## Realization Must-set（2026-08-04 · 代码门禁 · 非真人 D4）
+
+> ADR：[`docs/superpowers/specs/2026-08-04-realization-must-set-adr.md`](./specs/2026-08-04-realization-must-set-adr.md)  
+> **不宣称**「完美产品 / Full product GO / 4 周真人 D4 通过」——仅代码 Must-set。
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| ADR · D1–D4 DoD + 非目标 + cascade 默认质量承诺 | **closed** | 上链 ADR |
+| Craft golden 工厂（5 剧本 · shipped strategy/retrieval） | **closed** | `src/domain/craft-golden.ts` + `craft-golden.test.ts` |
+| Confirmed-only packing + conflict 不可静默 approve | **closed** | domain block + **route 409**（无假「已确认记忆」）· PATCH 改写重注记 · `force` 显式覆盖 · UI 拦截文案 · **client 采纳 409 body.state/revision**（防 stale PUT）· `memory-discipline` + `memory-candidates-conflict` + `productApi` 409-adopt 测 |
+| Longitudinal `contradicts` / supersede 生产写 + 策略/召回消费 | **closed** | `applyCognitiveRelations` / `resolveMemoryConflict` + guide/strategy · `longitudinal-edges.test.ts`（含 craft 场景 4） |
+| doNotSave 诚实结束 + 未确认 partial 不入权威稿 | **closed** | `session-end-presentation.ts` + hook 接线 · `turnAssembler` · `session-authority.test.ts` |
+| 真人 D4（4 周主观价值） | **open（推迟）** | 协议在使用方案；本清单不伪造分数 |
+
+轻量跑（无完整 vite 前端插件依赖时）：
+
+```bash
+REAL_PROVIDER_SMOKE=off npx vitest run --config vitest.domain.config.ts \
+  src/domain/craft-golden.test.ts \
+  src/domain/memory-discipline.test.ts \
+  src/domain/longitudinal-edges.test.ts \
+  src/domain/session-authority.test.ts
+```
+
 ## 验收
 
 ```bash
@@ -132,4 +156,5 @@ npx tsx scripts/voice-slo-smoke.ts
 node scripts/backup-export-smoke.mjs
 npm run test:e2e
 # 可选：set -a; . ./agent/.env; set +a; npm run test:e2e:real
+# Must-set domain 子集见上「Realization Must-set」
 ```
