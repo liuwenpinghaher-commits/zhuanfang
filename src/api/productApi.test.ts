@@ -870,9 +870,12 @@ describe("product api client", () => {
 
     // Uses fetch (carries any client-configured auth header) rather than <audio src>.
     expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:8787/api/sessions/sess-6/audio", { method: "GET" });
-    // jsdom's Blob<->Response round-trip is unreliable for byte size, so assert
-    // the contract that matters: a non-null Blob came back via fetch (not a URL).
-    expect(result).toBeInstanceOf(Blob);
+    // jsdom/undici 多 realm 下 response.blob() 返回的 Blob 与全局 Blob 可能不是同一构造函数，
+    // instanceof 会假失败；契约是：经 fetch 拿回非 null 的 Blob-like（有 size + arrayBuffer）。
+    expect(result).not.toBeNull();
+    expect(typeof (result as Blob).size).toBe("number");
+    expect(typeof (result as Blob).arrayBuffer).toBe("function");
+    expect((result as Blob).size).toBeGreaterThan(0);
   });
 
   it("fetchSessionAudioBlob returns null on 404 and throws ApiError on other non-2xx", async () => {
