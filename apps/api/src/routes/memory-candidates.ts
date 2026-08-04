@@ -5,7 +5,11 @@ import {
   rejectMemoryCandidate,
   updateMemoryCandidateText
 } from "../../../../src/domain/engine";
-import { withMemoryCandidateReview } from "../../../../src/domain/memoryReview";
+import {
+  collectConflictCorrectionTexts,
+  shouldBlockSilentMemoryConfirm,
+  withMemoryCandidateReview
+} from "../../../../src/domain/memoryReview";
 import { makeId, nowIso, withAuditEvent } from "../../../../src/domain/utils";
 import type { MemoryCandidate, MemoryRecord, ProductState } from "../../../../src/domain/types";
 import {
@@ -113,6 +117,36 @@ export async function registerMemoryCandidateRoutes(
       return reply.code(409).send({ error: "Memory candidate is not pending." });
     }
 
+    // ME-P1-01: UI offers merge vs add; default merge preserves approved candidate text.
+    const body =
+      request.body && typeof request.body === "object"
+        ? (request.body as Record<string, unknown>)
+        : {};
+    const mode =
+      body.mode === "add" || body.mode === "merge" ? (body.mode as "add" | "merge") : "merge";
+    // Explicit override only — never silent confirm of conflict-marked / correction-clashing candidates.
+    const force = body.force === true;
+
+    // Conflict gate BEFORE embed: production often has embedding configured (fail-closed 502).
+    // Without this order, conflict candidates never surface as 409 blocked and burn embed quota.
+    const corrections = collectConflictCorrectionTexts({
+      memoryCorrections: state.memoryCorrections
+    });
+    if (!force && shouldBlockSilentMemoryConfirm(candidate, corrections)) {
+      const blockedState = approveMemoryCandidate(state, candidate.id, { mode, force: false });
+      const reviewedCandidate = findCandidate(blockedState, candidate.id);
+      const persisted = /*durable*/await replaceStateDurable(repository, blockedState);
+      return reply.code(409).send({
+        error:
+          "候选与用户修正或笔记冲突，已拦截确认（未写入长期记忆）。请拒绝、改写后重审，或在知悉风险后显式 force 确认。",
+        blocked: true,
+        candidate: reviewedCandidate,
+        state: persisted,
+        embeddingReady: false,
+        vectorRecallAvailable: false
+      });
+    }
+
     // M3c: enrich the confirmed record with a semantic embedding so the long-term
     // store is cosine-searchable. Domain approve stays pure; route owns the client.
     // C-P1-06: when an embedding client is configured, embed failure is fail-closed (502)
@@ -129,15 +163,6 @@ export async function registerMemoryCandidateRoutes(
       });
     }
     const embedding = embedOutcome.status === "ok" ? embedOutcome.embedding : undefined;
-    // ME-P1-01: UI offers merge vs add; default merge preserves approved candidate text.
-    const body =
-      request.body && typeof request.body === "object"
-        ? (request.body as Record<string, unknown>)
-        : {};
-    const mode =
-      body.mode === "add" || body.mode === "merge" ? (body.mode as "add" | "merge") : "merge";
-    // Explicit override only — never silent confirm of conflict-marked / correction-clashing candidates.
-    const force = body.force === true;
     const nextState = approveMemoryCandidate(state, candidate.id, {
       ...(embedding ? { embedding, embeddingProvider: options.embeddingClient?.providerId } : {}),
       // Consolidation summaries carry the keeper's importance; honor it over the reviewScore band.

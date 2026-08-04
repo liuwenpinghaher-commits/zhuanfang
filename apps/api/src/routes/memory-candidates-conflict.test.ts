@@ -39,6 +39,47 @@ describe("POST /api/memory-candidates/:id/approve conflict block", () => {
     await app.close();
   });
 
+  it("conflict is checked before embed (no 502 when embedding would fail)", async () => {
+    // Production has embedding client; conflict must not be masked by embed 502.
+    const failingEmbed = {
+      providerId: "bailian-embed",
+      async embed() {
+        throw new Error("Bailian embeddings request failed: 400");
+      }
+    };
+    const appWithEmbed = Fastify();
+    const repo = createInMemoryProductStateRepository(createInitialProductState());
+    await registerMemoryCandidateRoutes(appWithEmbed, repo, {
+      embeddingClient: failingEmbed as never
+    });
+    await appWithEmbed.ready();
+    try {
+      repo.replaceState({
+        ...createInitialProductState(),
+        memoryCandidates: [pendingConflict("c_before_embed")],
+        memoryCorrections: [
+          {
+            id: "corr_embed",
+            text: "纠正：效率瓶颈不是结构性前提，也不是必须全部满足的准入门槛",
+            createdAt: "2026-08-01T00:00:00.000Z"
+          }
+        ],
+        memoryRecords: []
+      });
+      const res = await appWithEmbed.inject({
+        method: "POST",
+        url: "/api/memory-candidates/c_before_embed/approve",
+        payload: { mode: "add" }
+      });
+      expect(res.statusCode).toBe(409);
+      expect(res.json().blocked).toBe(true);
+      expect(res.json().error ?? "").toMatch(/冲突|拦截/);
+      expect(res.statusCode).not.toBe(502);
+    } finally {
+      await appWithEmbed.close();
+    }
+  });
+
   it("returns 409, does not confirm, and never claims 已确认记忆 when embedding is off", async () => {
     const seeded: ProductState = {
       ...createInitialProductState(),
