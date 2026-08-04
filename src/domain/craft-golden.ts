@@ -223,7 +223,7 @@ export function runRagGroundingRefuseScenario(): CraftGoldenResult {
     {
       id: "kc1",
       sourceId: "src_unrelated",
-      sourceType: "import_source",
+      sourceType: "material",
       title: "无关",
       text: "天气预报与交通路况汇总",
       keywords: ["天气", "路况"],
