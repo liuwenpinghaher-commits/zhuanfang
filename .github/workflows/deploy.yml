@@ -34,20 +34,25 @@ jobs:
             --exclude '.data' \
             --exclude 'playwright-report' \
             --exclude 'test-results' \
+            --exclude 'tests' \
+            --exclude '**/*.test.ts' \
+            --exclude '**/*.test.tsx' \
             --exclude '.codegraph' \
             --exclude '*.zip' \
             --exclude '.env' \
             --exclude '.env.local' \
             --exclude '.env.production.local' \
             --exclude 'memory' \
+            --exclude '.superpowers' \
+            --exclude 'agent' \
             ./ .deploy-artifact/app/
           # 双保险：绝不把密钥打进包
           rm -f .deploy-artifact/app/.env \
                 .deploy-artifact/app/.env.local \
                 .deploy-artifact/app/.env.production.local
           tar -C .deploy-artifact -czf zhuanfang-deploy.tgz app
-          sha256sum zhuanfang-deploy.tgz > zhuanfang-deploy.tgz.sha256
-          ls -lh zhuanfang-deploy.tgz zhuanfang-deploy.tgz.sha256
+          sha256sum zhuanfang-deploy.tgz | tee zhuanfang-deploy.tgz.sha256
+          ls -lh zhuanfang-deploy.tgz
 
       - name: Configure SSH
         env:
@@ -64,19 +69,29 @@ jobs:
           PORT="${DEPLOY_PORT:-22}"
           # 避免交互；失败不阻断（部分机房禁 keyscan）
           ssh-keyscan -p "$PORT" -T 10 "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
-          printf 'Host deploy-target\n  HostName %s\n  Port %s\n  User %s\n  IdentityFile ~/.ssh/deploy_key\n  IdentitiesOnly yes\n  StrictHostKeyChecking accept-new\n  ConnectTimeout 30\n  ServerAliveInterval 15\n  ServerAliveCountMax 8\n' \
+          printf 'Host deploy-target\n  HostName %s\n  Port %s\n  User %s\n  IdentityFile ~/.ssh/deploy_key\n  IdentitiesOnly yes\n  StrictHostKeyChecking accept-new\n  ConnectTimeout 30\n  ServerAliveInterval 10\n  ServerAliveCountMax 12\n  TCPKeepAlive yes\n' \
             "$DEPLOY_HOST" "$PORT" "${{ secrets.DEPLOY_USER }}" > ~/.ssh/config
           chmod 600 ~/.ssh/config
+          # 连通性探测（失败则整 job 失败，避免盲传）
+          ssh -F "$HOME/.ssh/config" -o BatchMode=yes deploy-target 'echo ssh_ok && uname -a'
 
-      - name: Upload tarball (rsync)
+      - name: Upload tarball (scp then rsync fallback)
         run: |
           set -euo pipefail
-          rsync -az --partial --timeout=120 --checksum \
-            -e "ssh -F $HOME/.ssh/config" \
-            zhuanfang-deploy.tgz zhuanfang-deploy.tgz.sha256 \
-            deploy-target:/tmp/
-          ssh -F "$HOME/.ssh/config" deploy-target \
-            'test -f /tmp/zhuanfang-deploy.tgz && sha256sum -c /tmp/zhuanfang-deploy.tgz.sha256'
+          # 优先 openssh scp（对小 tarball 更稳）；失败再 rsync（无 --checksum，避免全量哈希拖慢）
+          if scp -F "$HOME/.ssh/config" -o BatchMode=yes \
+              zhuanfang-deploy.tgz zhuanfang-deploy.tgz.sha256 \
+              deploy-target:/tmp/; then
+            echo "scp_upload_ok"
+          else
+            echo "scp_failed_try_rsync"
+            rsync -az --partial --timeout=180 \
+              -e "ssh -F $HOME/.ssh/config -o BatchMode=yes" \
+              zhuanfang-deploy.tgz zhuanfang-deploy.tgz.sha256 \
+              deploy-target:/tmp/
+          fi
+          ssh -F "$HOME/.ssh/config" -o BatchMode=yes deploy-target \
+            'test -f /tmp/zhuanfang-deploy.tgz && sha256sum -c /tmp/zhuanfang-deploy.tgz.sha256 && ls -lh /tmp/zhuanfang-deploy.tgz'
 
       - name: Extract and rebuild
         run: |
