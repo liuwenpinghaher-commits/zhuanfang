@@ -886,7 +886,10 @@ export function createBailianCharacterInterviewClientFromEnv(
   return createBailianCharacterInterviewClient({
     apiKey,
     baseUrl: env.BAILIAN_BASE_URL,
-    model: env.BAILIAN_CHARACTER_MODEL ?? BAILIAN_ROLE_PLAY_MODEL,
+    model:
+      env.BAILIAN_CHARACTER_MODEL?.trim() ||
+      env.BAILIAN_MODEL?.trim() ||
+      BAILIAN_ROLE_PLAY_MODEL,
     timeoutMs: resolveRequestTimeoutMs(env, "BAILIAN_INTERVIEW_REQUEST_TIMEOUT_MS")
   });
 }
@@ -902,7 +905,8 @@ export function createBailianChatClientFromEnv(
   return createBailianChatClient({
     apiKey,
     baseUrl: env.BAILIAN_BASE_URL,
-    model: env.BAILIAN_GENERAL_MODEL ?? BAILIAN_GENERAL_MODEL
+    // Prefer explicit general model; fall back to BAILIAN_MODEL so one text-model switch covers chat.
+    model: env.BAILIAN_GENERAL_MODEL?.trim() || env.BAILIAN_MODEL?.trim() || BAILIAN_GENERAL_MODEL
   });
 }
 
