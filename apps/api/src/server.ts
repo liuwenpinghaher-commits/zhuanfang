@@ -41,7 +41,22 @@ import {
   type BailianStreamingTtsClient,
   type BailianStreamingTtsOptions
 } from "./providers/bailian-streaming-tts";
-import { isAuthGuardActive, isAuthorized, readCookieToken } from "./auth";
+import {
+  bindRequestPrincipal,
+  isAuthGuardActive,
+  isAuthorized,
+  isSessionAuthEnabled,
+  readCookieToken,
+  resolvePrincipal,
+  SESSION_COOKIE
+} from "./auth";
+import { authenticateUser, ensureBootstrapUsers } from "./auth/users";
+import { issueSessionToken, sessionCookieHeader } from "./auth/session";
+import { currentUsername, enterPrincipal, legacyOwner } from "./auth/user-context";
+import {
+  createInMemoryUserRepoFactory,
+  createUserScopedProductStateRepository
+} from "./auth/user-scoped-repository";
 import { createLlmBudget } from "./llm-budget";
 import { createRateLimiter, rateLimitBucket } from "./rate-limit";
 import { resolveRequestTimeoutMs } from "./request-timeout";
@@ -87,6 +102,8 @@ interface BuildApiServerOptions {
   interviewTurnTimeoutMs?: number;
   env?: Record<string, string | undefined>;
   envFilePath?: string;
+  /** When true, do not auto-wrap productStateRepository with multi-user scoping. */
+  disableUserScopedState?: boolean;
   /**
    * Start the background research scheduler. Only the persistent process
    * (startServer) sets this; buildApiServer/tests leave it off so no timers leak.
@@ -129,11 +146,39 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   registerCors(server, runtimeEnv);
   registerProductionAuth(server, runtimeEnv);
   registerRuntimeBootstrap(server, runtimeEnv);
+  registerAuthRoutes(server, runtimeEnv);
   registerSensitiveRouteRateLimit(server, runtimeEnv);
   const writeGate = registerWriteSerialization(server);
   registerErrorHandler(server);
   // R7:默认工厂只构造内存仓库(surreal 需异步连接,只能由 startServer 经 createSurrealStores 注入)。
-  const innerProductStateRepository = options.productStateRepository ?? createDefaultProductStateRepository();
+  // P0 默认：所有登录用户共享同一 ProductState（与今日一致）。
+  // P1 多用户分仓：仅当 PRODUCT_USER_SCOPED_STATE=1 时包装（非 legacy 用户走独立仓）。
+  // 测试可注入已 scoped 的 productStateRepository，并设 disableUserScopedState 避免二次包装。
+  let baseRepo = options.productStateRepository ?? createDefaultProductStateRepository();
+  const userScoped =
+    !options.disableUserScopedState &&
+    isSessionAuthEnabled(runtimeEnv) &&
+    ["1", "true", "yes", "on"].includes((runtimeEnv.PRODUCT_USER_SCOPED_STATE ?? "").trim().toLowerCase());
+  if (userScoped) {
+    const factory = createInMemoryUserRepoFactory();
+    const legacy = legacyOwner(runtimeEnv);
+    const map = new Map<string, ProductStateRepository>();
+    map.set(legacy.toLowerCase().replace(/[^a-z0-9_-]+/g, "_").slice(0, 64) || "admin", baseRepo);
+    baseRepo = createUserScopedProductStateRepository({
+      env: runtimeEnv,
+      fallbackUsername: legacy,
+      getOrCreate(username: string) {
+        const key = username.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "_").slice(0, 64) || "user";
+        let r = map.get(key);
+        if (!r) {
+          r = factory.getOrCreate(username);
+          map.set(key, r);
+        }
+        return r;
+      }
+    });
+  }
+  const innerProductStateRepository = baseRepo;
   const providerClients: ProviderClients = {};
   const refreshProviderClients = () => refreshRuntimeProviderClients(providerClients, runtimeEnv, options);
   refreshProviderClients();
@@ -162,10 +207,10 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   // Fail-LOUD 而非 fail-open-silent:startServer() 在生产缺 token 时硬抛拒绝启动(生产硬闸);但直接用
   // buildApiServer 的嵌入/脚本路径若在生产 profile 缺 token,鉴权守卫静默关闭、全 /api/* 裸奔。这里至少
   // 响亮告警,不再静默。(嵌入方可自带鉴权层,故告警而非抛错,避免破坏合法用法。)
-  if (isProductionProfile && !runtimeEnv.PRODUCT_API_TOKEN) {
+  if (isProductionProfile && !runtimeEnv.PRODUCT_API_TOKEN && !isSessionAuthEnabled(runtimeEnv)) {
     console.warn(JSON.stringify({
       event: "auth_guard_inactive_in_production",
-      detail: "DEPLOYMENT_PROFILE=production 但未设 PRODUCT_API_TOKEN —— 鉴权守卫未启用,所有 /api/* 无凭据即可访问。"
+      detail: "DEPLOYMENT_PROFILE=production 但未设 PRODUCT_API_TOKEN / PRODUCT_AUTH_ENABLED —— 鉴权守卫未启用。"
     }));
   }
   // 生产 profile 却回落内存存储(通常是 PRODUCT_STORE=memory 或漏配 surreal 档) → 进程重启全部数据丢失。响亮告警。
@@ -853,41 +898,122 @@ function registerCors(server: ReturnType<typeof Fastify>, env: Record<string, st
  */
 export function assertProductionAuthConfigured(env: Record<string, string | undefined>) {
   const isProduction = (env.DEPLOYMENT_PROFILE ?? "").trim().toLowerCase() === "production";
-  if (isProduction && !env.PRODUCT_API_TOKEN) {
+  if (!isProduction) return;
+  // Prefer human session auth; machine token still recommended for LiveKit agent.
+  if (isSessionAuthEnabled(env)) {
+    if (!(env.PRODUCT_SESSION_SECRET ?? "").trim()) {
+      throw new Error(
+        "生产部署已启用 PRODUCT_AUTH_ENABLED，必须配置 PRODUCT_SESSION_SECRET（会话 Cookie 签名密钥）。"
+      );
+    }
+    return;
+  }
+  if (!env.PRODUCT_API_TOKEN) {
     throw new Error(
-      "生产部署 (DEPLOYMENT_PROFILE=production) 必须配置 PRODUCT_API_TOKEN：缺少令牌时鉴权守卫不会生效，所有 /api/* 路由（隐私导出、一键清空、修改 provider 配置、语音代理）将无凭据即可访问。请设置 PRODUCT_API_TOKEN 后再启动。"
+      "生产部署 (DEPLOYMENT_PROFILE=production) 必须配置 PRODUCT_API_TOKEN 或 PRODUCT_AUTH_ENABLED+PRODUCT_SESSION_SECRET：缺少凭证时鉴权守卫不会生效。"
     );
   }
 }
 
-// Paths exempted from bearer auth in production profile (healthcheck, metrics, etc.)
-const AUTH_EXEMPT_PREFIXES = ["/api/health", "/api/runtime-bootstrap"];
+// Paths exempted from auth when guard is active.
+const AUTH_EXEMPT_PREFIXES = [
+  "/api/health",
+  "/api/runtime-bootstrap",
+  "/api/auth/login",
+  "/api/auth/logout"
+];
 
 /**
- * Same-origin SPA auth bootstrap (criterion 2): without baking PRODUCT_API_TOKEN into
- * the static Vite bundle as the only model. Sets an HttpOnly cookie only — never returns
- * the long-lived secret in a free JSON body to unauthenticated callers (XSS/network
- * scrapers). Browser HTTP (credentials:include) and same-origin WS upgrades send the cookie.
- * Optional VITE_PRODUCT_API_TOKEN remains a deploy-time override for split-origin setups.
+ * Runtime bootstrap:
+ * - Session auth (PRODUCT_AUTH_ENABLED): report session presence; NEVER set PRODUCT_API_TOKEN cookie.
+ * - Legacy machine-token production: still set HttpOnly product_api_token cookie (no body secret).
+ * Long-lived secrets never appear in free JSON body.
  */
 function registerRuntimeBootstrap(server: ReturnType<typeof Fastify>, env: Record<string, string | undefined>) {
   server.get("/api/runtime-bootstrap", async (request: FastifyRequest, reply: FastifyReply) => {
-    if (!isAuthGuardActive(env) || !env.PRODUCT_API_TOKEN) {
+    if (!isAuthGuardActive(env)) {
+      return { authRequired: false, cookieSet: false };
+    }
+
+    const principal = resolvePrincipal(env, {
+      authHeader: typeof request.headers.authorization === "string" ? request.headers.authorization : undefined,
+      cookieHeader: typeof request.headers.cookie === "string" ? request.headers.cookie : undefined
+    });
+
+    // L1 human session path
+    if (isSessionAuthEnabled(env)) {
+      if (principal?.kind === "user") {
+        return {
+          authRequired: true,
+          authenticated: true,
+          username: principal.username,
+          cookieSet: true,
+          mode: "session"
+        };
+      }
+      return { authRequired: true, authenticated: false, cookieSet: false, mode: "session" };
+    }
+
+    // Legacy: production + PRODUCT_API_TOKEN only — set machine cookie for SPA bootstrap.
+    if (!env.PRODUCT_API_TOKEN) {
       return { authRequired: false, cookieSet: false };
     }
     const token = env.PRODUCT_API_TOKEN;
-    // Secure ONLY on real HTTPS. Production docker-compose defaults to http://127.0.0.1:3210;
-    // a Secure cookie is rejected by browsers on HTTP responses → whole SPA 401 after we
-    // stopped returning the token in the JSON body. trustProxy makes request.protocol honor
-    // X-Forwarded-Proto behind a TLS terminator.
     const secure = request.protocol === "https";
-    // HttpOnly + SameSite=Lax: not readable by page JS; sent on same-site API/WS.
     reply.header(
       "Set-Cookie",
       `product_api_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax${secure ? "; Secure" : ""}`
     );
-    // Deliberately omit the long-lived secret from the response body.
-    return { authRequired: true, cookieSet: true, secureCookie: secure };
+    return { authRequired: true, cookieSet: true, secureCookie: secure, mode: "machine_token" };
+  });
+}
+
+function registerAuthRoutes(server: ReturnType<typeof Fastify>, env: Record<string, string | undefined>) {
+  ensureBootstrapUsers(env);
+
+  server.post<{ Body: { username?: string; password?: string } }>("/api/auth/login", async (request, reply) => {
+    const username = String(request.body?.username ?? "").trim();
+    const password = String(request.body?.password ?? "");
+    if (!username || !password) {
+      return reply.code(400).send({ error: "username and password required" });
+    }
+    if (!authenticateUser(username, password, env)) {
+      return reply.code(401).send({ error: "invalid credentials" });
+    }
+    if (isSessionAuthEnabled(env) && !(env.PRODUCT_SESSION_SECRET ?? "").trim()) {
+      return reply.code(503).send({ error: "PRODUCT_SESSION_SECRET not configured" });
+    }
+    // Issue session even when only machine guard was historically used but bootstrap users exist.
+    const secretOk = (env.PRODUCT_SESSION_SECRET ?? "").trim();
+    if (!secretOk) {
+      return reply.code(503).send({ error: "PRODUCT_SESSION_SECRET not configured" });
+    }
+    const token = issueSessionToken(username, { env });
+    const secure =
+      (env.PRODUCT_SESSION_SECURE ?? "").trim() === "1" ||
+      request.protocol === "https";
+    reply.header("Set-Cookie", sessionCookieHeader(token, { secure }));
+    enterPrincipal({ kind: "user", username });
+    return { ok: true, username };
+  });
+
+  server.post("/api/auth/logout", async (request, reply) => {
+    const secure =
+      (env.PRODUCT_SESSION_SECURE ?? "").trim() === "1" || request.protocol === "https";
+    reply.header("Set-Cookie", sessionCookieHeader("", { clear: true, secure }));
+    enterPrincipal(null);
+    return { ok: true };
+  });
+
+  server.get("/api/auth/me", async (request, reply) => {
+    const principal = resolvePrincipal(env, {
+      authHeader: typeof request.headers.authorization === "string" ? request.headers.authorization : undefined,
+      cookieHeader: typeof request.headers.cookie === "string" ? request.headers.cookie : undefined
+    });
+    if (!principal || principal.kind !== "user") {
+      return reply.code(401).send({ error: "authentication required" });
+    }
+    return { username: principal.username };
   });
 }
 
@@ -910,6 +1036,7 @@ function registerSensitiveRouteRateLimit(server: ReturnType<typeof Fastify>, env
   });
 
   const STRICT_PREFIXES = [
+    "/api/auth/login",
     "/api/state/export",
     "/api/state/purge",
     "/api/state/import",
@@ -924,7 +1051,15 @@ function registerSensitiveRouteRateLimit(server: ReturnType<typeof Fastify>, env
   server.addHook("onRequest", async (request: FastifyRequest, reply: FastifyReply) => {
     const path = request.url.split("?")[0] ?? "";
     if (!path.startsWith("/api/")) return;
-    if (path === "/api/health" || path.startsWith("/api/health/") || path === "/api/runtime-bootstrap") return;
+    if (
+      path === "/api/health" ||
+      path.startsWith("/api/health/") ||
+      path === "/api/runtime-bootstrap" ||
+      path === "/api/auth/logout" ||
+      path === "/api/auth/me"
+    ) {
+      return;
+    }
 
     const useStrict = STRICT_PREFIXES.some((p) => path === p || path.startsWith(p + "/") || path.startsWith(p));
     // Only rate-limit mutating methods on general API; always limit strict prefixes (incl. GET export).
@@ -949,31 +1084,45 @@ function registerSensitiveRouteRateLimit(server: ReturnType<typeof Fastify>, env
 }
 
 function registerProductionAuth(server: ReturnType<typeof Fastify>, env: Record<string, string | undefined>) {
-  // Auth guard is only active in production profile WITH a token — keeps local dev friction-free.
+  // Auth guard: session and/or production machine token — keeps pure local dev open when neither set.
   if (!isAuthGuardActive(env)) {
     return;
   }
 
   server.addHook("onRequest", async (request: FastifyRequest, reply: FastifyReply) => {
-    const path = request.url.split("?")[0];
+    const path = (request.url.split("?")[0] ?? "").replace(/\/+$/, "") || "/";
 
-    // Exempt health check (and any future non-/api paths are already not API routes)
     if (AUTH_EXEMPT_PREFIXES.some((prefix) => path === prefix || path.startsWith(prefix + "/"))) {
       return;
     }
 
-    // Only guard /api/* routes; static assets served outside /api should pass through
     if (!path.startsWith("/api/")) {
       return;
     }
 
-    // 同时接受 ?token= 查询:浏览器原生媒体请求(<audio src>/<img>)无法带 Authorization 头,
-    // 没有这条,生产环境下原生 src 形式的音频回放等 GET 会被 401。与 WS 升级路径口径一致。
+    // me is public shape but returns 401 without session — still needs principal binding attempt
     const tokenQuery = new URLSearchParams(request.url.split("?")[1] ?? "").get("token") ?? undefined;
-    const cookieToken = readCookieToken(
-      typeof request.headers.cookie === "string" ? request.headers.cookie : undefined
-    );
-    if (isAuthorized(env, { authHeader: request.headers.authorization, tokenQuery, cookieToken })) {
+    const cookieHeader = typeof request.headers.cookie === "string" ? request.headers.cookie : undefined;
+    const cookieToken = readCookieToken(cookieHeader);
+    const principal = bindRequestPrincipal(env, {
+      authHeader: typeof request.headers.authorization === "string" ? request.headers.authorization : undefined,
+      tokenQuery: tokenQuery ?? undefined,
+      cookieHeader
+    });
+
+    if (path === "/api/auth/me") {
+      return; // handler returns 401 if no user session
+    }
+
+    if (
+      principal ||
+      isAuthorized(env, {
+        authHeader: typeof request.headers.authorization === "string" ? request.headers.authorization : undefined,
+        tokenQuery: tokenQuery ?? undefined,
+        cookieToken,
+        cookieHeader
+      })
+    ) {
       return;
     }
 

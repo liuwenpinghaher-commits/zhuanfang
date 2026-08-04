@@ -14,8 +14,16 @@ services:
       HOST: 0.0.0.0
       PORT: 3210
       DEPLOYMENT_PROFILE: ${DEPLOYMENT_PROFILE:-production}
-      # Required in production: the server fails closed (refuses to boot) without it.
-      PRODUCT_API_TOKEN: ${PRODUCT_API_TOKEN:?生产部署必须设置 PRODUCT_API_TOKEN，否则鉴权守卫不生效、所有 /api/* 路由无凭据可访问}
+      # Machine Bearer (LiveKit agent / CI). Human browser uses PRODUCT_AUTH_ENABLED session cookies.
+      PRODUCT_API_TOKEN: ${PRODUCT_API_TOKEN:?生产部署必须设置 PRODUCT_API_TOKEN（机器凭证）；人类登录请同时设 PRODUCT_AUTH_ENABLED + PRODUCT_SESSION_SECRET}
+      # L1 账密会话（推荐生产开启）
+      PRODUCT_AUTH_ENABLED: ${PRODUCT_AUTH_ENABLED:-1}
+      PRODUCT_SESSION_SECRET: ${PRODUCT_SESSION_SECRET:-}
+      PRODUCT_BOOTSTRAP_USERS: ${PRODUCT_BOOTSTRAP_USERS:-}
+      PRODUCT_SESSION_SECURE: ${PRODUCT_SESSION_SECURE:-1}
+      PRODUCT_SESSION_TTL_HOURS: ${PRODUCT_SESSION_TTL_HOURS:-168}
+      PRODUCT_LEGACY_OWNER: ${PRODUCT_LEGACY_OWNER:-admin}
+      PRODUCT_USER_SCOPED_STATE: ${PRODUCT_USER_SCOPED_STATE:-}
       PRODUCT_STATIC_DIR: /app/dist
       PRODUCT_STORE: surreal
       PRODUCT_STATE_DB_PATH: /app/.data/product-state.db

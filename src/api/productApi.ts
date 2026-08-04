@@ -811,6 +811,13 @@ export function createProductApiClient(
   async function requestJson(path: string, init: RequestInit): Promise<unknown> {
     const response = await authedFetch(`${normalizedBaseUrl}${path}`, init);
     if (!response.ok) {
+      if (response.status === 401) {
+        try {
+          window.dispatchEvent(new CustomEvent("zf-auth-required"));
+        } catch {
+          /* non-browser */
+        }
+      }
       // F-03:尽力解析错误 body 挂到 ApiError 上——reset 部分失败(500)的 body 带着
       // 热态 state 与 resetReceipt,前端要用;解析失败(非 JSON)不影响抛错本身。
       const errorBody: unknown = await response.json().catch(() => undefined);
@@ -822,6 +829,13 @@ export function createProductApiClient(
   async function requestText(path: string, init: RequestInit): Promise<string> {
     const response = await authedFetch(`${normalizedBaseUrl}${path}`, init);
     if (!response.ok) {
+      if (response.status === 401) {
+        try {
+          window.dispatchEvent(new CustomEvent("zf-auth-required"));
+        } catch {
+          /* non-browser */
+        }
+      }
       throw new ApiError(response.status, path);
     }
     return response.text();
