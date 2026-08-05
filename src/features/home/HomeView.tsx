@@ -574,7 +574,8 @@ export function HomeView({
               disabled={starting}
               onClick={() => {
                 setSelectedMode(mode.id);
-                onStart(mode.id, selectedTopic);
+                // 与一键开始同源：附带可选 relatedThemeIds（自定义主题时为空）
+                startWithCurrent(mode.id);
               }}
             >
               <strong>{mode.label}</strong>
