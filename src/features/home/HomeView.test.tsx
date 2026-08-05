@@ -29,12 +29,13 @@ describe("HomeView 专访启动真值", () => {
 
     expect(container?.textContent).toContain("长期主题");
     expect(container?.textContent).toContain("适合回访反复出现的问题");
-    expect(onStart).toHaveBeenCalledWith("long-term", "控制感");
+    // startWithCurrent may pass optional relatedThemeIds as 3rd arg
+    expect(onStart).toHaveBeenCalledWith("long-term", "控制感", undefined);
   });
 
   it("允许用户输入具体主题并按组织模式原样启动", () => {
     const state = createInitialProductState();
-    const onStart = vi.fn<(mode?: InterviewMode, topicHint?: string) => void>();
+    const onStart = vi.fn<(mode?: InterviewMode, topicHint?: string, relatedThemeIds?: string[]) => void>();
     renderHome(state, onStart);
     const input = container?.querySelector("input[placeholder*='专访主题']") as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
@@ -45,12 +46,12 @@ describe("HomeView 专访启动真值", () => {
     const organization = Array.from(container?.querySelectorAll("button") ?? []).find((item) => item.textContent?.includes("组织/关系"));
     act(() => organization?.click());
 
-    expect(onStart).toHaveBeenCalledWith("organization", "企业如何进行 AI Native 转型");
+    expect(onStart).toHaveBeenCalledWith("organization", "企业如何进行 AI Native 转型", undefined);
   });
 
   function renderHome(
     state: ReturnType<typeof createInitialProductState>,
-    onStart: (mode?: InterviewMode, topicHint?: string) => void
+    onStart: (mode?: InterviewMode, topicHint?: string, relatedThemeIds?: string[]) => void
   ) {
     container = document.createElement("div");
     document.body.appendChild(container);
