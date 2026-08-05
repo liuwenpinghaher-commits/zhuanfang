@@ -121,6 +121,21 @@
 | 2026-08-01 页面经营台会话收口（主题线+笔记+素材库） | **closed · archived** · tip `93e855b2` · 见 `2026-08-01-session-final-report.md` · ARCHIVE §0.10 |
 | 资产对话经营台（真新对话/跳源/grounding/预填/开专访） | **closed · archived · PASS** · `8806ce12` · 见 optimization-report + `2026-08-01-asset-chat-workflow-smoke.md` |
 
+## 功能闭环改进（2026-08-05 · 工程切片）
+
+> 方案：[`docs/superpowers/plans/2026-08-05-functional-loop-improvement.md`](./plans/2026-08-05-functional-loop-improvement.md)  
+> 冒烟：`node scripts/loop-workflow-smoke.mjs` → `2026-08-05-loop-workflow-smoke.json`
+
+| Phase | 状态 | 说明 |
+|---|---|---|
+| A 回访待办队列 | **closed** | `buildCognitiveRevisitQueue` / `pickInterviewLaunchRecommendation`；card 无 user topic 时吃队列；Home「认知待办」 |
+| A3 loop golden | **closed** | `loop-golden.ts`：decision 贯通 + HITL 排序 + suppress |
+| B HITL 粘性 | **closed** | `sticky-memory-hitl` 由 `pending` 计数派生；上场摘要 dismiss 不清 sticky |
+| C 会中回访 | **closed** | Interview 侧栏「本场回访」+ 策略标签 +「本场不追」→ `suppressedRevisitIds` |
+| D 档案 Tab | **closed（既有）** | `MyAssetsView` 专访档案 + `buildSessionArchive` |
+| E 冒烟/Rubric 模板 | **closed** | `scripts/loop-workflow-smoke.mjs` + `eval/samples/TEMPLATE.md` |
+| 真人 D4 | **open（推迟）** | 仍不伪造 |
+
 ## Realization Must-set（2026-08-04 · 代码门禁 · 非真人 D4）
 
 > ADR：[`docs/superpowers/specs/2026-08-04-realization-must-set-adr.md`](./specs/2026-08-04-realization-must-set-adr.md)  

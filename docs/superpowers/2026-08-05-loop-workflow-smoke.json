@@ -1,0 +1,113 @@
+{
+  "startedAt": "2026-08-05T06:27:02.614Z",
+  "ok": true,
+  "structural": [
+    {
+      "check": "file",
+      "rel": "src/domain/revisit-queue.ts",
+      "ok": true
+    },
+    {
+      "check": "file",
+      "rel": "src/domain/loop-golden.ts",
+      "ok": true
+    },
+    {
+      "check": "file",
+      "rel": "src/domain/revisit-queue.test.ts",
+      "ok": true
+    },
+    {
+      "check": "file",
+      "rel": "src/domain/loop-golden.test.ts",
+      "ok": true
+    },
+    {
+      "check": "file",
+      "rel": "src/features/home/HomeView.tsx",
+      "ok": true
+    },
+    {
+      "check": "file",
+      "rel": "src/features/interview/InterviewView.tsx",
+      "ok": true
+    },
+    {
+      "check": "file",
+      "rel": "src/features/my-assets/MyAssetsView.tsx",
+      "ok": true
+    },
+    {
+      "check": "file",
+      "rel": "src/domain/session-archive.ts",
+      "ok": true
+    },
+    {
+      "check": "snippet",
+      "file": "src/domain/revisit-queue.ts",
+      "needle": "export function buildCognitiveRevisitQueue",
+      "ok": true
+    },
+    {
+      "check": "snippet",
+      "file": "src/domain/revisit-queue.ts",
+      "needle": "export function pickInterviewLaunchRecommendation",
+      "ok": true
+    },
+    {
+      "check": "snippet",
+      "file": "src/domain/context-pack.ts",
+      "needle": "pickInterviewLaunchRecommendation",
+      "ok": true
+    },
+    {
+      "check": "snippet",
+      "file": "src/domain/strategy.ts",
+      "needle": "suppressedRevisitIds",
+      "ok": true
+    },
+    {
+      "check": "snippet",
+      "file": "src/features/home/HomeView.tsx",
+      "needle": "revisit-desk",
+      "ok": true
+    },
+    {
+      "check": "snippet",
+      "file": "src/features/interview/InterviewView.tsx",
+      "needle": "interview-revisit-panel",
+      "ok": true
+    },
+    {
+      "check": "snippet",
+      "file": "src/App.tsx",
+      "needle": "sticky-memory-hitl",
+      "ok": true
+    },
+    {
+      "check": "snippet",
+      "file": "src/App.tsx",
+      "needle": "pickInterviewLaunchRecommendation",
+      "ok": true
+    },
+    {
+      "check": "snippet",
+      "file": "src/features/my-assets/MyAssetsView.tsx",
+      "needle": "buildSessionArchive",
+      "ok": true
+    },
+    {
+      "check": "snippet",
+      "file": "src/features/my-assets/MyAssetsView.tsx",
+      "needle": "专访档案",
+      "ok": true
+    }
+  ],
+  "vitest": {
+    "status": 0,
+    "stdoutTail": "\n RUN  v4.1.8 /home/admin/projects/zhuanfang\n\n ✓ src/domain/craft-golden.test.ts (6 tests) 19ms\n ✓ src/domain/memory-discipline.test.ts (5 tests) 16ms\n ✓ src/domain/session-authority.test.ts (6 tests) 13ms\n ✓ src/domain/loop-golden.test.ts (1 test) 10ms\n ✓ src/domain/session-archive.test.ts (5 tests) 8ms\n ✓ src/domain/revisit-queue.test.ts (7 tests) 7ms\n\n Test Files  6 passed (6)\n      Tests  30 passed (30)\n   Start at  14:27:03\n   Duration  1.64s (transform 505ms, setup 0ms, import 817ms, tests 72ms, environment 1ms)\n\n",
+    "stderrTail": ""
+  },
+  "errors": [],
+  "finishedAt": "2026-08-05T06:27:04.928Z"
+}

@@ -29,11 +29,14 @@ import {
   buildInterviewResumeCards,
   buildRealtimeTurnState,
   buildSystemStatus,
+  countPendingMemoryCandidates,
   createQuestionFromNote,
   markMemoryCorrection,
+  pickInterviewLaunchRecommendation,
   receiveUserTurn,
   resolveInterviewTopicHint,
   searchProductAssets,
+  suppressRevisitOnSession,
   toggleAssetImportance,
   updateDecisionStatus,
   updateKnowledgeDebtStatus,
@@ -566,31 +569,42 @@ export default function App() {
   }
 
   // 引用跳源：切到对应视图并尽量精确 focus（笔记场次 / 记忆 id / 素材 / 资产 key / 主题 Track）。
-  const suggestedTopicHint = useMemo(
-    () => resolveInterviewTopicHint(productState, activeSearchBriefId ? { searchBriefId: activeSearchBriefId } : {}),
+  // Phase A: launch + card share cognitive revisit queue (not ad-hoc theme heat only).
+  const launchRecommendation = useMemo(
+    () =>
+      pickInterviewLaunchRecommendation(productState, {
+        ...(activeSearchBriefId ? { searchBriefId: activeSearchBriefId } : {})
+      }),
     [activeSearchBriefId, productState]
   );
-  const card = useMemo(
-    () => buildInterviewCard(productState, activeSearchBriefId, suggestedTopicHint),
-    [activeSearchBriefId, productState, suggestedTopicHint]
+  const revisitQueue = launchRecommendation.queue;
+  const pendingMemoryCount = useMemo(
+    () => countPendingMemoryCandidates(productState),
+    [productState]
   );
-  const recommendedLaunch = useMemo(() => {
+  const suggestedTopicHint = useMemo(() => {
     if (activeSearchBriefId) {
-      return { mode: "learning" as const, reason: "适合先消化外部材料，再回到你的真实经验" };
+      return resolveInterviewTopicHint(productState, { searchBriefId: activeSearchBriefId });
     }
-    const dueDecision = productState.decisions.some((decision) =>
-      decision.status === "待复盘" &&
-      decision.confirmationStatus === "用户确认" &&
-      (!decision.reviewAt || Date.parse(decision.reviewAt) <= Date.now())
+    return (
+      launchRecommendation.topicHint ||
+      resolveInterviewTopicHint(productState, {})
     );
-    if (dueDecision) {
-      return { mode: "decision" as const, reason: "有已确认且到期的决策需要复盘" };
-    }
-    if (productState.themes.length > 0) {
-      return { mode: "long-term" as const, reason: "适合回访反复出现的问题" };
-    }
-    return { mode: "daily" as const, reason: "先从最近发生的一件具体事情开始" };
-  }, [activeSearchBriefId, productState.decisions, productState.themes.length]);
+  }, [activeSearchBriefId, launchRecommendation.topicHint, productState]);
+  // Card auto path: omit user topicHint so buildInterviewCard consumes revisit queue.
+  const card = useMemo(
+    () => buildInterviewCard(productState, activeSearchBriefId, undefined),
+    [activeSearchBriefId, productState]
+  );
+  const recommendedLaunch = useMemo(
+    () => ({
+      mode: launchRecommendation.mode,
+      reason: launchRecommendation.reason,
+      topicHint: launchRecommendation.topicHint,
+      relatedThemeIds: launchRecommendation.relatedThemeIds
+    }),
+    [launchRecommendation]
+  );
   // Resume: surface every unfinished session; keeping only the newest one hid older active work.
   const resumeCards = useMemo(() => buildInterviewResumeCards(productState), [productState]);
   // 认知雷达是本地确定性真实计数（非 LLM 叙事），始终可算可渲染。
@@ -1763,6 +1777,20 @@ export default function App() {
             </span>
           </section>
         )}
+        {pendingMemoryCount > 0 && view !== "memory" && (
+          <section
+            className="notice warning sticky-memory-hitl"
+            role="status"
+            aria-live="polite"
+            data-testid="sticky-memory-hitl"
+          >
+            <strong>{pendingMemoryCount} 条记忆待确认</strong>
+            <span>未确认不会进入跨会话召回。关闭上场摘要后此条仍保留，直到全部审核完毕。</span>
+            <button type="button" className="primary-action" onClick={() => setView("memory")}>
+              去记忆治理
+            </button>
+          </section>
+        )}
         {notice && (
           <section className={`notice ${notice.kind}`} aria-live="polite" aria-atomic="true">
             <strong>{notice.message}</strong>
@@ -1819,10 +1847,13 @@ export default function App() {
             suggestedTopicHint={suggestedTopicHint}
             recommendedMode={recommendedLaunch.mode}
             recommendationReason={recommendedLaunch.reason}
+            recommendedRelatedThemeIds={recommendedLaunch.relatedThemeIds}
             resumeCards={resumeCards}
             activeBriefId={activeSearchBriefId}
             starting={startingInterview}
             lastInterviewSummary={lastInterviewSummary}
+            revisitQueue={revisitQueue}
+            pendingMemoryCount={pendingMemoryCount}
             onStart={(mode, topicHint, relatedThemeIds) =>
               void launchInterview(mode, activeSearchBriefId, topicHint, relatedThemeIds)
             }
@@ -1863,6 +1894,9 @@ export default function App() {
             onSubmit={submitTurn}
             onFinish={finishInterview}
             onControl={applyInterviewControl}
+            onSuppressRevisit={(kind, label) => {
+              setSession((prev) => (prev ? suppressRevisitOnSession(prev, kind, label) : prev));
+            }}
             onToggleRecording={toggleRealtimeRecording}
             onInterrupt={interruptAssistant}
             onVoiceReviewText={(text) => {

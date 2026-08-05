@@ -33,6 +33,8 @@ interface InterviewViewProps {
   onVoiceReviewText?: (text: string) => void;
   onConfirmVoiceReview?: () => void;
   onDiscardVoiceReview?: () => void;
+  /** Phase C: suppress decision/debt revisit for this session only. */
+  onSuppressRevisit?: (kind: "decision" | "debt", label: string) => void;
   submitting?: boolean;
   retryAvailable?: boolean;
   starting?: boolean;
@@ -90,6 +92,7 @@ export function InterviewView({
   onVoiceReviewText,
   onConfirmVoiceReview,
   onDiscardVoiceReview,
+  onSuppressRevisit,
   submitting,
   retryAvailable,
   starting,
@@ -172,6 +175,14 @@ export function InterviewView({
         : ["暂无明确可引用记忆"];
   const appliedTechniques = (session.enginePolicy?.appliedPlaybookRules ?? []).filter((rule) => rule.trim());
   const sessionCard = session.card;
+  const suppressed = session.suppressedRevisitIds ?? [];
+  const lastStrategy = session.strategyTrace?.at(-1);
+  const openDebts = (session.guide.openDebts ?? []).filter(
+    (d) => !suppressed.includes(`debt:${d.concept.trim()}`)
+  );
+  const decisionsToReview = (session.guide.decisionsToReview ?? []).filter(
+    (d) => !suppressed.includes(`decision:${d.title.trim()}`)
+  );
   const busy = Boolean(submitting || finishing);
   const controlsDisabled = busy;
   const userTurnCount = session.turns.filter((t) => t.role === "user").length;
@@ -507,6 +518,78 @@ export function InterviewView({
             <Flag size={18} />
             <h2>本次准备</h2>
           </div>
+
+          {/* Phase C: 本场回访清单 + 策略可见 */}
+          <details className="context-block revisit-panel" data-testid="interview-revisit-panel">
+            <summary>
+              <Lightbulb size={14} aria-hidden />
+              本场回访
+              {(decisionsToReview.length > 0 || openDebts.length > 0) && (
+                <span className="status-pill">
+                  {decisionsToReview.length + openDebts.length}
+                </span>
+              )}
+            </summary>
+            {lastStrategy && (
+              <p className="field-help">
+                最近策略：
+                <strong>
+                  {INTERVIEW_STRATEGY_LABELS[lastStrategy.strategy] ?? lastStrategy.label}
+                </strong>
+                {lastStrategy.reason ? ` · ${lastStrategy.reason}` : ""}
+              </p>
+            )}
+            {decisionsToReview.length === 0 && openDebts.length === 0 ? (
+              <p className="empty-hint">本场暂无到期决策或开放知识债；可自由展开。</p>
+            ) : (
+              <ul className="revisit-session-list">
+                {decisionsToReview.map((d) => (
+                  <li key={`dec-${d.title}`}>
+                    <div>
+                      <strong>决策 · {d.title}</strong>
+                      <small>
+                        已 {d.daysOpen} 天 · 选「{d.choice}」
+                      </small>
+                    </div>
+                    {onSuppressRevisit && (
+                      <button
+                        type="button"
+                        className="text-button"
+                        disabled={controlsDisabled}
+                        onClick={() => onSuppressRevisit("decision", d.title)}
+                      >
+                        本场不追
+                      </button>
+                    )}
+                  </li>
+                ))}
+                {openDebts.map((d) => (
+                  <li key={`debt-${d.concept}`}>
+                    <div>
+                      <strong>知识债 · {d.concept}</strong>
+                      <small>
+                        已 {d.daysOpen} 天 · {d.nextQuestion || d.context}
+                      </small>
+                    </div>
+                    {onSuppressRevisit && (
+                      <button
+                        type="button"
+                        className="text-button"
+                        disabled={controlsDisabled}
+                        onClick={() => onSuppressRevisit("debt", d.concept)}
+                      >
+                        本场不追
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {suppressed.length > 0 && (
+              <p className="field-help">已跳过本场回访 {suppressed.length} 项（不改写资产）。</p>
+            )}
+          </details>
+
           {appliedTechniques.length > 0 && (
             <div className="context-block applied-techniques">
               <span>

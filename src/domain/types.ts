@@ -696,6 +696,11 @@ export interface InterviewSession {
   /** v2 软标签：本会话软归属的主题线（可多归属、可为空）。 */
   relatedThemeIds?: string[];
   rawMaterialOffloaded?: boolean;
+  /**
+   * 本场用户显式「不追」的回访项（decision:标题 / debt:概念）。
+   * 仅影响本 session 策略，不改写资产状态。
+   */
+  suppressedRevisitIds?: string[];
 }
 
 export interface InterviewAgentContext {

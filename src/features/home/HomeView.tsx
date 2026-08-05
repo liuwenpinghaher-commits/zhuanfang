@@ -1,8 +1,9 @@
-import { BookOpen, Clock, Plus, Play, Sparkles, Target, TrendingUp, X } from "lucide-react";
+import { BookOpen, Brain, Clock, Plus, Play, Sparkles, Target, TrendingUp, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import { buildTimeline } from "../../domain/timeline";
 import type { buildInterviewCard, buildInterviewResumeCards } from "../../domain/engine";
+import type { RevisitItem } from "../../domain/revisit-queue";
 import type { InterviewMode, ProductState } from "../../domain/types";
 
 const modeOptions: Array<{ id: InterviewMode; label: string; detail: string }> = [
@@ -52,6 +53,7 @@ interface HomeViewProps {
   suggestedTopicHint?: string;
   recommendedMode?: InterviewMode;
   recommendationReason?: string;
+  recommendedRelatedThemeIds?: string[];
   resumeCards?: ReturnType<typeof buildInterviewResumeCards>;
   activeBriefId?: string;
   starting?: boolean;
@@ -62,6 +64,9 @@ interface HomeViewProps {
     doNotSave: boolean;
     finishedAt: string;
   };
+  /** Cognitive revisit queue (shared ranking with card/launch). */
+  revisitQueue?: RevisitItem[];
+  pendingMemoryCount?: number;
   onStart: (mode?: InterviewMode, topicHint?: string, relatedThemeIds?: string[]) => void;
   onContinue?: (sessionId: string) => void;
   onDiscardEmpty?: (sessionId: string) => void;
@@ -69,6 +74,9 @@ interface HomeViewProps {
   onDismissLastSummary?: () => void;
   onOpenTrack?: (themeId: string) => void;
   onNavigate?: (view: string) => void;
+  /** Prefill topic input from parent (end summary / sticky). */
+  prefillTopic?: string | null;
+  prefillMode?: InterviewMode | null;
 }
 
 export function HomeView({
@@ -77,25 +85,42 @@ export function HomeView({
   suggestedTopicHint = card.title,
   recommendedMode = "daily",
   recommendationReason = "先从最近发生的一件具体事情开始",
+  recommendedRelatedThemeIds,
   resumeCards = [],
   activeBriefId,
   starting = false,
   lastInterviewSummary = null,
+  revisitQueue = [],
+  pendingMemoryCount = 0,
   onStart,
   onContinue,
   onDiscardEmpty,
   onClearBrief,
   onDismissLastSummary,
   onOpenTrack,
-  onNavigate
+  onNavigate,
+  prefillTopic = null,
+  prefillMode = null
 }: HomeViewProps) {
   const timelineEvents = buildTimeline(state, 20);
   const [topicInput, setTopicInput] = useState("");
   const [selectedMode, setSelectedMode] = useState<InterviewMode>(recommendedMode);
+  // Display queue: skip resume (shown above); show HITL + next launchables.
+  const deskQueue = revisitQueue
+    .filter((item) => item.kind !== "resume_session" && item.kind !== "cold_start")
+    .slice(0, 3);
 
   useEffect(() => {
     setSelectedMode(recommendedMode);
   }, [recommendedMode]);
+
+  useEffect(() => {
+    if (prefillTopic) setTopicInput(prefillTopic);
+  }, [prefillTopic]);
+
+  useEffect(() => {
+    if (prefillMode) setSelectedMode(prefillMode);
+  }, [prefillMode]);
 
   const selectedTopic = topicInput.trim() || suggestedTopicHint;
   const selectedModeLabel = modeLabel(selectedMode);
@@ -116,7 +141,13 @@ export function HomeView({
 
   function startWithCurrent(mode: InterviewMode = selectedMode) {
     if (starting) return;
-    onStart(mode, selectedTopic);
+    const usingRecommendedTopic =
+      !topicInput.trim() || topicInput.trim() === (suggestedTopicHint || "").trim();
+    const themeIds =
+      usingRecommendedTopic && recommendedRelatedThemeIds?.length
+        ? recommendedRelatedThemeIds
+        : undefined;
+    onStart(mode, selectedTopic, themeIds);
   }
 
   return (
@@ -217,7 +248,83 @@ export function HomeView({
             >
               我的资产
             </button>
+            {deskQueue[0]?.canLaunchInterview && deskQueue[0].topicHint && (
+              <button
+                type="button"
+                className="secondary-action"
+                onClick={() => {
+                  setTopicInput(deskQueue[0]!.topicHint!);
+                  if (deskQueue[0]!.mode) setSelectedMode(deskQueue[0]!.mode);
+                  onDismissLastSummary?.();
+                }}
+              >
+                预约下次：{deskQueue[0].title.slice(0, 18)}
+              </button>
+            )}
           </div>
+        </section>
+      )}
+
+      {/* Phase A/B: 认知待办（关上场摘要后仍可见 pending 记忆） */}
+      {(pendingMemoryCount > 0 || deskQueue.length > 0) && (
+        <section className="panel revisit-desk" aria-label="认知待办" data-testid="revisit-desk">
+          <div className="panel-title row-between">
+            <div className="row">
+              <Target size={18} aria-hidden="true" />
+              <h2>认知待办</h2>
+            </div>
+            {pendingMemoryCount > 0 && (
+              <span className="status-pill is-emphasis">{pendingMemoryCount} 条记忆待确认</span>
+            )}
+          </div>
+          <p className="field-help mb-2">
+            按优先级：待审记忆 → 到期决策 → 知识债 → 主题下一问。未确认记忆不会进入下次召回。
+          </p>
+          <ul className="revisit-desk-list">
+            {deskQueue.map((item) => (
+              <li key={item.id} className="revisit-desk-item" data-revisit-kind={item.kind}>
+                <div>
+                  <strong>{item.title}</strong>
+                  <small>{item.reason}</small>
+                </div>
+                <div className="form-actions">
+                  {item.kind === "memory_hitl" ? (
+                    <button
+                      type="button"
+                      className="primary-action"
+                      onClick={() => onNavigate?.("memory")}
+                    >
+                      <Brain size={16} />
+                      去记忆治理
+                    </button>
+                  ) : item.canLaunchInterview ? (
+                    <button
+                      type="button"
+                      className="primary-action"
+                      disabled={starting}
+                      onClick={() => {
+                        if (item.mode) setSelectedMode(item.mode);
+                        if (item.topicHint) setTopicInput(item.topicHint);
+                        onStart(item.mode, item.topicHint, item.relatedThemeIds);
+                      }}
+                    >
+                      <Play size={16} />
+                      开始回访
+                    </button>
+                  ) : null}
+                  {item.href?.view === "track" && item.href.focusId && (
+                    <button
+                      type="button"
+                      className="secondary-action"
+                      onClick={() => onOpenTrack?.(item.href!.focusId!)}
+                    >
+                      主题工作区
+                    </button>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
         </section>
       )}
 

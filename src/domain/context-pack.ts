@@ -27,6 +27,7 @@ import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent, formatSearc
 import { buildInterviewEnginePolicy } from "./strategy";
 import { cosineSimilarity, topKByCosine } from "./vector";
 import { decideRecallAcceptance, resolveMinRecallScore, scoreMemoryTextsForReject } from "./retrieval";
+import { pickInterviewLaunchRecommendation } from "./revisit-queue";
 
 // ponytail: 有界常量 — 上下文包中最多携带的 corrections 条数
 const MAX_CONTEXT_CORRECTIONS = 20;
@@ -215,7 +216,14 @@ export function buildInterviewCard(state: ProductState, searchBriefId?: string, 
   const openDebt = state.debts.find((debt) => debt.status === "待了解") ?? state.debts[0];
   const confirmedMemoryTexts = collectConfirmedMemoryTexts(state);
   const reference = topTheme?.representativeQuote ?? confirmedMemoryTexts[0] ?? "你最近有一个反复出现的问题。";
-  const explicitTopicHint = topicHint?.trim();
+  const userTopicHint = topicHint?.trim();
+  // Phase A: no user/asset topic → derive from cognitive revisit queue (not bare topTheme only).
+  const autoLaunch =
+    !userTopicHint && !searchBriefId
+      ? pickInterviewLaunchRecommendation(state)
+      : null;
+  const explicitTopicHint = userTopicHint || (autoLaunch?.topicHint?.trim() ? autoLaunch.topicHint.trim() : undefined);
+  const fromRevisitQueue = Boolean(autoLaunch && !userTopicHint && autoLaunch.launchItem.kind !== "cold_start");
   const contextOptions = {
     ...(searchBriefId ? { searchBriefId } : {}),
     ...(explicitTopicHint ? { topicHint: explicitTopicHint } : {}),
@@ -224,9 +232,11 @@ export function buildInterviewCard(state: ProductState, searchBriefId?: string, 
   const searchBrief = resolveInterviewContextSearchBrief(state, contextOptions);
   const contextPack = buildInterviewContextPack(state, contextOptions, recall);
   const contextSourceHighlights = contextPack.sourceHighlights.slice(0, 3);
-  const focusQuestion = searchBrief || explicitTopicHint ? undefined : findNextInterviewFocusQuestion(state);
-  const title = explicitTopicHint
-    ? `继续追问：${formatQuestionTitle(explicitTopicHint)}`
+  const focusQuestion = searchBrief || userTopicHint ? undefined : findNextInterviewFocusQuestion(state);
+  const title = fromRevisitQueue && autoLaunch
+    ? autoLaunch.launchItem.title
+    : userTopicHint
+    ? `继续追问：${formatQuestionTitle(userTopicHint)}`
     : focusQuestion
     ? `继续追问：${formatQuestionTitle(focusQuestion.question)}`
     : topTheme
@@ -257,9 +267,11 @@ export function buildInterviewCard(state: ProductState, searchBriefId?: string, 
       ? agendaContext
         ? `你最近多次提到${themeName}，同时”${searchBrief.topic}”出现了可借用的外部素材。${agendaContext}，适合把个人问题放进更大的语境里看。`
         : `你最近多次提到${themeName}，同时”${searchBrief.topic}”出现了可借用的外部素材，适合把个人问题放进更大的语境里看。`
-      : explicitTopicHint && hasContextSources
+      : fromRevisitQueue && autoLaunch
+        ? autoLaunch.reason
+      : userTopicHint && hasContextSources
         ? `你刚选中的线索命中了可引用的导入资料，适合先借外部材料校准问题，再回到你的具体场景。`
-      : explicitTopicHint
+      : userTopicHint
         ? `你刚在资产库中选中了这条线索，适合直接接上它继续专访，而不是回到泛泛复盘。`
         : focusQuestion
           ? `你在会后反馈里明确要求继续追问这个问题，适合直接接上上次的未完成线索。`
@@ -270,8 +282,8 @@ export function buildInterviewCard(state: ProductState, searchBriefId?: string, 
             : "从你最近的一段记录继续，或聊聊此刻最在意的事。",
     suggestedOpening: searchBrief
       ? `我们先从一个外部素材切入：${ensureSentenceEnd(explicitTopicHint ?? searchBrief.discussionTopics[0])}它和你最近的真实场景有什么关系？`
-      : explicitTopicHint && hasContextSources
-        ? `我们先拿这条导入资料做参照：${ensureSentenceEnd(explicitTopicHint)}它和你最近的真实场景有什么关系？`
+      : userTopicHint && hasContextSources
+        ? `我们先拿这条导入资料做参照：${ensureSentenceEnd(userTopicHint)}它和你最近的真实场景有什么关系？`
         : guide.suggestedOpening,
     historyReferences: Array.from(new Set([
       ...(explicitTopicHint ? [`本次主题：${explicitTopicHint}`] : []),

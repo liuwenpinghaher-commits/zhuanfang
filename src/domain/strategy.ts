@@ -275,7 +275,11 @@ export function decideInterviewStrategy(session: InterviewSession, userText: str
 
   // Wave B · B1.2/B1.3: decision_review vs debt_followup — mutual exclusion same session;
   // prefer older due decision when both exist; loser stays on checklist only.
-  const dueDecision = session.guide.decisionsToReview?.[0];
+  // Phase C: session.suppressedRevisitIds lets user skip a revisit for this session only.
+  const suppressed = session.suppressedRevisitIds ?? [];
+  const dueDecision = session.guide.decisionsToReview?.find(
+    (d) => !suppressed.includes(`decision:${d.title.trim()}`)
+  );
   if (
     (previousUserTurns === 1 || previousUserTurns === 2 || previousUserTurns === 3) &&
     dueDecision &&
@@ -283,8 +287,16 @@ export function decideInterviewStrategy(session: InterviewSession, userText: str
     !hasStrategy(trace, "debt_followup")
   ) {
     // Prefer decision_review when daysOpen >= debt days (or no debt).
-    const debtDays = session.guide.openDebts?.[0]?.daysOpen ?? -1;
-    if (!session.guide.debtToAddress || dueDecision.daysOpen >= debtDays) {
+    const openDebt = session.guide.openDebts?.find(
+      (d) => !suppressed.includes(`debt:${d.concept.trim()}`)
+    );
+    const debtDays = openDebt?.daysOpen ?? -1;
+    const debtAddress =
+      session.guide.debtToAddress &&
+      !suppressed.includes(`debt:${session.guide.debtToAddress.trim()}`)
+        ? session.guide.debtToAddress
+        : openDebt?.concept;
+    if (!debtAddress || dueDecision.daysOpen >= debtDays) {
       return {
         ...base,
         strategy: "decision_review",
@@ -295,9 +307,15 @@ export function decideInterviewStrategy(session: InterviewSession, userText: str
     }
   }
 
+  const debtToAddress =
+    session.guide.debtToAddress &&
+    !suppressed.includes(`debt:${session.guide.debtToAddress.trim()}`)
+      ? session.guide.debtToAddress
+      : session.guide.openDebts?.find((d) => !suppressed.includes(`debt:${d.concept.trim()}`))
+          ?.concept;
   if (
     (previousUserTurns === 1 || previousUserTurns === 2) &&
-    session.guide.debtToAddress &&
+    debtToAddress &&
     !hasStrategy(trace, "debt_followup") &&
     !hasStrategy(trace, "decision_review")
   ) {
@@ -305,7 +323,7 @@ export function decideInterviewStrategy(session: InterviewSession, userText: str
       ...base,
       strategy: "debt_followup",
       label: "知识债追问",
-      reason: `第 2-3 轮回访未完成知识债：${session.guide.debtToAddress}`,
+      reason: `第 2-3 轮回访未完成知识债：${debtToAddress}`,
       depth: "mechanism"
     };
   }

@@ -5797,3 +5797,87 @@ p.field-error {
   outline: 2px solid color-mix(in srgb, var(--action-primary) 55%, transparent);
   outline-offset: 2px;
 }
+
+/* —— Functional loop: revisit desk + sticky HITL + session revisit —— */
+.revisit-desk-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.revisit-desk-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-app);
+}
+
+.revisit-desk-item strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.revisit-desk-item small {
+  display: block;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.sticky-memory-hitl {
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.sticky-memory-hitl .primary-action {
+  margin-left: auto;
+}
+
+.revisit-panel summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  list-style: none;
+}
+
+.revisit-panel summary::-webkit-details-marker {
+  display: none;
+}
+
+.revisit-session-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.revisit-session-list li {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border-default);
+}
+
+.revisit-session-list strong {
+  display: block;
+  font-size: 0.92rem;
+}
+
+.revisit-session-list small {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  margin-top: 2px;
+}

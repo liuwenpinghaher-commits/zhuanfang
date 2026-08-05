@@ -44,6 +44,22 @@ export {
 } from "./context-pack";
 
 export {
+  buildCognitiveRevisitQueue,
+  countPendingMemoryCandidates,
+  pickInterviewLaunchRecommendation,
+  listDueDecisionsForRevisit,
+  revisitSuppressKey,
+  isRevisitSuppressed,
+  suppressRevisitOnSession,
+} from "./revisit-queue";
+
+export type {
+  RevisitItem,
+  RevisitKind,
+  InterviewLaunchRecommendation,
+} from "./revisit-queue";
+
+export {
   buildInterviewEnginePolicy, decideInterviewStrategy,
 } from "./strategy";
 
