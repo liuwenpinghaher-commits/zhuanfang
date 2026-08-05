@@ -130,6 +130,8 @@ describe("session honesty — finalize doNotSave domain path", () => {
           evidenceQuote: "证据足够长作为引用锚点",
           reason: "不应写入",
           sensitivity: "normal",
+          reviewScore: 0.5,
+          reviewSignals: [],
           createdAt: "2026-08-01T00:00:00.000Z"
         }
       ]
