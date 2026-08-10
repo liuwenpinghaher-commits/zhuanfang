@@ -1094,4 +1094,195 @@ describe("connectCascadedPipeline", () => {
 
     pipeline.close();
   });
+
+  // =========================================================================
+  // Echo-guard golden + fixed-P1 regression locks (CFC+ Phase 1)
+  // Locks already-fixed behaviors so they cannot regress silently:
+  //   - listening-state speech_started preserves cumulative transcript (VAD 误切)
+  //   - TTS / post-TTS echo window: no barge-in, quarantine high-sim low-energy
+  //   - maxWait timer must not fire while mic suppressed (P2-14 / half-duplex)
+  //   - P1-08: close() → tts.close() (covered above)
+  // Do NOT re-implement omni reconnect (P1-06) here — locked in bailianWebsocket.test.
+  // =========================================================================
+
+  it("echo-guard golden: listening 态 speech_started 保留已累积转写（VAD 误切不丢前段）", async () => {
+    // Companion to the older "VAD 误切同一句" case — same invariant, explicit golden name.
+    const pipeline = connectCascadedPipeline(makeOpts());
+    await pipeline.startListening();
+
+    asr.setExpressionState("organizing");
+    asr.pushDelta("如果只看效率指标，", true);
+    asr.pushSpeechStopped(300);
+    await Promise.resolve();
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+    expect(userTranscripts.at(-1)?.text).toContain("如果只看效率指标");
+
+    // Same utterance resumes after a short VAD cut — must NOT wipe committed prefix.
+    asr.pushSpeechStarted();
+    expect(userTranscripts.at(-1)?.text).toContain("如果只看效率指标");
+
+    asr.setExpressionState("concluding");
+    asr.pushDelta("会忽略协作成本。", true);
+    asr.pushSpeechStopped(1000);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sendUserTurn.fn).toHaveBeenCalledOnce();
+    expect(sendUserTurn.fn.mock.calls[0][0]).toBe("如果只看效率指标，会忽略协作成本。");
+    pipeline.close();
+  });
+
+  it("echo-guard golden: maxWait 在 mic suppressed（开场 TTS）内不得触发 sendUserTurn", async () => {
+    vi.useFakeTimers();
+    asr.setExpressionState("organizing");
+    let resolveSpeak!: () => void;
+    const heldSpeak = vi.fn(
+      (_segs: string[]) => new Promise<void>((res) => { resolveSpeak = res; })
+    );
+    const heldTts = {
+      speak: heldSpeak,
+      stop: vi.fn(),
+      close: vi.fn(),
+    } as unknown as TtsSink;
+    const decisions: Array<{ reason: string }> = [];
+    const pipeline = connectCascadedPipeline(
+      makeOpts({
+        tts: heldTts,
+        decisionOpts: { maxWaitMs: 400, minPauseMs: 100 },
+        onDecision: (d) => decisions.push(d),
+      })
+    );
+
+    // Opening holds speaking + suppressMic for the entire held speak().
+    const started = pipeline.startListening("你好，今天我们聊聊你的工作。");
+    await Promise.resolve();
+    expect(heldSpeak).toHaveBeenCalledTimes(1);
+
+    // Echo of the opening line + speech_stopped must be ignored while suppressed.
+    asr.pushSpeechStarted();
+    asr.pushDelta("你好今天我们聊聊你的工作", true);
+    asr.pushSpeechStopped(500);
+    // Far past maxWaitMs — timer must not create a phantom user turn.
+    vi.advanceTimersByTime(3_000);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+    expect(decisions.some((d) => d.reason === "max-wait timer fired")).toBe(false);
+
+    resolveSpeak();
+    await started;
+    pipeline.close();
+  });
+
+  it("echo-guard golden: 留白 maxWait 武装后进入 TTS，speaking/echo 窗内不得 maxWait 误 respond", async () => {
+    vi.useFakeTimers();
+    asr.setExpressionState("organizing");
+    let resolveSpeak!: () => void;
+    const heldSpeak = vi.fn(
+      (_segs: string[]) => new Promise<void>((res) => { resolveSpeak = res; })
+    );
+    const heldTts = {
+      speak: heldSpeak,
+      stop: vi.fn(),
+      close: vi.fn(),
+    } as unknown as TtsSink;
+    const decisions: Array<{ reason: string }> = [];
+    const pipeline = connectCascadedPipeline(
+      makeOpts({
+        tts: heldTts,
+        decisionOpts: { maxWaitMs: 800, minPauseMs: 200 },
+        onDecision: (d) => decisions.push(d),
+      })
+    );
+    await pipeline.startListening();
+
+    // Organizing silence → wait + arm maxWait safety net.
+    asr.pushDelta("嗯这个嘛", true);
+    asr.pushSpeechStopped(300);
+    await Promise.resolve();
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+
+    // Partial advance — maxWait still pending, not fired.
+    vi.advanceTimersByTime(200);
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+
+    // User finishes → respond → held TTS → mic suppressed (and maxWait cleared / gated).
+    asr.setExpressionState("concluding");
+    asr.pushSpeechStopped(1_000);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sendUserTurn.fn).toHaveBeenCalledTimes(1);
+    expect(heldSpeak).toHaveBeenCalledTimes(1);
+
+    const callsAfterRespond = sendUserTurn.fn.mock.calls.length;
+
+    // While TTS is still held (mic suppressed), advancing well past maxWait must not
+    // create another turn or emit "max-wait timer fired".
+    vi.advanceTimersByTime(5_000);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sendUserTurn.fn.mock.calls.length).toBe(callsAfterRespond);
+    expect(decisions.filter((d) => d.reason === "max-wait timer fired")).toHaveLength(0);
+
+    // Echo of AI voice during TTS: no barge-in, no new turn.
+    asr.pushSpeechStarted();
+    asr.pushDelta("我理解。你继续说。", true);
+    asr.pushSpeechStopped(1_000);
+    await Promise.resolve();
+    expect(sendUserTurn.fn.mock.calls.length).toBe(callsAfterRespond);
+    expect(heldTts.stop).not.toHaveBeenCalled();
+
+    resolveSpeak();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Post-TTS echo guard window (~600ms): still no maxWait-driven turn.
+    vi.advanceTimersByTime(300);
+    asr.setUserEnergyEvidence(false);
+    asr.pushDelta("我理解。你继续说。", true);
+    asr.pushSpeechStopped(1_000);
+    await Promise.resolve();
+    expect(sendUserTurn.fn.mock.calls.length).toBe(callsAfterRespond);
+    expect(decisions.filter((d) => d.reason === "max-wait timer fired")).toHaveLength(0);
+
+    pipeline.close();
+  });
+
+  it("echo-guard golden: TTS 回声窗内高相似低能量 → quarantine，确认前绝不 sendUserTurn", async () => {
+    vi.useFakeTimers();
+    asr.setExpressionState("concluding");
+    asr.setUserEnergyEvidence(false);
+    const quarantined: Array<{ text: string; source: string }> = [];
+    const opts = makeOpts({
+      decisionOpts: { finalStabilityMs: 0, echoWindowMs: 1_500, echoSimilarityThreshold: 0.8 },
+    });
+    opts.callbacks.onTranscriptQuarantined = (item) =>
+      quarantined.push({ text: item.text, source: item.source });
+    const pipeline = connectCascadedPipeline(opts);
+
+    // Opening seeds recent TTS text for the echo similarity window.
+    await pipeline.startListening("你能讲一个具体的协作例子吗？");
+    // Past pipeline ECHO_GUARD_MS (600) so ASR is accepted, but still inside
+    // turnAssembler echoWindowMs (1500) after noteTtsPlayback.
+    vi.advanceTimersByTime(700);
+
+    asr.pushDelta("你能讲一个具体的协作例子吗？", true);
+    asr.pushSpeechStopped(1_000);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(quarantined).toHaveLength(1);
+    expect(quarantined[0].source).toBe("echo");
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+
+    // Human confirms a real user rewrite — only then may the turn proceed.
+    pipeline.confirmQuarantinedTranscript("我上周和产品一起改了优先级。");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sendUserTurn.fn).toHaveBeenCalledOnce();
+    expect(sendUserTurn.fn.mock.calls[0][0]).toBe("我上周和产品一起改了优先级。");
+    pipeline.close();
+  });
 });
