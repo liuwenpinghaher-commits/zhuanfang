@@ -78,23 +78,52 @@ import { registerStateRoutes } from "../routes/state";
 import { registerSystemRoutes } from "../routes/system";
 
 
+/** True for PRODUCT_AUTH_INSECURE_OK / similar flags: 1|true|yes|on (case-insensitive). */
+function isTruthyEnvFlag(value: string | undefined): boolean {
+  return ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
+}
+
+/**
+ * Production auth fail-closed gate (shared by startServer + buildApiServer).
+ *
+ * When DEPLOYMENT_PROFILE=production, require either:
+ * - session auth: PRODUCT_AUTH_ENABLED + PRODUCT_SESSION_SECRET, or
+ * - machine token: PRODUCT_API_TOKEN
+ *
+ * Single escape hatch: PRODUCT_AUTH_INSECURE_OK=1|true|yes|on — allows insecure start
+ * with an error-level log (no silent open API surface).
+ */
 export function assertProductionAuthConfigured(env: Record<string, string | undefined>) {
   const isProduction = (env.DEPLOYMENT_PROFILE ?? "").trim().toLowerCase() === "production";
   if (!isProduction) return;
+
   // Prefer human session auth; machine token still recommended for LiveKit agent.
+  let misconfigured: string | null = null;
   if (isSessionAuthEnabled(env)) {
     if (!(env.PRODUCT_SESSION_SECRET ?? "").trim()) {
-      throw new Error(
-        "生产部署已启用 PRODUCT_AUTH_ENABLED，必须配置 PRODUCT_SESSION_SECRET（会话 Cookie 签名密钥）。"
-      );
+      misconfigured =
+        "生产部署已启用 PRODUCT_AUTH_ENABLED，必须配置 PRODUCT_SESSION_SECRET（会话 Cookie 签名密钥）。";
     }
+  } else if (!env.PRODUCT_API_TOKEN) {
+    misconfigured =
+      "生产部署 (DEPLOYMENT_PROFILE=production) 必须配置 PRODUCT_API_TOKEN 或 PRODUCT_AUTH_ENABLED+PRODUCT_SESSION_SECRET：缺少凭证时鉴权守卫不会生效。";
+  }
+
+  if (!misconfigured) return;
+
+  if (isTruthyEnvFlag(env.PRODUCT_AUTH_INSECURE_OK)) {
+    // Explicit operator override only — never silent. Error-level so ops/alerts catch it.
+    console.error(
+      JSON.stringify({
+        event: "auth_insecure_ok_override",
+        detail: misconfigured,
+        PRODUCT_AUTH_INSECURE_OK: true
+      })
+    );
     return;
   }
-  if (!env.PRODUCT_API_TOKEN) {
-    throw new Error(
-      "生产部署 (DEPLOYMENT_PROFILE=production) 必须配置 PRODUCT_API_TOKEN 或 PRODUCT_AUTH_ENABLED+PRODUCT_SESSION_SECRET：缺少凭证时鉴权守卫不会生效。"
-    );
-  }
+
+  throw new Error(misconfigured);
 }
 
 // Paths exempted from auth when guard is active.
