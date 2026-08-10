@@ -510,6 +510,15 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
                 onError: (err) => {
                   setNotice(buildNotice("warning", "语音连接失败", err.message));
                 },
+                // Residual metrics (PR-2o): livekit interrupt publish outcome → runtime-metrics.
+                onBargeInMetric: (sample) => {
+                  void productApiClient.reportVoiceLatency({
+                    path: "livekit",
+                    interrupted: sample.interrupted,
+                    bargeInSuccess: sample.bargeInSuccess,
+                    ...(interviewId ? { sessionId: interviewId } : {})
+                  });
+                },
               },
             });
 
@@ -624,6 +633,8 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
                   );
                 },
                 // 重连过程对用户可见（此前 3 次重连期间 UI 仍显示"聆听中"，用户不知连接已断）。
+                // Residual (PR-2o): UX + bailianWebsocket structured logs (omni_reconnecting/…)
+                // make reconnect countable without new metrics schema fields.
                 onReconnecting: (attempt, maxAttempts) => {
                   setVoiceStatus("connecting");
                   setNotice(buildNotice("warning", "语音连接中断", `正在重连（第 ${attempt}/${maxAttempts} 次）…`));

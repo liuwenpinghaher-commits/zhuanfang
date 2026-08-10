@@ -483,11 +483,21 @@ export async function connectBailianRealtimeWebsocket(
   // re-emits proxy.connected, which re-sends sessionUpdate (via onopen) and fires
   // onReconnected. After maxReconnectAttempts failures we give up: mark closed
   // and report a terminal error so the UI can surface "voice disconnected".
+  //
+  // Residual observability (PR-2o): reconnect is countable via structured console
+  // events below (`omni_reconnecting` / `omni_reconnected` / `omni_reconnect_exhausted`)
+  // plus existing onReconnecting/onReconnected UX hooks (callers show notices).
+  // Optional: callers may also POST path:"omni" samples from those hooks; no schema
+  // change required for log-based counting.
   function scheduleReconnect() {
     if (closed || userClosed) return;
     if (reconnectAttempts >= maxReconnectAttempts) {
       closed = true;
       stopPlayback();
+      console.warn(JSON.stringify({
+        event: "omni_reconnect_exhausted",
+        maxAttempts: maxReconnectAttempts,
+      }));
       options.onError?.(new Error(
         `Realtime voice connection lost and could not reconnect after ${maxReconnectAttempts} attempts`
       ));
@@ -495,6 +505,11 @@ export async function connectBailianRealtimeWebsocket(
     }
     reconnectAttempts += 1;
     const attempt = reconnectAttempts;
+    console.info(JSON.stringify({
+      event: "omni_reconnecting",
+      attempt,
+      maxAttempts: maxReconnectAttempts,
+    }));
     options.onReconnecting?.(attempt, maxReconnectAttempts);
     const delay = baseReconnectDelayMs * attempt;
     reconnectTimer = setTimeout(() => {
@@ -574,6 +589,7 @@ export async function connectBailianRealtimeWebsocket(
             initialConnected = true;
             initialResolve(buildConnection());
           } else {
+            console.info(JSON.stringify({ event: "omni_reconnected" }));
             options.onReconnected?.();
           }
           break;

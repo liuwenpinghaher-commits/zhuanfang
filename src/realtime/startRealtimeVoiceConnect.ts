@@ -316,6 +316,15 @@ export async function startRealtimeVoiceConnect(deps: StartRealtimeVoiceConnectD
           onAudioLevel: (level) => deps.setAudioLevel(level),
           onError: (err) => {
             deps.setNotice(buildNotice("warning", "语音连接失败", err.message));
+          },
+          // Residual metrics (PR-2o): livekit interrupt publish outcome → runtime-metrics.
+          onBargeInMetric: (sample) => {
+            void productApiClient.reportVoiceLatency({
+              path: "livekit",
+              interrupted: sample.interrupted,
+              bargeInSuccess: sample.bargeInSuccess,
+              ...(interviewId ? { sessionId: interviewId } : {})
+            });
           }
         }
       });
@@ -457,6 +466,8 @@ export async function startRealtimeVoiceConnect(deps: StartRealtimeVoiceConnectD
           );
         }
       },
+      // Residual (PR-2o): reconnect UX is user-visible + countable via bailianWebsocket
+      // structured logs (omni_reconnecting / omni_reconnected / omni_reconnect_exhausted).
       onReconnecting: (attempt, maxAttempts) => {
         deps.setVoiceStatus("connecting");
         deps.setNotice(buildNotice("warning", "语音连接中断", `正在重连（第 ${attempt}/${maxAttempts} 次）…`));

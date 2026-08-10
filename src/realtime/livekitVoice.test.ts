@@ -199,4 +199,51 @@ describe("createLivekitVoiceSession — P1-7/P1-10: interrupt() behavior", () =>
     expect(() => session.interrupt()).not.toThrow();
     await new Promise((r) => setTimeout(r, 0));
   });
+
+  it("PR-2o residual: publish success reports bargeInSuccess=true via onBargeInMetric", async () => {
+    const onBargeInMetric = vi.fn();
+    const session = await createLivekitVoiceSession({
+      serverUrl: "ws://127.0.0.1:7880",
+      token: "test-token",
+      interviewSessionId: "test-session-id",
+      callbacks: { ...makeCallbacks(), onBargeInMetric },
+    });
+
+    session.interrupt();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(onBargeInMetric).toHaveBeenCalledWith({ interrupted: true, bargeInSuccess: true });
+  });
+
+  it("PR-2o residual: publish failure reports bargeInSuccess=false via onBargeInMetric", async () => {
+    mockPublishData.mockRejectedValueOnce(new Error("no agent"));
+    const onBargeInMetric = vi.fn();
+    const session = await createLivekitVoiceSession({
+      serverUrl: "ws://127.0.0.1:7880",
+      token: "test-token",
+      interviewSessionId: "test-session-id",
+      callbacks: { ...makeCallbacks(), onBargeInMetric },
+    });
+
+    session.interrupt();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(onBargeInMetric).toHaveBeenCalledWith({ interrupted: true, bargeInSuccess: false });
+  });
+
+  it("PR-2o residual: sync publish throw reports bargeInSuccess=false", async () => {
+    mockPublishData.mockImplementationOnce(() => {
+      throw new Error("not connected");
+    });
+    const onBargeInMetric = vi.fn();
+    const session = await createLivekitVoiceSession({
+      serverUrl: "ws://127.0.0.1:7880",
+      token: "test-token",
+      interviewSessionId: "test-session-id",
+      callbacks: { ...makeCallbacks(), onBargeInMetric },
+    });
+
+    expect(() => session.interrupt()).not.toThrow();
+    expect(onBargeInMetric).toHaveBeenCalledWith({ interrupted: true, bargeInSuccess: false });
+  });
 });
