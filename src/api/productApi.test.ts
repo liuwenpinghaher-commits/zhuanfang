@@ -147,7 +147,8 @@ describe("product api client", () => {
     expect(result.citations).toHaveLength(1);
     expect(result.citations[0]?.id).toBe("rc1");
     // 不走资产对话端点
-    expect(String(fetchImpl.mock.calls[0]?.[0])).not.toContain("/api/chat");
+    const firstCall = fetchImpl.mock.calls[0] as unknown as [string, RequestInit?];
+    expect(String(firstCall[0])).not.toContain("/api/chat");
   });
 
   it("N-06:stale-revision 409(带权威 current)→ conflicted:true,采纳服务端 current(既有行为不变)", async () => {
