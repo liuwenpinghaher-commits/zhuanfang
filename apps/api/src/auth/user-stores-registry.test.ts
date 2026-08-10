@@ -145,6 +145,99 @@ describe("UserStoresRegistry singleflight + pin + LRU", () => {
     expect(b.close).toHaveBeenCalledTimes(1);
     expect(registry.openKeys()).toEqual([]);
   });
+
+  it("does not double-open same dataDir while LRU close is in flight", async () => {
+    const events: string[] = [];
+    type Hold = { release: () => void; wait: Promise<void> };
+    const holds: Hold[] = [];
+    const openCounts = new Map<string, number>();
+    let openWhileCloseActive = 0;
+    let closeActive = 0;
+
+    const registry = createUserStoresRegistry({
+      baseDataDir: "/tmp/zf-double-open-close",
+      legacyUserKey: "admin",
+      maxOpen: 1,
+      openStores: async ({ userKey, dataDir }) => {
+        if (closeActive > 0) openWhileCloseActive += 1;
+        openCounts.set(userKey, (openCounts.get(userKey) ?? 0) + 1);
+        events.push(`open:${userKey}`);
+        const stores = mockStores(userKey);
+        let release!: () => void;
+        const wait = new Promise<void>((r) => {
+          release = r;
+        });
+        holds.push({ release, wait });
+        stores.close = vi.fn(async () => {
+          closeActive += 1;
+          events.push(`close-start:${userKey}`);
+          // Hold close open so concurrent acquire can race the window.
+          await wait;
+          events.push(`close-end:${userKey}`);
+          closeActive -= 1;
+        });
+        void dataDir;
+        return stores;
+      }
+    });
+
+    await registry.acquire("bob");
+    registry.release("bob");
+    expect(openCounts.get("bob")).toBe(1);
+
+    // Opening alice with maxOpen=1 must evict bob (async close held).
+    const aliceP = registry.acquire("alice");
+
+    // Wait until bob's close has started (ready deleted, closing registered).
+    await vi.waitFor(
+      () => {
+        expect(events).toContain("close-start:bob");
+      },
+      { timeout: 2000, interval: 5 }
+    );
+
+    expect(registry.isClosingDataDir(registry.dataDirFor("bob"))).toBe(true);
+    expect(registry.getIfReady("bob")).toBeUndefined();
+
+    // Concurrent re-open of bob while close still in flight — must wait, not openStores yet.
+    const bobP = registry.acquire("bob");
+    // Give the event loop a turn so a buggy double-open would have started.
+    await new Promise((r) => setTimeout(r, 40));
+    expect(openCounts.get("bob")).toBe(1);
+    expect(events.filter((e) => e === "open:bob")).toHaveLength(1);
+
+    // Settle bob close; alice may still be waiting on maybeEvict, then open alice, then bob re-open.
+    const bobHold = holds[0];
+    expect(bobHold).toBeTruthy();
+    bobHold!.release();
+
+    // alice open may register its own close hold if any — release remaining holds as they appear.
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      for (const h of holds) h.release();
+      const settled = await Promise.race([
+        Promise.all([aliceP, bobP]).then(() => true),
+        new Promise<false>((r) => setTimeout(() => r(false), 20))
+      ]);
+      if (settled) break;
+    }
+
+    await Promise.all([aliceP, bobP]);
+    registry.release("alice");
+    registry.release("bob");
+
+    // Second open of bob only after close-end:bob
+    const closeEndIdx = events.indexOf("close-end:bob");
+    const opensBob = events
+      .map((e, i) => (e === "open:bob" ? i : -1))
+      .filter((i) => i >= 0);
+    expect(opensBob.length).toBe(2);
+    expect(closeEndIdx).toBeGreaterThanOrEqual(0);
+    expect(opensBob[1]).toBeGreaterThan(closeEndIdx);
+    expect(openWhileCloseActive).toBe(0);
+
+    await registry.closeAll();
+  });
 });
 
 describe("KD16 production memory factory rejected", () => {

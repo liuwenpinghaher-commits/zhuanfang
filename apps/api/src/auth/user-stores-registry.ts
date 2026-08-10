@@ -135,6 +135,11 @@ export function assertDurableUserScopedOrThrow(
 export class UserStoresRegistry {
   private readonly ready = new Map<string, OpenedEntry>();
   private readonly opening = new Map<string, Promise<UserStoreHandle>>();
+  /**
+   * In-flight store.close() by dataDir. Prevents re-open of the same surrealkv path
+   * while LRU/shutdown close is still settling (KD20: never double-open same dataDir).
+   */
+  private readonly closingByDataDir = new Map<string, Promise<void>>();
   private readonly openStores: OpenUserStoresFn;
   private readonly baseDataDir: string;
   private readonly legacyUserKey: string;
@@ -178,14 +183,15 @@ export class UserStoresRegistry {
    */
   seed(userKey: string, stores: UserStoreHandle, opts?: { sticky?: boolean }): void {
     const key = sanitizeUserKey(userKey);
-    if (this.ready.has(key) || this.opening.has(key)) {
-      throw new Error(`UserStoresRegistry.seed: ${key} already open or opening`);
+    const dataDir = this.dataDirFor(key);
+    if (this.ready.has(key) || this.opening.has(key) || this.closingByDataDir.has(dataDir)) {
+      throw new Error(`UserStoresRegistry.seed: ${key} already open, opening, or closing`);
     }
     this.ready.set(key, {
       stores,
       pinCount: 0,
       lastUsed: Date.now(),
-      dataDir: this.dataDirFor(key),
+      dataDir,
       sticky: opts?.sticky ?? key === this.legacyUserKey
     });
   }
@@ -279,7 +285,7 @@ export class UserStoresRegistry {
   }
 
   /**
-   * Shutdown: wait for inflight opens, then close every ready store (ignore pin).
+   * Shutdown: wait for inflight opens + closes, then close every ready store (ignore pin).
    * Serial closes to avoid thundering herd on process exit.
    */
   async closeAll(): Promise<void> {
@@ -288,12 +294,17 @@ export class UserStoresRegistry {
     if (inflight.length > 0) {
       await Promise.allSettled(inflight);
     }
+    // Drain any LRU-evict closes already in flight before we clear ready.
+    const closing = [...this.closingByDataDir.values()];
+    if (closing.length > 0) {
+      await Promise.allSettled(closing);
+    }
     const entries = [...this.ready.entries()];
     this.ready.clear();
     this.opening.clear();
     for (const [key, entry] of entries) {
       try {
-        await entry.stores.close();
+        await this.runClose(entry.dataDir, () => entry.stores.close());
         this.log({ event: "user_store_close", userKey: key, reason: "closeAll" });
       } catch (error) {
         this.log({
@@ -310,9 +321,51 @@ export class UserStoresRegistry {
     return this.ready.get(sanitizeUserKey(userKey))?.pinCount ?? 0;
   }
 
+  /** Test helper: whether a dataDir currently has an in-flight close. */
+  isClosingDataDir(dataDir: string): boolean {
+    return this.closingByDataDir.has(dataDir);
+  }
+
+  /**
+   * Register + await a close for dataDir. Concurrent waiters share the same promise.
+   * Removed from the map only after close settles (success or failure).
+   */
+  private runClose(dataDir: string, closeFn: () => Promise<void>): Promise<void> {
+    const existing = this.closingByDataDir.get(dataDir);
+    if (existing) return existing;
+    const p = (async () => {
+      try {
+        await closeFn();
+      } finally {
+        this.closingByDataDir.delete(dataDir);
+      }
+    })();
+    this.closingByDataDir.set(dataDir, p);
+    return p;
+  }
+
+  private async waitForCloseIfAny(dataDir: string): Promise<void> {
+    const p = this.closingByDataDir.get(dataDir);
+    if (p) await p;
+  }
+
   private async openOne(key: string): Promise<UserStoreHandle> {
     await this.maybeEvict();
     const dataDir = this.dataDirFor(key);
+
+    // KD20: if this dataDir is mid-close (LRU re-open of same user), wait until settle.
+    // Loop: close may chain / a peer may re-open; re-check ready after each wait.
+    for (;;) {
+      await this.waitForCloseIfAny(dataDir);
+      const already = this.ready.get(key);
+      if (already) {
+        return already.stores;
+      }
+      // Still closing? (new close started after we woke) — wait again.
+      if (this.closingByDataDir.has(dataDir)) continue;
+      break;
+    }
+
     // Guard: never open a dataDir that is already open under another key
     for (const [otherKey, entry] of this.ready) {
       if (entry.dataDir === dataDir) {
@@ -321,10 +374,30 @@ export class UserStoresRegistry {
         );
       }
     }
+    // Final barrier: do not call openStores while close is registered.
+    if (this.closingByDataDir.has(dataDir)) {
+      await this.waitForCloseIfAny(dataDir);
+      const raced = this.ready.get(key);
+      if (raced) return raced.stores;
+    }
+
     const url = userStoreUrl(dataDir);
     this.log({ event: "user_store_open_start", userKey: key, dataDir, url });
     try {
       const stores = await this.openStores({ userKey: key, dataDir, url });
+      // If a close started for this dataDir while we were opening (should not happen
+      // under singleflight+closing map), refuse to publish a double-open handle.
+      if (this.closingByDataDir.has(dataDir)) {
+        try {
+          await stores.close();
+        } catch {
+          /* */
+        }
+        await this.waitForCloseIfAny(dataDir);
+        throw new Error(
+          `Refusing to publish store for dataDir=${dataDir}: close was in flight during open`
+        );
+      }
       this.ready.set(key, {
         stores,
         pinCount: 0,
@@ -352,6 +425,8 @@ export class UserStoresRegistry {
         if (entry.pinCount !== 0) continue;
         if (entry.sticky) continue;
         if (this.opening.has(key)) continue;
+        // Skip keys whose dataDir is already closing (should not still be in ready).
+        if (this.closingByDataDir.has(entry.dataDir)) continue;
         if (entry.lastUsed < victimLast) {
           victimLast = entry.lastUsed;
           victimKey = key;
@@ -370,21 +445,28 @@ export class UserStoresRegistry {
       }
       const entry = this.ready.get(victimKey);
       if (!entry) return;
+      const dataDir = entry.dataDir;
+      // Sync critical section (no await): drop from ready then register closing so
+      // concurrent acquire(victim) cannot pin a half-closed handle and must wait
+      // for close to settle before openStores (KD20).
       this.ready.delete(victimKey);
-      try {
-        await entry.stores.close();
-        this.log({
-          event: "user_store_evict",
-          userKey: victimKey,
-          dataDir: entry.dataDir
-        });
-      } catch (error) {
-        this.log({
-          event: "user_store_evict_close_failed",
-          userKey: victimKey,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
+      const closePromise = this.runClose(dataDir, async () => {
+        try {
+          await entry.stores.close();
+          this.log({
+            event: "user_store_evict",
+            userKey: victimKey,
+            dataDir
+          });
+        } catch (error) {
+          this.log({
+            event: "user_store_evict_close_failed",
+            userKey: victimKey,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      });
+      await closePromise;
     }
   }
 }
