@@ -1161,6 +1161,9 @@ describe("connectCascadedPipeline", () => {
     // respond/held TTS (suppressMic + clearMaxWait / !micSuppressed gate).
     // Text must NOT end on FINAL_PARTICLES (吗/呢/吧/啊/呀/嘛…) or it would
     // short-circuit to respond and never arm the timer (false-green).
+    // Single-sentence assistant reply so one resolveSpeak() drains TTS and
+    // actually enters releaseMicAfterGuard (ECHO_GUARD_MS) — default FIXED
+    // reply is two sentences → two speak() calls → one resolve stays mid-TTS.
     vi.useFakeTimers();
     asr.setExpressionState("organizing");
     let resolveSpeak!: () => void;
@@ -1175,9 +1178,15 @@ describe("connectCascadedPipeline", () => {
     const decisions: Array<{ action: string; reason: string }> = [];
     const maxWaitMs = 800;
     const minPauseMs = 200;
+    const singleSentenceSend = vi.fn(
+      async (_text: string, _signal: AbortSignal): Promise<{ assistantText: string }> => ({
+        assistantText: "我理解。",
+      })
+    );
     const pipeline = connectCascadedPipeline(
       makeOpts({
         tts: heldTts,
+        sendUserTurn: singleSentenceSend,
         decisionOpts: { maxWaitMs, minPauseMs, finalStabilityMs: 0 },
         onDecision: (d) => decisions.push({ action: d.action, reason: d.reason }),
       })
@@ -1188,12 +1197,12 @@ describe("connectCascadedPipeline", () => {
     asr.pushDelta("嗯", true);
     asr.pushSpeechStopped(300);
     await Promise.resolve();
-    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+    expect(singleSentenceSend).not.toHaveBeenCalled();
     expect(decisions.some((d) => d.action === "wait")).toBe(true);
     // Prove the safety-net is armed: almost maxWaitMs later, still no respond.
     vi.advanceTimersByTime(maxWaitMs - 50);
     await Promise.resolve();
-    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+    expect(singleSentenceSend).not.toHaveBeenCalled();
     expect(decisions.filter((d) => d.reason === "max-wait timer fired")).toHaveLength(0);
 
     // User finishes → concluding forces complete → respond → held TTS → mic suppressed.
@@ -1202,10 +1211,10 @@ describe("connectCascadedPipeline", () => {
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
-    expect(sendUserTurn.fn).toHaveBeenCalledTimes(1);
+    expect(singleSentenceSend).toHaveBeenCalledTimes(1);
     expect(heldSpeak).toHaveBeenCalledTimes(1);
 
-    const callsAfterRespond = sendUserTurn.fn.mock.calls.length;
+    const callsAfterRespond = singleSentenceSend.mock.calls.length;
     const maxWaitFiresBeforeTts = decisions.filter((d) => d.reason === "max-wait timer fired").length;
 
     // While TTS is still held (mic suppressed), advancing well past maxWait must not
@@ -1213,28 +1222,31 @@ describe("connectCascadedPipeline", () => {
     vi.advanceTimersByTime(5_000);
     await Promise.resolve();
     await Promise.resolve();
-    expect(sendUserTurn.fn.mock.calls.length).toBe(callsAfterRespond);
+    expect(singleSentenceSend.mock.calls.length).toBe(callsAfterRespond);
     expect(decisions.filter((d) => d.reason === "max-wait timer fired")).toHaveLength(maxWaitFiresBeforeTts);
 
     // Echo of AI voice during TTS: no barge-in, no new turn.
     asr.pushSpeechStarted();
-    asr.pushDelta("我理解。你继续说。", true);
+    asr.pushDelta("我理解。", true);
     asr.pushSpeechStopped(1_000);
     await Promise.resolve();
-    expect(sendUserTurn.fn.mock.calls.length).toBe(callsAfterRespond);
+    expect(singleSentenceSend.mock.calls.length).toBe(callsAfterRespond);
     expect(heldTts.stop).not.toHaveBeenCalled();
 
+    // Drain the only speak() → doRespond finishes → releaseMicAfterGuard (600ms).
     resolveSpeak();
     await Promise.resolve();
     await Promise.resolve();
+    expect(heldSpeak).toHaveBeenCalledTimes(1); // single-sentence: no second speak
 
-    // Post-TTS echo guard window (~600ms): still no maxWait-driven turn.
+    // True post-TTS echo guard window (mic still suppressed for ECHO_GUARD_MS):
+    // high-sim low-energy echo must not create a turn / max-wait respond.
     vi.advanceTimersByTime(300);
     asr.setUserEnergyEvidence(false);
-    asr.pushDelta("我理解。你继续说。", true);
+    asr.pushDelta("我理解。", true);
     asr.pushSpeechStopped(1_000);
     await Promise.resolve();
-    expect(sendUserTurn.fn.mock.calls.length).toBe(callsAfterRespond);
+    expect(singleSentenceSend.mock.calls.length).toBe(callsAfterRespond);
     expect(decisions.filter((d) => d.reason === "max-wait timer fired")).toHaveLength(maxWaitFiresBeforeTts);
 
     pipeline.close();
