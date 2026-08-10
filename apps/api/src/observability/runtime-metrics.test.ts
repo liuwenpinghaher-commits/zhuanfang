@@ -23,6 +23,7 @@ describe("runtime-metrics", () => {
     });
     const s = summarizeVoiceLatency();
     expect(s.sampleCount).toBe(6);
+    expect(s.ttfaCount).toBe(6);
     expect(s.ttfaP50Ms).toBeDefined();
     expect(s.ttfaP95Ms).toBeDefined();
     expect(s.interruptCount).toBe(1);
@@ -64,6 +65,35 @@ describe("runtime-metrics", () => {
     expect(s.falseTriggerByKind.auto_committed_echo_suspect).toBe(0);
     const snap = getRuntimeMetricsSnapshot();
     expect(snap.voice.falseTriggerCount).toBe(3);
+  });
+
+  it("event-only falseTrigger samples do not create TTFA percentiles", () => {
+    recordVoiceLatency({ path: "cascade", falseTriggerKind: "quarantine_echo_suspect" });
+    recordVoiceLatency({ path: "cascade", falseTriggerKind: "max_wait_suppressed" });
+    const s = summarizeVoiceLatency();
+    expect(s.falseTriggerCount).toBe(2);
+    expect(s.sampleCount).toBe(2);
+    expect(s.ttfaCount).toBe(0);
+    expect(s.ttfaP50Ms).toBeUndefined();
+    expect(s.ttfaP95Ms).toBeUndefined();
+    expect(s.segments.llmTtft.count).toBe(0);
+  });
+
+  it("falseTrigger flood does not shift existing TTFA percentiles (separate rings)", () => {
+    for (const ms of [100, 200, 300, 400, 500]) {
+      recordVoiceLatency({ path: "cascade", ttfaMs: ms, vadEndToSttMs: 40 });
+    }
+    const before = summarizeVoiceLatency();
+    expect(before.ttfaCount).toBe(5);
+    for (let i = 0; i < 80; i++) {
+      recordVoiceLatency({ path: "cascade", falseTriggerKind: "max_wait_suppressed" });
+    }
+    const after = summarizeVoiceLatency();
+    expect(after.ttfaCount).toBe(before.ttfaCount);
+    expect(after.ttfaP50Ms).toBe(before.ttfaP50Ms);
+    expect(after.ttfaP95Ms).toBe(before.ttfaP95Ms);
+    expect(after.falseTriggerCount).toBe(64); // event ring capped at MAX_VOICE_EVENTS
+    expect(after.sampleCount).toBe(5 + 64);
   });
 
   it("tracks recall empty vs hit", () => {

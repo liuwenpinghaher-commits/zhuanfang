@@ -1,6 +1,12 @@
 /**
  * In-process Stage-2/3 metrics: voice latency, barge-in, recall, grounding.
  * Single-user local tool — process memory is enough; no external TSDB required.
+ *
+ * Buffer layout (Phase-0):
+ * - `voiceSamples` — latency / barge-in / interrupt samples (TTFA window).
+ * - `voiceEventSamples` — false-trigger-only events (do NOT compete for TTFA slots).
+ * Prefer `ttfaCount` over `sampleCount` when reading latency window size:
+ * `sampleCount` = latency ring + event ring totals.
  */
 
 /** Phase-0 false-trigger countable kinds (echo / max-wait suppress). */
@@ -16,11 +22,7 @@ export const FALSE_TRIGGER_KINDS: readonly FalseTriggerKind[] = [
 ] as const;
 
 export function isFalseTriggerKind(value: unknown): value is FalseTriggerKind {
-  return (
-    value === "quarantine_echo_suspect" ||
-    value === "max_wait_suppressed" ||
-    value === "auto_committed_echo_suspect"
-  );
+  return (FALSE_TRIGGER_KINDS as readonly string[]).includes(value as string);
 }
 
 export interface VoiceLatencySample {
@@ -64,16 +66,51 @@ export interface GroundingMetricEvent {
 }
 
 const MAX_VOICE = 64;
+const MAX_VOICE_EVENTS = 64;
 const MAX_RECALL = 128;
 const MAX_GROUNDING = 128;
 
+/** Latency / barge-in samples — TTFA percentiles read only from this ring. */
 const voiceSamples: VoiceLatencySample[] = [];
+/** False-trigger-only events — separate ring so dense events cannot evict TTFA points. */
+const voiceEventSamples: VoiceLatencySample[] = [];
 const recallEvents: RecallMetricEvent[] = [];
 const groundingEvents: GroundingMetricEvent[] = [];
 
+function hasLatencyFields(sample: Omit<VoiceLatencySample, "at">): boolean {
+  return (
+    typeof sample.ttfaMs === "number" ||
+    typeof sample.vadEndToSttMs === "number" ||
+    typeof sample.sttToLlmMs === "number" ||
+    typeof sample.llmTtftMs === "number" ||
+    typeof sample.ttsTtfbMs === "number"
+  );
+}
+
+function isBargeOrInterruptSample(sample: Omit<VoiceLatencySample, "at">): boolean {
+  return (
+    sample.interrupted === true ||
+    sample.bargeInSuccess !== undefined ||
+    sample.interruptRecovery !== undefined
+  );
+}
+
 export function recordVoiceLatency(sample: Omit<VoiceLatencySample, "at"> & { at?: string }) {
-  voiceSamples.push({ at: sample.at ?? new Date().toISOString(), ...sample });
-  while (voiceSamples.length > MAX_VOICE) voiceSamples.shift();
+  const full: VoiceLatencySample = { at: sample.at ?? new Date().toISOString(), ...sample };
+  const latencyOrBarge = hasLatencyFields(full) || isBargeOrInterruptSample(full);
+
+  if (latencyOrBarge) {
+    voiceSamples.push(full);
+    while (voiceSamples.length > MAX_VOICE) voiceSamples.shift();
+  }
+
+  // Event-only false-triggers use a separate ring (do not occupy TTFA slots).
+  // If the same POST also carries latency/barge fields, it lives only in voiceSamples
+  // and falseTrigger is counted from there during summarize.
+  if (full.falseTriggerKind && isFalseTriggerKind(full.falseTriggerKind) && !latencyOrBarge) {
+    voiceEventSamples.push(full);
+    while (voiceEventSamples.length > MAX_VOICE_EVENTS) voiceEventSamples.shift();
+  }
 }
 
 export function recordRecallEvent(event: Omit<RecallMetricEvent, "at"> & { at?: string }) {
@@ -104,7 +141,20 @@ function segmentPercentiles(samples: VoiceLatencySample[], key: keyof VoiceLaten
   };
 }
 
-export function summarizeVoiceLatency(samples: VoiceLatencySample[] = voiceSamples) {
+function emptyFalseTriggerByKind(): Record<FalseTriggerKind, number> {
+  const counts = {} as Record<FalseTriggerKind, number>;
+  for (const kind of FALSE_TRIGGER_KINDS) counts[kind] = 0;
+  return counts;
+}
+
+/**
+ * @param samples latency/barge ring (defaults to process buffer)
+ * @param eventSamples false-trigger-only ring (defaults to process buffer)
+ */
+export function summarizeVoiceLatency(
+  samples: VoiceLatencySample[] = voiceSamples,
+  eventSamples: VoiceLatencySample[] = voiceEventSamples
+) {
   const ttfa = samples.map((s) => s.ttfaMs).filter((n): n is number => typeof n === "number" && Number.isFinite(n));
   const sorted = [...ttfa].sort((a, b) => a - b);
   const interruptSamples = samples.filter((s) => s.interrupted);
@@ -114,20 +164,18 @@ export function summarizeVoiceLatency(samples: VoiceLatencySample[] = voiceSampl
   const bargeInFailCount = samples.filter((s) => s.bargeInSuccess === false).length;
   const recoveryKnown = samples.filter((s) => s.interruptRecovery !== undefined);
   const interruptRecoveryCount = samples.filter((s) => s.interruptRecovery === true).length;
-  const falseTriggerByKind: Record<FalseTriggerKind, number> = {
-    quarantine_echo_suspect: 0,
-    max_wait_suppressed: 0,
-    auto_committed_echo_suspect: 0
-  };
+  const falseTriggerByKind = emptyFalseTriggerByKind();
   let falseTriggerCount = 0;
-  for (const s of samples) {
+  for (const s of [...samples, ...eventSamples]) {
     if (s.falseTriggerKind && isFalseTriggerKind(s.falseTriggerKind)) {
       falseTriggerByKind[s.falseTriggerKind] += 1;
       falseTriggerCount += 1;
     }
   }
   return {
-    sampleCount: samples.length,
+    /** Total records in latency ring + event ring (not equal to ttfaCount). */
+    sampleCount: samples.length + eventSamples.length,
+    /** Finite TTFA points only — use this for latency window size / SLO. */
     ttfaCount: sorted.length,
     ttfaP50Ms: percentile(sorted, 50),
     ttfaP95Ms: percentile(sorted, 95),
@@ -148,7 +196,10 @@ export function summarizeVoiceLatency(samples: VoiceLatencySample[] = voiceSampl
       llmTtft: segmentPercentiles(samples, "llmTtftMs"),
       ttsTtfb: segmentPercentiles(samples, "ttsTtfbMs")
     },
-    /** Local cascade budget reference (not a hard SLA). */
+    /**
+     * Local cascade budget reference (not a hard SLA).
+     * sampleCount includes event-only samples; latency percentiles use ttfaCount only.
+     */
     budgetHint: {
       ttfaP50TargetMs: 700,
       ttfaP95TargetMs: 1200,
@@ -200,6 +251,7 @@ export function getRuntimeMetricsSnapshot() {
 /** Test helper — clear buffers between cases. */
 export function resetRuntimeMetricsForTests() {
   voiceSamples.length = 0;
+  voiceEventSamples.length = 0;
   recallEvents.length = 0;
   groundingEvents.length = 0;
 }

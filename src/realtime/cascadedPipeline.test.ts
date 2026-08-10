@@ -664,9 +664,19 @@ describe("connectCascadedPipeline", () => {
         // intentionally never resolves
       });
     });
+    const latencySamples: Array<{ interrupted?: boolean; bargeInSuccess?: boolean }> = [];
 
     const pipeline = connectCascadedPipeline(
-      makeOpts({ sendUserTurn: slowSend })
+      makeOpts({
+        sendUserTurn: slowSend,
+        callbacks: {
+          onStateChange: (s) => stateChanges.push(s),
+          onUserTranscript: (text, isFinal) => userTranscripts.push({ text, isFinal }),
+          onAssistantText: (text) => assistantTexts.push(text),
+          onError: (e) => errors.push(e),
+          onLatency: (sample) => latencySamples.push(sample)
+        }
+      })
     );
     await pipeline.startListening();
 
@@ -687,6 +697,10 @@ describe("connectCascadedPipeline", () => {
     expect(tts.stopCalls).toBeGreaterThanOrEqual(1);
     // state should be "interrupted" or "listening"
     expect(stateChanges).toContain("interrupted");
+    // Phase-0: natural barge-in reports success metrics
+    expect(
+      latencySamples.some((s) => s.interrupted === true && s.bargeInSuccess === true)
+    ).toBe(true);
 
     pipeline.close();
   });
@@ -719,6 +733,65 @@ describe("connectCascadedPipeline", () => {
 
     pipeline.close();
     vi.useRealTimers();
+  });
+
+  it("max_wait_suppressed: timer firing during thinking emits falseTriggerKind", async () => {
+    vi.useFakeTimers();
+    const latencySamples: Array<{ falseTriggerKind?: string }> = [];
+    const hangSend = vi.fn(
+      (_text: string, _signal: AbortSignal) =>
+        new Promise<{ assistantText: string }>(() => {
+          /* stay in thinking until test ends */
+        })
+    );
+
+    const pipeline = connectCascadedPipeline(
+      makeOpts({
+        sendUserTurn: hangSend,
+        decisionOpts: {
+          maxWaitMs: 400,
+          minPauseMs: 100,
+          finalStabilityMs: 0,
+          echoWindowMs: 1_500,
+          echoSimilarityThreshold: 0.8
+        },
+        callbacks: {
+          onStateChange: (s) => stateChanges.push(s),
+          onUserTranscript: (text, isFinal) => userTranscripts.push({ text, isFinal }),
+          onAssistantText: (text) => assistantTexts.push(text),
+          onError: (e) => errors.push(e),
+          onLatency: (sample) => latencySamples.push(sample)
+        }
+      })
+    );
+
+    // Opening note enables later echo quarantine; drain echo-guard timer.
+    await pipeline.startListening("你能讲一个具体例子吗？");
+    await vi.advanceTimersByTimeAsync(601);
+
+    // Arm maxWait via organizing wait (timer must outlive the confirm path).
+    asr.setExpressionState("organizing");
+    asr.setUserEnergyEvidence(true);
+    asr.pushDelta("嗯那个", true);
+    asr.pushSpeechStopped(150);
+    await Promise.resolve();
+
+    // Echo quarantine does not clear maxWait; confirm → doRespond → thinking.
+    asr.setUserEnergyEvidence(false);
+    asr.pushDelta("你能讲一个具体例子吗？", true);
+    await Promise.resolve();
+    pipeline.confirmQuarantinedTranscript("我确认要说的话。");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(hangSend).toHaveBeenCalled();
+    expect(stateChanges).toContain("thinking");
+
+    // Fire armed maxWait while still thinking → suppressed countable event.
+    await vi.advanceTimersByTimeAsync(400);
+    await Promise.resolve();
+    expect(latencySamples.some((s) => s.falseTriggerKind === "max_wait_suppressed")).toBe(true);
+
+    pipeline.close();
   });
 
   it("空转写即使触发 max-wait 也绝不创建 phantom user turn", async () => {

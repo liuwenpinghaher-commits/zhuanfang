@@ -618,6 +618,8 @@ export async function registerSystemRoutes(
       metrics: {
         voice: {
           sampleCount: metrics.voice.sampleCount,
+          /** Finite TTFA points only — prefer over sampleCount for latency window size. */
+          ttfaCount: metrics.voice.ttfaCount,
           ttfaP50Ms: metrics.voice.ttfaP50Ms,
           ttfaP95Ms: metrics.voice.ttfaP95Ms,
           interruptCount: metrics.voice.interruptCount,

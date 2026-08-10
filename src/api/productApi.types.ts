@@ -675,7 +675,10 @@ export interface HealthResponse {
  */
 export interface RuntimeMetricsLite {
   voice?: {
+    /** Latency ring + event ring total (not equal to ttfaCount). */
     sampleCount?: number;
+    /** Finite TTFA points only — use for latency window / SLO; prefer over sampleCount. */
+    ttfaCount?: number;
     ttfaP50Ms?: number;
     ttfaP95Ms?: number;
     interruptCount?: number;
