@@ -37,6 +37,7 @@
 | **maxWait + micSuppressed** | `armMaxWait` 检查 `!micSuppressed && state∉{thinking,speaking}` |
 | **TTFA 骨架已接线** | pipeline `onLatency` → `useCascadeVoiceMetrics` → `POST .../runtime-metrics/voice` |
 | **cascade 断线韧性（主体）** | `asrConnectionLifecycle`、recovery review；既有 e2e |
+| **echo quarantine（逻辑）** | `turnAssembler` quarantine；pipeline `onTranscriptQuarantined`（计数 residual → pr-0b） |
 
 > **P1-10** LiveKit interrupt：代码侧已 best-effort（停本地播 + `publishData` + 重开麦），**不算「仍空操作」**；成功率未量化 → 记入 residual SLA，**不是**再写一遍 interrupt 函数。
 
@@ -64,14 +65,16 @@
 | P1-06 LiveKit reconnect | **fixed**（SDK） | `src/realtime/livekitVoice.ts`（Room reconnect 事件） | 文档标明依赖 SDK |
 | P1-07 ASR delta schema | **fixed** | `src/realtime/bailianWebsocket.ts`（`conversation.item.input_audio_transcription.delta` + `asr_invalid_delta`） | 回归锁 · PR-1 |
 | P1-08 TTS close | **fixed** | `src/realtime/cascadedTtsSink.ts` `close()`；`cascadedPipeline.test.ts` P1-08 | 回归锁 · PR-1 |
-| P1-09 timeouts | **fixed**（主体） / residual 抽查 | `apps/api/src/providers/bailian/_impl.ts`；`bailian-streaming-tts.ts`（P1-09 注释与测试） | 主体勿再 fix；遗漏 → PR-1 checklist |
+| P1-09 timeouts | **fixed**（主体） / residual 抽查 | `apps/api/src/providers/bailian/_impl.ts`；`apps/api/src/providers/bailian-streaming-tts.ts`（P1-09 注释与测试） | 主体勿再 fix；遗漏 → PR-1 checklist |
 | P1-10 LiveKit interrupt | **fixed** best-effort / **residual** SLA | `src/realtime/livekitVoice.ts` `interrupt()`；`agent/` 侧消费 | 勿再「空操作 fix」；SLA → pr-2o |
 | P1-11 interrupt scenes | **fixed** | `src/realtime/bailianWebsocket.ts` `cancelAndSaveContext`；`src/domain/signals.ts` `InterruptionScene` | 回归锁 · PR-1 |
 | P1-12 appendAssistantTranscriptFinal | **fixed** | `src/domain/session-transcript.ts`；`src/realtime/startRealtimeVoiceConnect.ts` | 回归锁 · PR-1；禁旁路覆盖 |
 | maxWait micSuppressed | **fixed** | `src/realtime/cascadedPipeline.ts` `armMaxWait`（`!micSuppressed`） | 回归 + 误触可观测 · PR-1 / pr-0b |
-| TTFA skeleton wired | **fixed**（骨架） | `cascadedPipeline.ts` `onLatency`；`src/hooks/useCascadeVoiceMetrics.ts`；`apps/api/src/observability/runtime-metrics.ts` | 勿从零重建；字段补洞 · pr-0b |
+| TTFA skeleton wired | **fixed**（骨架） | `src/realtime/cascadedPipeline.ts` `onLatency`；`src/hooks/useCascadeVoiceMetrics.ts`；`apps/api/src/observability/runtime-metrics.ts` | 勿从零重建；字段补洞 · pr-0b |
+| cascade disconnect resilience | **fixed**（主体） | `src/realtime/asrConnectionLifecycle.ts`；recovery review / `tests/e2e/voice-resilience.spec.ts` | 回归 · 已有 e2e；**禁止**当未修重写 |
+| echo quarantine logic | **fixed**（逻辑） / residual 见 falseTrigger | `src/realtime/turnAssembler.ts`；`cascadedPipeline` `onTranscriptQuarantined` | 勿重写 quarantine；计数 → **pr-0b** |
 | barge-in client field coverage | **residual** | `productApi` / `health` POST 与 cascade 自然 barge 上报缺口 | **pr-0b** |
-| falseTrigger counters | **residual** | quarantine 有、counter/API 无 | **pr-0b** |
+| falseTrigger counters | **residual** | quarantine 逻辑已 fixed；counter/API 无 | **pr-0b** |
 | session craft / turn-15 rubric | **residual** | `src/domain/craft-golden.ts` 仅策略级 | **pr-5**（turn-15 人工优先） |
 | LiveKit interrupt SLA | **residual** | 成功率未量化；默认 SLA=cascade | **pr-2o** 可选 |
 | half-cascade protocol | **residual**（unproven） | — | **pr-6s** spike 硬门禁 |
@@ -113,3 +116,4 @@
 | 日期 | 说明 |
 |------|------|
 | 2026-08-10 | 实现启动日记：HEAD fixed vs residual 分类落档（本文件） |
+| 2026-08-10 | §4 总表补 cascade disconnect resilience、echo quarantine logic 行 |
