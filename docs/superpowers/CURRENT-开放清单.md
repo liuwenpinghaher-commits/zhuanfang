@@ -144,6 +144,11 @@
 | 项 | 状态 | 说明 |
 |---|---|---|
 | ADR · D1–D4 DoD + 非目标 + cascade 默认质量承诺 | **closed** | 上链 ADR |
+| Craft golden 工厂（5 剧本 · shipped strategy/retrieval） | **closed** | `src/domain/craft-golden.ts` + `craft-golden.test.ts` |
+| Confirmed-only packing + conflict 不可静默 approve | **closed** | domain block + **route 409**（无假「已确认记忆」）· PATCH 改写重注记 · `force` 显式覆盖 · UI 拦截文案 · **client 采纳 409 body.state/revision**（防 stale PUT）· `memory-discipline` + `memory-candidates-conflict` + `productApi` 409-adopt 测 |
+| Longitudinal `contradicts` / supersede 生产写 + 策略/召回消费 | **closed** | `applyCognitiveRelations` / `resolveMemoryConflict` + guide/strategy · `longitudinal-edges.test.ts`（含 craft 场景 4） |
+| doNotSave 诚实结束 + 未确认 partial 不入权威稿 | **closed** | `session-end-presentation.ts` + hook 接线 · `turnAssembler` · `session-authority.test.ts` |
+| 真人 D4（4 周主观价值） | **open（推迟）** | 协议在使用方案；本清单不伪造分数 |
 
 ## 语音默认路径（CFC+ · 2026-08-10 · 书面冻结）
 
@@ -156,11 +161,6 @@
 | OQ1 · Audio3 model/音色冻结 | **open（暂不冻结）** | **阻塞 PR-8** 生产；PR-8s spike 可后续，绿也不自动解禁 |
 | PR-6s half-cascade spike | **SKIPPED（本轮无 live 证据）** | 无 key → 非 GO；**本轮不排 PR-6i / 无半级联生产** |
 | 默认 `realtimeMode` | **cascade** | seed / fallback；实验路径须显式配置 |
-| Craft golden 工厂（5 剧本 · shipped strategy/retrieval） | **closed** | `src/domain/craft-golden.ts` + `craft-golden.test.ts` |
-| Confirmed-only packing + conflict 不可静默 approve | **closed** | domain block + **route 409**（无假「已确认记忆」）· PATCH 改写重注记 · `force` 显式覆盖 · UI 拦截文案 · **client 采纳 409 body.state/revision**（防 stale PUT）· `memory-discipline` + `memory-candidates-conflict` + `productApi` 409-adopt 测 |
-| Longitudinal `contradicts` / supersede 生产写 + 策略/召回消费 | **closed** | `applyCognitiveRelations` / `resolveMemoryConflict` + guide/strategy · `longitudinal-edges.test.ts`（含 craft 场景 4） |
-| doNotSave 诚实结束 + 未确认 partial 不入权威稿 | **closed** | `session-end-presentation.ts` + hook 接线 · `turnAssembler` · `session-authority.test.ts` |
-| 真人 D4（4 周主观价值） | **open（推迟）** | 协议在使用方案；本清单不伪造分数 |
 
 轻量跑（无完整 vite 前端插件依赖时）：
 
