@@ -2,12 +2,13 @@
  * InterviewerBrain — single entry for turn-generation orchestration.
  *
  * Pure extraction of the former /turns and /turns/stream handler bodies.
- * Zero user-visible behavior change: routes keep write serialization
- * (runExclusive), then delegate here. Brain calls the existing
- * createAssistantTurn / createAssistantTurnStream paths; it does NOT
+ * Zero user-visible behavior change when VOICE_CRAFT_OUTPUT_GUARD is off (default).
+ * Routes keep write serialization (runExclusive), then delegate here. Brain calls
+ * the existing createAssistantTurn / createAssistantTurnStream paths; it does NOT
  * invent a parallel brain, half-cascade, or Audio3 path.
  *
  * No VOICE_BRAIN_UNIFIED flag: pure refactor; revert via git if needed.
+ * Optional craft output guard: see src/domain/craft-output-guard.ts.
  */
 import type { FastifyReply, FastifyRequest } from "fastify";
 import {
@@ -16,6 +17,11 @@ import {
   decideInterviewStrategy,
   receiveUserTurnWithAssistant
 } from "../../../../src/domain/engine";
+import {
+  applyCraftOutputGuard,
+  buildCraftMetaFromGuardResult,
+  type CraftOutputGuardResult
+} from "../../../../src/domain/craft-output-guard";
 import type {
   InteractionPreSignals,
   InterviewSession
@@ -45,6 +51,54 @@ import {
   upsertSession,
   withInterviewTurnDeadline
 } from "../routes/interview-session-helpers";
+
+/** Apply optional craft output guard to raw assistant text; log when triggered. */
+function guardAssistantText(
+  content: string,
+  sessionId: string,
+  path: "json" | "stream"
+): { text: string; guard: CraftOutputGuardResult } {
+  const guard = applyCraftOutputGuard(content);
+  if (guard.outputGuardTriggered) {
+    const meta = buildCraftMetaFromGuardResult(guard);
+    console.info(
+      JSON.stringify({
+        event: "craft_output_guard",
+        sessionId,
+        path,
+        action: meta.action,
+        reasons: meta.reasons,
+        singleQuestionHeuristicOk: meta.singleQuestionHeuristicOk,
+        originalLen: guard.originalText.length,
+        resultLen: guard.text.length
+      })
+    );
+  }
+  return { text: guard.text, guard };
+}
+
+/** Rewrite latest assistant turn content when guard truncated (json path after receiveTurn). */
+function applyGuardToLatestAssistantTurn(
+  session: InterviewSession,
+  sessionId: string,
+  path: "json" | "stream"
+): InterviewSession {
+  const turns = session.turns;
+  let lastAssistantIndex = -1;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    if (turns[i].role === "assistant") {
+      lastAssistantIndex = i;
+      break;
+    }
+  }
+  if (lastAssistantIndex === -1) return session;
+  const turn = turns[lastAssistantIndex];
+  const { text, guard } = guardAssistantText(turn.content, sessionId, path);
+  if (!guard.outputGuardTriggered || text === turn.content) return session;
+  const nextTurns = turns.slice();
+  nextTurns[lastAssistantIndex] = { ...turn, content: text };
+  return { ...session, turns: nextTurns };
+}
 
 /** Path tag for future multi-channel callers; HTTP handlers set this implicitly. */
 export type BrainPath = "cascade" | "omni" | "livekit" | "text";
@@ -229,11 +283,14 @@ export async function handleTurnsRequest(
     return reply.code(499).send({ error: "客户端已取消本轮，未写入轮次。" });
   }
   const { nextSession: rawNextSession, preSignals } = updatedResult;
+  // Optional craft output guard (VOICE_CRAFT_OUTPUT_GUARD, default off): truncate multi-?
+  // assistant turns or log retry-worthy violations before asides strip / persist.
+  const guardedSession = applyGuardToLatestAssistantTurn(rawNextSession, freshSession.id, "json");
   // The character model conveys manner via （…）stage-direction asides (e.g. 「（身体微倾，
   // 表现出好奇）」). Strip them out of the stored question so the transcript / finalize / memory
   // read as clean words like a real interview; distill the manner into `prosody` so the voice
   // path can still deliver it expressively. Only the just-generated assistant turn is touched.
-  const nextSession = stripAsidesFromLatestAssistantTurn(rawNextSession);
+  const nextSession = stripAsidesFromLatestAssistantTurn(guardedSession);
   const baseNextState = upsertSession(state, nextSession);
 
   // M3 recency write-back: the records actually recalled into THIS turn's guide get
@@ -361,8 +418,15 @@ export async function handleTurnsStreamRequest(
       return;
     }
 
+    // Stream path: guard applies to final persisted text (deltas may already have gone out).
+    const { text: guardedContent } = guardAssistantText(
+      assistantResult.content,
+      session.id,
+      "stream"
+    );
+
     const built = receiveUserTurnWithAssistant(session, content, {
-      content: assistantResult.content,
+      content: guardedContent,
       intent: assistantResult.intent,
       strategyDecision,
       ...(strategyDecision.referencedMemory
@@ -383,7 +447,7 @@ export async function handleTurnsStreamRequest(
     writeEvent("final", {
       session: nextSession,
       state: persisted,
-      assistantText: lastAssistant?.content ?? assistantResult.content,
+      assistantText: lastAssistant?.content ?? guardedContent,
       prosody: lastAssistant?.prosody,
       ...(assistantResult.preSignals ? { preSignals: assistantResult.preSignals } : {})
     });

@@ -2,6 +2,9 @@
 
 用于人工/半自动抽检。每项 0–2 分；一场抽检总分 / 10。
 
+**操作门禁（turn-15 / craft compliance 人工流程）**：见仓库根下 [`docs/interview-rubric.md`](../../interview-rubric.md)。  
+代码钩子（维度常量 / 空 turn-15 模板，不自动打分）：`src/domain/craft-output-guard.ts`。
+
 | 维度 | 0 | 1 | 2 |
 | --- | --- | --- | --- |
 | 具体时刻 | 停留抽象评价 | 偶发要例子 | 稳定落到可核验时刻 |
