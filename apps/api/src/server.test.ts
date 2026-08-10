@@ -1681,7 +1681,22 @@ describe("createGracefulShutdown (N-10 优雅关闭序列)", () => {
     });
     await shutdown("SIGTERM");
     expect(exited).toBe(true);
-    expect(errorSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes("graceful_shutdown_flush_failed"))).toBe(true);
+    // PR-O2: flush 超时用专用 event graceful_shutdown_flush_timeout(仍含「可能丢失未落库写」detail)。
+    expect(
+      errorSpy.mock.calls.some(
+        (c: unknown[]) =>
+          String(c[0]).includes("graceful_shutdown_flush_timeout") ||
+          String(c[0]).includes("graceful_shutdown_flush_failed")
+      )
+    ).toBe(true);
+  });
+
+  it("PRODUCT_SHUTDOWN_FLUSH_MS 解析:默认 10s、上限 30s、非法回落默认", async () => {
+    const { resolveShutdownFlushMs, DEFAULT_SHUTDOWN_FLUSH_MS } = await import("./server/shutdown");
+    expect(resolveShutdownFlushMs({})).toBe(DEFAULT_SHUTDOWN_FLUSH_MS);
+    expect(resolveShutdownFlushMs({ PRODUCT_SHUTDOWN_FLUSH_MS: "15000" })).toBe(15_000);
+    expect(resolveShutdownFlushMs({ PRODUCT_SHUTDOWN_FLUSH_MS: "999999" })).toBe(30_000);
+    expect(resolveShutdownFlushMs({ PRODUCT_SHUTDOWN_FLUSH_MS: "nope" })).toBe(DEFAULT_SHUTDOWN_FLUSH_MS);
   });
 
   it("closeServer 抛错不阻断后续步骤(仍 flush + exit)", async () => {

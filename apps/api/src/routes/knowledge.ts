@@ -8,6 +8,7 @@ import type { BailianEmbeddingClient } from "../providers/bailian";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import { buildKnowledgeChunks, diffIndexableSources } from "../../../../src/domain/knowledge";
 import type { WriteGate } from "../server";
+import { recordReindexEvent } from "../observability/runtime-metrics";
 
 // Bailian text-embedding 单次请求最多 10 条 input，超过会 400。批量大小必须 ≤ 10。
 const EMBED_BATCH = 10;
@@ -73,15 +74,20 @@ export async function embedChunks(
  * material/transcript 不在此处（由 import / /end 单独补点）。
  *
  * fire-and-forget 语义：调用方 void 它、不 await；本函数自身整体 try/catch 吞所有异常，
- * 绝不把错误抛回写路径——重索引失败只记一条 warn，不影响已落库的状态写入。
+ * 绝不把错误抛回写路径——重索引失败只记一条 warn + metrics，不影响已落库的状态写入。
+ *
+ * PR-O3: 结构化 success/fail 日志 + runtime-metrics reindex 计数/环形缓冲（写路径默认仍不 await）。
  */
 export async function reindexOnStateChange(
   prev: ProductState,
   next: ProductState,
   knowledgeRepo: KnowledgeIndexRepository,
   embeddingClient: BailianEmbeddingClient | undefined,
-  budget: LlmBudget
+  budget: LlmBudget,
+  opts?: { userKey?: string }
 ): Promise<void> {
+  const started = Date.now();
+  const userKey = opts?.userKey;
   try {
     const diff = diffIndexableSources(prev, next);
 
@@ -95,9 +101,11 @@ export async function reindexOnStateChange(
     // 经包装的 replaceState → 本函数收到 prev/next，比对 importSources 按 id，
     // 对 prev 有、next 无的来源逐个删其 material 块，避免删素材后遗留孤儿块仍被 chat 引用。
     const nextSourceIds = new Set(next.importSources.map((s) => s.id));
+    let materialRemoved = 0;
     for (const source of prev.importSources) {
       if (!nextSourceIds.has(source.id)) {
         await knowledgeRepo.deleteBySource("material", source.id);
+        materialRemoved += 1;
       }
     }
 
@@ -116,7 +124,43 @@ export async function reindexOnStateChange(
       }
     }
 
-    if (diff.changed.length === 0) return;
+    const baseCounts = {
+      removedSources: diff.removed.length,
+      changedSources: diff.changed.length,
+      materialRemoved,
+      transcriptSessionsRemoved: removedSessionIds.length,
+      userKey
+    };
+
+    if (diff.changed.length === 0) {
+      // 仅删除/无变更：仍记一次可观测事件（noop 或 success with zero embeds）。
+      const onlyDeletes =
+        diff.removed.length > 0 || materialRemoved > 0 || removedSessionIds.length > 0;
+      const durationMs = Date.now() - started;
+      if (onlyDeletes) {
+        console.info(
+          JSON.stringify({
+            event: "reindex_ok",
+            outcome: "success",
+            phase: "delete_only",
+            durationMs,
+            ...baseCounts,
+            chunkCount: 0,
+            embeddedCount: 0
+          })
+        );
+        recordReindexEvent({
+          outcome: "success",
+          ...baseCounts,
+          chunkCount: 0,
+          embeddedCount: 0,
+          durationMs
+        });
+      } else {
+        recordReindexEvent({ outcome: "noop", ...baseCounts, durationMs });
+      }
+      return;
+    }
 
     // 对 changed 的来源：从 next 全量切块，再过滤出这些来源的块。
     // 增量不含 transcript（空 map），material 在 next.importSources 里但不会出现在 changedKeys 中。
@@ -127,7 +171,21 @@ export async function reindexOnStateChange(
     const epochAtEmbed = await knowledgeRepo.epoch();
     const embedded = await embedChunks(relevant, embeddingClient, budget);
     if (await knowledgeRepo.epoch() !== epochAtEmbed) {
-      console.warn(JSON.stringify({ event: "reindex_discarded_stale_epoch" }));
+      const durationMs = Date.now() - started;
+      console.warn(
+        JSON.stringify({
+          event: "reindex_discarded_stale_epoch",
+          durationMs,
+          ...baseCounts,
+          chunkCount: relevant.length
+        })
+      );
+      recordReindexEvent({
+        outcome: "stale_discarded",
+        ...baseCounts,
+        chunkCount: relevant.length,
+        durationMs
+      });
       return;
     }
 
@@ -146,19 +204,67 @@ export async function reindexOnStateChange(
       // N-04:回写循环内每源复查代际——嵌入后到逐源 replaceSource 期间若 reset/purge 提交清空索引
       // (bumpEpoch),剩余源不得再写回(否则复活已清私密块)。单次前置检查(epochAtEmbed)挡不住中途清空。
       if (await knowledgeRepo.epoch() !== epochAtEmbed) {
-        console.warn(JSON.stringify({ event: "reindex_discarded_stale_epoch", phase: "midloop" }));
+        const durationMs = Date.now() - started;
+        console.warn(
+          JSON.stringify({
+            event: "reindex_discarded_stale_epoch",
+            phase: "midloop",
+            durationMs,
+            ...baseCounts,
+            chunkCount: relevant.length
+          })
+        );
+        recordReindexEvent({
+          outcome: "stale_discarded",
+          ...baseCounts,
+          chunkCount: relevant.length,
+          durationMs
+        });
         return;
       }
       const k = `${ref.sourceType}::${ref.sourceId}`;
       await knowledgeRepo.replaceSource(ref.sourceType, ref.sourceId, bySource.get(k) ?? []);
     }
+
+    const embeddedCount = embedded.filter(
+      (c) => Array.isArray(c.embedding) && c.embedding.length > 0
+    ).length;
+    const durationMs = Date.now() - started;
+    console.info(
+      JSON.stringify({
+        event: "reindex_ok",
+        outcome: "success",
+        durationMs,
+        ...baseCounts,
+        chunkCount: embedded.length,
+        embeddedCount
+      })
+    );
+    recordReindexEvent({
+      outcome: "success",
+      ...baseCounts,
+      chunkCount: embedded.length,
+      embeddedCount,
+      durationMs
+    });
   } catch (err) {
+    const durationMs = Date.now() - started;
+    const error = err instanceof Error ? err.message : String(err);
     console.warn(
       JSON.stringify({
         event: "reindex_failed",
-        error: err instanceof Error ? err.message : String(err)
+        outcome: "failed",
+        durationMs,
+        error,
+        userKey
       })
     );
+    recordReindexEvent({
+      outcome: "failed",
+      durationMs,
+      error,
+      userKey
+    });
   }
 }
 

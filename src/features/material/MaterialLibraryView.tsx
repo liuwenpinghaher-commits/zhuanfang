@@ -5,10 +5,12 @@ import {
   Play,
   RefreshCw,
   Search,
+  SendHorizontal,
   Trash2,
   Upload
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useState, type ChangeEvent, type KeyboardEvent } from "react";
+import type { RagCitation, RagQueryResponse } from "../../api/productApi.types";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { ImportSource, InterviewMode, ProductState } from "../../domain/types";
 
@@ -26,6 +28,11 @@ interface MaterialLibraryViewProps {
   onImport: (title: string, content: string) => Promise<MaterialImportResult>;
   onRebuildIndex: () => Promise<{ chunkCount: number }>;
   onDeleteSource: (sourceId: string) => void;
+  /**
+   * 就导入资料提问：走 POST /api/rag/query（仅 ragChunks），与资产对话 /api/chat 分离。
+   * 未接线时不展示提问面板。
+   */
+  onAskMaterials?: (question: string) => Promise<RagQueryResponse>;
   onReviewMemory?: (sourceId?: string) => void;
   onStartInterview?: (mode?: InterviewMode, topicHint?: string, relatedThemeIds?: string[]) => void;
   onOpenAssetChat?: (sourceTitle?: string) => void;
@@ -61,6 +68,7 @@ export function MaterialLibraryView({
   onImport,
   onRebuildIndex,
   onDeleteSource,
+  onAskMaterials,
   onReviewMemory,
   onStartInterview,
   onOpenAssetChat,
@@ -79,6 +87,11 @@ export function MaterialLibraryView({
   const [query, setQuery] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [deleteHint, setDeleteHint] = useState<string | null>(null);
+  const [askQuestion, setAskQuestion] = useState("");
+  const [asking, setAsking] = useState(false);
+  const [askError, setAskError] = useState<string | null>(null);
+  const [askAnswer, setAskAnswer] = useState<string | null>(null);
+  const [askCitations, setAskCitations] = useState<RagCitation[]>([]);
 
   useEffect(() => {
     if (!focusSourceId) return;
@@ -173,12 +186,40 @@ export function MaterialLibraryView({
     if (lastImport?.sourceId === sourceId) setLastImport(null);
   }
 
+  async function handleAsk() {
+    if (!onAskMaterials || asking) return;
+    const question = askQuestion.trim();
+    if (!question) return;
+    setAsking(true);
+    setAskError(null);
+    setAskAnswer(null);
+    setAskCitations([]);
+    try {
+      const result = await onAskMaterials(question);
+      setAskAnswer(result.answer ?? "");
+      setAskCitations(Array.isArray(result.citations) ? result.citations : []);
+    } catch (err) {
+      setAskError(formatRagAskError(err));
+    } finally {
+      setAsking(false);
+    }
+  }
+
+  function handleAskKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      void handleAsk();
+    }
+  }
+
+  const canAsk = Boolean(onAskMaterials) && askQuestion.trim().length > 0 && !asking;
+
   return (
     <section className="view-stack">
       <HeaderBlock
         eyebrow="认知资产 · 素材库"
         title="导入资料与知识索引"
-        subtitle="原料车间：导入文本 → 切块索引 → 抽取待审记忆。审核在「记忆」，召回在专访与资产对话。"
+        subtitle="原料车间：导入文本 → 切块索引 → 就资料提问 → 抽取待审记忆。审核在「记忆」，全局助手走资产对话。"
         action={
           <div className="header-actions material-header-actions">
             <button
@@ -307,6 +348,77 @@ export function MaterialLibraryView({
           )}
         </div>
       </section>
+
+      {onAskMaterials && (
+        <section className="panel material-ask-panel" aria-label="就资料提问">
+          <div className="panel-title">
+            <MessageSquare size={18} aria-hidden />
+            <h2>就资料提问</h2>
+          </div>
+          <p className="field-help">
+            仅检索已导入的参考文献块（ragChunks），不混入记忆 / 笔记 / 主题。需要跨源综合请用「资产对话」。
+            {materialChunks.length === 0 ? " · 当前尚无访谈上下文块，可先导入资料。" : ""}
+          </p>
+          <div className="field-grid">
+            <label className="field-stack" htmlFor="material-ask-question">
+              <span className="field-label">问题</span>
+              <textarea
+                id="material-ask-question"
+                value={askQuestion}
+                rows={3}
+                maxLength={2000}
+                placeholder="例如：这份资料里关于授权的关键结论是什么？"
+                disabled={asking}
+                onChange={(e) => setAskQuestion(e.target.value)}
+                onKeyDown={handleAskKeyDown}
+              />
+            </label>
+            <div className="form-actions">
+              <button
+                className="primary-action"
+                type="button"
+                onClick={() => void handleAsk()}
+                disabled={!canAsk}
+                aria-busy={asking}
+              >
+                <SendHorizontal size={16} aria-hidden />
+                {asking ? "检索中…" : "提问"}
+              </button>
+            </div>
+            {askError && (
+              <p className="field-status is-danger" role="alert">
+                {askError}
+              </p>
+            )}
+            {askAnswer != null && !askError && (
+              <div className="material-ask-result" role="status">
+                <strong>回答</strong>
+                <p className="material-ask-answer">{askAnswer}</p>
+                {askCitations.length > 0 && (
+                  <ul className="clean-list material-ask-citations" aria-label="引用">
+                    {askCitations.map((c) => (
+                      <li key={c.id}>
+                        <span className="material-ask-cite-index">
+                          [{typeof c.citationIndex === "number" ? c.citationIndex : "?"}]
+                        </span>{" "}
+                        {c.title}
+                        {c.sourceUrl ? (
+                          <>
+                            {" · "}
+                            <a href={c.sourceUrl} target="_blank" rel="noreferrer">
+                              来源
+                            </a>
+                          </>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </div>
+        </section>
+      )}
 
       <section className="panel">
         <div className="panel-title row-between">
@@ -447,4 +559,33 @@ function readAsText(file: File): Promise<string> {
     reader.onerror = () => reject(reader.error);
     reader.readAsText(file);
   });
+}
+
+/** 资料问答错误 → 可行动中文文案（对齐 AssetChatView.formatChatSendError 口径）。 */
+export function formatRagAskError(err: unknown): string {
+  if (err && typeof err === "object" && "status" in err) {
+    const status = Number((err as { status: number }).status);
+    const body = (err as { body?: unknown }).body;
+    const apiMsg =
+      body &&
+      typeof body === "object" &&
+      body !== null &&
+      "error" in body &&
+      typeof (body as { error: unknown }).error === "string"
+        ? String((body as { error: string }).error).trim()
+        : "";
+    if (apiMsg) return apiMsg;
+    if (status === 429) return "本时段 LLM 预算已用尽，资料问答暂不可用，请稍后重试。";
+    if (status === 503) return "资料问答 LLM 未配置或不可用（常见于缺少 DASHSCOPE_API_KEY）。";
+    if (status === 502) return "资料召回或生成失败，请重试。";
+    if (status === 422) return "问题不能为空。";
+    if (status >= 500) return `服务端资料问答失败（${status}）。`;
+  }
+  if (err instanceof Error && err.message.trim()) {
+    if (/failed to fetch|network|load failed|econnrefused/i.test(err.message)) {
+      return "后端不可达，资料问答需要在线。";
+    }
+    return err.message.trim();
+  }
+  return "提问失败：资料问答需要后端在线。";
 }

@@ -65,6 +65,16 @@ server.get("/api/health", async () => {
             empty: metrics.recall.empty,
             low_score: metrics.recall.low_score,
             error: metrics.recall.error
+          },
+          // PR-O3: reindex fire-and-forget 可见性（进程内计数；重启清空）。
+          reindex: {
+            successTotal: metrics.reindex.successTotal,
+            failedTotal: metrics.reindex.failedTotal,
+            staleDiscardedTotal: metrics.reindex.staleDiscardedTotal,
+            eventCount: metrics.reindex.eventCount,
+            lastAt: metrics.reindex.lastAt,
+            lastOutcome: metrics.reindex.lastOutcome,
+            lastDurationMs: metrics.reindex.lastDurationMs
           }
         }
       };

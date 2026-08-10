@@ -2042,6 +2042,7 @@ export default function App() {
             state={productState}
             onImport={importMemoryDocument}
             onRebuildIndex={() => productApiClient.rebuildKnowledgeIndex()}
+            onAskMaterials={(question) => productApiClient.queryRag(question)}
             onDeleteSource={(id) => {
               // 素材删除会连带清其知识索引块(经包装的 PUT autosave 触发 reindex),不可撤销 → 二次确认。
               if (typeof window !== "undefined" && !window.confirm("确定删除这份素材吗？它在知识库/资产对话中的索引也会一并移除，无法撤销。")) {
