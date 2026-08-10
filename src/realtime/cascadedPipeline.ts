@@ -169,13 +169,29 @@ export interface ConnectCascadedPipelineOptions {
   callbacks: CascadedPipelineCallbacks;
   preSignals?: InteractionPreSignals | null;
   decisionOpts?: {
+    /**
+     * Silence before cascade may commit a turn (ms). Default 600.
+     * Lower → snappier endpoint / higher false end-of-turn risk; raise if users are cut off mid-thought.
+     */
     minPauseMs?: number;
+    /** Hard max wait before forced respond (ms). Default 8000. */
     maxWaitMs?: number;
+    /**
+     * Minimum user speech sustain while agent is speaking before barge-in (ms). Default 280.
+     * Lower → easier interrupt (more false barge risk); higher → harder to cut in.
+     * Wired from `systemConfig.voice.minBargeInMs` when set.
+     */
     minBargeInMs?: number;
     finalStabilityMs?: number;
     echoWindowMs?: number;
     echoSimilarityThreshold?: number;
-    /** Stage-3: silence | semantic | pvad-experimental */
+    /**
+     * Endpointing policy (Stage-3). Default `semantic`.
+     * - silence: pause-only
+     * - semantic: completion phrases + minPause (default path)
+     * - pvad-experimental: Silero-ish browser VAD bias when available; soft-falls back
+     * See `systemConfig.voice.endpointingMode`. Does not change ASR model.
+     */
     endpointingMode?: EndpointingMode;
   };
   /** Layer-2 LLM endpoint: returns done=true when the transcript reads complete. */
@@ -542,7 +558,11 @@ export function connectCascadedPipeline(
       if (ttsPlaybackInterrupted) return;
       const source = stripSpokenAsides(pendingText);
       // Match splitSentences logic for complete clauses ending with 。！？\n
-      // Hard stops: 。！？\n ; soft clause stops: ，、；;, when length>=8 (token-level-ish TTFA)
+      // Hard stops: 。！？\n
+      // Soft clause stops: ，、；;, — first segment uses a lower char floor so Cosy
+      // can start on the opening clause sooner (TTFA); later segments keep ≥8 to
+      // avoid choppy mid-sentence splits.
+      const minSoftChars = firstSpeakStarted ? 8 : 4;
       const parts = source.split(/(?<=[。！？\n，、；;,])/u);
       let keep = "";
       const ready: string[] = [];
@@ -550,7 +570,9 @@ export function connectCascadedPipeline(
         const p = parts[i]?.trim() ?? "";
         if (!p) continue;
         const hard = /[。！？]$/u.test(p) || p.endsWith("\n");
-        const soft = /[，、；;,]$/u.test(p) && p.replace(/[，、；;,。！？\s]/gu, "").length >= 8;
+        const soft =
+          /[，、；;,]$/u.test(p) &&
+          p.replace(/[，、；;,。！？\s]/gu, "").length >= minSoftChars;
         if (hard || soft || (forceAll && i === parts.length - 1 && p)) {
           ready.push(p.replace(/[\n]$/u, "").trim());
         } else {

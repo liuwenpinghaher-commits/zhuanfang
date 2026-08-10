@@ -85,8 +85,12 @@ export interface StartRealtimeVoiceConnectDeps {
   voiceRecallRefreshSucceeded: () => void;
   voiceRecallRefreshFailed: (kind: "pre_signals" | "voice_instructions", err: unknown) => void;
   buildNotice: (severity: "success" | "warning" | "danger" | "info", title: string, detail: string) => UiNotice;
-  /** Stage-3: optional experimental endpointing (documented; cascade uses existing minBargeIn). */
+  /**
+   * Cascade endpointing policy (default L1). See `systemConfig.voice.endpointingMode`
+   * and docs/cascade-l1-ttfa-baseline.md. Does not change ASR model.
+   */
   endpointingMode?: "silence" | "semantic" | "pvad-experimental";
+  /** Barge-in sustain ms while agent speaks; pipeline default 280 if omitted. */
   minBargeInMs?: number;
 }
 

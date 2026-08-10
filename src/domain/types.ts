@@ -41,11 +41,18 @@ export interface SystemConfig {
     podcastVoice: string;
     podcastFormat: "solo" | "host-guest";
     realtimeMode: "bailian" | "livekit" | "cascade";
-    /** Stage-3: cascade barge-in sustain ms (default 280 in pipeline). */
+    /**
+     * Cascade barge-in: minimum user speech sustain while agent is speaking (ms).
+     * Pipeline default 280. Tune down (~180) if barge-in feels sticky; tune up (~400)
+     * if noise / coughs false-trigger interrupts. Does not change ASR model.
+     */
     minBargeInMs?: number;
     /**
-     * Stage-3 endpointing policy. `pvad-experimental` is honest capability only —
-     * runtime still uses semantic completion phrases + minBargeIn (no pVAD model wired).
+     * Cascade endpointing policy (default path L1 tuning knobs; not Omni/Audio3).
+     * - `silence` — pause-only end-of-turn
+     * - `semantic` — default; completion phrases + minPause / maxWait
+     * - `pvad-experimental` — browser neural VAD bias when available; soft-falls back
+     *   to semantic/energy heuristics (honest capability; no separate pVAD model binary)
      */
     endpointingMode?: "silence" | "semantic" | "pvad-experimental";
   };
