@@ -1,9 +1,9 @@
 # Spike: half-cascade inject assistant text (omni mouth)
 
-> **Status:** `SKIPPED`
-> **Ran at:** 2026-08-10T04:57:29.748Z
+> **Status:** `RAN`
+> **Ran at:** 2026-08-10T05:41:37.625Z
 > **Model:** `qwen3.5-omni-flash-realtime`
-> **API key:** configured: false
+> **API key:** configured: true
 > **Script:** `scripts/spike-half-cascade.mjs`
 > **WS:** `wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=...`
 
@@ -54,18 +54,19 @@ Any of:
 
 | ID | Approach | Verdict | Detail |
 |----|----------|---------|--------|
-| A | conversation.item.create (assistant) + response.create | SKIPPED | no API key |
-| B | response.create with instructions (verbatim) | SKIPPED | no API key |
+| A | conversation.item.create (assistant) + response.create | HTTP_ERR | HTTP 401: {"code":"InvalidApiKey","message":"Invalid API-key provided.","request_id":"2cdf3096-010d-9fd0-92f0-2488f552c9f6"} |
+| B | response.create with instructions (verbatim) | HTTP_ERR | HTTP 401: {"code":"InvalidApiKey","message":"Invalid API-key provided.","request_id":"36777b8f-d6b2-9a0d-8667-c22258a64e9d"} |
 
 ## Overall verdict
 
-**`SKIPPED`**
+**`ERROR`**
 
 ## Notes
 
-- DASHSCOPE_API_KEY missing — live probe skipped (exit 0 for CI).
-- Fill .env.local and re-run to populate approach verdicts.
-- Production cascade/bailian paths were not modified.
+- Approach A (assistant inject): HTTP_ERR — gotAudio=false audioBytes~0
+- Approach B (instructions): HTTP_ERR — gotAudio=false audioBytes~0
+- Verdict ERROR: see approach details.
+- This spike does not change production cascade/bailian code paths.
 
 ## Event sample (truncated)
 

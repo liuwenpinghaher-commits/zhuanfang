@@ -1,8 +1,8 @@
 # Spike: Audio 3.0 session + voice allowlist (PR-8s)
 
-> **Status:** `SKIPPED`
-> **Ran at:** 2026-08-10T05:14:04.276Z
-> **API key:** configured: false
+> **Status:** `RAN`
+> **Ran at:** 2026-08-10T05:41:37.773Z
+> **API key:** configured: true
 > **Script:** `scripts/spike-audio3-session.mjs`
 > **WS base:** `wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=...`
 > **OQ1:** **not frozen** → production **PR-8 remains blocked** even if this spike is green
@@ -53,39 +53,42 @@ When product freezes OQ1, fill from this file:
 
 | Model | Verdict | Detail |
 |-------|---------|--------|
-| `qwen-audio-3.0-realtime-flash` | SKIPPED | no API key |
-| `qwen-audio-3.0-realtime-plus` | SKIPPED | no API key |
+| `qwen-audio-3.0-realtime-flash` | HTTP_ERR | HTTP 401: {"code":"InvalidApiKey","message":"Invalid API-key provided.","request_id":"cae1736b-a645-92b9-a8b1-bdabb4ebcaeb"} |
+| `qwen-audio-3.0-realtime-plus` | HTTP_ERR | HTTP 401: {"code":"InvalidApiKey","message":"Invalid API-key provided.","request_id":"a5eba956-a182-950c-867b-f40804d73a5a"} |
 
 ## Voice allowlist probes
 
 | Model | Voice | Verdict | Detail |
 |-------|-------|---------|--------|
-| `qwen-audio-3.0-realtime-flash` | `longanqian` | SKIPPED | no API key |
-| `qwen-audio-3.0-realtime-flash` | `longanhuan` | SKIPPED | no API key |
-| `qwen-audio-3.0-realtime-flash` | `Ethan` | SKIPPED | no API key |
+| `qwen-audio-3.0-realtime-flash` | `longanqian` | HTTP_ERR | HTTP 401: {"code":"InvalidApiKey","message":"Invalid API-key provided.","request_id":"06085d69-71f9-956d-a6db-4baf71f798d2"} |
+| `qwen-audio-3.0-realtime-flash` | `longanhuan` | HTTP_ERR | HTTP 401: {"code":"InvalidApiKey","message":"Invalid API-key provided.","request_id":"8472633f-ab87-9635-b8ab-3742c1ecdda9"} |
+| `qwen-audio-3.0-realtime-flash` | `Ethan` | HTTP_ERR | HTTP 401: {"code":"InvalidApiKey","message":"Invalid API-key provided.","request_id":"aef219b0-3210-93f8-b740-e65c4bfea34c"} |
 
 ## Turn detection probes
 
 | Model | Mode | Verdict | Detail |
 |-------|------|---------|--------|
-| `qwen-audio-3.0-realtime-flash` | `server_vad` | SKIPPED | no API key |
-| `qwen-audio-3.0-realtime-flash` | `smart_turn` | SKIPPED | no API key |
+| `qwen-audio-3.0-realtime-flash` | `server_vad` | HTTP_ERR | HTTP 401: {"code":"InvalidApiKey","message":"Invalid API-key provided.","request_id":"c6deaa7b-9514-9036-b9a8-189dfd7fe826"} |
+| `qwen-audio-3.0-realtime-flash` | `smart_turn` | HTTP_ERR | HTTP 401: {"code":"InvalidApiKey","message":"Invalid API-key provided.","request_id":"096003f5-142a-9468-9477-c1c6393387dc"} |
 
 ## Overall verdict
 
-**`SKIPPED`**
+**`ERROR`**
 
 ## Notes
 
-- DASHSCOPE_API_KEY missing — live probe skipped (exit 0 for CI).
-- Fill .env.local and re-run to populate model/voice/smart_turn verdicts.
-- Production Audio3 flag / profile registration intentionally untouched.
-- OQ1 still not frozen: PR-8 production remains blocked regardless of this template.
+- Primary model used for voice/td probes: qwen-audio-3.0-realtime-flash
+- Overall: ERROR
+- Verdict ERROR.
+- This spike does not enable VOICE_BAILIAN_AUDIO3 or change realtime-model-profile registration.
+- Omni and Cosy production defaults remain unchanged (CFC+).
 
 ## Freeze hints (draft — not frozen)
 
-- No live run — OQ1 remains unfrozen; PR-8 production stays blocked.
-- Re-run with DASHSCOPE_API_KEY to populate model/voice/smart_turn candidates.
+- No accepted model ids yet.
+- No accepted Audio3 voices yet.
+- No accepted turn_detection mode yet.
+- Do not set VOICE_BAILIAN_AUDIO3=true or register audio3-flash profile until OQ1 freezes.
 
 ## Event sample (truncated)
 
