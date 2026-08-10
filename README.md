@@ -430,7 +430,7 @@ React UI
 
 播客：全来源（笔记 / 搜索简报 / 主题 / 知识债）脚本均由 LLM 生成；创建默认只落脚本，仅当 `PODCAST_AUTO_RENDER_ON_CREATE=true|1|yes|on` 时创建即 TTS。工作台确认后 `POST /api/podcast/episodes/:id/synthesize`。生产验证见 [`docs/superpowers/2026-08-01-podcast-multisource-llm-deploy-verification.md`](docs/superpowers/2026-08-01-podcast-multisource-llm-deploy-verification.md)（默认音色 `longanhuan` 可用；部分 voice id 如 `longyuan_v3` 可能被 CosyVoice 400 拒绝）。
 
-生产鉴权：`GET /api/runtime-bootstrap` 仅设置 HttpOnly cookie，**不**在 JSON body 回传长期 `PRODUCT_API_TOKEN`。同源 SPA 用 `credentials: include`；分域部署可另设 `VITE_PRODUCT_API_TOKEN`。
+生产鉴权（S17）：`GET /api/runtime-bootstrap` **默认不再** `Set-Cookie` 长期 `PRODUCT_API_TOKEN`（响应体也不回传密钥）。人类入口用 `PRODUCT_AUTH_ENABLED` + 账密登录（`zf_session`）；机器/Agent 用 `Authorization: Bearer $PRODUCT_API_TOKEN`。仅机器门禁的 SPA 部署请 bake-in `VITE_PRODUCT_API_TOKEN`（matrix B）或开启会话登录。紧急回滚：`PRODUCT_BOOTSTRAP_LEGACY_TOKEN_COOKIE=1` 可恢复旧 HttpOnly cookie 行为（会打 error 级告警，勿常态开启）。
 
 产品入口始终是**仓库根目录**（`src/`、`apps/api/`、`packages/db/`）。历史上的嵌套副本/agent worktree 已从工作区移除，勿再以子目录副本为开发主路径。
 

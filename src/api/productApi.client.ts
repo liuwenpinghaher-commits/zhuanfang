@@ -73,7 +73,8 @@ export function createProductApiClient(
   // local fail-open traffic keep byte-identical request shapes.
   const authedFetch: FetchLike = (url, init) => {
     const authedToken = resolveProductApiToken();
-    // Production SPA relies on HttpOnly cookie from runtime-bootstrap → credentials:include.
+    // Production SPA: session cookie (zf_session) and/or VITE_PRODUCT_API_TOKEN Bearer (matrix B).
+    // runtime-bootstrap no longer mints product_api_token cookie (S17); credentials:include for session.
     // Unit tests (VITEST) keep init byte-identical unless a token is configured.
     const underTest = typeof process !== "undefined" && Boolean(process.env.VITEST);
     if (!authedToken) {

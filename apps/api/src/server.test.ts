@@ -1294,34 +1294,37 @@ it("renders podcast audio through Bailian CosyVoice when the audio client is con
       expect(response.statusCode).toBe(200);
     });
 
-    it("runtime-bootstrap is auth-exempt, sets HttpOnly cookie without body secret; cookie authorizes /api/state", async () => {
+    it("runtime-bootstrap is auth-exempt and never Set-Cookie PRODUCT_API_TOKEN by default (S17)", async () => {
       const server = buildApiServer({
         env: { DEPLOYMENT_PROFILE: "production", PRODUCT_API_TOKEN: "secret-bootstrap" }
       });
 
-      // Unauthenticated bootstrap must succeed (SPA has no VITE bake-in yet).
-      // inject() is HTTP — production must NOT set Secure or browsers drop the cookie.
+      // Unauthenticated bootstrap must succeed without minting a long-lived machine cookie.
       const boot = await server.inject({ method: "GET", url: "/api/runtime-bootstrap" });
       expect(boot.statusCode).toBe(200);
       const body = boot.json() as {
         authRequired: boolean;
         cookieSet: boolean;
-        secureCookie?: boolean;
+        mode?: string;
+        need_machine_token?: boolean;
         token?: unknown;
       };
       expect(body.authRequired).toBe(true);
-      expect(body.cookieSet).toBe(true);
-      expect(body.secureCookie).toBe(false);
+      expect(body.cookieSet).toBe(false);
+      expect(body.mode).toBe("machine_token");
+      expect(body.need_machine_token).toBe(true);
       // Long-lived secret must NOT appear in free JSON body.
       expect(body.token).toBeUndefined();
       expect(JSON.stringify(body)).not.toContain("secret-bootstrap");
       const setCookie = boot.headers["set-cookie"];
       const cookieHeader = Array.isArray(setCookie) ? setCookie.join(";") : String(setCookie ?? "");
-      expect(cookieHeader).toMatch(/product_api_token=/);
-      expect(cookieHeader.toLowerCase()).toContain("httponly");
-      expect(cookieHeader.toLowerCase()).not.toMatch(/(?:^|;\s*)secure(?:;|$)/);
+      expect(cookieHeader).not.toMatch(/product_api_token=/);
 
-      // Cookie alone authorizes subsequent API calls (HTTP production docker path).
+      // Without cookie or Bearer, protected routes stay 401.
+      const denied = await server.inject({ method: "GET", url: "/api/state" });
+      expect(denied.statusCode).toBe(401);
+
+      // Explicit client cookie (legacy) still authorizes if already held — server accepts, does not mint.
       const viaCookie = await server.inject({
         method: "GET",
         url: "/api/state",
@@ -1335,11 +1338,58 @@ it("renders podcast audio through Bailian CosyVoice when the audio client is con
         url: "/api/state?token=secret-bootstrap"
       });
       expect(viaQuery.statusCode).toBe(200);
+
+      // Bearer remains the preferred machine path.
+      const viaBearer = await server.inject({
+        method: "GET",
+        url: "/api/state",
+        headers: { authorization: "Bearer secret-bootstrap" }
+      });
+      expect(viaBearer.statusCode).toBe(200);
     });
 
-    it("runtime-bootstrap sets Secure cookie only when request.protocol is https", async () => {
+    it("runtime-bootstrap PRODUCT_BOOTSTRAP_LEGACY_TOKEN_COOKIE=1 restores Set-Cookie (emergency only)", async () => {
       const server = buildApiServer({
-        env: { DEPLOYMENT_PROFILE: "production", PRODUCT_API_TOKEN: "secret-https" }
+        env: {
+          DEPLOYMENT_PROFILE: "production",
+          PRODUCT_API_TOKEN: "secret-legacy-cookie",
+          PRODUCT_BOOTSTRAP_LEGACY_TOKEN_COOKIE: "1"
+        }
+      });
+      const boot = await server.inject({ method: "GET", url: "/api/runtime-bootstrap" });
+      expect(boot.statusCode).toBe(200);
+      const body = boot.json() as {
+        cookieSet: boolean;
+        mode?: string;
+        legacyTokenCookie?: boolean;
+        secureCookie?: boolean;
+      };
+      expect(body.cookieSet).toBe(true);
+      expect(body.mode).toBe("machine_token");
+      expect(body.legacyTokenCookie).toBe(true);
+      expect(body.secureCookie).toBe(false);
+      expect(JSON.stringify(body)).not.toContain("secret-legacy-cookie");
+      const setCookie = boot.headers["set-cookie"];
+      const cookieHeader = Array.isArray(setCookie) ? setCookie.join(";") : String(setCookie ?? "");
+      expect(cookieHeader).toMatch(/product_api_token=/);
+      expect(cookieHeader.toLowerCase()).toContain("httponly");
+      expect(cookieHeader.toLowerCase()).not.toMatch(/(?:^|;\s*)secure(?:;|$)/);
+
+      const viaCookie = await server.inject({
+        method: "GET",
+        url: "/api/state",
+        headers: { cookie: "product_api_token=secret-legacy-cookie" }
+      });
+      expect(viaCookie.statusCode).toBe(200);
+    });
+
+    it("runtime-bootstrap legacy cookie uses Secure when request.protocol is https", async () => {
+      const server = buildApiServer({
+        env: {
+          DEPLOYMENT_PROFILE: "production",
+          PRODUCT_API_TOKEN: "secret-https",
+          PRODUCT_BOOTSTRAP_LEGACY_TOKEN_COOKIE: "1"
+        }
       });
       // Simulate TLS terminator: trustProxy + X-Forwarded-Proto → request.protocol === https
       const boot = await server.inject({
@@ -1348,7 +1398,8 @@ it("renders podcast audio through Bailian CosyVoice when the audio client is con
         headers: { "x-forwarded-proto": "https", host: "app.example.com" }
       });
       expect(boot.statusCode).toBe(200);
-      const body = boot.json() as { secureCookie?: boolean };
+      const body = boot.json() as { secureCookie?: boolean; cookieSet?: boolean };
+      expect(body.cookieSet).toBe(true);
       expect(body.secureCookie).toBe(true);
       const setCookie = boot.headers["set-cookie"];
       const cookieHeader = Array.isArray(setCookie) ? setCookie.join(";") : String(setCookie ?? "");

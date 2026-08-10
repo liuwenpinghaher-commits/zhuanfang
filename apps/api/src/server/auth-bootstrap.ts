@@ -106,9 +106,11 @@ export const AUTH_EXEMPT_PREFIXES = [
 ];
 
 /**
- * Runtime bootstrap:
+ * Runtime bootstrap (S17):
  * - Session auth (PRODUCT_AUTH_ENABLED): report session presence; NEVER set PRODUCT_API_TOKEN cookie.
- * - Legacy machine-token production: still set HttpOnly product_api_token cookie (no body secret).
+ * - Machine-token production: NEVER Set-Cookie long-lived PRODUCT_API_TOKEN by default.
+ *   SPA should use VITE_PRODUCT_API_TOKEN (matrix B) or human session login.
+ * - Emergency only: PRODUCT_BOOTSTRAP_LEGACY_TOKEN_COOKIE=1 restores old HttpOnly cookie (logs error).
  * Long-lived secrets never appear in free JSON body.
  */
 export function registerRuntimeBootstrap(server: ReturnType<typeof Fastify>, env: Record<string, string | undefined>) {
@@ -136,17 +138,56 @@ export function registerRuntimeBootstrap(server: ReturnType<typeof Fastify>, env
       return { authRequired: true, authenticated: false, cookieSet: false, mode: "session" };
     }
 
-    // Legacy: production + PRODUCT_API_TOKEN only — set machine cookie for SPA bootstrap.
+    // Machine-token only (production + PRODUCT_API_TOKEN, no session auth).
     if (!env.PRODUCT_API_TOKEN) {
       return { authRequired: false, cookieSet: false };
     }
-    const token = env.PRODUCT_API_TOKEN;
-    const secure = request.protocol === "https";
-    reply.header(
-      "Set-Cookie",
-      `product_api_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax${secure ? "; Secure" : ""}`
+
+    const legacyCookieRaw = (env.PRODUCT_BOOTSTRAP_LEGACY_TOKEN_COOKIE ?? "").trim().toLowerCase();
+    const legacyCookieEnabled =
+      legacyCookieRaw === "1" || legacyCookieRaw === "true" || legacyCookieRaw === "yes" || legacyCookieRaw === "on";
+
+    // Emergency rollback only — do not enable in normal deploys.
+    if (legacyCookieEnabled) {
+      console.error(
+        JSON.stringify({
+          event: "bootstrap_legacy_token_cookie",
+          level: "error",
+          message:
+            "PRODUCT_BOOTSTRAP_LEGACY_TOKEN_COOKIE is enabled: runtime-bootstrap is Set-Cookie'ing long-lived PRODUCT_API_TOKEN. Disable this flag; prefer PRODUCT_AUTH_ENABLED session login or VITE_PRODUCT_API_TOKEN (matrix B)."
+        })
+      );
+      const token = env.PRODUCT_API_TOKEN;
+      const secure = request.protocol === "https";
+      reply.header(
+        "Set-Cookie",
+        `product_api_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax${secure ? "; Secure" : ""}`
+      );
+      return {
+        authRequired: true,
+        cookieSet: true,
+        secureCookie: secure,
+        mode: "machine_token",
+        need_machine_token: false,
+        legacyTokenCookie: true
+      };
+    }
+
+    // Default (S17): never mint product_api_token cookie. Client may already hold a legacy cookie
+    // from an older deploy — report presence without refreshing/re-issuing the secret.
+    const existingCookie = readCookieToken(
+      typeof request.headers.cookie === "string" ? request.headers.cookie : undefined
     );
-    return { authRequired: true, cookieSet: true, secureCookie: secure, mode: "machine_token" };
+    const alreadyHasLegacyCookie = Boolean(existingCookie && principal?.kind === "machine");
+
+    return {
+      authRequired: true,
+      authenticated: alreadyHasLegacyCookie,
+      cookieSet: alreadyHasLegacyCookie,
+      mode: "machine_token",
+      // SPA: use VITE_PRODUCT_API_TOKEN Bearer (matrix B) or enable session auth — not bootstrap cookie.
+      need_machine_token: !alreadyHasLegacyCookie
+    };
   });
 }
 

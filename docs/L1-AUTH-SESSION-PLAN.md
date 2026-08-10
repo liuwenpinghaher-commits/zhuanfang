@@ -167,11 +167,13 @@ GET  /api/auth/me
 
 | 旧 | 新 |
 |----|-----|
-| 无条件 Set-Cookie 共享 token | 若已有有效 `zf_session` → `{ authRequired: true, authenticated: true, username }` |
-| | 若门禁开且未登录 → `{ authRequired: true, authenticated: false }` **不下发密钥** |
+| 无条件 Set-Cookie 共享 token | 若已有有效 `zf_session` → `{ authRequired: true, authenticated: true, username, mode: "session" }` |
+| | 会话门禁开且未登录 → `{ authRequired: true, authenticated: false, mode: "session" }` **不下发密钥、不 Set-Cookie 机器 token** |
+| | 仅机器门禁（production + `PRODUCT_API_TOKEN`）→ `{ authRequired: true, mode: "machine_token", need_machine_token: true, cookieSet: false }` **默认绝不 Set-Cookie 长期 token（S17）** |
 | | 若门禁关 → `{ authRequired: false }` |
+| 紧急回滚 | `PRODUCT_BOOTSTRAP_LEGACY_TOKEN_COOKIE=1` 可恢复旧 HttpOnly `product_api_token` cookie（error 级日志，勿常态开） |
 
-前端根据 `authenticated: false` 跳转登录页。
+前端：`mode=session` 且 `authenticated: false` → 登录页；`need_machine_token` / `mode=machine_token` → **不**进登录页，改用 `VITE_PRODUCT_API_TOKEN`（matrix B）或已有凭证。
 
 ### 4.4 守卫钩子 `registerProductionAuth`
 
