@@ -60,6 +60,20 @@ services:
       PROVIDER_SMOKE_TEST_WEBRTC_OFFER_SDP: ${PROVIDER_SMOKE_TEST_WEBRTC_OFFER_SDP:-}
     volumes:
       - zhuanfang-data:/app/.data
+    # Align with image HEALTHCHECK: HTTP 200 alone is not enough — body must have ready:true
+    # (false when persist.degraded). See docs/runbooks/ALERTS.md §1 / A-01 N-strike.
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:'+(process.env.PORT||'3210')+'/api/health').then(async(r)=>{if(!r.ok)process.exit(1);const j=await r.json();process.exit(j&&j.ready===true?0:1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
 
 volumes:
