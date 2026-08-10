@@ -46,6 +46,9 @@ COPY src ./src
 RUN mkdir -p /app/.data/corpus-audio && chown -R node:node /app
 USER node
 EXPOSE 3210
+# Require readiness (ready:true), not mere HTTP 200 / ok:true — persist.degraded keeps
+# the process alive but must fail the container healthcheck so orchestrators do not
+# route traffic to a write-untrusted instance.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || '3210') + '/api/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||'3210')+'/api/health').then(async(r)=>{if(!r.ok)process.exit(1);const j=await r.json();process.exit(j&&j.ready===true?0:1)}).catch(()=>process.exit(1))"
 CMD ["npm", "run", "start:api"]

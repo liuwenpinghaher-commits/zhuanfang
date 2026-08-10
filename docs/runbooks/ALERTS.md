@@ -39,13 +39,18 @@
 
 | 字段 | 含义 | 监控用法 |
 | --- | --- | --- |
-| `ok: true` | 进程活着、路由可答 | **liveness**（Docker HEALTHCHECK 级） |
+| `ok: true` | 进程活着、路由可答 | **liveness**（进程未死；单独 curl 可看） |
 | `ready: true` | `!persist.degraded` | **readiness**；写路径可信时才为 true |
 | `persist.degraded` | `consecutiveFailures > 0` | **P0** 数据面 |
 | `metrics.voice.*` | TTFA / 分段 / budgetHint | 语音体验（需有样本） |
 | `metrics.recall.*` | hit / empty / low_score / error | 召回健康 |
 
-**规则：** 容器/进程探活只看 `ok`；**业务是否可写** 看 `ready` 且无 `persist.degraded`。
+**规则：**
+
+- **业务是否可写** 看 `ready: true` 且无 `persist.degraded`。
+- **Docker HEALTHCHECK / compose healthcheck**（镜像与 `docker-compose.yml`）要求 **`ready === true`**，不只 HTTP 200 / `ok: true`。  
+  原因：`persist.degraded` 时进程仍会回 200 + `ok: true` + `ready: false`；若探活只看状态码，编排会把**写路径不可信**的实例标成 healthy。
+- 手搓 liveness（「进程还在不在」）可只看连接/`ok`；**判定可服务 / 自动重启门禁** 必须看 `ready`。
 
 快速探针示例：
 
@@ -53,7 +58,10 @@
 export BASE=http://127.0.0.1:3210
 export PRODUCT_API_TOKEN='…'   # 仅受保护路由需要
 
-# Liveness / readiness
+# Liveness / readiness（exit 0 仅当 ready）
+curl -sS "$BASE/api/health" | jq -e '.ok == true and .ready == true' >/dev/null
+
+# 摘要查看
 curl -sS "$BASE/api/health" | jq '{ok,ready,persist,voice:(.metrics.voice| {ttfaP95Ms,sampleCount,budgetHint})}'
 
 # 完整环形指标（需鉴权）
@@ -83,15 +91,26 @@ curl -sS -H "Authorization: Bearer $PRODUCT_API_TOKEN" \
 | **窗口** | 即时（每次 health） |
 | **日志/事件** | 仓库层 lastError；可能伴随磁盘/锁相关 stderr |
 | **动作** | 1. 读 `lastError` / `lastErrorAt`  2. 按 [runbook §4](./README.md) 查磁盘、权限、双开锁  3. **暂停** 重要写入；`GET /api/state/export` 抢救  4. 修复后确认 `ready: true` 且 failures 归零 |
-| **勿做** | 忽略后继续大批 import/approve；对同一 `.data/surreal` 再起第二 API |
+| **勿做** | 忽略后继续大批 import/approve；对同一 `.data/surreal` 再起第二 API；**把「重启容器」当作唯一动作**（见下 N-strike） |
+
+#### A-01.N · 连续 ready=false / persist.degraded 的 N-strike（强制人工）
+
+当 Docker/compose 因 `ready: false` 把实例标 **unhealthy**，或 cron/外监控连续观察到 `ready: false` / `persist.degraded`：
+
+| | |
+| --- | --- |
+| **N-strike** | 对齐 HEALTHCHECK：`interval=30s`、`retries=3` → 约 **连续 3 次**（~1.5–2 min，不含 start_period）仍 `ready: false` 即进入本条 |
+| **人类必做** | 1. `curl -sS $BASE/api/health \| jq .` 确认 `persist` / failures  2. **先** `GET /api/state/export`（或卷级冷拷 `.data`）做抢救备份  3. 查 lastError、磁盘、权限、双开锁（[runbook §4](./README.md)）  4. 根因修复后**再**重启/ recreate；确认 `ready: true` 且 failures 归零 |
+| **禁止** | **盲目 `restart` / `compose up --force-recreate` 作为唯一动作**——degraded 多半是磁盘/锁/权威库写失败；空转重启可能：掩盖根因、打断自愈重试、在卷损坏时二次踩坑。重启**可以**是步骤之一，但**不能替代** export + 根因确认。 |
+| **与 A-02 边界** | 连接失败 / 进程不在 → A-02；进程在、HTTP 200 但 `ready: false` → **本条（A-01.N）**，不要只按「探活失败→重启」处理。 |
 
 ### A-02 · 进程 / 容器探活失败（P0）
 
 | | |
 | --- | --- |
-| **信号** | `GET /api/health` 连接失败、非 200、或超时 |
+| **信号** | `GET /api/health` 连接失败、非 200、超时；或容器因 HEALTHCHECK 标 unhealthy **且** 响应不可达（非 mere ready=false） |
 | **阈值** | 连续 **2** 次失败（间隔 ≥30s，对齐 Docker healthcheck 量级） |
-| **动作** | 1. `docker compose ps` / 进程是否在  2. 日志是否 `surreal_connect_failed`（双开锁）→ [runbook §1](./README.md)  3. 是否 production 缺 `PRODUCT_API_TOKEN` 拒启  4. 重启单实例；确认卷仍在（`down -v` 会清库） |
+| **动作** | 1. `docker compose ps` / 进程是否在  2. 若进程在但 unhealthy：先 `curl health` 区分 `ready: false`（→ **A-01.N**，先 export）与真死  3. 日志是否 `surreal_connect_failed`（双开锁）→ [runbook §1](./README.md)  4. 是否 production 缺 `PRODUCT_API_TOKEN` 拒启  5. 确认卷仍在后再考虑重启（`down -v` 会清库） |
 
 ### A-03 · Production 危险配置（P0）
 
