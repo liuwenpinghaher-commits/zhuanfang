@@ -48,3 +48,15 @@
   - 限流：等 `Retry-After`；测试可设 `RATE_LIMIT_DISABLED=true`
   - 桶与场景上界：见 [`docs/COST-ENVELOPE.md`](../COST-ENVELOPE.md)（次数 ≠ 美元）
   - 告警分级：见 [`ALERTS.md`](./ALERTS.md) A-05
+
+## 6. 优雅关闭 flush 超时
+
+- **症状**：滚动重启/SIGTERM 后日志 `graceful_shutdown_flush_timeout`；或重启后丢「刚保存成功」的状态。
+- **配置**：`PRODUCT_SHUTDOWN_FLUSH_MS`（默认 10s，上限 30s）。
+- **处理**：见 [`ALERTS.md`](./ALERTS.md) **A-15**；先 export，再查双开锁/磁盘，勿盲目 `kill -9`。
+
+## 7. 知识索引滞后（reindex FAF）
+
+- **症状**：状态已更新但 chat 仍召到旧块/召不到新记忆。
+- **信号**：`metrics.reindex` / `reindex_failed` / `reindex_ok`。
+- **处理**：见 [`ALERTS.md`](./ALERTS.md) **A-16**；索引失败不回滚写；必要时 rebuild。

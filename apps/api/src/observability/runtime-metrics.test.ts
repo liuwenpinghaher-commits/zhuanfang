@@ -2,8 +2,11 @@ import { describe, expect, it, beforeEach } from "vitest";
 import {
   getRuntimeMetricsSnapshot,
   recordRecallEvent,
+  recordReindexEvent,
   recordVoiceLatency,
   resetRuntimeMetricsForTests,
+  resolveMetricsJsonlPath,
+  summarizeReindex,
   summarizeVoiceLatency
 } from "./runtime-metrics";
 
@@ -112,5 +115,38 @@ describe("runtime-metrics", () => {
     expect(snap.grounding.grounded).toBe(1);
     expect(snap.grounding.refused).toBe(1);
     expect(snap.grounding.citationPresentRate).toBe(0.5);
+  });
+
+  it("tracks reindex success/fail counters and snapshot.reindex", () => {
+    recordReindexEvent({
+      outcome: "success",
+      changedSources: 2,
+      chunkCount: 3,
+      embeddedCount: 2,
+      durationMs: 40
+    });
+    recordReindexEvent({ outcome: "failed", error: "boom", durationMs: 5 });
+    recordReindexEvent({ outcome: "stale_discarded", chunkCount: 1, durationMs: 10 });
+    const s = summarizeReindex();
+    expect(s.successTotal).toBe(1);
+    expect(s.failedTotal).toBe(1);
+    expect(s.staleDiscardedTotal).toBe(1);
+    expect(s.eventCount).toBe(3);
+    expect(s.lastOutcome).toBe("stale_discarded");
+    const snap = getRuntimeMetricsSnapshot();
+    expect(snap.reindex.failedTotal).toBe(1);
+    expect(snap.reindex.successTotal).toBe(1);
+  });
+
+  it("resolveMetricsJsonlPath prefers PRODUCT_METRICS_JSONL_PATH then PERSIST_PATH alias", () => {
+    expect(resolveMetricsJsonlPath({})).toBeUndefined();
+    expect(resolveMetricsJsonlPath({ PRODUCT_METRICS_JSONL_PATH: " /tmp/m.jsonl " })).toBe("/tmp/m.jsonl");
+    expect(resolveMetricsJsonlPath({ PRODUCT_METRICS_PERSIST_PATH: "/tmp/p.jsonl" })).toBe("/tmp/p.jsonl");
+    expect(
+      resolveMetricsJsonlPath({
+        PRODUCT_METRICS_JSONL_PATH: "/tmp/a.jsonl",
+        PRODUCT_METRICS_PERSIST_PATH: "/tmp/b.jsonl"
+      })
+    ).toBe("/tmp/a.jsonl");
   });
 });

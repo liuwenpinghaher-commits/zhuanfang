@@ -197,6 +197,37 @@ curl -sS -H "Authorization: Bearer $PRODUCT_API_TOKEN" \
 | **阈值** | 连续 tick error → **P2**；仅 capped → **P3**（预算保护，见成本信封） |
 | **动作** | 关自动研究或降频；查外搜 key；避免后台抽干 `system`/`research_auto_run` |
 
+### A-15 · Shutdown flush 超时 / 可能丢已确认写（P1）
+
+| | |
+| --- | --- |
+| **信号** | stderr JSON `graceful_shutdown_flush_timeout`（或 `graceful_shutdown_flush_failed`）；启动/关闭日志含 `flushTimeoutMs` |
+| **含义** | SIGTERM/SIGINT 后 persist 队列未能在预算内排空——**可能**丢失已 HTTP 200 但未落 surreal 的写（N-02 窗口） |
+| **配置** | `PRODUCT_SHUTDOWN_FLUSH_MS`（默认 **10000**，上限 **30000**）；`PRODUCT_SHUTDOWN_CLOSE_MS`（默认 8000，server.close 预算） |
+| **阈值** | **出现即记 P1**（尤其生产 rolling restart / OOM kill 前后） |
+| **动作** | 1. 查磁盘/锁/双开（[runbook §1](./README.md)、A-01） 2. 确认只有单 API 实例占用 `.data/surreal` 3. 若常态超时：在 10–30s 内调高 `PRODUCT_SHUTDOWN_FLUSH_MS` 并查 persist 积压 4. 重启前尽量 `GET /api/state/export` 5. **勿**把 flush 超时当「可忽略 warning」 |
+| **分仓** | 多用户 stores registry 落地后 flush = `registry.closeAll()`（`flushFromRegistry`）；超时语义相同 |
+| **勿做** | 无限加大超时掩盖磁盘故障；用 `kill -9` 当日常重启 |
+
+### A-16 · 知识索引 reindex 失败 / 滞后（P2–P3）
+
+| | |
+| --- | --- |
+| **信号** | `health.metrics.reindex.failedTotal` 上升；stderr `reindex_failed` / `reindex_discarded_stale_epoch`；`GET /api/system/runtime-metrics` → `reindex` |
+| **对照** | 成功：`reindex_ok` + `successTotal`；无变更：`noop`（不告警） |
+| **语义** | 写路径 **fire-and-forget**：状态已落库，索引滞后只影响 chat/rag 召回，**不**回滚写 |
+| **阈值** | `failedTotal` 在活跃写入窗口内 **≥ 3** 或 `lastOutcome=failed` 且用户报「刚改的记忆召不到」→ **P2**；偶发 stale_discarded（reset/purge 竞态）→ **P3** |
+| **动作** | 1. 查 embedding/budget（`llm_budget_exceeded` / `knowledge_embed_failed`） 2. 必要时 `rebuild` 知识索引路由 3. 确认未在 purge 中途期望召回 4. 勿把 FAF reindex 改成默认同步 await 写路径 |
+| **指标窗口** | 进程内环 + 计数；重启清空（与 voice 环一致） |
+
+### A-17 · 可选 JSONL 指标落盘失败（P3）
+
+| | |
+| --- | --- |
+| **信号** | `metrics_jsonl_append_failed`；配置了 `PRODUCT_METRICS_JSONL_PATH`（或 alias `PRODUCT_METRICS_PERSIST_PATH`）但文件不增长 |
+| **阈值** | 连续失败 → **P3**（内存环仍可用） |
+| **动作** | 查路径权限/磁盘；留空 env 即关闭落盘。**不改** `POST /api/system/runtime-metrics/voice` body schema |
+
 ---
 
 ## 3. 建议巡检节奏（单机）
@@ -250,6 +281,10 @@ echo "$body" | jq -e '
 | stderr JSON | `auth_guard_inactive_in_production` | A-03 |
 | stderr JSON | `write_slot_*` | A-11 |
 | export JSON | `completeness.status` | A-10 |
+| stderr JSON | `graceful_shutdown_flush_timeout` / `graceful_shutdown_flush_failed` | A-15 |
+| stderr JSON | `reindex_failed` / `reindex_ok` / `reindex_discarded_stale_epoch` | A-16 |
+| health/metrics | `metrics.reindex.*` | A-16 |
+| stderr JSON | `metrics_jsonl_append_failed` | A-17 |
 
 代码预算提示常量：
 

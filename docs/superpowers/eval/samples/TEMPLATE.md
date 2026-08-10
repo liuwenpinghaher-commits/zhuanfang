@@ -29,6 +29,19 @@
 （从会话导出或控制台）
 ```
 
+## turn-15 / 人工门禁（可选，长会话填）
+
+| 字段 | 填写 |
+|------|------|
+| turn_index | 15（或近似并注明） |
+| tracking_ok | yes / no / n/a |
+| gate_status | go / no-go / **insufficient_data** |
+| path | cascade / bailian / livekit |
+| GATE-HUMAN-VALUE 备注 | （产品价值感受；**≠** a11y） |
+
+> n 不足时 **必须** 写 `insufficient_data`，不得标 go。  
+> 详见 [`docs/interview-rubric.md`](../../../interview-rubric.md)。
+
 ## 闭环检查
 
 - [ ] 结束有笔记（或 doNotSave 诚实）

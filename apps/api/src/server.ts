@@ -121,9 +121,11 @@ import {
   withDeadline,
 } from "./server/defaults";
 import {
-  type GracefulShutdownDeps,
   createGracefulShutdown,
+  resolveShutdownFlushMs,
+  resolveShutdownCloseMs,
 } from "./server/shutdown";
+import { ensureMetricsJsonlAutoPersist } from "./observability/runtime-metrics";
 
 interface BuildApiServerOptions {
   productStateRepository?: ProductStateRepository;
@@ -872,6 +874,8 @@ export async function startServer() {
   const port = Number(process.env.PORT ?? 3210);
   const host = process.env.HOST ?? "127.0.0.1";
   await server.listen({ host, port });
+  // PR-O4: optional JSONL snapshot sink (no-op when PRODUCT_METRICS_JSONL_PATH empty).
+  ensureMetricsJsonlAutoPersist(process.env);
 
   // N-10:优雅关闭钩子——SIGINT/SIGTERM 时先停收新请求、再排空 persist 队列(数据优先)、
   // 再关 OTel、最后退出。R7 删同步 sqlite 后 persist 是唯一持久路径,裸退会丢已确认 200 的写;
@@ -879,18 +883,22 @@ export async function startServer() {
   // 仅 startServer(真实常驻进程)注册钩子;buildApiServer/测试路径不注册,故不泄漏信号 handler。
   const flushPersistence = async () => {
     if (storesClose) {
-      // surreal 档 / PR-S3 registry: close() flush persist 队列 + 关连接(们)。
+      // surreal 档 / PR-S3 registry: close() flush persist 队列 + 关连接(们)；
+      // 与 flushFromRegistry 对齐时 storesClose 已绑定 registry.closeAll。
       await storesClose();
     } else {
       // memory 档:flush 若存在则排空(基接口无 flush → no-op 也无妨),无连接可关 → 干净退出。
       await (repository as { flush?: () => Promise<void> }).flush?.();
     }
   };
+  // PR-O2: PRODUCT_SHUTDOWN_FLUSH_MS 可配(默认 10s,上限 30s);超时记 graceful_shutdown_flush_timeout。
   const gracefulShutdown = createGracefulShutdown({
     closeServer: () => server.close(),
     flushPersistence,
     shutdownTelemetry,
-    exit: (code) => process.exit(code)
+    exit: (code) => process.exit(code),
+    flushTimeoutMs: resolveShutdownFlushMs(process.env),
+    closeTimeoutMs: resolveShutdownCloseMs(process.env)
   });
   // process.once:同一信号只触发一次(自动摘除 handler);跨信号(SIGINT 后 SIGTERM)由
   // createGracefulShutdown 内部的 shuttingDown 幂等守卫兜住,二者叠加=双保险。
@@ -919,4 +927,11 @@ export {
 } from "./server/write-gate";
 export { assertProductionAuthConfigured } from "./server/auth-bootstrap";
 export { isSpaHistoryPath } from "./server/defaults";
-export { createGracefulShutdown, type GracefulShutdownDeps } from "./server/shutdown";
+export {
+  createGracefulShutdown,
+  flushFromRegistry,
+  resolveShutdownFlushMs,
+  resolveShutdownCloseMs,
+  type GracefulShutdownDeps,
+  type ShutdownStoreRegistry
+} from "./server/shutdown";

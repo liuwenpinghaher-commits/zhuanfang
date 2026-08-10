@@ -1,5 +1,5 @@
 /**
- * In-process Stage-2/3 metrics: voice latency, barge-in, recall, grounding.
+ * In-process Stage-2/3 metrics: voice latency, barge-in, recall, grounding, reindex.
  * Single-user local tool — process memory is enough; no external TSDB required.
  *
  * Buffer layout (Phase-0):
@@ -7,7 +7,13 @@
  * - `voiceEventSamples` — false-trigger-only events (do NOT compete for TTFA slots).
  * Prefer `ttfaCount` over `sampleCount` when reading latency window size:
  * `sampleCount` = latency ring + event ring totals.
+ *
+ * Optional disk: PRODUCT_METRICS_JSONL_PATH (or PRODUCT_METRICS_PERSIST_PATH) appends
+ * `getRuntimeMetricsSnapshot()` lines. **Does not change** recordVoiceLatency / POST body schema.
  */
+
+import { appendFile, mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
 
 /** Phase-0 false-trigger countable kinds (echo / max-wait suppress). */
 export type FalseTriggerKind =
@@ -65,10 +71,29 @@ export interface GroundingMetricEvent {
   citationCount: number;
 }
 
+/** Knowledge reindex outcome (write path stays fire-and-forget; this is observability only). */
+export type ReindexOutcome = "success" | "failed" | "stale_discarded" | "noop";
+
+export interface ReindexMetricEvent {
+  at: string;
+  outcome: ReindexOutcome;
+  removedSources?: number;
+  changedSources?: number;
+  materialRemoved?: number;
+  transcriptSessionsRemoved?: number;
+  chunkCount?: number;
+  embeddedCount?: number;
+  durationMs?: number;
+  error?: string;
+  /** Optional multi-user key (may be redacted by caller). */
+  userKey?: string;
+}
+
 const MAX_VOICE = 64;
 const MAX_VOICE_EVENTS = 64;
 const MAX_RECALL = 128;
 const MAX_GROUNDING = 128;
+const MAX_REINDEX = 64;
 
 /** Latency / barge-in samples — TTFA percentiles read only from this ring. */
 const voiceSamples: VoiceLatencySample[] = [];
@@ -76,6 +101,15 @@ const voiceSamples: VoiceLatencySample[] = [];
 const voiceEventSamples: VoiceLatencySample[] = [];
 const recallEvents: RecallMetricEvent[] = [];
 const groundingEvents: GroundingMetricEvent[] = [];
+const reindexEvents: ReindexMetricEvent[] = [];
+
+/** Process-lifetime counters (survive ring eviction). */
+const reindexTotals = {
+  success: 0,
+  failed: 0,
+  stale_discarded: 0,
+  noop: 0
+};
 
 function hasLatencyFields(sample: Omit<VoiceLatencySample, "at">): boolean {
   return (
@@ -111,6 +145,9 @@ export function recordVoiceLatency(sample: Omit<VoiceLatencySample, "at"> & { at
     voiceEventSamples.push(full);
     while (voiceEventSamples.length > MAX_VOICE_EVENTS) voiceEventSamples.shift();
   }
+
+  // Optional JSONL: throttle on sample path (do not block hot path).
+  maybePersistMetricsJsonl("sample");
 }
 
 export function recordRecallEvent(event: Omit<RecallMetricEvent, "at"> & { at?: string }) {
@@ -121,6 +158,17 @@ export function recordRecallEvent(event: Omit<RecallMetricEvent, "at"> & { at?: 
 export function recordGroundingEvent(event: Omit<GroundingMetricEvent, "at"> & { at?: string }) {
   groundingEvents.push({ at: event.at ?? new Date().toISOString(), ...event });
   while (groundingEvents.length > MAX_GROUNDING) groundingEvents.shift();
+}
+
+export function recordReindexEvent(event: Omit<ReindexMetricEvent, "at"> & { at?: string }) {
+  const full: ReindexMetricEvent = { at: event.at ?? new Date().toISOString(), ...event };
+  reindexEvents.push(full);
+  while (reindexEvents.length > MAX_REINDEX) reindexEvents.shift();
+  if (full.outcome in reindexTotals) {
+    reindexTotals[full.outcome] += 1;
+  }
+  // Reindex is rare; always try JSONL (still non-blocking).
+  maybePersistMetricsJsonl("reindex");
 }
 
 function percentile(sorted: number[], p: number): number | undefined {
@@ -239,13 +287,119 @@ export function summarizeGrounding(events: GroundingMetricEvent[] = groundingEve
   };
 }
 
+export function summarizeReindex(events: ReindexMetricEvent[] = reindexEvents) {
+  const last = events.length > 0 ? events[events.length - 1] : undefined;
+  return {
+    eventCount: events.length,
+    successTotal: reindexTotals.success,
+    failedTotal: reindexTotals.failed,
+    staleDiscardedTotal: reindexTotals.stale_discarded,
+    noopTotal: reindexTotals.noop,
+    lastAt: last?.at,
+    lastOutcome: last?.outcome,
+    lastDurationMs: last?.durationMs,
+    recent: events.slice(-8)
+  };
+}
+
 export function getRuntimeMetricsSnapshot() {
   return {
     generatedAt: new Date().toISOString(),
     voice: summarizeVoiceLatency(),
     recall: summarizeRecall(),
-    grounding: summarizeGrounding()
+    grounding: summarizeGrounding(),
+    reindex: summarizeReindex()
   };
+}
+
+// --- Optional JSONL persist (PR-O4) ---
+
+const DEFAULT_JSONL_MIN_GAP_MS = 30_000;
+const DEFAULT_JSONL_INTERVAL_MS = 60_000;
+
+let lastJsonlWriteAt = 0;
+let jsonlInterval: ReturnType<typeof setInterval> | undefined;
+let jsonlStartedForPath: string | undefined;
+
+/**
+ * Resolve optional JSONL path. Primary: PRODUCT_METRICS_JSONL_PATH.
+ * Alias: PRODUCT_METRICS_PERSIST_PATH (SIC+ design). Empty = disabled.
+ */
+export function resolveMetricsJsonlPath(
+  env: Record<string, string | undefined> = typeof process !== "undefined" ? process.env : {}
+): string | undefined {
+  const primary = (env.PRODUCT_METRICS_JSONL_PATH ?? "").trim();
+  const alias = (env.PRODUCT_METRICS_PERSIST_PATH ?? "").trim();
+  const path = primary || alias;
+  return path || undefined;
+}
+
+export async function appendRuntimeMetricsJsonl(
+  snapshot: ReturnType<typeof getRuntimeMetricsSnapshot> = getRuntimeMetricsSnapshot(),
+  env: Record<string, string | undefined> = typeof process !== "undefined" ? process.env : {}
+): Promise<boolean> {
+  const path = resolveMetricsJsonlPath(env);
+  if (!path) return false;
+  try {
+    await mkdir(dirname(path), { recursive: true });
+    await appendFile(path, `${JSON.stringify(snapshot)}\n`, "utf8");
+    lastJsonlWriteAt = Date.now();
+    return true;
+  } catch (err) {
+    console.warn(
+      JSON.stringify({
+        event: "metrics_jsonl_append_failed",
+        path,
+        error: err instanceof Error ? err.message : String(err)
+      })
+    );
+    return false;
+  }
+}
+
+/**
+ * Fire-and-forget JSONL append with throttle for high-frequency sample path.
+ * reason "reindex" / "interval" bypasses the min-gap (reindex is rare; interval is paced).
+ */
+export function maybePersistMetricsJsonl(
+  reason: "sample" | "reindex" | "interval" | "manual" = "sample",
+  env: Record<string, string | undefined> = typeof process !== "undefined" ? process.env : {}
+): void {
+  const path = resolveMetricsJsonlPath(env);
+  if (!path) return;
+  ensureMetricsJsonlAutoPersist(env);
+  const minGap = Math.max(
+    5_000,
+    Number(env.PRODUCT_METRICS_JSONL_MIN_GAP_MS) || DEFAULT_JSONL_MIN_GAP_MS
+  );
+  const now = Date.now();
+  if (reason === "sample" && now - lastJsonlWriteAt < minGap) return;
+  void appendRuntimeMetricsJsonl(getRuntimeMetricsSnapshot(), env);
+}
+
+/**
+ * Start periodic snapshot append when path is configured. Idempotent; interval is unref'd
+ * so it does not alone keep the process alive. Safe no-op when path empty.
+ */
+export function ensureMetricsJsonlAutoPersist(
+  env: Record<string, string | undefined> = typeof process !== "undefined" ? process.env : {}
+): void {
+  const path = resolveMetricsJsonlPath(env);
+  if (!path) return;
+  if (jsonlInterval && jsonlStartedForPath === path) return;
+  if (jsonlInterval) {
+    clearInterval(jsonlInterval);
+    jsonlInterval = undefined;
+  }
+  const intervalMs = Math.max(
+    10_000,
+    Number(env.PRODUCT_METRICS_JSONL_INTERVAL_MS) || DEFAULT_JSONL_INTERVAL_MS
+  );
+  jsonlStartedForPath = path;
+  jsonlInterval = setInterval(() => {
+    maybePersistMetricsJsonl("interval", env);
+  }, intervalMs);
+  if (typeof jsonlInterval.unref === "function") jsonlInterval.unref();
 }
 
 /** Test helper — clear buffers between cases. */
@@ -254,4 +408,15 @@ export function resetRuntimeMetricsForTests() {
   voiceEventSamples.length = 0;
   recallEvents.length = 0;
   groundingEvents.length = 0;
+  reindexEvents.length = 0;
+  reindexTotals.success = 0;
+  reindexTotals.failed = 0;
+  reindexTotals.stale_discarded = 0;
+  reindexTotals.noop = 0;
+  lastJsonlWriteAt = 0;
+  if (jsonlInterval) {
+    clearInterval(jsonlInterval);
+    jsonlInterval = undefined;
+  }
+  jsonlStartedForPath = undefined;
 }
