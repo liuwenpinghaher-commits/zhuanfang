@@ -147,6 +147,7 @@ export function buildQualityOperationsReport(state: ProductState): QualityOperat
       "perspective_shift",
       "blindspot_probe",
       "mechanism_reversal_probe",
+      "playbook_followup_probe",
       "premise_challenge",
       "synthesis",
     ].includes(item.strategy),

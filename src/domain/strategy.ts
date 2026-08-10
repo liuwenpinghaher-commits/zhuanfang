@@ -232,6 +232,11 @@ export function decideInterviewStrategy(session: InterviewSession, userText: str
       : {})
   };
 
+  // Authoritative if-order (SIC+ KD7 · single source of truth):
+  // concrete → mechanism → decision/debt → playbook_followup → synthesis → rest.
+  // Do not reintroduce competing "priority tables" elsewhere.
+
+  // 1 · concrete_example_probe
   if (
     hasConcreteMomentPlaybookRule(session) &&
     previousUserTurns === 0 &&
@@ -247,6 +252,7 @@ export function decideInterviewStrategy(session: InterviewSession, userText: str
     };
   }
 
+  // 2 · mechanism_reversal_probe
   if (
     hasMechanismReversalPlaybookRule(session) &&
     previousUserTurns >= 1 &&
@@ -263,16 +269,6 @@ export function decideInterviewStrategy(session: InterviewSession, userText: str
     };
   }
 
-  if (previousUserTurns >= 1 && hasReachedStageSummaryWindow(session) && trace.at(-1)?.strategy !== "synthesis") {
-    return {
-      ...base,
-      strategy: "synthesis",
-      label: "阶段总结",
-      reason: "访谈已超过 10 分钟，先阶段总结，避免继续发散。",
-      depth: "synthesis"
-    };
-  }
-
   // Wave B · B1.2/B1.3: decision_review vs debt_followup — mutual exclusion same session;
   // prefer older due decision when both exist; loser stays on checklist only.
   // Phase C: session.suppressedRevisitIds lets user skip a revisit for this session only.
@@ -280,6 +276,8 @@ export function decideInterviewStrategy(session: InterviewSession, userText: str
   const dueDecision = session.guide.decisionsToReview?.find(
     (d) => !suppressed.includes(`decision:${d.title.trim()}`)
   );
+
+  // 3 · decision_review (before follow-up / synthesis)
   if (
     (previousUserTurns === 1 || previousUserTurns === 2 || previousUserTurns === 3) &&
     dueDecision &&
@@ -307,6 +305,7 @@ export function decideInterviewStrategy(session: InterviewSession, userText: str
     }
   }
 
+  // 4 · debt_followup
   const debtToAddress =
     session.guide.debtToAddress &&
     !suppressed.includes(`debt:${session.guide.debtToAddress.trim()}`)
@@ -328,7 +327,33 @@ export function decideInterviewStrategy(session: InterviewSession, userText: str
     };
   }
 
-  // Wave B · B2.1: one contradiction_review per session in mid-late turns.
+  // 5 · playbook_followup_probe (follow-up rule hard branch; after decision/debt, before synthesis)
+  if (
+    hasFollowUpPlaybookRule(session) &&
+    hasConcreteInterviewMoment(userText) &&
+    !hasStrategy(trace, "playbook_followup_probe")
+  ) {
+    return {
+      ...base,
+      strategy: "playbook_followup_probe",
+      label: "技法追问",
+      reason: "已应用语料学习补丁：在具体时刻上做技法追问，顺着用户刚落到的事实再挖一层。",
+      depth: "mechanism"
+    };
+  }
+
+  // 6 · synthesis (≥10min wall — after follow-up so it does not starve playbook-driven probes)
+  if (previousUserTurns >= 1 && hasReachedStageSummaryWindow(session) && trace.at(-1)?.strategy !== "synthesis") {
+    return {
+      ...base,
+      strategy: "synthesis",
+      label: "阶段总结",
+      reason: "访谈已超过 10 分钟，先阶段总结，避免继续发散。",
+      depth: "synthesis"
+    };
+  }
+
+  // 7+ · rest (contradiction / perspective / blindspot / premise / default) — HEAD relative order
   if (
     previousUserTurns >= 4 &&
     previousUserTurns <= 8 &&
@@ -469,6 +494,16 @@ function hasMechanismReversalPlaybookRule(session: InterviewSession) {
   }
   return (session.enginePolicy?.appliedPlaybookRules ?? []).some(
     (rule) => rule.includes("机制") && rule.includes("奖励") && rule.includes("代价")
+  );
+}
+function hasFollowUpPlaybookRule(session: InterviewSession) {
+  // Explicit follow-up ruleType drives the hard branch. Legacy keyword fallback is
+  // intentionally narrow: generic "追问" alone is too common; only clear technique copy.
+  if (hasAppliedRuleType(session, "follow-up")) {
+    return true;
+  }
+  return (session.enginePolicy?.appliedPlaybookRules ?? []).some(
+    (rule) => rule.includes("追问") && (rule.includes("技法") || rule.includes("顺着") || rule.includes("再挖"))
   );
 }
 function hasReachedStageSummaryWindow(session: InterviewSession) {

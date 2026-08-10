@@ -5,20 +5,26 @@ import {
   runConcreteMomentScenario,
   runContradictionReviewScenario,
   runDebtFollowupNoDuplicateScenario,
+  runDecisionOverPlaybookFollowupScenario,
   runDecisionReviewOnceScenario,
+  runPlaybookFollowupOverSynthesisScenario,
+  runPlaybookFollowupProbeScenario,
   runRagGroundingRefuseScenario
 } from "./craft-golden";
 
 describe("craft golden factory (shipped strategy/retrieval)", () => {
-  it("runs all five rubric-aligned scenarios against real domain paths", () => {
+  it("runs all rubric-aligned scenarios against real domain paths", () => {
     const results = runAllCraftGolden();
-    expect(results).toHaveLength(5);
+    expect(results).toHaveLength(8);
     expect(results.map((r) => r.id).sort()).toEqual(
       [
         "concrete_moment_probe",
         "contradiction_review_mid_late_once",
         "debt_followup_no_duplicate",
+        "decision_over_playbook_followup",
         "decision_review_once",
+        "playbook_followup_over_synthesis",
+        "playbook_followup_probe",
         "rag_grounding_refuse"
       ].sort()
     );
@@ -43,5 +49,17 @@ describe("craft golden factory (shipped strategy/retrieval)", () => {
 
   it("rag_grounding_refuse", () => {
     expect(runRagGroundingRefuseScenario().pass).toBe(true);
+  });
+
+  it("playbook_followup_probe", () => {
+    expect(runPlaybookFollowupProbeScenario().pass).toBe(true);
+  });
+
+  it("decision_over_playbook_followup", () => {
+    expect(runDecisionOverPlaybookFollowupScenario().pass).toBe(true);
+  });
+
+  it("playbook_followup_over_synthesis", () => {
+    expect(runPlaybookFollowupOverSynthesisScenario().pass).toBe(true);
   });
 });

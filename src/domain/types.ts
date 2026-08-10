@@ -344,6 +344,7 @@ export type InterviewStrategyId =
   | "mechanism_reversal_probe"
   | "debt_followup"
   | "decision_review"
+  | "playbook_followup_probe"
   | "contradiction_review"
   | "perspective_shift"
   | "blindspot_probe"

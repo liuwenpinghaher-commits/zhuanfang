@@ -293,6 +293,7 @@ export function getInterruptionScene(strategy?: string): InterruptionScene {
       return "key_insight";
     case "concrete_example_probe":
     case "debt_followup":
+    case "playbook_followup_probe":
       return "anchor_probe";
     case "perspective_shift":
     case "synthesis":
