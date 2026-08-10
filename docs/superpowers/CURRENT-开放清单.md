@@ -144,6 +144,18 @@
 | 项 | 状态 | 说明 |
 |---|---|---|
 | ADR · D1–D4 DoD + 非目标 + cascade 默认质量承诺 | **closed** | 上链 ADR |
+
+## 语音默认路径（CFC+ · 2026-08-10 · 书面冻结）
+
+> ADR：[`docs/superpowers/specs/2026-08-10-voice-cascade-default-opt-in-adr.md`](./specs/2026-08-10-voice-cascade-default-opt-in-adr.md)  
+> 锚定 **KD1**（默认 cascade、拒绝无门禁 E2E 翻盘）与 **KD16**（OQ1 暂不冻结 → 不合并 PR-8；半级联无证据不排实现）。
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| ADR · cascade 保持默认；bailian/Audio3/livekit 仅 opt-in | **closed** | 书面否决静默 E2E 翻盘（PR-10） |
+| OQ1 · Audio3 model/音色冻结 | **open（暂不冻结）** | **阻塞 PR-8** 生产；PR-8s spike 可后续，绿也不自动解禁 |
+| PR-6s half-cascade spike | **SKIPPED（本轮无 live 证据）** | 无 key → 非 GO；**本轮不排 PR-6i / 无半级联生产** |
+| 默认 `realtimeMode` | **cascade** | seed / fallback；实验路径须显式配置 |
 | Craft golden 工厂（5 剧本 · shipped strategy/retrieval） | **closed** | `src/domain/craft-golden.ts` + `craft-golden.test.ts` |
 | Confirmed-only packing + conflict 不可静默 approve | **closed** | domain block + **route 409**（无假「已确认记忆」）· PATCH 改写重注记 · `force` 显式覆盖 · UI 拦截文案 · **client 采纳 409 body.state/revision**（防 stale PUT）· `memory-discipline` + `memory-candidates-conflict` + `productApi` 409-adopt 测 |
 | Longitudinal `contradicts` / supersede 生产写 + 策略/召回消费 | **closed** | `applyCognitiveRelations` / `resolveMemoryConflict` + guide/strategy · `longitudinal-edges.test.ts`（含 craft 场景 4） |
