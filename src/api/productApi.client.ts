@@ -25,6 +25,7 @@ import type {
   ProductApiClient,
   ProductApiClientOptions,
   PurgeReceipt,
+  RagQueryResponse,
   RealtimeVoiceSessionResponse,
   RefreshSearchBriefResponse,
   ResetReceipt,
@@ -273,6 +274,14 @@ export function createProductApiClient(
     },
     async rebuildKnowledgeIndex() {
       return (await requestJson("/api/knowledge/rebuild", { method: "POST" })) as { chunkCount: number };
+    },
+    async queryRag(question) {
+      // 资料库「就资料提问」：POST /api/rag/query，不改 /api/chat 行为。
+      return (await requestJson("/api/rag/query", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ question })
+      })) as RagQueryResponse;
     },
     async sendChatMessage(sessionId, message) {
       const response = (await requestJson("/api/chat", {

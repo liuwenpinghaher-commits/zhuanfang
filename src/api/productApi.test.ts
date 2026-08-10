@@ -128,6 +128,28 @@ describe("product api client", () => {
     expect(result.state.profile.name).toBe("Mia");
   });
 
+  it("PR-P2: queryRag POSTs /api/rag/query and returns answer + citations (not /api/chat)", async () => {
+    const body = {
+      answer: "资料说授权应先建信任[1]",
+      citations: [{ id: "rc1", title: "授权笔记", citationIndex: 1 }]
+    };
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify(body), { status: 200 }));
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+
+    const result = await client.queryRag("授权怎么做？");
+
+    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:8787/api/rag/query", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ question: "授权怎么做？" })
+    });
+    expect(result.answer).toContain("授权");
+    expect(result.citations).toHaveLength(1);
+    expect(result.citations[0]?.id).toBe("rc1");
+    // 不走资产对话端点
+    expect(String(fetchImpl.mock.calls[0]?.[0])).not.toContain("/api/chat");
+  });
+
   it("N-06:stale-revision 409(带权威 current)→ conflicted:true,采纳服务端 current(既有行为不变)", async () => {
     const current = { ...createInitialProductState(), revision: 7 };
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ error: "stale revision", current }), { status: 409 }));

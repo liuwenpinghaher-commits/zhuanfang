@@ -193,6 +193,23 @@ describe("empty-state render guards", () => {
     expect(html).toContain("还没有导入任何素材");
     expect(html).toContain("原料车间");
     expect(html).toContain("重建知识索引");
+    // 未接线 onAskMaterials 时不展示就资料提问面板
+    expect(html).not.toContain("就资料提问");
+  });
+
+  it("MaterialLibraryView shows ask-materials panel when onAskMaterials is wired", () => {
+    const s = createEmptyProductState();
+    const html = renderToString(
+      <MaterialLibraryView
+        state={s}
+        onImport={async () => ({ sourceId: "x", candidateCount: 0 })}
+        onRebuildIndex={async () => ({ chunkCount: 0 })}
+        onDeleteSource={() => {}}
+        onAskMaterials={async () => ({ answer: "暂无", citations: [] })}
+      />
+    );
+    expect(html).toContain("就资料提问");
+    expect(html).toContain("仅检索已导入的参考文献块");
   });
 
   it("ThemesView renders empty state copy when themes array is empty (P1-6)", () => {
