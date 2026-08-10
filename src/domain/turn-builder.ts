@@ -45,6 +45,8 @@ function buildAssistantTurn(session: InterviewSession, userText: string): Interv
     content = `先别急着概括成判断。你能讲一个最近的具体时刻吗：当时是什么场景，发生了什么，哪一句话或哪个瞬间让你觉得"${anchor}"？`;
   } else if (decision.strategy === "mechanism_reversal_probe") {
     content = `反过来看，这个具体时刻里也许不是某个人的问题，而是某种安排让事情自然往这个方向走。如果把它当成一个机制问题：是什么让"${anchor}"反复发生，谁从中得到了好处，谁承担了代价？`;
+  } else if (decision.strategy === "playbook_followup_probe") {
+    content = `你已经落到了"${anchor}"这个具体点上。顺着它再往下挖一层：当时还有谁在场，下一步最自然发生了什么，或者你现在仍卡在哪一句/哪个决定上？`;
   } else if (decision.strategy === "debt_followup") {
     const debt = session.guide.openDebts.find((item) => item.concept === session.guide.debtToAddress) ?? session.guide.openDebts[0];
     content = debt
@@ -343,6 +345,7 @@ const VALID_STRATEGY_IDS: ReadonlySet<InterviewStrategyId> = new Set<InterviewSt
   "mechanism_reversal_probe",
   "debt_followup",
   "decision_review",
+  "playbook_followup_probe",
   "contradiction_review",
   "perspective_shift",
   "blindspot_probe",
@@ -362,6 +365,7 @@ export const INTERVIEW_STRATEGY_LABELS: Record<InterviewStrategyId, string> = {
   mechanism_reversal_probe: "机制反转",
   debt_followup: "知识债追问",
   decision_review: "决策复盘",
+  playbook_followup_probe: "技法追问",
   contradiction_review: "对立观点复盘",
   perspective_shift: "视角切换",
   blindspot_probe: "盲区探测",
@@ -377,6 +381,7 @@ export const INTERVIEW_STRATEGY_LABELS: Record<InterviewStrategyId, string> = {
 export const PLAYBOOK_DRIVEN_STRATEGIES: ReadonlySet<InterviewStrategyId> = new Set<InterviewStrategyId>([
   "concrete_example_probe",
   "mechanism_reversal_probe",
+  "playbook_followup_probe",
 ]);
 
 function coerceStrategyId(value: string | undefined): InterviewStrategyId | undefined {

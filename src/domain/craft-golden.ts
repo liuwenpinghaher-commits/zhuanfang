@@ -13,7 +13,10 @@ export type CraftGoldenScenarioId =
   | "decision_review_once"
   | "debt_followup_no_duplicate"
   | "contradiction_review_mid_late_once"
-  | "rag_grounding_refuse";
+  | "rag_grounding_refuse"
+  | "playbook_followup_probe"
+  | "decision_over_playbook_followup"
+  | "playbook_followup_over_synthesis";
 
 export type CraftGoldenResult = {
   id: CraftGoldenScenarioId;
@@ -244,12 +247,85 @@ export function runRagGroundingRefuseScenario(): CraftGoldenResult {
   };
 }
 
+/** 6 · follow-up ruleType + concrete moment → playbook_followup_probe */
+export function runPlaybookFollowupProbeScenario(): CraftGoldenResult {
+  const state = createInitialProductState();
+  const session = baseSession(state);
+  session.enginePolicy = {
+    ...session.enginePolicy!,
+    appliedPlaybookRules: ["顺着具体事实再往下挖一层"],
+    appliedPlaybookRuleTypes: ["follow-up"]
+  };
+  session.guide.decisionsToReview = [];
+  session.guide.debtToAddress = undefined;
+  session.guide.openDebts = [];
+  const decision = decideInterviewStrategy(session, "上周那次会议他说要等拍板");
+  const pass = decision.strategy === "playbook_followup_probe";
+  return {
+    id: "playbook_followup_probe",
+    pass,
+    detail: pass ? "strategy=playbook_followup_probe" : `got ${decision.strategy}`
+  };
+}
+
+/** 7 · due decision on turn 2 beats follow-up rule hard branch */
+export function runDecisionOverPlaybookFollowupScenario(): CraftGoldenResult {
+  const state = createInitialProductState();
+  const session = baseSession(state, "decision");
+  session.enginePolicy = {
+    ...session.enginePolicy!,
+    appliedPlaybookRules: ["顺着具体事实再往下挖一层"],
+    appliedPlaybookRuleTypes: ["follow-up"]
+  };
+  session.turns = [
+    { id: "u1", role: "user", content: "第一轮", intent: "用户表达", timestamp: new Date().toISOString() }
+  ];
+  session.guide.debtToAddress = undefined;
+  session.guide.openDebts = [];
+  session.guide.decisionsToReview = [{ title: "是否放权", choice: "关键节点把控", daysOpen: 40 }];
+  const decision = decideInterviewStrategy(session, "上周那次会议他说要等拍板");
+  const pass = decision.strategy === "decision_review";
+  return {
+    id: "decision_over_playbook_followup",
+    pass,
+    detail: pass ? "decision_review > playbook_followup_probe" : `got ${decision.strategy}`
+  };
+}
+
+/** 8 · follow-up rule + ≥10min still picks playbook_followup (not synthesis) */
+export function runPlaybookFollowupOverSynthesisScenario(): CraftGoldenResult {
+  const state = createInitialProductState();
+  const session = baseSession(state);
+  session.startedAt = new Date(Date.now() - 11 * 60 * 1000).toISOString();
+  session.enginePolicy = {
+    ...session.enginePolicy!,
+    appliedPlaybookRules: ["顺着具体事实再往下挖一层"],
+    appliedPlaybookRuleTypes: ["follow-up"]
+  };
+  session.turns = [
+    { id: "u1", role: "user", content: "第一轮", intent: "用户表达", timestamp: new Date().toISOString() }
+  ];
+  session.guide.decisionsToReview = [];
+  session.guide.debtToAddress = undefined;
+  session.guide.openDebts = [];
+  const decision = decideInterviewStrategy(session, "上周那次会议他说要等拍板");
+  const pass = decision.strategy === "playbook_followup_probe";
+  return {
+    id: "playbook_followup_over_synthesis",
+    pass,
+    detail: pass ? "playbook_followup_probe > synthesis" : `got ${decision.strategy}`
+  };
+}
+
 export const CRAFT_GOLDEN_RUNNERS: Array<() => CraftGoldenResult> = [
   runConcreteMomentScenario,
   runDecisionReviewOnceScenario,
   runDebtFollowupNoDuplicateScenario,
   runContradictionReviewScenario,
-  runRagGroundingRefuseScenario
+  runRagGroundingRefuseScenario,
+  runPlaybookFollowupProbeScenario,
+  runDecisionOverPlaybookFollowupScenario,
+  runPlaybookFollowupOverSynthesisScenario
 ];
 
 export function runAllCraftGolden(): CraftGoldenResult[] {

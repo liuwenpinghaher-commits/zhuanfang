@@ -115,6 +115,107 @@ describe("decideInterviewStrategy — decision_review (Wave B)", () => {
   });
 });
 
+describe("decideInterviewStrategy — playbook_followup_probe (SIC+ KD7)", () => {
+  it("triggers playbook_followup_probe via follow-up ruleType + concrete moment", () => {
+    const session = sessionWithRules(["顺着具体事实再往下挖一层"], ["follow-up"]);
+    session.guide.decisionsToReview = [];
+    session.guide.debtToAddress = undefined;
+    session.guide.openDebts = [];
+    const decision = decideInterviewStrategy(session, "上周那次会议他说要等拍板");
+    expect(decision.strategy).toBe("playbook_followup_probe");
+    expect(decision.label).toBe("技法追问");
+  });
+
+  it("does not fire playbook_followup_probe without a concrete moment signal", () => {
+    const session = sessionWithRules(["顺着具体事实再往下挖一层"], ["follow-up"]);
+    const decision = decideInterviewStrategy(session, "团队总是不主动承担");
+    expect(decision.strategy).not.toBe("playbook_followup_probe");
+  });
+
+  it("does not double-fire playbook_followup_probe in the same session", () => {
+    const session = sessionWithRules(["顺着具体事实再往下挖一层"], ["follow-up"]);
+    session.turns = [
+      { id: "u1", role: "user", content: "上周会议", intent: "用户表达", timestamp: new Date().toISOString() }
+    ];
+    session.strategyTrace = [
+      {
+        turnIndex: 1,
+        strategy: "playbook_followup_probe",
+        label: "技法追问",
+        reason: "done",
+        depth: "mechanism"
+      }
+    ];
+    const decision = decideInterviewStrategy(session, "上周那次会议他还是那样");
+    expect(decision.strategy).not.toBe("playbook_followup_probe");
+  });
+
+  it("priority: decision_review beats playbook_followup_probe", () => {
+    const session = sessionWithRules(["顺着具体事实再往下挖一层"], ["follow-up"]);
+    session.turns = [
+      { id: "u1", role: "user", content: "第一轮", intent: "用户表达", timestamp: new Date().toISOString() }
+    ];
+    session.strategyTrace = [];
+    session.guide.debtToAddress = undefined;
+    session.guide.openDebts = [];
+    session.guide.decisionsToReview = [
+      { title: "是否放权", choice: "关键节点把控", daysOpen: 40 }
+    ];
+    const decision = decideInterviewStrategy(session, "上周那次会议他说要等拍板");
+    expect(decision.strategy).toBe("decision_review");
+  });
+
+  it("priority: debt_followup beats playbook_followup_probe", () => {
+    const session = sessionWithRules(["顺着具体事实再往下挖一层"], ["follow-up"]);
+    session.turns = [
+      { id: "u1", role: "user", content: "第一轮", intent: "用户表达", timestamp: new Date().toISOString() }
+    ];
+    session.strategyTrace = [];
+    session.guide.decisionsToReview = [];
+    session.guide.debtToAddress = "跨部门激励为何失效";
+    session.guide.openDebts = [
+      {
+        concept: "跨部门激励为何失效",
+        context: "组织",
+        daysOpen: 20,
+        nextQuestion: "谁的 KPI？"
+      }
+    ];
+    const decision = decideInterviewStrategy(session, "上周那次会议他还是那样");
+    expect(decision.strategy).toBe("debt_followup");
+  });
+
+  it("priority: playbook_followup_probe beats ≥10min synthesis", () => {
+    const session = sessionWithRules(["顺着具体事实再往下挖一层"], ["follow-up"]);
+    session.startedAt = new Date(Date.now() - 11 * 60 * 1000).toISOString();
+    session.turns = [
+      { id: "u1", role: "user", content: "第一轮", intent: "用户表达", timestamp: new Date().toISOString() }
+    ];
+    session.strategyTrace = [];
+    session.guide.decisionsToReview = [];
+    session.guide.debtToAddress = undefined;
+    session.guide.openDebts = [];
+    const decision = decideInterviewStrategy(session, "上周那次会议他说要等拍板");
+    expect(decision.strategy).toBe("playbook_followup_probe");
+  });
+
+  it("regression: ≥10min still yields synthesis when no follow-up rule", () => {
+    const session = sessionWithRules([]);
+    session.startedAt = new Date(Date.now() - 11 * 60 * 1000).toISOString();
+    session.turns = [
+      { id: "u1", role: "user", content: "第一轮", intent: "用户表达", timestamp: new Date().toISOString() }
+    ];
+    session.strategyTrace = [];
+    session.guide.decisionsToReview = [];
+    session.guide.debtToAddress = undefined;
+    session.guide.openDebts = [];
+    session.guide.recommendedPerspectives = [];
+    session.guide.blindspotCandidates = [];
+    const decision = decideInterviewStrategy(session, "上周那次会议他说要等拍板");
+    expect(decision.strategy).toBe("synthesis");
+  });
+});
+
 describe("decideInterviewStrategy — late-session anti-repeat", () => {
   it("does not repeat synthesis when the latest strategy already synthesized the discussion", () => {
     const session = sessionWithRules([]);
