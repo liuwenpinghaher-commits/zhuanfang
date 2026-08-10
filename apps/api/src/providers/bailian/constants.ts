@@ -9,8 +9,14 @@ export {
   BAILIAN_PODCAST_TTS_VOICE,
   BAILIAN_REALTIME_MODEL,
   BAILIAN_REALTIME_FALLBACK_MODEL,
+  BAILIAN_REALTIME_DEFAULT_VOICE,
+  BAILIAN_REALTIME_PROFILE_OMNI_DEFAULT,
   BAILIAN_TRANSCRIPTION_MODEL,
   BAILIAN_GENERAL_MODEL,
   BAILIAN_EMBEDDING_MODEL,
-  resolveBailianRealtimeModels
+  resolveBailianRealtimeModels,
+  resolveBailianRealtimeProfile,
+  resolveBailianRealtimeProfileId,
+  getBailianRealtimeModelProfile
 } from "./_impl";
+export type { BailianRealtimeProfileId, BailianRealtimeModelProfile } from "./_impl";

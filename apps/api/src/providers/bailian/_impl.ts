@@ -20,22 +20,25 @@ export const BAILIAN_ROLE_PLAY_MODEL = "deepseek-v4-flash-0731";
 export const BAILIAN_PODCAST_TTS_MODEL = "cosyvoice-v3-plus";
 // cosyvoice-v3-plus requires v3-series voices (longanyang/longanhuan_v3); v1/v2 voices return engine error 418.
 export const BAILIAN_PODCAST_TTS_VOICE = "longanyang";
-export const BAILIAN_REALTIME_MODEL = "qwen3.5-omni-flash-realtime";
-export const BAILIAN_REALTIME_FALLBACK_MODEL = "qwen3-omni-flash-realtime";
+// Realtime model/voice defaults live in realtime-model-profile (omni-default). Re-export for stable import paths.
+export {
+  BAILIAN_REALTIME_MODEL,
+  BAILIAN_REALTIME_FALLBACK_MODEL,
+  BAILIAN_REALTIME_DEFAULT_VOICE,
+  resolveBailianRealtimeModels,
+  resolveBailianRealtimeProfile,
+  resolveBailianRealtimeProfileId,
+  getBailianRealtimeModelProfile,
+  BAILIAN_REALTIME_PROFILE_OMNI_DEFAULT
+} from "./realtime-model-profile";
+export type {
+  BailianRealtimeProfileId,
+  BailianRealtimeModelProfile
+} from "./realtime-model-profile";
 export const BAILIAN_TRANSCRIPTION_MODEL = "sensevoice-v1";
 // General-purpose text model for server-side synthesis (diary, review, corpus, intel).
 export const BAILIAN_GENERAL_MODEL = "deepseek-v4-flash-0731";
 export const BAILIAN_EMBEDDING_MODEL = "text-embedding-v3";
-
-export function resolveBailianRealtimeModels(env: Record<string, string | undefined>): {
-  model: string;
-  fallbackModel: string;
-} {
-  return {
-    model: env.BAILIAN_REALTIME_MODEL?.trim() || BAILIAN_REALTIME_MODEL,
-    fallbackModel: env.BAILIAN_REALTIME_FALLBACK_MODEL?.trim() || BAILIAN_REALTIME_FALLBACK_MODEL,
-  };
-}
 
 // ── Per-request timeouts (P1-09) ──────────────────────────────────────────────
 // Hard wall-clock caps so a half-dead DashScope connection (TCP connected but
