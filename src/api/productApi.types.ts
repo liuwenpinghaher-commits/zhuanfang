@@ -69,6 +69,11 @@ export interface ProductApiClient {
   /** Full rebuild of the server-side knowledge index. Returns how many chunks were indexed. */
   rebuildKnowledgeIndex(): Promise<{ chunkCount: number }>;
   /**
+   * 纯导入资料 QA：仅检索 state.ragChunks（interview-context 导入块）。
+   * 与 sendChatMessage（/api/chat，八源 knowledge）产品语义分离——资料库「就资料提问」专用。
+   */
+  queryRag(question: string): Promise<RagQueryResponse>;
+  /**
    * Ask the asset-grounded chat assistant. sessionId=null starts a new session;
    * the server appends both the user message and the grounded answer, then returns
    * the full replaced state plus the (new or existing) sessionId, the answer text
@@ -356,6 +361,20 @@ export interface ImportDocumentResponse {
   reindexFailed?: boolean;
   reindexStaleDiscarded?: boolean;
   warning?: string;
+}
+
+/** 与 apps/api routes/rag.ts RagCitation 对齐：仅导入资料块引用。 */
+export interface RagCitation {
+  id: string;
+  title: string;
+  sourceUrl?: string;
+  /** 1-based index matching `[n]` markers in the answer body. */
+  citationIndex?: number;
+}
+
+export interface RagQueryResponse {
+  answer: string;
+  citations: RagCitation[];
 }
 
 export interface CreateInterviewSessionRequest {
