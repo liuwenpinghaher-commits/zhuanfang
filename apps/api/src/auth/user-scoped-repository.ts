@@ -61,7 +61,7 @@ function createScopedProductStateFacade(
       }
       // Capability forward: bind methods to the live underlying repo (not the proxy).
       const repo = resolve();
-      const value = (repo as Record<string | symbol, unknown>)[prop as string];
+      const value = (repo as unknown as Record<string | symbol, unknown>)[prop as string];
       if (typeof value === "function") {
         return (value as (...args: unknown[]) => unknown).bind(repo);
       }
