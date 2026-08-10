@@ -4,6 +4,7 @@ import {
   BAILIAN_PODCAST_TTS_VOICE,
   BAILIAN_REALTIME_FALLBACK_MODEL,
   BAILIAN_REALTIME_MODEL,
+  BAILIAN_REALTIME_DEFAULT_VOICE,
   resolveBailianRealtimeModels,
   BAILIAN_ROLE_PLAY_MODEL,
   BAILIAN_TRANSCRIPTION_MODEL,
@@ -266,9 +267,9 @@ const runtimeSettingDefinitions: RuntimeSettingDefinition[] = [
     key: "BAILIAN_REALTIME_VOICE",
     section: "voice",
     label: "Realtime 音色",
-    description: "Qwen-Omni Realtime 使用的音色。可通过声音复刻创建自定义音色。",
+    description: "Qwen-Omni Realtime 使用的音色（omni profile，非 CosyVoice）。可通过声音复刻创建自定义音色。",
     valueKind: "select",
-    defaultValue: "Ethan",
+    defaultValue: BAILIAN_REALTIME_DEFAULT_VOICE,
     options: [
       { label: "晨煦 Ethan", value: "Ethan" },
       { label: "甜甜 Tina", value: "Tina" },
@@ -618,6 +619,8 @@ export async function registerSystemRoutes(
       metrics: {
         voice: {
           sampleCount: metrics.voice.sampleCount,
+          /** Finite TTFA points only — prefer over sampleCount for latency window size. */
+          ttfaCount: metrics.voice.ttfaCount,
           ttfaP50Ms: metrics.voice.ttfaP50Ms,
           ttfaP95Ms: metrics.voice.ttfaP95Ms,
           interruptCount: metrics.voice.interruptCount,
@@ -626,6 +629,8 @@ export async function registerSystemRoutes(
           bargeInSuccessRate: metrics.voice.bargeInSuccessRate,
           interruptRecoveryCount: metrics.voice.interruptRecoveryCount,
           interruptRecoveryRate: metrics.voice.interruptRecoveryRate,
+          falseTriggerCount: metrics.voice.falseTriggerCount,
+          falseTriggerByKind: metrics.voice.falseTriggerByKind,
           segments: metrics.voice.segments,
           budgetHint: metrics.voice.budgetHint
         },

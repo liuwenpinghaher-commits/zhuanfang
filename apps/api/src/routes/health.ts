@@ -1,5 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import { getRuntimeMetricsSnapshot, recordVoiceLatency } from "../observability/runtime-metrics";
+import {
+  getRuntimeMetricsSnapshot,
+  isFalseTriggerKind,
+  recordVoiceLatency
+} from "../observability/runtime-metrics";
 
 /** E:权威库落库健康度快照(内联,避免跨包 import PersistHealth)。 */
 type PersistHealthLite = { consecutiveFailures: number; lastError?: string; lastErrorAt?: string };
@@ -77,6 +81,11 @@ server.get("/api/health", async () => {
           : "unknown";
       const num = (k: string) =>
         typeof body[k] === "number" && Number.isFinite(body[k] as number) ? (body[k] as number) : undefined;
+      const boolOpt = (k: string): boolean | undefined =>
+        body[k] === true ? true : body[k] === false ? false : undefined;
+      const falseTriggerKind = isFalseTriggerKind(body.falseTriggerKind)
+        ? body.falseTriggerKind
+        : undefined;
       recordVoiceLatency({
         path,
         ttfaMs: num("ttfaMs"),
@@ -85,6 +94,9 @@ server.get("/api/health", async () => {
         llmTtftMs: num("llmTtftMs"),
         ttsTtfbMs: num("ttsTtfbMs"),
         interrupted: body.interrupted === true,
+        bargeInSuccess: boolOpt("bargeInSuccess"),
+        interruptRecovery: boolOpt("interruptRecovery"),
+        falseTriggerKind,
         sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined
       });
       return { ok: true, metrics: getRuntimeMetricsSnapshot().voice };

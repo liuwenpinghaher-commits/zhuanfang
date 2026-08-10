@@ -12,6 +12,7 @@ import {
 import { connectRealtimeAsrProxy } from "../realtime/asrProxyConnection";
 import {
   resolveBailianRealtimeModels,
+  resolveBailianRealtimeProfile,
   type BailianRealtimeVoiceClient,
   type BailianVoiceEnrollmentClient,
   type BailianEmbeddingClient
@@ -219,6 +220,9 @@ export function createRealtimeVoiceSession(
   env: Record<string, string | undefined>
 ): RealtimeVoiceSessionRecord {
   const config = buildRealtimeVoiceConfig(env);
+  // Omni session defaults (voice + pcm formats) come from the realtime model profile layer.
+  // Cosy TTS voices stay on cascade/podcast paths — not mixed into session.update.
+  const profile = resolveBailianRealtimeProfile(env);
   const sessionId = `rtv-${randomUUID()}`;
   const signalingPath = `/api/realtime-voice/sessions/${sessionId}/webrtc/answer`;
   const instructions = normalizeInstructions(payload.instructions);
@@ -240,9 +244,9 @@ export function createRealtimeVoiceSession(
       type: "session.update",
       session: {
         modalities: ["text", "audio"],
-        voice: normalizeOptionalString(payload.voice) ?? env.BAILIAN_REALTIME_VOICE ?? "Ethan",
-        input_audio_format: "pcm",
-        output_audio_format: "pcm",
+        voice: normalizeOptionalString(payload.voice) ?? profile.voice,
+        input_audio_format: profile.inputAudioFormat,
+        output_audio_format: profile.outputAudioFormat,
         instructions,
         turn_detection: {
           type: config.vad === "client_vad" ? "server_vad" : config.vad,

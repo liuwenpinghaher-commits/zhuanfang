@@ -28,10 +28,17 @@ recordVoiceLatency({
   interruptRecovery: true,
   ttfaMs: 120
 });
+// Phase-0: discrete false-trigger events (no ttfa required).
+recordVoiceLatency({ path: "cascade", falseTriggerKind: "quarantine_echo_suspect" });
+recordVoiceLatency({ path: "cascade", falseTriggerKind: "max_wait_suppressed" });
 
 const s = summarizeVoiceLatency();
 const okP95 = (s.ttfaP95Ms ?? Infinity) <= (s.budgetHint.ttfaP95TargetMs ?? 1200);
 const okBarge = (s.bargeInSuccessRate ?? 0) >= 0.9 || s.bargeInSuccessCount >= 1;
+const okFalseTrigger =
+  s.falseTriggerCount >= 1 &&
+  (s.falseTriggerByKind.quarantine_echo_suspect ?? 0) >= 1 &&
+  (s.falseTriggerByKind.max_wait_suppressed ?? 0) >= 1;
 
 console.log(
   JSON.stringify(
@@ -40,15 +47,19 @@ console.log(
       ttfaP95Ms: s.ttfaP95Ms,
       budget: s.budgetHint,
       bargeInSuccessRate: s.bargeInSuccessRate,
+      interruptRecoveryRate: s.interruptRecoveryRate,
+      falseTriggerCount: s.falseTriggerCount,
+      falseTriggerByKind: s.falseTriggerByKind,
       segments: s.segments,
       okP95,
-      okBarge
+      okBarge,
+      okFalseTrigger
     },
     null,
     2
   )
 );
 
-if (!okP95 || !okBarge) {
+if (!okP95 || !okBarge || !okFalseTrigger) {
   process.exitCode = 1;
 }

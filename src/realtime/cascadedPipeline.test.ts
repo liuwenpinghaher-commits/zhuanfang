@@ -241,34 +241,13 @@ describe("connectCascadedPipeline", () => {
   });
 
   // -------------------------------------------------------------------------
-  // 2c. VAD 误切同一句:listening 态 speech_started 不清累积(前段不丢)
-  //     回归:server_vad 在思考停顿处切段 → 用户续说触发 speech_started(非 barge-in)。
-  //     旧实现每次 speech_started 都清 committedTranscript → 前段丢失 → 残段不完整不
-  //     respond → session.turns 永远 0 → /end 返回 422「结束失败,本次未生成档案」。
+  // 2c. VAD 误切同一句 — covered by echo-guard golden below (Phase 1 lock).
+  //     Historical context: server_vad cut mid-thought → speech_started wiped
+  //     committedTranscript → /end 422. Keep the narrative here; single golden
+  //     owns the assertion surface to avoid dual-red drift.
   // -------------------------------------------------------------------------
-  it("VAD 误切同一句:listening 态 speech_started 累积前段(不丢),最终合并提交", async () => {
-    const pipeline = connectCascadedPipeline(makeOpts());
-    await pipeline.startListening();
-
-    // 第一段:用户说半句后思考停顿,被 server_vad 切段(短停顿 → wait,未 respond)
-    asr.setExpressionState("organizing");
-    asr.pushDelta("我觉得这个产品的核心，", true);
-    asr.pushSpeechStopped(300); // silenceMs < minPauseMs(600) → wait
-    await new Promise((r) => setTimeout(r, 0));
-    expect(sendUserTurn.fn).not.toHaveBeenCalled();
-
-    // 用户继续说同一句:listening 态 speech_started(非 barge-in)——必须保留前段
-    asr.pushSpeechStarted();
-    asr.setExpressionState("concluding");
-    asr.pushDelta("是认知沉淀。", true);
-    asr.pushSpeechStopped(1000); // concluding → respond
-    await new Promise((r) => setTimeout(r, 0));
-
-    // sendUserTurn 必须收到累积的完整句,而不是只有最后一段("是认知沉淀。")
-    expect(sendUserTurn.fn).toHaveBeenCalledOnce();
-    expect(sendUserTurn.fn.mock.calls[0][0]).toBe("我觉得这个产品的核心，是认知沉淀。");
-
-    pipeline.close();
+  it.skip("VAD 误切同一句:listening 态 speech_started 累积前段(不丢),最终合并提交 — covered by echo-guard golden", async () => {
+    /* see: echo-guard golden: listening 态 speech_started 保留已累积转写 */
   });
 
   // -------------------------------------------------------------------------
@@ -403,10 +382,12 @@ describe("connectCascadedPipeline", () => {
     asr.setExpressionState("concluding");
     asr.setUserEnergyEvidence(false);
     const quarantined: Array<{ text: string; reason: string }> = [];
+    const latencySamples: Array<{ falseTriggerKind?: string }> = [];
     const opts = makeOpts({
       decisionOpts: { finalStabilityMs: 0, echoWindowMs: 1_500, echoSimilarityThreshold: 0.8 }
     });
     opts.callbacks.onTranscriptQuarantined = (item) => quarantined.push(item);
+    opts.callbacks.onLatency = (sample) => latencySamples.push(sample);
     const pipeline = connectCascadedPipeline(opts);
 
     await pipeline.startListening("你能讲一个具体例子吗？");
@@ -417,6 +398,8 @@ describe("connectCascadedPipeline", () => {
 
     expect(quarantined).toHaveLength(1);
     expect(sendUserTurn.fn).not.toHaveBeenCalled();
+    // Phase-0: echo quarantine emits countable false-trigger event
+    expect(latencySamples.some((s) => s.falseTriggerKind === "quarantine_echo_suspect")).toBe(true);
 
     pipeline.confirmQuarantinedTranscript("我可以讲一个具体例子。");
     await Promise.resolve();
@@ -660,9 +643,19 @@ describe("connectCascadedPipeline", () => {
         // intentionally never resolves
       });
     });
+    const latencySamples: Array<{ interrupted?: boolean; bargeInSuccess?: boolean }> = [];
 
     const pipeline = connectCascadedPipeline(
-      makeOpts({ sendUserTurn: slowSend })
+      makeOpts({
+        sendUserTurn: slowSend,
+        callbacks: {
+          onStateChange: (s) => stateChanges.push(s),
+          onUserTranscript: (text, isFinal) => userTranscripts.push({ text, isFinal }),
+          onAssistantText: (text) => assistantTexts.push(text),
+          onError: (e) => errors.push(e),
+          onLatency: (sample) => latencySamples.push(sample)
+        }
+      })
     );
     await pipeline.startListening();
 
@@ -683,6 +676,10 @@ describe("connectCascadedPipeline", () => {
     expect(tts.stopCalls).toBeGreaterThanOrEqual(1);
     // state should be "interrupted" or "listening"
     expect(stateChanges).toContain("interrupted");
+    // Phase-0: natural barge-in reports success metrics
+    expect(
+      latencySamples.some((s) => s.interrupted === true && s.bargeInSuccess === true)
+    ).toBe(true);
 
     pipeline.close();
   });
@@ -715,6 +712,65 @@ describe("connectCascadedPipeline", () => {
 
     pipeline.close();
     vi.useRealTimers();
+  });
+
+  it("max_wait_suppressed: timer firing during thinking emits falseTriggerKind", async () => {
+    vi.useFakeTimers();
+    const latencySamples: Array<{ falseTriggerKind?: string }> = [];
+    const hangSend = vi.fn(
+      (_text: string, _signal: AbortSignal) =>
+        new Promise<{ assistantText: string }>(() => {
+          /* stay in thinking until test ends */
+        })
+    );
+
+    const pipeline = connectCascadedPipeline(
+      makeOpts({
+        sendUserTurn: hangSend,
+        decisionOpts: {
+          maxWaitMs: 400,
+          minPauseMs: 100,
+          finalStabilityMs: 0,
+          echoWindowMs: 1_500,
+          echoSimilarityThreshold: 0.8
+        },
+        callbacks: {
+          onStateChange: (s) => stateChanges.push(s),
+          onUserTranscript: (text, isFinal) => userTranscripts.push({ text, isFinal }),
+          onAssistantText: (text) => assistantTexts.push(text),
+          onError: (e) => errors.push(e),
+          onLatency: (sample) => latencySamples.push(sample)
+        }
+      })
+    );
+
+    // Opening note enables later echo quarantine; drain echo-guard timer.
+    await pipeline.startListening("你能讲一个具体例子吗？");
+    await vi.advanceTimersByTimeAsync(601);
+
+    // Arm maxWait via organizing wait (timer must outlive the confirm path).
+    asr.setExpressionState("organizing");
+    asr.setUserEnergyEvidence(true);
+    asr.pushDelta("嗯那个", true);
+    asr.pushSpeechStopped(150);
+    await Promise.resolve();
+
+    // Echo quarantine does not clear maxWait; confirm → doRespond → thinking.
+    asr.setUserEnergyEvidence(false);
+    asr.pushDelta("你能讲一个具体例子吗？", true);
+    await Promise.resolve();
+    pipeline.confirmQuarantinedTranscript("我确认要说的话。");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(hangSend).toHaveBeenCalled();
+    expect(stateChanges).toContain("thinking");
+
+    // Fire armed maxWait while still thinking → suppressed countable event.
+    await vi.advanceTimersByTimeAsync(400);
+    await Promise.resolve();
+    expect(latencySamples.some((s) => s.falseTriggerKind === "max_wait_suppressed")).toBe(true);
+
+    pipeline.close();
   });
 
   it("空转写即使触发 max-wait 也绝不创建 phantom user turn", async () => {
@@ -1015,6 +1071,220 @@ describe("connectCascadedPipeline", () => {
     await vi.waitFor(() => expect(onTtsPlaybackInterrupted).toHaveBeenCalledOnce());
     expect(interruptedTts.speak).toHaveBeenCalledTimes(1);
 
+    pipeline.close();
+  });
+
+  // =========================================================================
+  // Echo-guard golden + fixed-P1 regression locks (CFC+ Phase 1)
+  // Locks already-fixed behaviors so they cannot regress silently:
+  //   - listening-state speech_started preserves cumulative transcript (VAD 误切)
+  //   - TTS / post-TTS echo window: no barge-in, quarantine high-sim low-energy
+  //   - maxWait timer must not fire while mic suppressed (P2-14 / half-duplex)
+  //   - P1-08: close() → tts.close() (covered above)
+  // Do NOT re-implement omni reconnect (P1-06) here — locked in bailianWebsocket.test.
+  // =========================================================================
+
+  it("echo-guard golden: listening 态 speech_started 保留已累积转写（VAD 误切不丢前段）", async () => {
+    // Single lock for handleSpeechStarted: only barge-in resets transcript.
+    // silenceMs=300 < default minPauseMs=600 → wait (prefix retained).
+    const pipeline = connectCascadedPipeline(makeOpts());
+    await pipeline.startListening();
+
+    asr.setExpressionState("organizing");
+    asr.pushDelta("如果只看效率指标，", true);
+    asr.pushSpeechStopped(300);
+    await Promise.resolve();
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+    expect(userTranscripts.at(-1)?.text).toContain("如果只看效率指标");
+
+    // Same utterance resumes after a short VAD cut — must NOT wipe committed prefix.
+    asr.pushSpeechStarted();
+    expect(userTranscripts.at(-1)?.text).toContain("如果只看效率指标");
+
+    asr.setExpressionState("concluding");
+    asr.pushDelta("会忽略协作成本。", true);
+    asr.pushSpeechStopped(1000);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sendUserTurn.fn).toHaveBeenCalledOnce();
+    expect(sendUserTurn.fn.mock.calls[0][0]).toBe("如果只看效率指标，会忽略协作成本。");
+    pipeline.close();
+  });
+
+  it("echo-guard golden: 开场 TTS 期间回声忽略，不得 barge-in / sendUserTurn", async () => {
+    // Half-duplex lock for opening speak() only — does NOT claim to arm maxWait
+    // (mic suppress drops ASR before armMaxWait). P2-14 maxWait×suppress is
+    // locked by the following "留白 maxWait 武装后进入 TTS" golden.
+    vi.useFakeTimers();
+    asr.setExpressionState("organizing");
+    let resolveSpeak!: () => void;
+    const heldSpeak = vi.fn(
+      (_segs: string[]) => new Promise<void>((res) => { resolveSpeak = res; })
+    );
+    const heldStop = vi.fn();
+    const heldTts = {
+      speak: heldSpeak,
+      stop: heldStop,
+      close: vi.fn(),
+    } as unknown as TtsSink;
+    const pipeline = connectCascadedPipeline(
+      makeOpts({
+        tts: heldTts,
+        decisionOpts: { maxWaitMs: 400, minPauseMs: 100 },
+      })
+    );
+
+    // Opening holds speaking + suppressMic for the entire held speak().
+    const started = pipeline.startListening("你好，今天我们聊聊你的工作。");
+    await Promise.resolve();
+    expect(heldSpeak).toHaveBeenCalledTimes(1);
+
+    // Echo of the opening line must be ignored while suppressed.
+    asr.pushSpeechStarted();
+    asr.pushDelta("你好今天我们聊聊你的工作", true);
+    asr.pushSpeechStopped(500);
+    vi.advanceTimersByTime(3_000);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+    expect(heldStop).not.toHaveBeenCalled();
+
+    resolveSpeak();
+    await started;
+    pipeline.close();
+  });
+
+  it("echo-guard golden: 留白 maxWait 武装后进入 TTS，speaking/echo 窗内不得 maxWait 误 respond", async () => {
+    // P2-14 real lock: incomplete transcript must arm maxWait FIRST, then
+    // respond/held TTS (suppressMic + clearMaxWait / !micSuppressed gate).
+    // Text must NOT end on FINAL_PARTICLES (吗/呢/吧/啊/呀/嘛…) or it would
+    // short-circuit to respond and never arm the timer (false-green).
+    // Single-sentence assistant reply so one resolveSpeak() drains TTS and
+    // actually enters releaseMicAfterGuard (ECHO_GUARD_MS) — default FIXED
+    // reply is two sentences → two speak() calls → one resolve stays mid-TTS.
+    vi.useFakeTimers();
+    asr.setExpressionState("organizing");
+    let resolveSpeak!: () => void;
+    const heldSpeak = vi.fn(
+      (_segs: string[]) => new Promise<void>((res) => { resolveSpeak = res; })
+    );
+    const heldTts = {
+      speak: heldSpeak,
+      stop: vi.fn(),
+      close: vi.fn(),
+    } as unknown as TtsSink;
+    const decisions: Array<{ action: string; reason: string }> = [];
+    const maxWaitMs = 800;
+    const minPauseMs = 200;
+    const singleSentenceSend = vi.fn(
+      async (_text: string, _signal: AbortSignal): Promise<{ assistantText: string }> => ({
+        assistantText: "我理解。",
+      })
+    );
+    const pipeline = connectCascadedPipeline(
+      makeOpts({
+        tts: heldTts,
+        sendUserTurn: singleSentenceSend,
+        decisionOpts: { maxWaitMs, minPauseMs, finalStabilityMs: 0 },
+        onDecision: (d) => decisions.push({ action: d.action, reason: d.reason }),
+      })
+    );
+    await pipeline.startListening();
+
+    // Incomplete filler ("嗯" is TRAILING_FILLERS) + silence >= minPause → wait + armMaxWait.
+    asr.pushDelta("嗯", true);
+    asr.pushSpeechStopped(300);
+    await Promise.resolve();
+    expect(singleSentenceSend).not.toHaveBeenCalled();
+    expect(decisions.some((d) => d.action === "wait")).toBe(true);
+    // Prove the safety-net is armed: almost maxWaitMs later, still no respond.
+    vi.advanceTimersByTime(maxWaitMs - 50);
+    await Promise.resolve();
+    expect(singleSentenceSend).not.toHaveBeenCalled();
+    expect(decisions.filter((d) => d.reason === "max-wait timer fired")).toHaveLength(0);
+
+    // User finishes → concluding forces complete → respond → held TTS → mic suppressed.
+    asr.setExpressionState("concluding");
+    asr.pushSpeechStopped(1_000);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(singleSentenceSend).toHaveBeenCalledTimes(1);
+    expect(heldSpeak).toHaveBeenCalledTimes(1);
+
+    const callsAfterRespond = singleSentenceSend.mock.calls.length;
+    const maxWaitFiresBeforeTts = decisions.filter((d) => d.reason === "max-wait timer fired").length;
+
+    // While TTS is still held (mic suppressed), advancing well past maxWait must not
+    // create another turn or emit a NEW "max-wait timer fired".
+    vi.advanceTimersByTime(5_000);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(singleSentenceSend.mock.calls.length).toBe(callsAfterRespond);
+    expect(decisions.filter((d) => d.reason === "max-wait timer fired")).toHaveLength(maxWaitFiresBeforeTts);
+
+    // Echo of AI voice during TTS: no barge-in, no new turn.
+    asr.pushSpeechStarted();
+    asr.pushDelta("我理解。", true);
+    asr.pushSpeechStopped(1_000);
+    await Promise.resolve();
+    expect(singleSentenceSend.mock.calls.length).toBe(callsAfterRespond);
+    expect(heldTts.stop).not.toHaveBeenCalled();
+
+    // Drain the only speak() → doRespond finishes → releaseMicAfterGuard (600ms).
+    resolveSpeak();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(heldSpeak).toHaveBeenCalledTimes(1); // single-sentence: no second speak
+
+    // True post-TTS echo guard window (mic still suppressed for ECHO_GUARD_MS):
+    // high-sim low-energy echo must not create a turn / max-wait respond.
+    vi.advanceTimersByTime(300);
+    asr.setUserEnergyEvidence(false);
+    asr.pushDelta("我理解。", true);
+    asr.pushSpeechStopped(1_000);
+    await Promise.resolve();
+    expect(singleSentenceSend.mock.calls.length).toBe(callsAfterRespond);
+    expect(decisions.filter((d) => d.reason === "max-wait timer fired")).toHaveLength(maxWaitFiresBeforeTts);
+
+    pipeline.close();
+  });
+
+  it("echo-guard golden: TTS 回声窗内高相似低能量 → quarantine，确认前绝不 sendUserTurn", async () => {
+    vi.useFakeTimers();
+    asr.setExpressionState("concluding");
+    asr.setUserEnergyEvidence(false);
+    const quarantined: Array<{ text: string; source: string }> = [];
+    const opts = makeOpts({
+      decisionOpts: { finalStabilityMs: 0, echoWindowMs: 1_500, echoSimilarityThreshold: 0.8 },
+    });
+    opts.callbacks.onTranscriptQuarantined = (item) =>
+      quarantined.push({ text: item.text, source: item.source });
+    const pipeline = connectCascadedPipeline(opts);
+
+    // Opening seeds recent TTS text for the echo similarity window.
+    await pipeline.startListening("你能讲一个具体的协作例子吗？");
+    // Past pipeline ECHO_GUARD_MS (600) so ASR is accepted, but still inside
+    // turnAssembler echoWindowMs (1500) after noteTtsPlayback.
+    vi.advanceTimersByTime(700);
+
+    asr.pushDelta("你能讲一个具体的协作例子吗？", true);
+    asr.pushSpeechStopped(1_000);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(quarantined).toHaveLength(1);
+    expect(quarantined[0].source).toBe("echo");
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+
+    // Human confirms a real user rewrite — only then may the turn proceed.
+    pipeline.confirmQuarantinedTranscript("我上周和产品一起改了优先级。");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sendUserTurn.fn).toHaveBeenCalledOnce();
+    expect(sendUserTurn.fn.mock.calls[0][0]).toBe("我上周和产品一起改了优先级。");
     pipeline.close();
   });
 });

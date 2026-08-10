@@ -16,4 +16,6 @@
 REAL_PROVIDER_SMOKE=off npx vitest run --config vitest.domain.config.ts src/domain/craft-golden.test.ts
 ```
 
-人工 rubric 仍见 [`interview-rubric.md`](./interview-rubric.md)。本 golden **不**证明开放域文采「专业编辑级」。
+人工 rubric 仍见 [`interview-rubric.md`](./interview-rubric.md) 与操作门禁 [`docs/interview-rubric.md`](../../interview-rubric.md)。本 golden **不**证明开放域文采「专业编辑级」。
+
+可选输出护栏 `VOICE_CRAFT_OUTPUT_GUARD`（默认 off）只影响 LLM 落库话术截断/日志，**不**参与本 golden 的 strategy/retrieval 断言。

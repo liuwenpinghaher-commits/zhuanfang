@@ -38,6 +38,7 @@ import {
 } from "../realtime/voiceTransportLifecycle";
 import { deriveRealtimeWsBaseUrl } from "../realtime/wsBaseUrl";
 import { buildNotice, type UiNotice } from "../ui";
+import { useCascadeVoiceMetrics } from "./useCascadeVoiceMetrics";
 
 export type RealtimeVoiceConnection =
   | BailianRealtimeWebrtcConnection
@@ -125,6 +126,9 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
     voiceRecallRefreshSucceeded,
     voiceRecallRefreshFailed
   } = args;
+
+  // Phase-0: cascade TTFA + barge-in + false-trigger → POST runtime-metrics/voice
+  const { reportLatency } = useCascadeVoiceMetrics(session?.id ?? null);
 
   function closeRealtimeVoiceSession() {
     // Invalidate callbacks before closing resources: pipeline.close() may synchronously
@@ -384,6 +388,10 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
                   if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
                   setNotice(buildNotice("warning", "语音播放中断", "本轮语音播放中断，文字内容已保留"));
                 },
+                onLatency: (sample) => {
+                  if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
+                  reportLatency(sample);
+                },
                 onTranscriptQuarantined: (item) => {
                   if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
                   setLiveUserTranscript("");
@@ -502,6 +510,15 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
                 onError: (err) => {
                   setNotice(buildNotice("warning", "语音连接失败", err.message));
                 },
+                // Residual metrics (PR-2o): livekit interrupt publish outcome → runtime-metrics.
+                onBargeInMetric: (sample) => {
+                  void productApiClient.reportVoiceLatency({
+                    path: "livekit",
+                    interrupted: sample.interrupted,
+                    bargeInSuccess: sample.bargeInSuccess,
+                    ...(interviewId ? { sessionId: interviewId } : {})
+                  });
+                },
               },
             });
 
@@ -616,6 +633,8 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
                   );
                 },
                 // 重连过程对用户可见（此前 3 次重连期间 UI 仍显示"聆听中"，用户不知连接已断）。
+                // Residual (PR-2o): UX + bailianWebsocket structured logs (omni_reconnecting/…)
+                // make reconnect countable without new metrics schema fields.
                 onReconnecting: (attempt, maxAttempts) => {
                   setVoiceStatus("connecting");
                   setNotice(buildNotice("warning", "语音连接中断", `正在重连（第 ${attempt}/${maxAttempts} 次）…`));

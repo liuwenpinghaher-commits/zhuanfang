@@ -19,6 +19,16 @@ export interface LivekitVoiceCallbacks {
   onAssistantTranscript: (text: string, isFinal: boolean) => void;
   onAudioLevel: (level: number) => void;
   onError: (error: Error) => void;
+  /**
+   * Residual metrics (PR-2o): barge-in outcome after interrupt().
+   * publishData success → bargeInSuccess true; publish failure → false
+   * (local mute still ran; agent may keep synthesizing). Optional — existing
+   * callers need no change. Wire to productApi.reportVoiceLatency({ path: "livekit" }).
+   */
+  onBargeInMetric?: (sample: {
+    interrupted: true;
+    bargeInSuccess: boolean;
+  }) => void;
 }
 
 export interface LivekitVoiceSession {
@@ -190,18 +200,30 @@ export async function createLivekitVoiceSession(
       try { callbacks.onAudioLevel(0); } catch { /* ignore */ }
 
       // 2. Tell the agent to cancel synthesis (reliable delivery).
+      // Residual metrics: report bargeInSuccess via onBargeInMetric when available.
+      // Success = signal published (local mute already applied). Failure = agent may
+      // keep speaking — countable false without claiming cascade-grade interrupt SLA.
+      const reportBargeIn = (bargeInSuccess: boolean) => {
+        try {
+          callbacks.onBargeInMetric?.({ interrupted: true, bargeInSuccess });
+        } catch {
+          /* metrics must never break barge-in UX */
+        }
+      };
       try {
         const payload = new TextEncoder().encode(JSON.stringify(INTERRUPT_SIGNAL));
         const maybePromise = room.localParticipant.publishData(payload, { reliable: true });
         void Promise.resolve(maybePromise).then(
           () => {
             console.info(JSON.stringify({ event: "livekit_interrupt_published", signal: INTERRUPT_SIGNAL }));
+            reportBargeIn(true);
           },
           (err: unknown) => {
             console.warn(JSON.stringify({
               event: "livekit_interrupt_publish_failed",
               error: err instanceof Error ? err.message : String(err),
             }));
+            reportBargeIn(false);
           },
         );
       } catch (err) {
@@ -209,6 +231,7 @@ export async function createLivekitVoiceSession(
           event: "livekit_interrupt_publish_failed",
           error: err instanceof Error ? err.message : String(err),
         }));
+        reportBargeIn(false);
       }
 
       // 3. Make sure the mic is live so the user's barge-in is heard.

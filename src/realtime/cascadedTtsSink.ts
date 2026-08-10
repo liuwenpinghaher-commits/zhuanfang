@@ -26,10 +26,14 @@ import type { TtsSink } from "./cascadedPipeline";
 import type { SpeechProsody } from "../domain/speech-text";
 
 const DEFAULT_SAMPLE_RATE = 24000;
-// Pre-roll before the first chunk plays. Gives the audio thread headroom so the
-// opening doesn't glitch/under-run at startup, and keeps the first scheduled time
-// safely in the future (a just-resumed context can have currentTime ~0).
-const STARTUP_LATENCY = 0.15;
+// Pre-roll before the first PCM chunk of an utterance plays.
+// Historical 150ms cushion was safe but sat fully on the critical path after the
+// first network chunk arrived — pure perceived TTFA tax with no synthesis work.
+// With a warm running AudioContext, 40–60ms is enough look-ahead on modern
+// browsers; keep a slightly larger cushion only when the context just resumed
+// (currentTime still near 0 / state not yet steady).
+const FIRST_CHUNK_LATENCY_WARM_S = 0.05;
+const FIRST_CHUNK_LATENCY_COLD_S = 0.08;
 
 export class TtsPlaybackInterruptedError extends Error {
   readonly code?: number;
@@ -177,12 +181,17 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(ctx.destination);
-    // First chunk: start a touch in the future (cushion). Thereafter start exactly
+    // First chunk: short look-ahead cushion (TTFA-aware). Thereafter start exactly
     // when the previous buffer ends (sample-accurate, gapless). On under-run
     // (network stall) fall back to "now" — a small gap, not a crash/garble.
-    const startAt = firstChunkOfUtterance
-      ? ctx.currentTime + STARTUP_LATENCY
-      : Math.max(ctx.currentTime, nextStartTime);
+    let startAt: number;
+    if (firstChunkOfUtterance) {
+      const warm = ctx.state === "running" && ctx.currentTime > 0.05;
+      const cushion = warm ? FIRST_CHUNK_LATENCY_WARM_S : FIRST_CHUNK_LATENCY_COLD_S;
+      startAt = ctx.currentTime + cushion;
+    } else {
+      startAt = Math.max(ctx.currentTime, nextStartTime);
+    }
     firstChunkOfUtterance = false;
     try {
       source.start(startAt);

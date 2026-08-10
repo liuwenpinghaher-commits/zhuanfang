@@ -70,19 +70,27 @@ export interface StartRealtimeVoiceConnectDeps {
   adoptServerState: (state: ProductState) => void;
   closeRealtimeVoiceSession: () => void;
   reportLatency: (sample: {
-    ttfaMs: number;
+    ttfaMs?: number;
     vadEndToSttMs?: number;
     sttToLlmMs?: number;
     llmTtftMs?: number;
     ttsTtfbMs?: number;
+    interrupted?: boolean;
+    bargeInSuccess?: boolean;
+    interruptRecovery?: boolean;
+    falseTriggerKind?: "quarantine_echo_suspect" | "max_wait_suppressed" | "auto_committed_echo_suspect";
   }) => void;
   consumeInterruptStashPrompt: () => string;
   recordTurnFailedFallback: (text: string, err: unknown) => void;
   voiceRecallRefreshSucceeded: () => void;
   voiceRecallRefreshFailed: (kind: "pre_signals" | "voice_instructions", err: unknown) => void;
   buildNotice: (severity: "success" | "warning" | "danger" | "info", title: string, detail: string) => UiNotice;
-  /** Stage-3: optional experimental endpointing (documented; cascade uses existing minBargeIn). */
+  /**
+   * Cascade endpointing policy (default L1). See `systemConfig.voice.endpointingMode`
+   * and docs/cascade-l1-ttfa-baseline.md. Does not change ASR model.
+   */
   endpointingMode?: "silence" | "semantic" | "pvad-experimental";
+  /** Barge-in sustain ms while agent speaks; pipeline default 280 if omitted. */
   minBargeInMs?: number;
 }
 
@@ -312,6 +320,15 @@ export async function startRealtimeVoiceConnect(deps: StartRealtimeVoiceConnectD
           onAudioLevel: (level) => deps.setAudioLevel(level),
           onError: (err) => {
             deps.setNotice(buildNotice("warning", "语音连接失败", err.message));
+          },
+          // Residual metrics (PR-2o): livekit interrupt publish outcome → runtime-metrics.
+          onBargeInMetric: (sample) => {
+            void productApiClient.reportVoiceLatency({
+              path: "livekit",
+              interrupted: sample.interrupted,
+              bargeInSuccess: sample.bargeInSuccess,
+              ...(interviewId ? { sessionId: interviewId } : {})
+            });
           }
         }
       });
@@ -453,6 +470,8 @@ export async function startRealtimeVoiceConnect(deps: StartRealtimeVoiceConnectD
           );
         }
       },
+      // Residual (PR-2o): reconnect UX is user-visible + countable via bailianWebsocket
+      // structured logs (omni_reconnecting / omni_reconnected / omni_reconnect_exhausted).
       onReconnecting: (attempt, maxAttempts) => {
         deps.setVoiceStatus("connecting");
         deps.setNotice(buildNotice("warning", "语音连接中断", `正在重连（第 ${attempt}/${maxAttempts} 次）…`));

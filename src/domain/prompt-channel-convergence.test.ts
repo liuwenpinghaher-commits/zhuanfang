@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { buildCharacterSystemPrompt } from "../../apps/api/src/providers/bailian/interview";
 import { applyMidSessionCardRefresh } from "./context-pack";
+import { buildInterviewAgentContext } from "./turn-builder";
 import { buildRealtimeVoiceInstructions } from "./voice-instructions";
 import type { InterviewCard, InterviewContextPack, InterviewSession } from "./types";
 
@@ -140,5 +142,41 @@ describe("R-P1-02 voice prompt channel convergence", () => {
     const card = applyMidSessionCardRefresh(session.card, session.guide, livePack);
     expect(card.historyReferences).toEqual(["【guide live】本轮可引用记忆"]);
     expect(card.sourceHighlights?.[0]?.snippet).toBe("中段刷新素材");
+  });
+
+  /**
+   * Three prompt channels must inject profile.explicitBoundaries when set:
+   * 1) cascade/text — buildCharacterSystemPrompt (createAssistantTurn)
+   * 2) bailian omni voice — buildRealtimeVoiceInstructions (voice-instructions refresh)
+   * 3) livekit agent — buildInterviewAgentContext (agent-context instructions)
+   */
+  it("three paths include explicitBoundaries when set (cascade / omni / livekit)", () => {
+    const session = makeSession();
+    const boundaries = ["不要追问家庭关系", "不要把情绪写成人格结论"];
+
+    const cascadeText = buildCharacterSystemPrompt(session, [], undefined, boundaries);
+    const omniVoice = buildRealtimeVoiceInstructions(session, session.card, [], boundaries);
+    const livekit = buildInterviewAgentContext(session, [], boundaries).instructions;
+
+    for (const [label, text] of [
+      ["cascade/text", cascadeText],
+      ["omni/voice-instructions", omniVoice],
+      ["livekit/agent-context", livekit]
+    ] as const) {
+      expect(text, label).toContain("【用户硬性边界·绝不违反】");
+      expect(text, label).toContain("不要追问家庭关系");
+      expect(text, label).toContain("不要把情绪写成人格结论");
+    }
+  });
+
+  it("three paths omit the boundaries block when boundaries are empty", () => {
+    const session = makeSession();
+    const cascadeText = buildCharacterSystemPrompt(session, [], undefined, []);
+    const omniVoice = buildRealtimeVoiceInstructions(session, session.card, [], []);
+    const livekit = buildInterviewAgentContext(session, [], []).instructions;
+
+    for (const text of [cascadeText, omniVoice, livekit]) {
+      expect(text).not.toContain("【用户硬性边界·绝不违反】");
+    }
   });
 });

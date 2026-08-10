@@ -150,6 +150,18 @@
 | doNotSave 诚实结束 + 未确认 partial 不入权威稿 | **closed** | `session-end-presentation.ts` + hook 接线 · `turnAssembler` · `session-authority.test.ts` |
 | 真人 D4（4 周主观价值） | **open（推迟）** | 协议在使用方案；本清单不伪造分数 |
 
+## 语音默认路径（CFC+ · 2026-08-10 · 书面冻结）
+
+> ADR：[`docs/superpowers/specs/2026-08-10-voice-cascade-default-opt-in-adr.md`](./specs/2026-08-10-voice-cascade-default-opt-in-adr.md)  
+> 锚定 **KD1**（默认 cascade、拒绝无门禁 E2E 翻盘）与 **KD16**（OQ1 暂不冻结 → 不合并 PR-8；半级联无证据不排实现）。
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| ADR · cascade 保持默认；bailian/Audio3/livekit 仅 opt-in | **closed** | 书面否决静默 E2E 翻盘（PR-10） |
+| OQ1 · Audio3 model/音色冻结 | **open（暂不冻结）** | **阻塞 PR-8** 生产；PR-8s spike 可后续，绿也不自动解禁 |
+| PR-6s half-cascade spike | **SKIPPED（本轮无 live 证据）** | 无 key → 非 GO；**本轮不排 PR-6i / 无半级联生产** |
+| 默认 `realtimeMode` | **cascade** | seed / fallback；实验路径须显式配置 |
+
 轻量跑（无完整 vite 前端插件依赖时）：
 
 ```bash

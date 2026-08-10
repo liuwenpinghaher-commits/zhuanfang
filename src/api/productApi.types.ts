@@ -38,7 +38,22 @@ export interface ProductApiClient {
   getPrivacyReport(): Promise<PrivacyReport>;
   /** F-04:成功时附带服务端逐库清理回执;部分失败抛 ApiError(500, body 含 state+purgeReceipt)。 */
   purgeState(): Promise<ProductState & { purgeReceipt?: PurgeReceipt }>;
-  reportVoiceLatency(sample: { path?: string; ttfaMs?: number; vadEndToSttMs?: number; sttToLlmMs?: number; llmTtftMs?: number; ttsTtfbMs?: number; interrupted?: boolean; sessionId?: string }): Promise<void>;
+  reportVoiceLatency(sample: {
+    path?: string;
+    ttfaMs?: number;
+    vadEndToSttMs?: number;
+    sttToLlmMs?: number;
+    llmTtftMs?: number;
+    ttsTtfbMs?: number;
+    interrupted?: boolean;
+    /** Cascade/interrupt: barge-in stopped playback / aborted turn. */
+    bargeInSuccess?: boolean;
+    /** Post-interrupt next turn retained interrupted context (stash). */
+    interruptRecovery?: boolean;
+    /** Phase-0 false-trigger / echo-guard countable event. */
+    falseTriggerKind?: "quarantine_echo_suspect" | "max_wait_suppressed" | "auto_committed_echo_suspect";
+    sessionId?: string;
+  }): Promise<void>;
   getSystemCapabilities(): Promise<SystemCapabilitiesResponse>;
   getSystemConfig(): Promise<SystemConfigResponse>;
   updateSystemConfig(updates: SystemConfigUpdateRequest): Promise<SystemConfigUpdateResponse>;
@@ -660,7 +675,10 @@ export interface HealthResponse {
  */
 export interface RuntimeMetricsLite {
   voice?: {
+    /** Latency ring + event ring total (not equal to ttfaCount). */
     sampleCount?: number;
+    /** Finite TTFA points only — use for latency window / SLO; prefer over sampleCount. */
+    ttfaCount?: number;
     ttfaP50Ms?: number;
     ttfaP95Ms?: number;
     interruptCount?: number;
@@ -668,6 +686,13 @@ export interface RuntimeMetricsLite {
     bargeInSuccessRate?: number;
     interruptRecoveryCount?: number;
     interruptRecoveryRate?: number;
+    /** Phase-0: false-trigger / echo-guard event totals. */
+    falseTriggerCount?: number;
+    falseTriggerByKind?: {
+      quarantine_echo_suspect?: number;
+      max_wait_suppressed?: number;
+      auto_committed_echo_suspect?: number;
+    };
     /** Per-stage latency percentiles (cascade reports segments when available). */
     segments?: {
       vadEndToStt?: { count?: number; p50Ms?: number; p95Ms?: number };

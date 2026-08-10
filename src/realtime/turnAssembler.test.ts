@@ -38,6 +38,51 @@ describe("turnAssembler", () => {
     expect(assembler.decide({ atMs: 1500, allowCommit: true }).action).toBe("quarantine");
   });
 
+  // Echo-guard golden edges (Phase 1 regression locks) — keep quarantine strict
+  // only for high-sim + no user energy *inside* the TTS echo window.
+  it("echo-guard golden: 回声窗外的高相似转写不再 quarantine，可稳定后 commit", () => {
+    const assembler = createTurnAssembler({
+      stabilityWindowMs: 100,
+      echoWindowMs: 500,
+      similarityThreshold: 0.72
+    });
+    assembler.noteTtsPlayback({
+      text: "你能讲一个最近发生的具体例子吗？",
+      startedAtMs: 0,
+      endedAtMs: 1000
+    });
+    // atMs well past endedAtMs + echoWindowMs → not echo, treat as real user speech.
+    const result = assembler.ingest({
+      text: "你能讲一个最近发生的具体例子吗？",
+      isFinal: true,
+      atMs: 1000 + 500 + 50,
+      hasUserEnergyEvidence: false
+    });
+    expect(result.action).toBe("wait");
+    expect(assembler.decide({ atMs: 1000 + 500 + 200, allowCommit: true }).action).toBe("commit");
+  });
+
+  it("echo-guard golden: 窗内高相似但有用户能量证据时不 quarantine", () => {
+    const assembler = createTurnAssembler({
+      stabilityWindowMs: 100,
+      echoWindowMs: 800,
+      similarityThreshold: 0.72
+    });
+    assembler.noteTtsPlayback({
+      text: "你能讲一个最近发生的具体例子吗？",
+      startedAtMs: 0,
+      endedAtMs: 1000
+    });
+    const result = assembler.ingest({
+      text: "你能讲一个最近发生的具体例子吗",
+      isFinal: true,
+      atMs: 1200,
+      hasUserEnergyEvidence: true
+    });
+    expect(result.action).toBe("wait");
+    expect(assembler.decide({ atMs: 1400, allowCommit: true }).action).toBe("commit");
+  });
+
   it("有用户能量和问答语境时保留极短但完整的回答", () => {
     const assembler = createTurnAssembler({ stabilityWindowMs: 100 });
     assembler.ingest({ text: "不是", isFinal: true, atMs: 0, hasUserEnergyEvidence: true });
