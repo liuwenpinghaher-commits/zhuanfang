@@ -52,11 +52,22 @@ import {
 } from "./auth";
 import { authenticateUser, ensureBootstrapUsers } from "./auth/users";
 import { issueSessionToken, sessionCookieHeader } from "./auth/session";
-import { currentUsername, enterPrincipal, legacyOwner } from "./auth/user-context";
+import { currentPrincipal, currentUsername, enterPrincipal, legacyOwner, sanitizeUserKey } from "./auth/user-context";
 import {
   createInMemoryUserRepoFactory,
+  createRegistryUserScopedProductStateRepository,
   createUserScopedProductStateRepository
 } from "./auth/user-scoped-repository";
+import { createUserScopedColdRepos } from "./auth/user-scoped-cold";
+import {
+  assertDurableUserScopedOrThrow,
+  baseDataDirFromProductStateDbPath,
+  createUserStoresRegistry,
+  isUserScopedStateEnabled,
+  resolveStoreUserKey,
+  userStoreLruMax,
+  type UserStoresRegistry
+} from "./auth/user-stores-registry";
 import { createLlmBudget } from "./llm-budget";
 import { createRateLimiter, rateLimitBucket } from "./rate-limit";
 import { resolveRequestTimeoutMs } from "./request-timeout";
@@ -94,6 +105,7 @@ import {
   registerCors,
 } from "./server/http-plugins";
 import {
+  AUTH_EXEMPT_PREFIXES,
   assertProductionAuthConfigured,
   registerRuntimeBootstrap,
   registerAuthRoutes,
@@ -135,6 +147,12 @@ interface BuildApiServerOptions {
   envFilePath?: string;
   /** When true, do not auto-wrap productStateRepository with multi-user scoping. */
   disableUserScopedState?: boolean;
+  /**
+   * PR-S3: durable per-user SurrealStores registry. When set with USER_SCOPED=1,
+   * hot+cold facades route via registry (singleflight/pin/LRU). Production forbids
+   * memory multi-user factory when scoped (KD16).
+   */
+  userStoresRegistry?: UserStoresRegistry;
   /**
    * Start the background research scheduler. Only the persistent process
    * (startServer) sets this; buildApiServer/tests leave it off so no timers leak.
@@ -183,23 +201,97 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   registerErrorHandler(server);
   // R7:默认工厂只构造内存仓库(surreal 需异步连接,只能由 startServer 经 createSurrealStores 注入)。
   // P0 默认：所有登录用户共享同一 ProductState（与今日一致）。
-  // P1 多用户分仓：仅当 PRODUCT_USER_SCOPED_STATE=1 时包装（非 legacy 用户走独立仓）。
+  // P1/PR-S3 多用户分仓：PRODUCT_USER_SCOPED_STATE=1 时包装。
+  // - durable: startServer 注入 userStoresRegistry → 热+三冷 facade + pin hook
+  // - non-prod 无 registry: 内存 map 工厂（仅测试/本地）
+  // - production 无 registry: KD16 拒绝启动
   // 测试可注入已 scoped 的 productStateRepository，并设 disableUserScopedState 避免二次包装。
   let baseRepo = options.productStateRepository ?? createDefaultProductStateRepository();
+  const userStoresRegistry = options.userStoresRegistry;
   const userScoped =
     !options.disableUserScopedState &&
     isSessionAuthEnabled(runtimeEnv) &&
-    ["1", "true", "yes", "on"].includes((runtimeEnv.PRODUCT_USER_SCOPED_STATE ?? "").trim().toLowerCase());
+    isUserScopedStateEnabled(runtimeEnv);
+
+  // KD16: production + USER_SCOPED=1 requires durable registry (not in-memory multi-tenant).
   if (userScoped) {
+    assertDurableUserScopedOrThrow(runtimeEnv, {
+      durable: Boolean(userStoresRegistry),
+      productStoreMode: options.productStoreMode ?? (userStoresRegistry ? "surreal" : "memory")
+    });
+  }
+
+  let rawMaterialRepository =
+    options.rawMaterialRepository ?? createDefaultRawMaterialRepository();
+  let audioRepository = options.audioRepository ?? createDefaultAudioRepository();
+  let knowledgeIndexRepository =
+    options.knowledgeIndexRepository ?? createDefaultKnowledgeIndexRepository();
+
+  if (userScoped && userStoresRegistry) {
+    // Durable full-store path: facades route by current principal (machine → legacy).
+    const legacy = legacyOwner(runtimeEnv);
+    baseRepo = createRegistryUserScopedProductStateRepository({
+      registry: userStoresRegistry,
+      env: runtimeEnv,
+      fallbackUsername: legacy
+    });
+    const cold = createUserScopedColdRepos({
+      registry: userStoresRegistry,
+      env: runtimeEnv,
+      fallbackUsername: legacy
+    });
+    rawMaterialRepository = cold.rawMaterialRepository;
+    audioRepository = cold.audioRepository;
+    knowledgeIndexRepository = cold.knowledgeIndexRepository;
+
+    // Request pin: acquire/open user store before handlers; release after response.
+    // Exempt auth/health bootstrap paths (no product data).
+    type ReqWithStore = FastifyRequest & { _userStoreKey?: string };
+    server.addHook("onRequest", async (request: FastifyRequest, reply: FastifyReply) => {
+      if (reply.sent) return;
+      const path = (request.url.split("?")[0] ?? "").replace(/\/+$/, "") || "/";
+      if (!path.startsWith("/api/")) return;
+      if (AUTH_EXEMPT_PREFIXES.some((prefix) => path === prefix || path.startsWith(prefix + "/"))) {
+        return;
+      }
+      if (path === "/api/auth/me") return;
+
+      // Auth hook already 401'd — do not open a store for anonymous callers.
+      if (isAuthGuardActive(runtimeEnv) && !currentPrincipal()) return;
+
+      // bindRequestPrincipal (registerProductionAuth) runs in an earlier onRequest hook.
+      // Machine → legacy store (KD18); user → sanitize(username); null → fallback legacy.
+      const storeKey = resolveStoreUserKey(runtimeEnv);
+      try {
+        await userStoresRegistry.acquire(storeKey);
+        (request as ReqWithStore)._userStoreKey = storeKey;
+      } catch (error) {
+        console.error(JSON.stringify({
+          event: "user_store_acquire_failed",
+          userKey: storeKey,
+          error: error instanceof Error ? error.message : String(error)
+        }));
+        return reply.code(503).send({
+          error: "user store unavailable",
+          detail: error instanceof Error ? error.message : String(error)
+        });
+      }
+    });
+    server.addHook("onResponse", async (request: FastifyRequest) => {
+      const storeKey = (request as ReqWithStore)._userStoreKey;
+      if (storeKey) userStoresRegistry.release(storeKey);
+    });
+  } else if (userScoped) {
+    // Non-production memory multi-user factory (tests / local only; KD16 blocks production).
     const factory = createInMemoryUserRepoFactory();
     const legacy = legacyOwner(runtimeEnv);
     const map = new Map<string, ProductStateRepository>();
-    map.set(legacy.toLowerCase().replace(/[^a-z0-9_-]+/g, "_").slice(0, 64) || "admin", baseRepo);
+    map.set(sanitizeUserKey(legacy), baseRepo);
     baseRepo = createUserScopedProductStateRepository({
       env: runtimeEnv,
       fallbackUsername: legacy,
       getOrCreate(username: string) {
-        const key = username.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "_").slice(0, 64) || "user";
+        const key = sanitizeUserKey(username);
         let r = map.get(key);
         if (!r) {
           r = factory.getOrCreate(username);
@@ -251,13 +343,7 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
       detail: "生产 profile 使用内存状态存储(PRODUCT_STORE=memory 或 dbPath 为 :memory:) —— 进程重启将丢失全部数据。持久化请设 PRODUCT_STORE=surreal。"
     }));
   }
-  // R7:三冷层(raw-material / audio / knowledge index)默认走内存;唯有 surreal 档由 startServer
-  // 经 createSurrealStores 注入真实冷层(与热态同一嵌入式连接)。显式注入的 repo(测试/surreal)总是优先。
-  const rawMaterialRepository =
-    options.rawMaterialRepository ?? createDefaultRawMaterialRepository();
-  const audioRepository = options.audioRepository ?? createDefaultAudioRepository();
-  const knowledgeIndexRepository =
-    options.knowledgeIndexRepository ?? createDefaultKnowledgeIndexRepository();
+  // R7:三冷层默认内存;surreal 档由 startServer 注入。PR-S3 durable scoped 时上面已换成 registry facade。
   const envFilePath = options.envFilePath ?? join(process.cwd(), ".env.local");
 
   // Single shared budget instance — covers all LLM entry points (interview turns,
@@ -266,18 +352,28 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   const sharedBudget = createLlmBudget();
 
   // 持久化边界增量索引：包住 product-state 仓库，每次 replaceState 后 fire-and-forget 触发
-  // 增量重索引（diff 出变更的可索引资产 → 删/重建块）。绝不 await、绝不阻塞写、绝不把错误抛回写路径。
-  // 包装在 sharedBudget / knowledgeIndexRepository 就绪后做，使下游所有路由共用包装后的仓库。
+  // 增量重索引。PR-S3：在 replaceState 同步路径 resolve 当前用户的 concrete knowledge（ALS+pin 仍有效），
+  // 避免 fire-and-forget 时 facade 回落 legacy（KD6）。
+  const knowledgeForReindex: KnowledgeIndexRepository | (() => KnowledgeIndexRepository) =
+    userStoresRegistry
+      ? () => {
+          const key = resolveStoreUserKey(runtimeEnv);
+          return userStoresRegistry.requireReady(key).knowledgeIndex;
+        }
+      : knowledgeIndexRepository;
   const productStateRepository = withKnowledgeReindex(
     innerProductStateRepository,
-    knowledgeIndexRepository,
+    knowledgeForReindex,
     () => providerClients.embeddingClient,
     sharedBudget
   );
 
-  // E:surreal 权威库落库健康度探针 → /api/health 暴露 persist.degraded。R7:dual-write 已删除,
-  // 权威库直接有 getPersistHealth;内存档无此方法 → undefined → health 只回 ok。
+  // E:surreal 权威库落库健康度探针 → /api/health 暴露 persist.degraded。
+  // PR-S3 flag=1: 聚合 legacy + 当前已打开仓的 max(consecutiveFailures)(未打开用户仓不可见)。
   const probePersistHealth = () => {
+    if (userStoresRegistry) {
+      return userStoresRegistry.aggregatePersistHealth();
+    }
     const repo = innerProductStateRepository as {
       getPersistHealth?: () => { consecutiveFailures: number; lastError?: string; lastErrorAt?: string };
     };
@@ -490,14 +586,20 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
  * - void reindexOnStateChange(...)：不 await、不阻塞写、不抛——reindex 自身已整体 try/catch。
  *
  * embeddingClient 通过 getter 取，因为运行时 refresh 会重建该 client（key 变更），
- * 装配期一次性捕获会拿到陈旧引用。其余方法显式转发（接口仅 4 个方法，显式比展开更稳）。
+ * 装配期一次性捕获会拿到陈旧引用。
+ *
+ * knowledgeRepo 可为固定 repo，或 `() => KnowledgeIndexRepository`（PR-S3 分仓）：
+ * getter 在 replaceState **同步路径**内解析（ALS principal 仍在），再交给 fire-and-forget，
+ * 避免异步 reindex 时 ALS 已退出、facade 回落 legacy 写错用户 knowledge（KD6）。
  */
 export function withKnowledgeReindex(
   inner: ProductStateRepository,
-  knowledgeRepo: KnowledgeIndexRepository,
+  knowledgeRepo: KnowledgeIndexRepository | (() => KnowledgeIndexRepository),
   getEmbeddingClient: () => BailianEmbeddingClient | undefined,
   budget: ReturnType<typeof createLlmBudget>
 ): ProductStateRepository {
+  const resolveKnowledge = (): KnowledgeIndexRepository =>
+    typeof knowledgeRepo === "function" ? knowledgeRepo() : knowledgeRepo;
   return {
     // 能力透传(P2b 生产可达性修复):此前只回 4 个接口方法,把 inner(surreal handle)的原生召回
     // /治理事务/审计能力全部吞掉 → 路由层 asNativeRecall(wrapped) 恒 undefined,原生召回在生产静默
@@ -515,7 +617,9 @@ export function withKnowledgeReindex(
       // 回归审查 R4-3:import/purge 传 skipReindex——它们随后显式全量 rebuild/清空,包装层的增量重索引
       // 是重复嵌入(与显式 rebuild 竞态,浪费预算)。跳过后由显式路径负责索引一致性。
       if (!opts?.skipReindex) {
-        void reindexOnStateChange(prev, result, knowledgeRepo, getEmbeddingClient(), budget);
+        // Resolve knowledge under current ALS / pin, then hand a concrete repo to async reindex.
+        const knowledgeForUser = resolveKnowledge();
+        void reindexOnStateChange(prev, result, knowledgeForUser, getEmbeddingClient(), budget);
       }
       return result;
     }
@@ -604,27 +708,39 @@ export async function startServer() {
     }));
   }
 
+  // PR-S3: session auth + USER_SCOPED=1 → durable per-user SurrealStores (or KD16 refuse in production).
+  const userScopedAtStart =
+    isSessionAuthEnabled(process.env) && isUserScopedStateEnabled(process.env);
+
   // R2a:surreal 档下热态 + 三冷层共用同一嵌入式连接(嵌入式 surrealkv 同进程独占锁,不能开第二连接)。
   // createSurrealStores 打开一个连接、applySchema 一次,返回热态仓库 + 三冷层仓库。
-  const loadSurrealStores = async () => {
+  type LoadedSurrealStores = {
+    productState: ProductStateRepository;
+    rawMaterial: RawMaterialRepository;
+    audio: AudioRepository;
+    knowledgeIndex: KnowledgeIndexRepository;
+    close: () => Promise<void>;
+  };
+  const loadSurrealModule = async () => {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-    const mod = await (Function("p", "return import(p)") as (p: string) => Promise<{
-      createSurrealStores: (opts: { url: string }) => Promise<{
-        productState: ProductStateRepository;
-        rawMaterial: RawMaterialRepository;
-        audio: AudioRepository;
-        knowledgeIndex: KnowledgeIndexRepository;
-        // N-10:优雅关闭用——先 flush 热态 persist 队列、再关共享嵌入式连接。
-        close: () => Promise<void>;
-      }>;
-    }>)(new URL("../../../packages/db/src/surreal/surreal-cold-repositories.ts", import.meta.url).pathname);
+    return (await (Function("p", "return import(p)") as (p: string) => Promise<{
+      createSurrealStores: (opts: { url: string }) => Promise<LoadedSurrealStores>;
+    }>)(new URL("../../../packages/db/src/surreal/surreal-cold-repositories.ts", import.meta.url).pathname));
+  };
+  const loadSurrealStoresAtUrl = async (url: string): Promise<LoadedSurrealStores> => {
+    const mod = await loadSurrealModule();
+    return mod.createSurrealStores({ url });
+  };
+  const loadLegacySurrealStores = async () => {
     const dataDir = join(dirname(productStateDbPath), "surreal");
-    return mod.createSurrealStores({ url: `surrealkv://${dataDir}/surreal` });
+    return loadSurrealStoresAtUrl(`surrealkv://${dataDir}/surreal`);
   };
 
   let repository: ProductStateRepository;
   // N-10:surreal 档的「flush persist 队列 + 关共享连接」句柄(优雅关闭时调);memory 档为 undefined。
+  // PR-S3 scoped: storesClose = registry.closeAll().
   let storesClose: (() => Promise<void>) | undefined;
+  let userStoresRegistry: UserStoresRegistry | undefined;
   // R7:档位收敛为 memory|surreal 两档。surreal 档注入 Surreal 冷层(与热态同连接);memory 档
   // 冷层 undefined → buildApiServer 走默认内存工厂。
   let surrealColdRepos: {
@@ -632,26 +748,86 @@ export async function startServer() {
     audioRepository?: AudioRepository;
     knowledgeIndexRepository?: KnowledgeIndexRepository;
   } = {};
+
+  // KD16 hard gate before any listen: production + scoped + non-durable store → refuse.
+  if (userScopedAtStart) {
+    assertDurableUserScopedOrThrow(process.env, {
+      durable: productStore === "surreal",
+      productStoreMode: productStore
+    });
+  }
+
   if (productStore === "memory") {
     // F-02/A2:in-memory 档位(sentinel 或显式 PRODUCT_STORE=memory)。productStateDbPath 此时
     // 恒为 sentinel,buildApiServer 的冷层默认工厂(raw/audio/knowledge)同走内存,零落盘。
+    // USER_SCOPED=1 仅允许非 production(已在 assert 放行)→ buildApiServer 内存分仓工厂。
     repository = createInMemoryProductStateRepository();
     console.warn(JSON.stringify({
       event: "product_store",
       mode: "memory",
       reason: selection.reason,
+      userScoped: userScopedAtStart,
       // sentinel 压过档位继承时响亮注明,避免运维误以为持久档生效。
       ...(selection.ignoredProductStore ? { ignoredProductStore: selection.ignoredProductStore } : {})
     }));
-  } else {
-    // R7:surreal 是唯一持久档(未设/未知/已废弃档位均已在 resolveProductStoreSelection 归一到此)。
-    // R2a:热态 + 三冷层共用同一嵌入式连接(嵌入式 surrealkv 同进程独占锁,不能开第二连接)。
-    // N-07:嵌入式 surrealkv 同进程独占锁——若另一进程已持锁,connect 会静默永挂。
-    // createSurrealConnection 已加超时抛 SurrealConnectTimeoutError;这里指认数据目录后 exit 1,
-    // 让运维一眼看到"疑似双开"而非盯着无输出的挂死进程猜。
-    let stores: Awaited<ReturnType<typeof loadSurrealStores>>;
+  } else if (userScopedAtStart) {
+    // PR-S3 durable path: pre-open legacy full stores; lazy-open other users via registry.
+    const legacy = legacyOwner(process.env);
+    const legacyKey = sanitizeUserKey(legacy);
+    const baseDataDir = baseDataDirFromProductStateDbPath(productStateDbPath);
+    let legacyStores: LoadedSurrealStores;
     try {
-      stores = await loadSurrealStores();
+      legacyStores = await loadLegacySurrealStores();
+    } catch (error) {
+      const dataDir = join(dirname(productStateDbPath), "surreal");
+      const timedOut = error instanceof Error && error.name === "SurrealConnectTimeoutError";
+      console.error(JSON.stringify({
+        event: "surreal_connect_failed",
+        dataDir,
+        userKey: legacyKey,
+        suspectedCause: timedOut ? "另一进程可能正持有该数据目录的独占锁(双开)" : "连接/初始化失败",
+        detail: error instanceof Error ? error.message : String(error)
+      }));
+      process.exit(1);
+    }
+    const registry = createUserStoresRegistry({
+      baseDataDir,
+      legacyUserKey: legacyKey,
+      maxOpen: userStoreLruMax(process.env),
+      openStores: async ({ url, userKey, dataDir }) => {
+        try {
+          return await loadSurrealStoresAtUrl(url);
+        } catch (error) {
+          const timedOut = error instanceof Error && error.name === "SurrealConnectTimeoutError";
+          console.error(JSON.stringify({
+            event: "surreal_connect_failed",
+            dataDir,
+            userKey,
+            suspectedCause: timedOut ? "另一进程可能正持有该数据目录的独占锁(双开)" : "连接/初始化失败",
+            detail: error instanceof Error ? error.message : String(error)
+          }));
+          throw error;
+        }
+      }
+    });
+    registry.seed(legacyKey, legacyStores);
+    userStoresRegistry = registry;
+    // Facades built inside buildApiServer from registry; seed productState only for type fallbacks.
+    repository = legacyStores.productState;
+    storesClose = () => registry.closeAll();
+    console.warn(JSON.stringify({
+      event: "product_store",
+      mode: "surreal",
+      reason: selection.reason,
+      userScoped: true,
+      detail: "PR-S3 durable UserStoresRegistry (legacy pre-open; lazy per-user full stores)"
+    }));
+  } else {
+    // R7:surreal 是唯一持久档。flag=0 保持今日：一次 createSurrealStores → 注入。
+    // N-07:嵌入式 surrealkv 同进程独占锁——若另一进程已持锁,connect 会静默永挂。
+    let stores: LoadedSurrealStores;
+    try {
+      stores = await loadLegacySurrealStores();
     } catch (error) {
       const dataDir = join(dirname(productStateDbPath), "surreal");
       const timedOut = error instanceof Error && error.name === "SurrealConnectTimeoutError";
@@ -685,7 +861,9 @@ export async function startServer() {
   const server = buildApiServer({
     productStateRepository: repository,
     // R7:surreal 档注入 Surreal 冷层(与热态同连接);memory 档为空 → buildApiServer 走默认内存工厂。
-    ...surrealColdRepos,
+    // PR-S3 durable scoped: cold facades come from registry inside buildApiServer (skip seed cold).
+    ...(userStoresRegistry ? {} : surrealColdRepos),
+    ...(userStoresRegistry ? { userStoresRegistry } : {}),
     // F-02/A2:把实际生效档位透出到 /api/system/capabilities,供 E2E globalSetup 校验隔离。
     productStoreMode: productStore,
     enableResearchScheduler: true,
@@ -701,7 +879,7 @@ export async function startServer() {
   // 仅 startServer(真实常驻进程)注册钩子;buildApiServer/测试路径不注册,故不泄漏信号 handler。
   const flushPersistence = async () => {
     if (storesClose) {
-      // surreal 档:stores.close() 先 flush 热态 persist 队列、再关共享嵌入式连接。
+      // surreal 档 / PR-S3 registry: close() flush persist 队列 + 关连接(们)。
       await storesClose();
     } else {
       // memory 档:flush 若存在则排空(基接口无 flush → no-op 也无妨),无连接可关 → 干净退出。
