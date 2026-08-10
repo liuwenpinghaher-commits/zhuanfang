@@ -226,6 +226,9 @@ export function createProductApiClient(
       llmTtftMs?: number;
       ttsTtfbMs?: number;
       interrupted?: boolean;
+      bargeInSuccess?: boolean;
+      interruptRecovery?: boolean;
+      falseTriggerKind?: "quarantine_echo_suspect" | "max_wait_suppressed" | "auto_committed_echo_suspect";
       sessionId?: string;
     }): Promise<void> {
       try {

@@ -38,6 +38,7 @@ import {
 } from "../realtime/voiceTransportLifecycle";
 import { deriveRealtimeWsBaseUrl } from "../realtime/wsBaseUrl";
 import { buildNotice, type UiNotice } from "../ui";
+import { useCascadeVoiceMetrics } from "./useCascadeVoiceMetrics";
 
 export type RealtimeVoiceConnection =
   | BailianRealtimeWebrtcConnection
@@ -125,6 +126,9 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
     voiceRecallRefreshSucceeded,
     voiceRecallRefreshFailed
   } = args;
+
+  // Phase-0: cascade TTFA + barge-in + false-trigger → POST runtime-metrics/voice
+  const { reportLatency } = useCascadeVoiceMetrics(session?.id ?? null);
 
   function closeRealtimeVoiceSession() {
     // Invalidate callbacks before closing resources: pipeline.close() may synchronously
@@ -383,6 +387,10 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
                 onTtsPlaybackInterrupted: () => {
                   if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
                   setNotice(buildNotice("warning", "语音播放中断", "本轮语音播放中断，文字内容已保留"));
+                },
+                onLatency: (sample) => {
+                  if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
+                  reportLatency(sample);
                 },
                 onTranscriptQuarantined: (item) => {
                   if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;

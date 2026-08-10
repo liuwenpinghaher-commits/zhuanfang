@@ -77,6 +77,14 @@ server.get("/api/health", async () => {
           : "unknown";
       const num = (k: string) =>
         typeof body[k] === "number" && Number.isFinite(body[k] as number) ? (body[k] as number) : undefined;
+      const boolOpt = (k: string): boolean | undefined =>
+        body[k] === true ? true : body[k] === false ? false : undefined;
+      const falseTriggerKind =
+        body.falseTriggerKind === "quarantine_echo_suspect" ||
+        body.falseTriggerKind === "max_wait_suppressed" ||
+        body.falseTriggerKind === "auto_committed_echo_suspect"
+          ? body.falseTriggerKind
+          : undefined;
       recordVoiceLatency({
         path,
         ttfaMs: num("ttfaMs"),
@@ -85,6 +93,9 @@ server.get("/api/health", async () => {
         llmTtftMs: num("llmTtftMs"),
         ttsTtfbMs: num("ttsTtfbMs"),
         interrupted: body.interrupted === true,
+        bargeInSuccess: boolOpt("bargeInSuccess"),
+        interruptRecovery: boolOpt("interruptRecovery"),
+        falseTriggerKind,
         sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined
       });
       return { ok: true, metrics: getRuntimeMetricsSnapshot().voice };

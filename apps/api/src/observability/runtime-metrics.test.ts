@@ -32,6 +32,40 @@ describe("runtime-metrics", () => {
     expect(s.budgetHint.ttfaP95TargetMs).toBe(1200);
   });
 
+  it("accepts bargeInSuccess false and interruptRecovery aggregates", () => {
+    recordVoiceLatency({
+      path: "cascade",
+      interrupted: true,
+      bargeInSuccess: false,
+      interruptRecovery: false
+    });
+    recordVoiceLatency({
+      path: "cascade",
+      interrupted: true,
+      bargeInSuccess: true,
+      interruptRecovery: true
+    });
+    const s = summarizeVoiceLatency();
+    expect(s.bargeInSuccessCount).toBe(1);
+    expect(s.bargeInFailCount).toBe(1);
+    expect(s.bargeInSuccessRate).toBeCloseTo(0.5);
+    expect(s.interruptRecoveryCount).toBe(1);
+    expect(s.interruptRecoveryRate).toBeCloseTo(0.5);
+  });
+
+  it("counts falseTrigger quarantine and max_wait_suppressed events", () => {
+    recordVoiceLatency({ path: "cascade", falseTriggerKind: "quarantine_echo_suspect" });
+    recordVoiceLatency({ path: "cascade", falseTriggerKind: "quarantine_echo_suspect" });
+    recordVoiceLatency({ path: "cascade", falseTriggerKind: "max_wait_suppressed" });
+    const s = summarizeVoiceLatency();
+    expect(s.falseTriggerCount).toBe(3);
+    expect(s.falseTriggerByKind.quarantine_echo_suspect).toBe(2);
+    expect(s.falseTriggerByKind.max_wait_suppressed).toBe(1);
+    expect(s.falseTriggerByKind.auto_committed_echo_suspect).toBe(0);
+    const snap = getRuntimeMetricsSnapshot();
+    expect(snap.voice.falseTriggerCount).toBe(3);
+  });
+
   it("tracks recall empty vs hit", () => {
     recordRecallEvent({ capability: "chat", outcome: "empty" });
     recordRecallEvent({ capability: "chat", outcome: "hit", hitCount: 3, topScore: 0.4 });

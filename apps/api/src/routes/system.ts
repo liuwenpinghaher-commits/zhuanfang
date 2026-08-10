@@ -626,6 +626,8 @@ export async function registerSystemRoutes(
           bargeInSuccessRate: metrics.voice.bargeInSuccessRate,
           interruptRecoveryCount: metrics.voice.interruptRecoveryCount,
           interruptRecoveryRate: metrics.voice.interruptRecoveryRate,
+          falseTriggerCount: metrics.voice.falseTriggerCount,
+          falseTriggerByKind: metrics.voice.falseTriggerByKind,
           segments: metrics.voice.segments,
           budgetHint: metrics.voice.budgetHint
         },

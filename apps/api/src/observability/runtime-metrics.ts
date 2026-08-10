@@ -3,6 +3,26 @@
  * Single-user local tool — process memory is enough; no external TSDB required.
  */
 
+/** Phase-0 false-trigger countable kinds (echo / max-wait suppress). */
+export type FalseTriggerKind =
+  | "quarantine_echo_suspect"
+  | "max_wait_suppressed"
+  | "auto_committed_echo_suspect";
+
+export const FALSE_TRIGGER_KINDS: readonly FalseTriggerKind[] = [
+  "quarantine_echo_suspect",
+  "max_wait_suppressed",
+  "auto_committed_echo_suspect"
+] as const;
+
+export function isFalseTriggerKind(value: unknown): value is FalseTriggerKind {
+  return (
+    value === "quarantine_echo_suspect" ||
+    value === "max_wait_suppressed" ||
+    value === "auto_committed_echo_suspect"
+  );
+}
+
 export interface VoiceLatencySample {
   at: string;
   path: "cascade" | "omni" | "livekit" | "interrupt" | "unknown";
@@ -17,6 +37,11 @@ export interface VoiceLatencySample {
   bargeInSuccess?: boolean;
   /** Stage-3: post-interrupt next turn retained interrupted context (stash). */
   interruptRecovery?: boolean;
+  /**
+   * Phase-0: false-trigger / echo-guard event (countable).
+   * May be sent alone (no ttfaMs) as a discrete event sample.
+   */
+  falseTriggerKind?: FalseTriggerKind;
   sessionId?: string;
 }
 
@@ -89,6 +114,18 @@ export function summarizeVoiceLatency(samples: VoiceLatencySample[] = voiceSampl
   const bargeInFailCount = samples.filter((s) => s.bargeInSuccess === false).length;
   const recoveryKnown = samples.filter((s) => s.interruptRecovery !== undefined);
   const interruptRecoveryCount = samples.filter((s) => s.interruptRecovery === true).length;
+  const falseTriggerByKind: Record<FalseTriggerKind, number> = {
+    quarantine_echo_suspect: 0,
+    max_wait_suppressed: 0,
+    auto_committed_echo_suspect: 0
+  };
+  let falseTriggerCount = 0;
+  for (const s of samples) {
+    if (s.falseTriggerKind && isFalseTriggerKind(s.falseTriggerKind)) {
+      falseTriggerByKind[s.falseTriggerKind] += 1;
+      falseTriggerCount += 1;
+    }
+  }
   return {
     sampleCount: samples.length,
     ttfaCount: sorted.length,
@@ -102,6 +139,9 @@ export function summarizeVoiceLatency(samples: VoiceLatencySample[] = voiceSampl
     interruptRecoveryCount,
     interruptRecoveryRate:
       recoveryKnown.length > 0 ? interruptRecoveryCount / recoveryKnown.length : undefined,
+    /** Phase-0: countable false-trigger / echo-guard events. */
+    falseTriggerCount,
+    falseTriggerByKind,
     segments: {
       vadEndToStt: segmentPercentiles(samples, "vadEndToSttMs"),
       sttToLlm: segmentPercentiles(samples, "sttToLlmMs"),

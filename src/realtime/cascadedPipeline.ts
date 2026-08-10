@@ -123,13 +123,20 @@ export interface CascadedPipelineCallbacks {
   onError: (e: Error) => void;
   /** TTS playback stopped unexpectedly; the assistant text remains available. */
   onTtsPlaybackInterrupted?: (e: Error) => void;
-  /** Stage-2 TTFA probe */
+  /**
+   * Stage-2/3: TTFA probe + barge-in / false-trigger countable events.
+   * ttfaMs optional so event-only samples (quarantine, max_wait_suppressed, barge-in) can fire without latency.
+   */
   onLatency?: (sample: {
-    ttfaMs: number;
+    ttfaMs?: number;
     vadEndToSttMs?: number;
     sttToLlmMs?: number;
     llmTtftMs?: number;
     ttsTtfbMs?: number;
+    interrupted?: boolean;
+    bargeInSuccess?: boolean;
+    interruptRecovery?: boolean;
+    falseTriggerKind?: "quarantine_echo_suspect" | "max_wait_suppressed" | "auto_committed_echo_suspect";
   }) => void;
   onTranscriptQuarantined?: (item: TranscriptReviewItem) => void;
 }
@@ -263,6 +270,10 @@ export function connectCascadedPipeline(
     surfacedQuarantineKey = key;
     activeReview = item;
     callbacks.onTranscriptQuarantined?.(item);
+    // Phase-0: echo-window quarantine is a countable false-trigger (not recovery review).
+    if (item.source === "echo") {
+      callbacks.onLatency?.({ falseTriggerKind: "quarantine_echo_suspect" });
+    }
   }
 
   function setState(next: CascadePipelineState) {
@@ -335,6 +346,9 @@ export function connectCascadedPipeline(
       if (!closed && !micSuppressed && state !== "thinking" && state !== "speaking") {
         onDecision?.({ layer: 0, action: "respond", reason: "max-wait timer fired", transcript, silenceMs: maxWaitMs, expressionState });
         requestStableCommit(true);
+      } else if (!closed && (micSuppressed || state === "thinking" || state === "speaking")) {
+        // Phase-0: maxWait attempted but suppressed by half-duplex / active turn.
+        callbacks.onLatency?.({ falseTriggerKind: "max_wait_suppressed" });
       }
     }, maxWaitMs);
   }
@@ -409,6 +423,8 @@ export function connectCascadedPipeline(
       committedTranscript = "";
       partialTranscript = "";
       turnAssembler.reset();
+      // Phase-0: cascade natural barge-in succeeded (abort + stop TTS).
+      callbacks.onLatency?.({ interrupted: true, bargeInSuccess: true });
     }
     return wasActive;
   }

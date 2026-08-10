@@ -70,11 +70,15 @@ export interface StartRealtimeVoiceConnectDeps {
   adoptServerState: (state: ProductState) => void;
   closeRealtimeVoiceSession: () => void;
   reportLatency: (sample: {
-    ttfaMs: number;
+    ttfaMs?: number;
     vadEndToSttMs?: number;
     sttToLlmMs?: number;
     llmTtftMs?: number;
     ttsTtfbMs?: number;
+    interrupted?: boolean;
+    bargeInSuccess?: boolean;
+    interruptRecovery?: boolean;
+    falseTriggerKind?: "quarantine_echo_suspect" | "max_wait_suppressed" | "auto_committed_echo_suspect";
   }) => void;
   consumeInterruptStashPrompt: () => string;
   recordTurnFailedFallback: (text: string, err: unknown) => void;

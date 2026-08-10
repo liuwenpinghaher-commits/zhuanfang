@@ -403,10 +403,12 @@ describe("connectCascadedPipeline", () => {
     asr.setExpressionState("concluding");
     asr.setUserEnergyEvidence(false);
     const quarantined: Array<{ text: string; reason: string }> = [];
+    const latencySamples: Array<{ falseTriggerKind?: string }> = [];
     const opts = makeOpts({
       decisionOpts: { finalStabilityMs: 0, echoWindowMs: 1_500, echoSimilarityThreshold: 0.8 }
     });
     opts.callbacks.onTranscriptQuarantined = (item) => quarantined.push(item);
+    opts.callbacks.onLatency = (sample) => latencySamples.push(sample);
     const pipeline = connectCascadedPipeline(opts);
 
     await pipeline.startListening("你能讲一个具体例子吗？");
@@ -417,6 +419,8 @@ describe("connectCascadedPipeline", () => {
 
     expect(quarantined).toHaveLength(1);
     expect(sendUserTurn.fn).not.toHaveBeenCalled();
+    // Phase-0: echo quarantine emits countable false-trigger event
+    expect(latencySamples.some((s) => s.falseTriggerKind === "quarantine_echo_suspect")).toBe(true);
 
     pipeline.confirmQuarantinedTranscript("我可以讲一个具体例子。");
     await Promise.resolve();
