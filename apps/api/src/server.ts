@@ -169,11 +169,15 @@ interface ProviderClients {
 const REQUEST_BODY_LIMIT_BYTES = 28 * 1024 * 1024;
 
 export function buildApiServer(options: BuildApiServerOptions = {}) {
+  const runtimeEnv = options.env ?? process.env;
+  // Fail-closed before assembling routes: production without credentials must not open /api/*.
+  // Same bar as startServer; sole override PRODUCT_AUTH_INSECURE_OK (error-level log).
+  assertProductionAuthConfigured(runtimeEnv);
+
   // 回归审查 R3-C:trustProxy 让 request.protocol 认 X-Forwarded-Proto——否则 TLS 终止反代下
   // request.protocol 恒 http,CSRF 守卫的 sameHost 比较(origin https:// vs http://internal)恒 false,
   // 漏配 PRODUCT_WEB_ORIGINS + 同源托管时会 403 拦掉全部合法同源写。
   const server = Fastify({ logger: false, bodyLimit: REQUEST_BODY_LIMIT_BYTES, trustProxy: true });
-  const runtimeEnv = options.env ?? process.env;
   registerCors(server, runtimeEnv);
   registerProductionAuth(server, runtimeEnv);
   registerRuntimeBootstrap(server, runtimeEnv);
@@ -235,15 +239,6 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   const stateStore: "memory" | "surreal" = options.productStoreMode === "surreal" ? "surreal" : "memory";
 
   const isProductionProfile = (runtimeEnv.DEPLOYMENT_PROFILE ?? "").trim().toLowerCase() === "production";
-  // Fail-LOUD 而非 fail-open-silent:startServer() 在生产缺 token 时硬抛拒绝启动(生产硬闸);但直接用
-  // buildApiServer 的嵌入/脚本路径若在生产 profile 缺 token,鉴权守卫静默关闭、全 /api/* 裸奔。这里至少
-  // 响亮告警,不再静默。(嵌入方可自带鉴权层,故告警而非抛错,避免破坏合法用法。)
-  if (isProductionProfile && !runtimeEnv.PRODUCT_API_TOKEN && !isSessionAuthEnabled(runtimeEnv)) {
-    console.warn(JSON.stringify({
-      event: "auth_guard_inactive_in_production",
-      detail: "DEPLOYMENT_PROFILE=production 但未设 PRODUCT_API_TOKEN / PRODUCT_AUTH_ENABLED —— 鉴权守卫未启用。"
-    }));
-  }
   // 生产 profile 却回落内存存储(通常是 PRODUCT_STORE=memory 或漏配 surreal 档) → 进程重启全部数据丢失。响亮告警。
   if (isProductionProfile && stateStore === "memory") {
     console.warn(JSON.stringify({
@@ -577,12 +572,9 @@ export async function startServer() {
     }
   }
 
-  // P0-A fail-closed: in the production profile the bearer guard only activates when a
-  // token is present (see isAuthGuardActive). Refuse to start a production deployment
-  // without PRODUCT_API_TOKEN, otherwise every /api/* route (full privacy export, one-shot
-  // purge, provider-config writes, WS voice proxies) would be reachable with no credential.
-  // buildApiServer() stays token-free on purpose so tests can construct a server in-memory;
-  // this guard lives here so it only bites when a real, listening process is launched.
+  // P0-A fail-closed (early): refuse production listen without auth credentials before
+  // opening Surreal / binding the port. buildApiServer re-checks the same bar (incl.
+  // PRODUCT_AUTH_INSECURE_OK) so embed/script entrypoints cannot assemble an open surface.
   assertProductionAuthConfigured(process.env);
 
   // Persist by default so a server restart no longer drops all interview state.

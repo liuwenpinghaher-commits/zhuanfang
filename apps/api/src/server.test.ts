@@ -2,7 +2,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildApiServer, isDirectCliExecution, createGracefulShutdown, isSpaHistoryPath } from "./server";
+import {
+  assertProductionAuthConfigured,
+  buildApiServer,
+  isDirectCliExecution,
+  createGracefulShutdown,
+  isSpaHistoryPath
+} from "./server";
 import {
   createFakeChatClient,
   createFakeEmbeddingClient,
@@ -1404,14 +1410,86 @@ it("renders podcast audio through Bailian CosyVoice when the audio client is con
       expect(response.statusCode).toBe(200);
     });
 
-    it("does not enforce auth when PRODUCT_API_TOKEN is not set even in production profile", async () => {
+    it("fail-closed: buildApiServer throws when production profile lacks auth credentials", () => {
+      expect(() =>
+        buildApiServer({
+          env: { DEPLOYMENT_PROFILE: "production" }
+        })
+      ).toThrow(/PRODUCT_API_TOKEN|PRODUCT_AUTH_ENABLED|PRODUCT_SESSION_SECRET/);
+    });
+
+    it("fail-closed: session auth enabled without PRODUCT_SESSION_SECRET throws", () => {
+      expect(() =>
+        buildApiServer({
+          env: {
+            DEPLOYMENT_PROFILE: "production",
+            PRODUCT_AUTH_ENABLED: "1"
+          }
+        })
+      ).toThrow(/PRODUCT_SESSION_SECRET/);
+    });
+
+    it("PRODUCT_AUTH_INSECURE_OK allows insecure production build with error log (guard stays inactive)", async () => {
+      const err = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const server = buildApiServer({
+          env: {
+            DEPLOYMENT_PROFILE: "production",
+            PRODUCT_AUTH_INSECURE_OK: "1"
+          }
+        });
+        const response = await server.inject({ method: "GET", url: "/api/state" });
+        expect(response.statusCode).toBe(200);
+        expect(err).toHaveBeenCalled();
+        const logged = err.mock.calls.map((c) => String(c[0])).join("\n");
+        expect(logged).toContain("auth_insecure_ok_override");
+        await server.close();
+      } finally {
+        err.mockRestore();
+      }
+    });
+
+    it("session auth production with PRODUCT_SESSION_SECRET builds and enforces 401 without cookie", async () => {
       const server = buildApiServer({
-        env: { DEPLOYMENT_PROFILE: "production" }
+        env: {
+          DEPLOYMENT_PROFILE: "production",
+          PRODUCT_AUTH_ENABLED: "1",
+          PRODUCT_SESSION_SECRET: "test-session-secret-for-production-gate-32b"
+        }
       });
-
       const response = await server.inject({ method: "GET", url: "/api/state" });
+      expect(response.statusCode).toBe(401);
+      await server.close();
+    });
 
-      expect(response.statusCode).toBe(200);
+    it("assertProductionAuthConfigured: non-production is a no-op; insecure ok accepts true/yes/on", () => {
+      expect(() => assertProductionAuthConfigured({})).not.toThrow();
+      expect(() =>
+        assertProductionAuthConfigured({ DEPLOYMENT_PROFILE: "development" })
+      ).not.toThrow();
+      expect(() =>
+        assertProductionAuthConfigured({
+          DEPLOYMENT_PROFILE: "production",
+          PRODUCT_API_TOKEN: "tok"
+        })
+      ).not.toThrow();
+      expect(() =>
+        assertProductionAuthConfigured({ DEPLOYMENT_PROFILE: "production" })
+      ).toThrow();
+
+      const err = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        for (const flag of ["true", "yes", "on", "TRUE"]) {
+          expect(() =>
+            assertProductionAuthConfigured({
+              DEPLOYMENT_PROFILE: "production",
+              PRODUCT_AUTH_INSECURE_OK: flag
+            })
+          ).not.toThrow();
+        }
+      } finally {
+        err.mockRestore();
+      }
     });
 
     it("blocks unauthenticated requests when DEPLOYMENT_PROFILE='Production' (case-insensitive, security fix)", async () => {
