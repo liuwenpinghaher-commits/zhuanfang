@@ -184,6 +184,15 @@ describe("llm-budget guard: GET /api/reviews", () => {
 
     await server.close();
   });
+
+  // reviews 已纳入 SYSTEM_BUDGET_KEYS：耗尽后 429，滑窗滚动后可再次 consume（不再是孤立单调桶）。
+  it("reviews 滑窗：耗尽 tryConsume false → 窗口过后可再 consume", async () => {
+    const budget = createLlmBudget({ maxCallsPerSession: 1, systemWindowMs: 20 });
+    expect(budget.tryConsume("reviews")).toBe(true);
+    expect(budget.tryConsume("reviews")).toBe(false); // cap hit within the window
+    await new Promise((r) => setTimeout(r, 30)); // let the window elapse
+    expect(budget.tryConsume("reviews")).toBe(true); // window rolled over — not permanently stuck
+  });
 });
 
 // ---------------------------------------------------------------------------

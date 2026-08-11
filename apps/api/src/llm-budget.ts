@@ -17,7 +17,9 @@ export interface LlmBudget {
 // 审计修复(P3-36/P1-6):knowledge_index(增量重索引嵌入)与 memory_consolidate(记忆整理摘要)
 // 同为非 session 键——前者曾两头落空(不 reset 也不在滑窗,长跑进程 200 次后嵌入永久静默关闭,
 // 正是上方注释点名要避免的失效模式);后者曾完全绕过预算。一并纳入滑窗。
-const SYSTEM_BUDGET_KEYS = new Set(["system", "research_auto_run", "chat", "rag_query", "knowledge_index", "memory_consolidate"]);
+// reviews 同为非 session 键(GET /api/reviews)，曾是「孤立单调桶」：到 cap 后进程生命周期内永久 429，
+// 只能靠重启恢复。纳入滑窗后与 chat/system 一致，按窗口滚动恢复。
+const SYSTEM_BUDGET_KEYS = new Set(["system", "research_auto_run", "chat", "rag_query", "knowledge_index", "memory_consolidate", "reviews"]);
 
 // Default sliding window for system buckets (1 hour). Override via LLM_SYSTEM_WINDOW_MS or
 // the opts param (tests). The cap (maxCallsPerSession) is reused as the per-window cap.
