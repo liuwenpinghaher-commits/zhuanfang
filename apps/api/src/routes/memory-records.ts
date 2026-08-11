@@ -3,6 +3,7 @@ import { deleteMemoryRecord, deprecateMemoryRecord, updateMemoryRecordText } fro
 import type { MemoryRecord, ProductState } from "../../../../src/domain/types";
 import type { ProductStateRepository } from "../product-state-repository";
 import type { BailianEmbeddingClient } from "../providers/bailian";
+import type { LlmBudget } from "../llm-budget";
 import { MAX_EMBED_CHARS } from "./knowledge";
 import { runStateCommand } from "../state-command";
 import type { WriteGate } from "../server";
@@ -12,6 +13,9 @@ interface MemoryRecordRouteOptions {
    *  匹配(比无向量更糟)。注入与 approve 同源的 client;缺省/失败则【删除】陈旧向量诚实退化为
    *  关键词召回。 */
   embeddingClient?: BailianEmbeddingClient;
+  /** 与 approve/knowledge 同源:重嵌走 knowledge_index 桶。由 server 注入 sharedBudget;
+   *  勿在此 ?? createLlmBudget() 掩盖漏传。预算耗尽/未注入 → 跳过 embed、删陈旧向量、仍 200 保存文本。 */
+  llmBudget?: LlmBudget;
   /** 回归审查 R6-6 → R3:三条路由均豁免全局写锁,同步 read-modify-write 走 runStateCommand
    *  CAS 重试(embed 仍在锁外/重试外先算),CAS commit 经此写门与在途长持锁写互斥(D3 不变量)。 */
   writeGate?: WriteGate;
@@ -57,15 +61,39 @@ export async function registerMemoryRecordRoutes(
     // 算好的向量以闭包常量带进 mutate 写回。
     // 审计修复(P2-12):文本变 → 向量必须跟着变。成功则更新(带 provider 戳);失败/无 client 则
     // 删除陈旧向量(诚实退化为关键词召回,绝不让旧语义继续参与排序)。
+    // 预算闸(knowledge_index):耗尽或未注入 sharedBudget → 跳过 embed,仍 200 保存文本(永不 429 整次 PATCH)。
     let reembedded: { embedding: number[]; embeddingProvider?: string } | undefined;
     if (options.embeddingClient) {
-      try {
-        const [vec] = await options.embeddingClient.embed([text.slice(0, MAX_EMBED_CHARS)]);
-        if (Array.isArray(vec) && vec.length > 0) {
-          reembedded = { embedding: vec, ...(options.embeddingClient.providerId ? { embeddingProvider: options.embeddingClient.providerId } : {}) };
+      const budget = options.llmBudget;
+      const allowEmbed = budget != null && budget.tryConsume("knowledge_index");
+      if (!allowEmbed) {
+        console.warn(
+          JSON.stringify({
+            event: "llm_budget_exceeded",
+            capability: "knowledge_index",
+            phase: "memory_record_reembed",
+            id: record.id,
+            reason: budget == null ? "llm_budget_not_injected" : "cap_exhausted"
+          })
+        );
+      } else {
+        try {
+          const [vec] = await options.embeddingClient.embed([text.slice(0, MAX_EMBED_CHARS)]);
+          if (Array.isArray(vec) && vec.length > 0) {
+            reembedded = {
+              embedding: vec,
+              ...(options.embeddingClient.providerId ? { embeddingProvider: options.embeddingClient.providerId } : {})
+            };
+          }
+        } catch (err) {
+          console.warn(
+            JSON.stringify({
+              event: "memory_record_reembed_failed",
+              id: record.id,
+              error: err instanceof Error ? err.message : String(err)
+            })
+          );
         }
-      } catch (err) {
-        console.warn(JSON.stringify({ event: "memory_record_reembed_failed", id: record.id, error: err instanceof Error ? err.message : String(err) }));
       }
     }
     // R3:R6-6 的"写门内重读 latest 原子合并"换轨为 runStateCommand CAS 重试——同步 RMW 语义不变
@@ -94,7 +122,19 @@ export async function registerMemoryRecordRoutes(
     }
     // 返回 replaceState 的权威态(revision 已 bump),否则客户端下一次乐观 PUT 必 409。
     const updatedRecord = findRecord(persisted, record.id);
-    return { record: updatedRecord, state: persisted };
+    const embeddingReady = Boolean(reembedded?.embedding && reembedded.embedding.length > 0);
+    return {
+      record: updatedRecord,
+      state: persisted,
+      embeddingReady,
+      vectorRecallAvailable: embeddingReady,
+      ...(embeddingReady
+        ? {}
+        : {
+            warning:
+              "已保存文本修正，但语义向量未重算（预算不足、嵌入失败或未配置）：跨会话向量召回按关键词/子串路径。"
+          })
+    };
   });
 
   // R3 试点:纯同步小 RMW,换轨 CAS(查找在 mutate 内基于最新态重算;返回的 record 是删除前快照)。

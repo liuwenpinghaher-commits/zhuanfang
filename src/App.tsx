@@ -950,11 +950,22 @@ export default function App() {
     return withMemoryAction(() => productApiClient.deleteMemoryRecord(id)).catch(() => {});
   };
   const editMemoryRecord = async (recordId: string, text: string) => {
-    // 修正后端会自动重算 embedding。用 adoptServerState 采纳权威态，避免冗余 PUT。
+    // 修正后端会在预算允许时重算 embedding；embeddingReady===false 时勿声称已重建语义索引。
     try {
-      const next = await productApiClient.updateMemoryRecordText(recordId, text);
-      adoptServerState(next);
-      setNotice(buildNotice("success", "记忆已更新", "已保存修正并重新计算语义索引。"));
+      const result = await productApiClient.updateMemoryRecordText(recordId, text);
+      adoptServerState(result.state);
+      if (result.embeddingReady === false) {
+        setNotice(
+          buildNotice(
+            "success",
+            "记忆已更新",
+            result.warning ??
+              "已保存文本修正；语义索引未重算（预算不足或嵌入不可用），当前仅关键词/子串可命中。"
+          )
+        );
+      } else {
+        setNotice(buildNotice("success", "记忆已更新", "已保存修正并重新计算语义索引。"));
+      }
     } catch {
       setNotice(buildNotice("warning", "记忆修改未保存", "请稍后重试。"));
     }

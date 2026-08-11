@@ -152,6 +152,27 @@ export async function registerMemoryCandidateRoutes(
     // C-P1-06: when an embedding client is configured, embed failure is fail-closed (502)
     // so "confirmed" never silently means "not HNSW-searchable". When no client is
     // configured (keyword-only product config), approve succeeds with embeddingReady:false.
+    // 预算闸(knowledge_index):有 embeddingClient 时先 tryConsume;耗尽/未注入 → 429 且不写 confirmed
+    // (与 consolidate 摘要闸同纪律;勿 ?? createLlmBudget() 掩盖 server 漏传 sharedBudget)。
+    if (options.embeddingClient) {
+      const budget = options.llmBudget;
+      if (!budget || !budget.tryConsume("knowledge_index")) {
+        console.warn(
+          JSON.stringify({
+            event: "llm_budget_exceeded",
+            capability: "knowledge_index",
+            phase: "memory_approve_embed",
+            candidateId: candidate.id,
+            reason: budget == null ? "llm_budget_not_injected" : "cap_exhausted"
+          })
+        );
+        return reply.code(429).send({
+          error: "记忆确认失败：语义向量预算已用尽，本条未确认。请稍后再试或提高 LLM 预算上限。",
+          embeddingReady: false,
+          vectorRecallAvailable: false
+        });
+      }
+    }
     const embedOutcome = await embedCandidateText(candidate.text, options.embeddingClient);
     if (options.embeddingClient && embedOutcome.status !== "ok") {
       const embedError =

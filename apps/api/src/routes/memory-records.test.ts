@@ -5,6 +5,7 @@ import { createInMemoryProductStateRepository } from "../product-state-repositor
 import { createEmptyProductState } from "../../../../src/domain/engine";
 import type { BailianEmbeddingClient } from "../providers/bailian";
 import type { MemoryRecord, MemoryRecordStatus, ProductState } from "../../../../src/domain/types";
+import { createLlmBudget } from "../llm-budget";
 
 function record(partial: Partial<MemoryRecord> & { id: string; text: string }): MemoryRecord {
   return {
@@ -26,6 +27,9 @@ function seed(records: MemoryRecord[]): ProductState {
 const client = (embed: BailianEmbeddingClient["embed"], providerId?: string): BailianEmbeddingClient =>
   ({ embed, ...(providerId ? { providerId } : {}) }) as unknown as BailianEmbeddingClient;
 
+/** 测试用宽松预算:与 production sharedBudget 同纪律,显式注入勿靠 route 内兜底。 */
+const allowBudget = () => createLlmBudget({ maxCallsPerSession: 20 });
+
 describe("memory-records PATCH (P2-12 重嵌 + 回归审查 R6-5/R6-6)", () => {
   it("编辑文本 → 重算向量(带 provider 戳),返回权威态(revision 已 bump)", async () => {
     // N-01-embedding:mock 向量须是合法 1024 维——PATCH 经 replaceState → normalizeProductState →
@@ -35,7 +39,10 @@ describe("memory-records PATCH (P2-12 重嵌 + 回归审查 R6-5/R6-6)", () => {
     const repo = createInMemoryProductStateRepository(seed([record({ id: "m1", text: "旧文本", embedding: [9, 9], embeddingProvider: "old" })]));
     const rev0 = repo.getState().revision ?? 0;
     const server = Fastify({ logger: false });
-    await registerMemoryRecordRoutes(server, repo, { embeddingClient: client(embed, "test-provider") });
+    await registerMemoryRecordRoutes(server, repo, {
+      embeddingClient: client(embed, "test-provider"),
+      llmBudget: allowBudget()
+    });
     const res = await server.inject({ method: "PATCH", url: "/api/memory-records/m1", payload: { text: "新的事实陈述" } });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -43,6 +50,7 @@ describe("memory-records PATCH (P2-12 重嵌 + 回归审查 R6-5/R6-6)", () => {
     expect(body.record.embedding).toEqual(newVec);          // 文本变 → 向量真的重算了
     expect(body.record.embeddingProvider).toBe("test-provider");
     expect(body.state.revision).toBe(rev0 + 1);             // 返回权威态,客户端下次乐观 PUT 不 409
+    expect(body.embeddingReady).toBe(true);
   });
 
   it("无 embeddingClient → 删除陈旧向量(诚实退化为关键词召回,绝不留旧语义)", async () => {
@@ -53,16 +61,39 @@ describe("memory-records PATCH (P2-12 重嵌 + 回归审查 R6-5/R6-6)", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().record.text).toBe("改后");
     expect(res.json().record.embedding).toBeUndefined();    // 陈旧向量已删,不带旧语义参与排序
+    expect(res.json().embeddingReady).toBe(false);
   });
 
   it("R6-5:embed 输入截断到 MAX_EMBED_CHARS(2000)——与 approve 同口径,不喂超长文本致向量漂移", async () => {
     const embed = vi.fn(async (texts: string[]) => texts.map(() => [0.1]));
     const repo = createInMemoryProductStateRepository(seed([record({ id: "m1", text: "旧" })]));
     const server = Fastify({ logger: false });
-    await registerMemoryRecordRoutes(server, repo, { embeddingClient: client(embed) });
+    await registerMemoryRecordRoutes(server, repo, { embeddingClient: client(embed), llmBudget: allowBudget() });
     await server.inject({ method: "PATCH", url: "/api/memory-records/m1", payload: { text: "文".repeat(5000) } });
     expect(embed).toHaveBeenCalledTimes(1);
     expect(embed.mock.calls[0]![0]![0]!.length).toBe(2000);  // 截断到 MAX_EMBED_CHARS,与 approve 一致
+  });
+
+  it("A3:knowledge_index cap=0 + fake embed → 200 保存文本、无向量、不调 embed(整次 PATCH 永不 429)", async () => {
+    const embed = vi.fn(async (texts: string[]) => texts.map(() => Array.from({ length: 1024 }, () => 0.2)));
+    const repo = createInMemoryProductStateRepository(
+      seed([record({ id: "m1", text: "旧", embedding: [9, 9], embeddingProvider: "old" })])
+    );
+    const server = Fastify({ logger: false });
+    await registerMemoryRecordRoutes(server, repo, {
+      embeddingClient: client(embed),
+      llmBudget: createLlmBudget({ maxCallsPerSession: 0 })
+    });
+    const res = await server.inject({ method: "PATCH", url: "/api/memory-records/m1", payload: { text: "预算耗尽后的新文本" } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.record.text).toBe("预算耗尽后的新文本");
+    expect(body.record.embedding).toBeUndefined();
+    expect(body.embeddingReady).toBe(false);
+    expect(body.vectorRecallAvailable).toBe(false);
+    expect(embed).not.toHaveBeenCalled();
+    expect(repo.getState().memoryRecords[0]!.text).toBe("预算耗尽后的新文本");
+    await server.close();
   });
 
   it("text 超 16KB 上限 → 422(不写入)", async () => {

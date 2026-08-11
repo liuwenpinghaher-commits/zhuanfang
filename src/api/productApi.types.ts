@@ -109,8 +109,16 @@ export interface ProductApiClient {
   consolidateMemory(): Promise<{ state: ProductState; deprecated: number }>;
   updateMemoryCandidate(id: string, text: string): Promise<ProductState>;
   deprecateMemoryRecord(id: string, reason?: string): Promise<ProductState>;
-  /** Edit a confirmed long-term memory's text; the server recomputes its embedding. */
-  updateMemoryRecordText(id: string, text: string): Promise<ProductState>;
+  /** Edit a confirmed long-term memory's text; server may recompute embedding (knowledge_index budget). */
+  updateMemoryRecordText(
+    id: string,
+    text: string
+  ): Promise<{
+    state: ProductState;
+    embeddingReady?: boolean;
+    vectorRecallAvailable?: boolean;
+    warning?: string;
+  }>;
   deleteMemoryRecord(id: string): Promise<ProductState>;
   saveState(state: ProductState): Promise<{ state: ProductState; conflicted: boolean }>;
   /** F-03:成功时附带服务端逐库清理回执(见 {@link ResetReceipt});部分失败抛 ApiError(500, body 含 state+resetReceipt)。 */

@@ -36,7 +36,7 @@
 | `system` | `import_documents` · `search_briefs` · `search_refresh` · `search_auto_briefs` · `podcast_script` · `corpus_insights` 等 | import / search / podcast / corpus |
 | `chat` | 全局助手 chat | `routes/chat.ts` |
 | `rag_query` | 导入资料 QA | `routes/rag.ts` |
-| `knowledge_index` | 嵌入 / 重嵌 | `routes/knowledge.ts` 等 |
+| `knowledge_index` | 嵌入 / 重嵌 | `routes/knowledge.ts` · 记忆 `approve` embed · `PATCH /api/memory-records` 重嵌 |
 | `memory_consolidate` | 记忆整理摘要 | `routes/memory-candidates.ts` |
 | `research_auto_run` | 后台研究调度 | `research-scheduler.ts` · search auto |
 | `reviews` | 月/年复盘叙事 LLM | `routes/reviews.ts`（`GET /api/reviews`） |
@@ -123,11 +123,15 @@
 | 外接 Search API | 否（LLM 预算） | AnySearch/Tavily/Exa/Brave **各自计费与限流** |
 | `research_auto_run` 调度 | `research_auto_run` 滑窗 | 与交互 `system` 隔离，避免后台抽干前台 |
 
-### 3.7 记忆巩固
+### 3.7 记忆巩固与 HITL 嵌入
 
 | 步骤 | 桶 | 模型 |
 | --- | --- | --- |
 | `POST /api/memory/consolidate` | `memory_consolidate` | 按集群摘要次数；`mode=queue` 可只预览 |
+| `POST .../memory-candidates/:id/approve` 嵌入 | `knowledge_index` | 有 embeddingClient 时 **1 次/确认**；耗尽 → **429**，**不写** confirmed |
+| `PATCH /api/memory-records/:id` 重嵌 | `knowledge_index` | **1 次/编辑**（有 client 时）；耗尽 → **仍 200** 保存文本、删除陈旧向量、`embeddingReady:false`（整次 PATCH **永不 429**） |
+
+无 embeddingClient（关键词-only 配置）时：approve 仍成功且 `embeddingReady:false`；PATCH 删陈旧向量后保存文本。
 
 ---
 

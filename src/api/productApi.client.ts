@@ -398,8 +398,20 @@ export function createProductApiClient(
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ text })
-      })) as { state: ProductState };
-      return normalizeProductState(response.state);
+      })) as {
+        state: ProductState;
+        embeddingReady?: boolean;
+        vectorRecallAvailable?: boolean;
+        warning?: string;
+      };
+      return {
+        state: normalizeProductState(response.state),
+        ...(response.embeddingReady !== undefined ? { embeddingReady: response.embeddingReady } : {}),
+        ...(response.vectorRecallAvailable !== undefined
+          ? { vectorRecallAvailable: response.vectorRecallAvailable }
+          : {}),
+        ...(response.warning ? { warning: response.warning } : {})
+      };
     },
     async deleteMemoryRecord(id) {
       const response = (await requestJson(`/api/memory-records/${id}`, { method: "DELETE" })) as { state: ProductState };

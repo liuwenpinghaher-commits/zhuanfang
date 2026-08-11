@@ -50,7 +50,10 @@ describe("memory-candidates approve (M3c embedding enrichment)", () => {
     const embed = vi.fn(async (texts: string[]) => texts.map(() => fixedVector));
     const repo = createInMemoryProductStateRepository(seedPendingCandidate());
     const server = Fastify({ logger: false });
-    await registerMemoryCandidateRoutes(server, repo, { embeddingClient: { embed } });
+    await registerMemoryCandidateRoutes(server, repo, {
+      embeddingClient: { embed },
+      llmBudget: createLlmBudget({ maxCallsPerSession: 20 })
+    });
 
     const res = await server.inject({
       method: "POST",
@@ -105,7 +108,10 @@ describe("memory-candidates approve (M3c embedding enrichment)", () => {
     const embed = vi.fn(async (texts: string[]) => texts.map(() => [0.1]));
     const repo = createInMemoryProductStateRepository(seedPendingCandidate({ text: "记".repeat(5000) }));
     const server = Fastify({ logger: false });
-    await registerMemoryCandidateRoutes(server, repo, { embeddingClient: { embed } });
+    await registerMemoryCandidateRoutes(server, repo, {
+      embeddingClient: { embed },
+      llmBudget: createLlmBudget({ maxCallsPerSession: 20 })
+    });
     const res = await server.inject({ method: "POST", url: "/api/memory-candidates/mc-approve-001/approve" });
     expect(res.statusCode).toBe(200);
     expect(embed).toHaveBeenCalledTimes(1);
@@ -120,7 +126,10 @@ describe("memory-candidates approve (M3c embedding enrichment)", () => {
     });
     const repo = createInMemoryProductStateRepository(seedPendingCandidate());
     const server = Fastify({ logger: false });
-    await registerMemoryCandidateRoutes(server, repo, { embeddingClient: { embed } });
+    await registerMemoryCandidateRoutes(server, repo, {
+      embeddingClient: { embed },
+      llmBudget: createLlmBudget({ maxCallsPerSession: 20 })
+    });
 
     const res = await server.inject({
       method: "POST",
@@ -132,6 +141,30 @@ describe("memory-candidates approve (M3c embedding enrichment)", () => {
     expect(body.vectorRecallAvailable).toBe(false);
     expect(String(body.error)).toMatch(/语义向量不可用|嵌入/);
     // Not confirmed into long-term store
+    expect(repo.getState().memoryRecords.find((r) => r.sourceCandidateId === "mc-approve-001")).toBeUndefined();
+    expect(repo.getState().memoryCandidates.find((c) => c.id === "mc-approve-001")?.status).toBe("pending");
+
+    await server.close();
+  });
+
+  it("A4:knowledge_index cap=0 + fake embed → approve 429 语义向量预算已用尽,不写 confirmed、不调 embed", async () => {
+    const embed = vi.fn(async (texts: string[]) => texts.map(() => Array.from({ length: 1024 }, () => 0.3)));
+    const repo = createInMemoryProductStateRepository(seedPendingCandidate());
+    const server = Fastify({ logger: false });
+    await registerMemoryCandidateRoutes(server, repo, {
+      embeddingClient: { embed },
+      llmBudget: createLlmBudget({ maxCallsPerSession: 0 })
+    });
+
+    const res = await server.inject({
+      method: "POST",
+      url: "/api/memory-candidates/mc-approve-001/approve"
+    });
+    expect(res.statusCode).toBe(429);
+    const body = res.json();
+    expect(String(body.error)).toContain("语义向量预算已用尽");
+    expect(body.embeddingReady).toBe(false);
+    expect(embed).not.toHaveBeenCalled();
     expect(repo.getState().memoryRecords.find((r) => r.sourceCandidateId === "mc-approve-001")).toBeUndefined();
     expect(repo.getState().memoryCandidates.find((c) => c.id === "mc-approve-001")?.status).toBe("pending");
 

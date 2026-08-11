@@ -493,7 +493,9 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   void server.register(async (registeredServer) => {
     await registerMemoryRecordRoutes(registeredServer, productStateRepository, withLiveProviderClients({
       // 审计修复(P2-12):编辑记忆文本重嵌所需(与 approve 同源 client)。
-      // 回归审查 R6-6:PATCH 豁免全局写锁后,handler 用 writeGate 把同步 RMW 串行化(embed 在锁外)。
+      // 回归审查 R6-6:PATCH 豁免全局写锁后,route 用 writeGate 把同步 RMW 串行化(embed 在锁外)。
+      // 预算闸:重嵌走 knowledge_index(与 approve/knowledge 共享 sharedBudget);漏传勿在 route 内兜底新建。
+      llmBudget: sharedBudget,
       writeGate
     }));
   });
