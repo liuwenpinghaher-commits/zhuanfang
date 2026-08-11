@@ -36,7 +36,7 @@
 | `system` | `import_documents` · `search_briefs` · `search_refresh` · `search_auto_briefs` · `podcast_script` · `corpus_insights` 等 | import / search / podcast / corpus |
 | `chat` | 全局助手 chat | `routes/chat.ts` |
 | `rag_query` | 导入资料 QA | `routes/rag.ts` |
-| `knowledge_index` | 嵌入 / 重嵌 | `routes/knowledge.ts` · 记忆 `approve` embed · `PATCH /api/memory-records` 重嵌 |
+| `knowledge_index` | 嵌入 / 重嵌 · voice prefetch embed | `routes/knowledge.ts` · 记忆 `approve` embed · `PATCH /api/memory-records` 重嵌 · `routes/realtime-voice.ts` agent-context prefetch |
 | `memory_consolidate` | 记忆整理摘要 | `routes/memory-candidates.ts` |
 | `research_auto_run` | 后台研究调度 | `research-scheduler.ts` · search auto |
 | `reviews` | 月/年复盘叙事 LLM | `routes/reviews.ts`（`GET /api/reviews`） |
@@ -56,8 +56,9 @@
 | 项 | 说明 |
 | --- | --- |
 | `reviews` | 独立 key `reviews`，已在 `SYSTEM_BUDGET_KEYS` 滑窗集合；默认每小时最多 `LLM_MAX_CALLS_PER_SESSION` 次，到 cap 后 429，窗滚动后恢复（不再是「孤立单调桶」）。 |
-| 语音 cascade TTS/ASR | 浏览器/代理路径上的 **流式 TTS、SenseVoice ASR、Realtime** 多数 **不走** `llm-budget` 次数闸（仍受供应商配额与 `RATE_LIMIT` 影响）。专访 **LLM 追问**仍走 session 桶。 |
-| Embedding | `knowledge_index` 等走预算；本地 `EMBEDDING_PROVIDER=local` 仍计 **调用次数**（不产生云 embedding 费，但仍占进程闸）。 |
+| 语音 cascade TTS/ASR | 浏览器/代理路径上的 **流式 TTS、SenseVoice ASR、Realtime 上游字节流** **有意不走** `llm-budget` 次数闸（仍受供应商配额与 `RATE_LIMIT` 影响）。专访 **LLM 追问**仍走 session 桶。 |
+| 语音 agent-context **prefetch embed** | **已闸**：`GET .../agent-context` 在嵌入用户最新话语前 `tryConsume("knowledge_index")`；漏传 budget → 日志 `llm_budget_missing` / 耗尽 → `llm_budget_exceeded`（capability `voice_prefetch_embed`），无向量继续 BM25/theme 召回。 |
+| Embedding | `knowledge_index` 等走预算（含 voice prefetch embed、knowledge rebuild / reindex、记忆 approve/PATCH）；本地 `EMBEDDING_PROVIDER=local` 仍计 **调用次数**（不产生云 embedding 费，但仍占进程闸）。 |
 | 未配置 key | 能力 **5xx / 诚实失败**，不会静默烧预算装成功。 |
 
 ---
@@ -82,9 +83,11 @@
 
 | 步骤 | 是否计 LLM 预算 | 备注 |
 | --- | --- | --- |
-| ASR 分片 / 流式识别 | 通常否 | 供应商 ASR 时长/次数 |
+| ASR 分片 / 流式识别 | **否（有意）** | 供应商 ASR 时长/次数；不走 `llm-budget` |
 | 每轮应答 LLM | **是 · session** | 与文本类似，轮次驱动 |
-| 流式 TTS 子句 | 通常否 | 字符/请求计供应商 TTS |
+| 流式 TTS 子句 | **否（有意）** | 字符/请求计供应商 TTS；不走 `llm-budget` |
+| agent-context prefetch embed | **是 · `knowledge_index`** | 有 `latestUserText` 且 embedding 可用时 1 次/刷新；耗尽则无向量降级 |
+| Realtime omni 上游字节流 | **否（有意）** | 供应商配额 + `RATE_LIMIT` |
 | barge-in / interrupt | 否（控制面） | 不另计 LLM |
 | **会话 LLM** | session | **约 15–50**（含 turn 辅助） |
 | **推荐并发** | — | **1 路** cascade（见部署清单） |

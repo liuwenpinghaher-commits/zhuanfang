@@ -28,6 +28,7 @@ import { replaceStateDurable } from "../product-state-repository";
 import { asNativeRecall } from "../recall/native-recall-capability";
 import { resolveBailianApiKey } from "../runtime-secrets";
 import { prefetchRecall } from "../recall/prefetch-recall";
+import type { LlmBudget } from "../llm-budget";
 import {
   applyMidSessionCardRefresh,
   buildInterviewContextPack,
@@ -70,6 +71,11 @@ export interface RealtimeVoiceRouteOptions {
   stateRepo?: ProductStateRepository;
   /** 🔴-1: embeds the latest user utterance so livekit agent-context recall tracks the conversation. */
   embeddingClient?: BailianEmbeddingClient;
+  /**
+   * Shared process budget for voice prefetch embed (knowledge_index).
+   * Production must inject sharedBudget from server.ts — do not fall back to createLlmBudget().
+   */
+  llmBudget?: LlmBudget;
   /**
    * Injectable streaming TTS client for the TTS WebSocket proxy.
    * When omitted the proxy constructs one at upgrade time from the

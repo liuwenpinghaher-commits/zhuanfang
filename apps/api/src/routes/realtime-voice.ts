@@ -399,7 +399,24 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
       latestUserText
     );
     try {
-      queryEmbedding = await embedRecallQuery(latestUserText, options.embeddingClient);
+      // A1: voice prefetch embed occupies knowledge_index. Do NOT fall back to createLlmBudget()
+      // (would mask missing production wiring). Missing/exhausted → no vector; BM25/theme continues.
+      // Only gate when embed would actually run (client + non-empty text); no-op paths skip tryConsume.
+      const willEmbed = Boolean(options.embeddingClient && latestUserText?.trim());
+      if (willEmbed) {
+        const budget = options.llmBudget;
+        if (!budget) {
+          console.warn(JSON.stringify({ event: "llm_budget_missing", capability: "voice_prefetch_embed" }));
+          queryEmbedding = undefined;
+        } else if (!budget.tryConsume("knowledge_index")) {
+          console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "voice_prefetch_embed" }));
+          queryEmbedding = undefined;
+        } else {
+          queryEmbedding = await embedRecallQuery(latestUserText, options.embeddingClient);
+        }
+      } else {
+        queryEmbedding = await embedRecallQuery(latestUserText, options.embeddingClient);
+      }
       const nativeRecall = asNativeRecall(stateRepo);
       // Prefetch when native is available; embedding optional (BM25/theme still useful).
       recall = nativeRecall

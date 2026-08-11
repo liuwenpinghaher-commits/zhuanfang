@@ -469,7 +469,8 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
     await registerRealtimeVoiceRoutes(registeredServer, withLiveProviderClients({
       stateRepo: productStateRepository,
       env: runtimeEnv,
-      writeGate
+      writeGate,
+      llmBudget: sharedBudget
     }));
   });
   void server.register(async (registeredServer) => {

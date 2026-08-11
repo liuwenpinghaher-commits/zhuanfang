@@ -8,6 +8,7 @@ import {
   createInMemoryProductStateRepository,
   type ProductStateRepository
 } from "../product-state-repository";
+import { createLlmBudget } from "../llm-budget";
 import { registerRealtimeVoiceRoutes } from "./realtime-voice";
 import type { BailianStreamingTtsClient } from "../providers/bailian-streaming-tts";
 import type { InterviewEnginePolicy, InterviewSession } from "../../../../src/domain/types";
@@ -487,7 +488,11 @@ describe("realtime-voice /agent-context route", () => {
     let embedCalls = 0;
     const fakeEmbed = { embed: async (_texts: string[]) => { embedCalls += 1; return [[1, 0, 0]]; } };
     const embApp = Fastify();
-    await registerRealtimeVoiceRoutes(embApp, { stateRepo, embeddingClient: fakeEmbed as never });
+    await registerRealtimeVoiceRoutes(embApp, {
+      stateRepo,
+      embeddingClient: fakeEmbed as never,
+      llmBudget: createLlmBudget({ maxCallsPerSession: 20 })
+    });
     await embApp.ready();
 
     const res = await embApp.inject({
@@ -511,7 +516,11 @@ describe("realtime-voice /agent-context route", () => {
     let embedCalls = 0;
     const fakeEmbed = { embed: async () => { embedCalls += 1; return [[1, 0, 0]]; } };
     const embApp = Fastify();
-    await registerRealtimeVoiceRoutes(embApp, { stateRepo, embeddingClient: fakeEmbed as never });
+    await registerRealtimeVoiceRoutes(embApp, {
+      stateRepo,
+      embeddingClient: fakeEmbed as never,
+      llmBudget: createLlmBudget({ maxCallsPerSession: 20 })
+    });
     await embApp.ready();
     const res = await embApp.inject({ method: "GET", url: `/api/realtime-voice/agent-context/${sid}` });
     expect(res.statusCode).toBe(200);
@@ -565,7 +574,8 @@ describe("realtime-voice /agent-context route", () => {
     const embApp = Fastify();
     await registerRealtimeVoiceRoutes(embApp, {
       stateRepo: nativeRepo,
-      embeddingClient: { embed: async () => [[1, 0, 0]] } as never
+      embeddingClient: { embed: async () => [[1, 0, 0]] } as never,
+      llmBudget: createLlmBudget({ maxCallsPerSession: 20 })
     });
     await embApp.ready();
 
@@ -621,7 +631,8 @@ describe("realtime-voice /agent-context route", () => {
     await registerRealtimeVoiceRoutes(voiceApp, {
       stateRepo,
       embeddingClient: { embed } as never,
-      writeGate
+      writeGate,
+      llmBudget: createLlmBudget({ maxCallsPerSession: 20 })
     });
     await registerInterviewSessionRoutes(voiceApp, stateRepo, { writeGate });
     await voiceApp.ready();
@@ -673,7 +684,8 @@ describe("realtime-voice /agent-context route", () => {
     const embApp = Fastify();
     await registerRealtimeVoiceRoutes(embApp, {
       stateRepo: nativeRepo,
-      embeddingClient: { embed: async () => [[1, 0, 0]] } as never
+      embeddingClient: { embed: async () => [[1, 0, 0]] } as never,
+      llmBudget: createLlmBudget({ maxCallsPerSession: 20 })
     });
     await embApp.ready();
     const res = await embApp.inject({
@@ -685,6 +697,59 @@ describe("realtime-voice /agent-context route", () => {
     // failed path must not mutate session guide
     const stored = nativeRepo.getState().sessions.find((s) => s.id === sid);
     expect(stored?.guide.topicHint).toBe("放权");
+    await embApp.close();
+  });
+
+  it("A1: voice prefetch embed skips when knowledge_index budget exhausted (no 429, BM25/theme continues)", async () => {
+    const { createInterviewSession } = await import("../../../../src/domain/engine");
+    const { generateSessionId } = await import("../../../../src/domain/identifiers");
+    const sid = generateSessionId();
+    const session = createInterviewSession({ id: sid, title: "x", createdAt: new Date().toISOString() });
+    stateRepo.replaceState({ ...stateRepo.getState(), sessions: [session] });
+
+    let embedCalls = 0;
+    const fakeEmbed = { embed: async () => { embedCalls += 1; return [[1, 0, 0]]; } };
+    const exhausted = createLlmBudget({ maxCallsPerSession: 1 });
+    expect(exhausted.tryConsume("knowledge_index")).toBe(true); // pre-exhaust the sliding key
+
+    const embApp = Fastify();
+    await registerRealtimeVoiceRoutes(embApp, {
+      stateRepo,
+      embeddingClient: fakeEmbed as never,
+      llmBudget: exhausted
+    });
+    await embApp.ready();
+    const res = await embApp.inject({
+      method: "GET",
+      url: `/api/realtime-voice/agent-context/${sid}?latestUserText=${encodeURIComponent("刷新召回")}`
+    });
+    expect(res.statusCode).toBe(200);
+    expect(embedCalls).toBe(0);
+    await embApp.close();
+  });
+
+  it("A1: voice prefetch embed skips when llmBudget missing (warn path, no silent createLlmBudget)", async () => {
+    const { createInterviewSession } = await import("../../../../src/domain/engine");
+    const { generateSessionId } = await import("../../../../src/domain/identifiers");
+    const sid = generateSessionId();
+    const session = createInterviewSession({ id: sid, title: "x", createdAt: new Date().toISOString() });
+    stateRepo.replaceState({ ...stateRepo.getState(), sessions: [session] });
+
+    let embedCalls = 0;
+    const fakeEmbed = { embed: async () => { embedCalls += 1; return [[1, 0, 0]]; } };
+    const embApp = Fastify();
+    // intentionally omit llmBudget — production must inject sharedBudget
+    await registerRealtimeVoiceRoutes(embApp, {
+      stateRepo,
+      embeddingClient: fakeEmbed as never
+    });
+    await embApp.ready();
+    const res = await embApp.inject({
+      method: "GET",
+      url: `/api/realtime-voice/agent-context/${sid}?latestUserText=${encodeURIComponent("刷新召回")}`
+    });
+    expect(res.statusCode).toBe(200);
+    expect(embedCalls).toBe(0);
     await embApp.close();
   });
 });
