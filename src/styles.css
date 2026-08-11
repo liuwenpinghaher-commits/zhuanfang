@@ -5337,6 +5337,22 @@ p.field-error {
   gap: 4px;
 }
 
+/* B5: 待裁决矛盾 pill（与 is-stale 同色系，强调人工裁决） */
+.status-pill.is-warning {
+  border-color: var(--accent-amber);
+  color: var(--accent-amber);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* B5: 矛盾候选卡轻量视觉区分 */
+.memory-card.is-conflict,
+.record-row.is-conflict {
+  border-color: color-mix(in srgb, var(--accent-amber) 55%, var(--border-default));
+  background: color-mix(in srgb, var(--accent-amber) 6%, var(--surface-raised));
+}
+
 .status-pill.is-tracked {
   border-color: var(--action-primary);
   color: var(--action-primary);

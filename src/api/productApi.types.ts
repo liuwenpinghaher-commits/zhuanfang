@@ -48,7 +48,8 @@ export interface ConsolidateQueueSummary {
 }
 
 export type ConsolidateApplyResult = {
-  mode?: "apply";
+  /** 与 queue 对称：client 恒写入；便于 exhaustive switch 收窄。 */
+  mode: "apply";
   state: ProductState;
   summary: ConsolidateApplySummary;
 };
@@ -139,6 +140,8 @@ export interface ProductApiClient {
     vectorRecallAvailable?: boolean;
     warning?: string;
     blocked?: boolean;
+    /** 409 冲突门成功返回时透传服务端 error，供 A4 文案（不进 catch）。 */
+    error?: string;
   }>;
   rejectMemoryCandidate(id: string, reviewNote?: string): Promise<ProductState>;
   /**

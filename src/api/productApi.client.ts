@@ -354,11 +354,14 @@ export function createProductApiClient(
             vectorRecallAvailable?: boolean;
           };
           if (body.state && (body.blocked === true || String(body.error ?? "").includes("冲突") || String(body.error ?? "").includes("拦截"))) {
+            const errorText = typeof body.error === "string" ? body.error.trim() : "";
             return {
               state: normalizeProductState(body.state),
               blocked: true,
               embeddingReady: body.embeddingReady === true,
-              vectorRecallAvailable: body.vectorRecallAvailable === true
+              vectorRecallAvailable: body.vectorRecallAvailable === true,
+              // A4: 409 blocked 不抛错，须把 error 带回 then 分支文案（含「保留 A/B」引导）
+              ...(errorText ? { error: errorText } : {})
             };
           }
         }

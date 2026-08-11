@@ -856,19 +856,31 @@ export default function App() {
                 embeddingReady?: boolean;
                 vectorRecallAvailable?: boolean;
                 blocked?: boolean;
+                error?: string;
                 candidate?: { status?: string };
                 record?: unknown;
               })
             : null;
         const state = payload ? payload.state : (next as ProductState);
         adoptServerState(state);
-        // Conflict approve must never look like success (domain may leave candidate pending).
+        // A4 + B5: approve 409 blocked 在 client 被吞成成功返回（blocked:true），须在此写引导文案，
+        // 不能依赖 catch（catch 对主路径接近 dead）。矛盾 → 保留 A/B；修正冲突 → 拒绝/改写。
         if (payload?.blocked === true) {
+          const serverError = typeof payload.error === "string" ? payload.error.trim() : "";
+          const looksLikeContradiction =
+            serverError.includes("矛盾") ||
+            serverError.includes("待裁决") ||
+            serverError.includes("resolve-conflict");
+          const guidance = looksLikeContradiction
+            ? "请用「保留 A/B」裁决，勿直接重试确认。"
+            : "请拒绝或改写后再确认；若为待裁决矛盾请用「保留 A/B」裁决，勿直接重试。";
           setNotice(
             buildNotice(
               "warning",
               "确认已拦截",
-              "候选与用户修正冲突，未写入长期记忆。请拒绝或改写后再确认。"
+              serverError
+                ? `${serverError} ${guidance}`
+                : `候选确认已被拦截，未写入长期记忆。${guidance}`
             )
           );
           return;
@@ -1003,7 +1015,7 @@ export default function App() {
       .consolidateMemory() // 默认 apply；queue 预览不走此确认路径
       .then((res) => {
         adoptServerState(res.state);
-        // B8: notice 仅 apply 路径读 deprecated / contradictions / decayApplied；禁止读 queue 字段。
+        // B8: notice 按 mode 收窄；apply 仅读 deprecated/contradictions/decayApplied。
         if (res.mode === "queue") {
           const s = res.summary;
           setNotice(
@@ -1015,6 +1027,7 @@ export default function App() {
           );
           return;
         }
+        // mode === "apply"（必填，与 queue 对称）
         const s = res.summary;
         const parts: string[] = [];
         parts.push(

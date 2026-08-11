@@ -607,6 +607,60 @@ describe("conflict resolution (B5)", () => {
     });
     expect(onResolveConflict).toHaveBeenCalledWith("c-conflict", { keepSide: "a" });
     expect(onApprove).not.toHaveBeenCalled();
+
+    const keepB = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("保留 B")
+    )!;
+    await act(async () => {
+      keepB.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onResolveConflict).toHaveBeenCalledWith("c-conflict", { keepSide: "b" });
+
+    // 矛盾卡仍提供「修正」（改写消解路径，Issue 5）
+    const editBtn = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("修正")
+    );
+    expect(editBtn).toBeTruthy();
+  });
+
+  it("conflict candidate disables A/B when pair records cannot be resolved", () => {
+    const onResolveConflict = vi.fn();
+    const conflict = makeCandidate({
+      id: "c-orphan",
+      text: "【待裁决矛盾】A：不存在的记忆甲 ｜ B：不存在的记忆乙",
+      suggestedUpdate: "conflict"
+    });
+    const state = makeState({
+      memoryCandidates: [conflict],
+      memoryRecords: [] // no matching confirmed records
+    });
+    renderView(
+      <MemoryGovernanceView
+        state={state}
+        importing={false}
+        onImport={noop}
+        onApprove={noop}
+        onReject={noop}
+        onResolveConflict={onResolveConflict}
+        onEditCandidate={noop}
+        onDeprecate={noop}
+        onDeleteRecord={noop}
+        onEditRecord={noop}
+        onConsolidate={noop}
+        onAddAnnotation={noop}
+        onRemoveAnnotation={noop}
+        getRawMaterial={async () => null} />
+    );
+
+    expect(container.textContent).toContain("无法解析矛盾两侧");
+    const keepA = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("保留 A")
+    ) as HTMLButtonElement;
+    const keepB = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("保留 B")
+    ) as HTMLButtonElement;
+    expect(keepA?.disabled).toBe(true);
+    expect(keepB?.disabled).toBe(true);
   });
 });
 

@@ -83,6 +83,8 @@ describe("product api client", () => {
     expect(result.blocked).toBe(true);
     expect(result.state.revision).toBe(42);
     expect(result.embeddingReady).toBe(false);
+    // A4: 409 blocked 须透传 error，供 App then 分支引导「保留 A/B」
+    expect(result.error).toContain("冲突");
     expect(fetchImpl).toHaveBeenCalledWith(
       "http://127.0.0.1:8787/api/memory-candidates/c1/approve",
       expect.objectContaining({ method: "POST" })
@@ -110,6 +112,29 @@ describe("product api client", () => {
     );
   });
 
+  it("B5: resolveMemoryConflict POSTs explicit keepRecordId/demoteRecordId body", async () => {
+    const serverState = { ...createInitialProductState(), revision: 8 };
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ state: serverState, keepRecordId: "r-keep", demoteRecordId: "r-demote" }), {
+        status: 200
+      })
+    );
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+
+    await client.resolveMemoryConflict("cand-2", {
+      keepRecordId: "r-keep",
+      demoteRecordId: "r-demote"
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://127.0.0.1:8787/api/memory-candidates/cand-2/resolve-conflict",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ keepRecordId: "r-keep", demoteRecordId: "r-demote" })
+      })
+    );
+  });
+
   it("B8: consolidateMemory apply returns discriminated summary (deprecated/contradictions/decayApplied)", async () => {
     const serverState = { ...createInitialProductState(), revision: 3 };
     const fetchImpl = vi.fn(async () =>
@@ -126,7 +151,7 @@ describe("product api client", () => {
     const result = await client.consolidateMemory();
 
     expect(result.mode).toBe("apply");
-    if (result.mode !== "queue") {
+    if (result.mode === "apply") {
       expect(result.summary.deprecated).toBe(2);
       expect(result.summary.contradictions).toBe(1);
       expect(result.summary.decayApplied).toBe(true);

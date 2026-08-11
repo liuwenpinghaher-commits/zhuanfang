@@ -179,14 +179,22 @@ export function MemoryGovernanceView({
     return text.length > 40 ? text.slice(0, 40) + "…" : text;
   }
 
+  const defaultCandidateOp = (): CandidateOp => ({
+    approve: "idle",
+    reject: "idle",
+    save: "idle",
+    resolve: "idle"
+  });
+
   function getOp(id: string): CandidateOp {
-    return candidateOps[id] ?? { approve: "idle", reject: "idle", save: "idle", resolve: "idle" };
+    return candidateOps[id] ?? defaultCandidateOp();
   }
 
   function setOp(id: string, patch: Partial<CandidateOp>) {
+    // 基于 prev[id] 合并，避免快速连续 set 时 getOp 闭包丢中间字段（Issue 8）。
     setCandidateOps((prev) => ({
       ...prev,
-      [id]: { ...getOp(id), ...patch }
+      [id]: { ...defaultCandidateOp(), ...prev[id], ...patch }
     }));
   }
 
@@ -521,12 +529,13 @@ export function MemoryGovernanceView({
                         {candidate.reviewSignals?.length > 0 && (
                           <span className="label">{candidate.reviewSignals.join(" · ")}</span>
                         )}
-                        {isConflict && sideLabels && (
+                        {isConflict && (
                           <div className="dedup-hint" role="note">
                             <ShieldAlert size={14} aria-hidden="true" className="icon-inline" />
                             <span>
-                              请选择保留哪一侧（另一侧降级、不删除）。
-                              直接「确认」会被拦截——请用下方裁决按钮。
+                              {canResolve
+                                ? "请选择保留哪一侧（另一侧降级、不删除）。直接「确认」会被拦截——请用下方裁决按钮；也可修正文案后重新裁决。"
+                                : "无法解析矛盾两侧已确认记忆，裁决按钮不可用。请刷新后重试，或点「不要记」丢弃本候选；也可修正文案。"}
                             </span>
                           </div>
                         )}
@@ -634,17 +643,16 @@ export function MemoryGovernanceView({
                               )}
                             </>
                           )}
-                          {!isConflict && (
-                            <button
-                              className="secondary-action"
-                              type="button"
-                              disabled={anyLoading}
-                              onClick={() => startEdit(candidate.id, candidate.text)}
-                            >
-                              <Pencil size={16} />
-                              修正
-                            </button>
-                          )}
+                          <button
+                            className="secondary-action"
+                            type="button"
+                            disabled={anyLoading}
+                            onClick={() => startEdit(candidate.id, candidate.text)}
+                            title={isConflict ? "改写后可能清除矛盾标记，再裁决或确认" : undefined}
+                          >
+                            <Pencil size={16} />
+                            修正
+                          </button>
                           <button
                             className={`secondary-action${isRejecting ? " btn-loading" : ""}`}
                             type="button"
