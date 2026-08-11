@@ -892,6 +892,7 @@ export default function App() {
       })
       .catch((err) => {
         const conflict = err instanceof ApiError && (err.status === 409 || err.status === 422 || err.status === 404);
+        const isBudget = err instanceof ApiError && err.status === 429;
         const body =
           err instanceof ApiError && err.body && typeof err.body === "object"
             ? (err.body as { error?: unknown; state?: ProductState; blocked?: boolean })
@@ -906,15 +907,23 @@ export default function App() {
         if (body?.state && typeof body.state === "object" && "revision" in body.state) {
           adoptServerState(body.state as ProductState);
         }
-        setNotice(buildNotice(
-          "warning",
-          isApproveBlock ? "确认已拦截" : conflict ? "操作未生效" : "操作失败",
-          isApproveBlock
-            ? serverError || "候选与用户修正冲突，未写入长期记忆。请拒绝或改写后再确认。"
+        // A4 预算 429 / embed 502 等会带 body.error：优先展示服务端文案，勿一律「需要后端在线」。
+        const title = isApproveBlock
+          ? "确认已拦截"
+          : isBudget
+            ? "预算已用尽"
             : conflict
-              ? serverError || "该记忆的状态已变化(可能已被处理或清理),请刷新后重试。"
-              : "记忆治理需要后端在线。"
-        ));
+              ? "操作未生效"
+              : "操作失败";
+        const detail = isApproveBlock
+          ? serverError || "候选与用户修正冲突，未写入长期记忆。请拒绝或改写后再确认。"
+          : conflict
+            ? serverError || "该记忆的状态已变化(可能已被处理或清理),请刷新后重试。"
+            : serverError ||
+              (isBudget
+                ? "本时段 LLM 预算已用尽，请稍后重试。"
+                : "记忆治理需要后端在线。");
+        setNotice(buildNotice("warning", title, detail));
         throw err;
       });
   }
@@ -955,10 +964,11 @@ export default function App() {
       const result = await productApiClient.updateMemoryRecordText(recordId, text);
       adoptServerState(result.state);
       if (result.embeddingReady === false) {
+        // 与导入路径「向量未就绪 → warning」对齐，便于扫读到语义索引未重算。
         setNotice(
           buildNotice(
-            "success",
-            "记忆已更新",
+            "warning",
+            "记忆已更新（语义索引未重算）",
             result.warning ??
               "已保存文本修正；语义索引未重算（预算不足或嵌入不可用），当前仅关键词/子串可命中。"
           )

@@ -91,6 +91,9 @@ describe("memory-records PATCH (P2-12 重嵌 + 回归审查 R6-5/R6-6)", () => {
     expect(body.record.embedding).toBeUndefined();
     expect(body.embeddingReady).toBe(false);
     expect(body.vectorRecallAvailable).toBe(false);
+    // 前端 editMemoryRecord 优先展示 result.warning；缺字段时只靠 fallback 会静默丢契约。
+    expect(typeof body.warning).toBe("string");
+    expect(String(body.warning)).toMatch(/语义向量|预算|关键词/);
     expect(embed).not.toHaveBeenCalled();
     expect(repo.getState().memoryRecords[0]!.text).toBe("预算耗尽后的新文本");
     await server.close();
