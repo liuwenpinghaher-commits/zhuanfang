@@ -46,6 +46,15 @@ export interface ReplaceStateOptions {
    * 仅 withKnowledgeReindex 读取;底层 surreal/memory repo 忽略此字段。
    */
   skipReindex?: boolean;
+  /**
+   * C16 / 缺口 #6:流水表移除语义。映射到 Surreal `buildPersistStatements.streamPurgeMode`。
+   * - `"governance-keep"`:整库替换/import/purge 回落路径强制 `DELETE table WHERE id NOT IN keep`
+   *   (跳过滑出判别,避免满窗 import 把 prev 窗口误判为 slide-out 而残留)。
+   * - `"slide-out"` / omit:常规 append 保全史(默认)。
+   * memory 档无流水表 → no-op。生产 surreal import 主路径走 `runGovernanceTransaction`,
+   * 在 `executeGovernanceTransaction` 内强制 governance-keep(不依赖本字段)。
+   */
+  streamPurgeMode?: "slide-out" | "governance-keep";
 }
 
 export interface ProductStateRepository {

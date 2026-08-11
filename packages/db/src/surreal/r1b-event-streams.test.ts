@@ -201,6 +201,43 @@ describe("R1b reset / purge(all) 隐私语义 (mem://)", () => {
   });
 });
 
+describe("C16 streamPurgeMode · journal replaceState 回落 (mem://)", () => {
+  it("replaceState(..., { streamPurgeMode: 'governance-keep' }): 满窗替换清扫 prev 窗口", async () => {
+    const repo = await makeMem();
+    // 活库满窗 + 窗口外历史
+    repo.replaceState({ ...buildR1bFixtureState(repo.getState()), auditEvents: makeAuditEvents(1, MAX_EVENT_LOG) });
+    await repo.flush();
+    await repo.query(
+      "UPSERT $rid CONTENT { type: 'memory_referenced', label: '老', detail: '', severity: 'info', entityType: 'memory', entityId: 'm_old', createdAt: $d, rest: {} };",
+      { rid: new RecordId("audit_event", ["2020-01-01T00:00:00.000Z", "ae_old"]), d: new Date("2020-01-01T00:00:00.000Z") },
+    );
+    expect(await countOf(repo, "audit_event")).toBe(MAX_EVENT_LOG + 1);
+
+    // 全部新于活库的满窗备份 + 显式 governance-keep(journal import 路径)
+    const imported = makeAuditEvents(MAX_EVENT_LOG + 1, MAX_EVENT_LOG * 2);
+    repo.replaceState(
+      { ...repo.getState(), auditEvents: imported },
+      { streamPurgeMode: "governance-keep" },
+    );
+    await repo.flush();
+    expect(repo.getPersistHealth().consecutiveFailures).toBe(0);
+    expect(await countOf(repo, "audit_event"), "journal 回落 keep 清扫").toBe(MAX_EVENT_LOG);
+    const [rows] = await repo.query<[Array<{ id?: RecordId }>]>("SELECT id FROM audit_event;");
+    const domainIds = (rows ?? []).map((r) => {
+      const raw = r.id?.id;
+      return Array.isArray(raw) ? String(raw[1]) : streamDomainIdish(r.id);
+    });
+    expect(domainIds).not.toContain("ae_1");
+    expect(domainIds).not.toContain("ae_old");
+    expect(domainIds).toContain(`ae_${MAX_EVENT_LOG + 1}`);
+  }, 120000);
+
+  function streamDomainIdish(id: unknown): string {
+    if (id instanceof RecordId && Array.isArray(id.id)) return String(id.id[1] ?? "");
+    return String(id ?? "");
+  }
+});
+
 describe("R1b 枚举钳制 ↔ schema ASSERT 对齐 (mem://)", () => {
   it("坏 severity/status/string 经 normalize 钳制后落库不 wedge,DB 值为 fail-closed 兜底", async () => {
     const repo = await makeMem();

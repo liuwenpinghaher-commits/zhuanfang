@@ -607,7 +607,12 @@ export async function registerStateRoutes(
       run: async () => {
         // 回归审查 R4-3(保留):跳过包装层增量重索引——下方显式 rebuildKnowledgeIndex 全量
         // 重建(含冷层逐字稿),增量与全量并跑是重复嵌入(浪费预算)。
-        replaced = await replaceStateDurable(repository, imported, { skipReindex: true });
+        // C16:journal 回落与治理事务主路径对齐——流水 streamPurgeMode=governance-keep,
+        // 满窗 import 不误判滑出(缺口 #6 closed)。
+        replaced = await replaceStateDurable(repository, imported, {
+          skipReindex: true,
+          streamPurgeMode: "governance-keep",
+        });
       }
     });
 
@@ -842,8 +847,12 @@ export async function registerStateRoutes(
       // 私人数据也留下来);冷层失败以 500 + purgeReceipt 如实回执,让前端明确"删了什么、
       // 哪里还残留、该重试什么",而不是假装什么都没发生。
       // 回归审查 R4-3(保留):跳过增量重索引——上方已直接清空整个知识索引。
+      // C16:与 import journal / 治理事务对齐,流水 keep 清扫(缺口 #6 closed)。
       const stores = await clearColdStoresBestEffort();   // R2a:已异步化
-      const nextState = await replaceStateDurable(repository, purged, { skipReindex: true });
+      const nextState = await replaceStateDurable(repository, purged, {
+        skipReindex: true,
+        streamPurgeMode: "governance-keep",
+      });
       const failedStores = listFailedStores(stores);
       const purgeReceipt = { partialFailure: failedStores.length > 0, hotStateCommitted: true, stores };
       if (purgeReceipt.partialFailure) {

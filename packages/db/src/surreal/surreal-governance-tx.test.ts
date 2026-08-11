@@ -1,8 +1,11 @@
 import { describe, it, expect, afterEach } from "vitest";
+import { RecordId } from "surrealdb";
 import { createSurrealStores, type SurrealStores } from "./surreal-cold-repositories";
 import { createSurrealProductStateRepository, type SurrealRepoHandle } from "./surreal-product-state-repository";
 import { GovernanceInFlightError } from "../../../../apps/api/src/product-state-repository";
 import type { InterviewAudio, InterviewRawMaterial, KnowledgeChunk, ProductState } from "../../../../src/domain/types";
+import { makeAuditEvents } from "./r1b-event-streams.fixture";
+import { MAX_EVENT_LOG } from "../../../../src/domain/storage";
 
 /** R2b · 治理事务(reset/purge/import 真 ACID)的仓库层测试。
  *  全用 mem://(同进程、HNSW 可用;surrealkv 同进程持文件锁,close 后无法同进程重开——既有 r1a/r1b
@@ -421,6 +424,52 @@ describe("N-03 冷层直写守卫(治理在途拒绝 put/replaceSource,防隐私
     await s.productState.flush();
     expect(await s.audio.listAll()).toHaveLength(0);
   });
+});
+
+describe("C16 streamPurgeMode · 满窗 import 缺口 #6 (governance-keep)", () => {
+  it("runGovernanceTransaction replace: 满窗且全部新于活库 → prev 窗口行 + 窗口外历史不得残留", async () => {
+    const s = await makeStores();
+    await s.productState.flush();
+
+    // 活库满窗 ae_1..ae_1000(ts 1..1000)。纯 diff 下,用「全部更新」的满窗备份覆盖时
+    // isSlideOut 会把 removeIds 全判为滑出 → 不触发 keep 清扫(缺口 #6)。
+    const liveWindow = makeAuditEvents(1, MAX_EVENT_LOG);
+    s.productState.replaceState({ ...s.productState.getState(), auditEvents: liveWindow });
+    await s.productState.flush();
+    expect(s.productState.getPersistHealth().consecutiveFailures).toBe(0);
+
+    // 窗口外历史行:基线看不见;keep 清扫必须连带删掉(隐私,非逐 id 删)。
+    const oldTs = "2020-01-01T00:00:00.000Z";
+    await s.productState.query(
+      "UPSERT $rid CONTENT { type: 'memory_referenced', label: '老', detail: '', severity: 'info', entityType: 'memory', entityId: 'm_old', createdAt: $d, rest: {} };",
+      { rid: new RecordId("audit_event", [oldTs, "ae_old"]), d: new Date(oldTs) },
+    );
+
+    const countOf = async (table: string): Promise<number> => {
+      const [rows] = await s.productState.query<[Array<{ count?: number }>]>(`SELECT count() FROM ${table} GROUP ALL;`);
+      return rows?.[0]?.count ?? 0;
+    };
+    expect(await countOf("audit_event")).toBe(MAX_EVENT_LOG + 1);
+
+    // 备份:恰满窗且全部新于活库(ae_1001..ae_2000)。治理事务强制 streamPurgeMode=governance-keep。
+    const importedWindow = makeAuditEvents(MAX_EVENT_LOG + 1, MAX_EVENT_LOG * 2);
+    const nextHot = { ...s.productState.getState(), auditEvents: importedWindow } as ProductState;
+    await s.productState.runGovernanceTransaction!({ kind: "replace", next: nextHot }, {});
+
+    expect(s.productState.getPersistHealth().consecutiveFailures, "治理 import 零失败").toBe(0);
+    expect(await countOf("audit_event"), "仅保留导入窗口,prev 窗口与窗口外历史均清").toBe(MAX_EVENT_LOG);
+    const [ids] = await s.productState.query<[Array<{ id?: unknown }>]>("SELECT id FROM audit_event;");
+    const domainIds = (ids ?? []).map((row) => {
+      const id = row.id as { id?: unknown } | undefined;
+      const arr = id && typeof id === "object" && "id" in id ? (id as { id: unknown }).id : id;
+      return Array.isArray(arr) ? String(arr[1]) : String(arr ?? "");
+    });
+    expect(domainIds).toContain(`ae_${MAX_EVENT_LOG * 2}`);
+    expect(domainIds).toContain(`ae_${MAX_EVENT_LOG + 1}`);
+    expect(domainIds).not.toContain("ae_1");
+    expect(domainIds).not.toContain("ae_old");
+    expect(domainIds).not.toContain(`ae_${MAX_EVENT_LOG}`);
+  }, 120000);
 });
 
 describe("N-05 治理代际(getGovernanceGeneration:后台长任务据此丢弃陈旧产出)", () => {
