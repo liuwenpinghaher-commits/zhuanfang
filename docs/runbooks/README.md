@@ -4,6 +4,17 @@
 
 **告警协议（D6.a）：** [`ALERTS.md`](./ALERTS.md) — 阈值、优先级、巡检与降噪。
 
+**专题 runbook：**
+
+| 文档 | 用途 |
+| --- | --- |
+| [`ALERTS.md`](./ALERTS.md) | 告警目录（含 A-05 预算滑窗、A-18 import 索引、A-20 遗留 sqlite） |
+| [`sqlite-legacy-migration.md`](./sqlite-legacy-migration.md) | C12：旧 sqlite **仅** export JSON → import（无官方迁移脚本） |
+| [`reserved-graph-edges.md`](./reserved-graph-edges.md) | C14：`promoted_from` / `corrects` = reserved-no-consumer |
+| [`user-scoped-stores.md`](./user-scoped-stores.md) | 分仓 / USER_SCOPED |
+| [`../COST-ENVELOPE.md`](../COST-ENVELOPE.md) | 已闸 / 有意未闸 · opt-in |
+| [`../DEPLOYMENT-CHECKLIST.md`](../DEPLOYMENT-CHECKLIST.md) | 上线勾选 · capabilities 对照 |
+
 ## 1. 双开锁库 / 启动无输出后退出
 
 - **症状**：第二个 `dev:api` / `dev:full` 卡住或立刻退出。
@@ -41,13 +52,20 @@
 
 ## 5. LLM / 路由 429
 
-- **症状**：chat/rag/corpus 返回 429
+- **症状**：chat/rag/corpus/reviews/knowledge 等返回 429
 - **日志**：`llm_budget_exceeded` 或 `rate_limit_exceeded`
 - **处理**：
   - 预算：等滑窗（默认 1h）或调 `LLM_MAX_CALLS_PER_SESSION` / `LLM_SYSTEM_WINDOW_MS`
+  - **系统键含 `reviews`**：与 `chat`/`knowledge_index` 一样滑窗恢复，**不要**默认重启进程
   - 限流：等 `Retry-After`；测试可设 `RATE_LIMIT_DISABLED=true`
-  - 桶与场景上界：见 [`docs/COST-ENVELOPE.md`](../COST-ENVELOPE.md)（次数 ≠ 美元）
-  - 告警分级：见 [`ALERTS.md`](./ALERTS.md) A-05
+  - 桶与场景上界 / 已闸表：见 [`docs/COST-ENVELOPE.md`](../COST-ENVELOPE.md)（次数 ≠ 美元）
+  - 告警分级：见 [`ALERTS.md`](./ALERTS.md) A-05 · A-19
+
+## 5b. 旧 sqlite 数据「消失」
+
+- **症状**：升级 R7+ 后库空，磁盘仍有 `product-state.db`
+- **日志**：`legacy_sqlite_file_ignored` / `product_store_deprecated`
+- **处理**：见 [`sqlite-legacy-migration.md`](./sqlite-legacy-migration.md)（export→import only）
 
 ## 6. 优雅关闭 flush 超时
 

@@ -29,6 +29,8 @@
 | **会话桶** | 真实 `session.id` | 该专访会话内后续 LLM 调用 429 | `POST .../end` 等路径 `budget.reset(sessionId)`；或新会话新 id |
 | **系统滑窗桶** | 固定名，见下表 | 该 key 在窗口内 429 | 等滑窗滚动（默认 1h）或调大 cap/窗 |
 
+> **历史：** `reviews` 曾是「孤立单调桶」（进程顶满后只能重启）。接线 epic 后 `reviews` 已入 `SYSTEM_BUDGET_KEYS`，与其它系统键同滑窗恢复——**不再**存在孤立单调桶。
+
 ### 2.1 系统滑窗 key（`SYSTEM_BUDGET_KEYS`）
 
 | Key | 典型 capability（日志/语义） | 路由/模块 |
@@ -41,7 +43,7 @@
 | `research_auto_run` | 后台研究调度 | `research-scheduler.ts` · search auto |
 | `reviews` | 月/年复盘叙事 LLM | `routes/reviews.ts`（`GET /api/reviews`） |
 
-每个 key **各自**享有「每窗最多 `LLM_MAX_CALLS_PER_SESSION` 次」——**不是**全局 200 均分所有 key，而是 **每 key 每窗最多 200**（默认）。
+每个 key **各自**享有「每窗最多 `LLM_MAX_CALLS_PER_SESSION` 次」——**不是**全局 200 均分所有 key，而是 **每 key 每窗最多 200**（默认）。滑窗滚动后自动可再消费（**无需重启**）。
 
 ### 2.2 会话桶（专访主路径）
 
@@ -51,7 +53,33 @@
 
 一场专访的 **全部会话侧 LLM** 共享该 session 的 200 次上限（默认），结束时 reset。
 
-### 2.3 已知边角
+### 2.3 已闸 / 有意未闸（写入侧 embed 与邻接）
+
+**真源：** 各路由 `tryConsume(...)`；系统键见 `SYSTEM_BUDGET_KEYS`。本表回答「审计说未接线」时哪些是 **已闸/本 epic 必闸**，哪些是 **有意未闸**（产品/范围选择，不是缺陷）。
+
+#### 已闸 / 本 epic 范围内必闸
+
+| 状态 | 路径 | 预算键 | 耗尽策略 |
+| --- | --- | --- | --- |
+| 已闸 | knowledge rebuild / `withKnowledgeReindex` 增量重嵌 | `knowledge_index` | 429 / 跳过批（现逻辑） |
+| 已闸 | memory candidate **approve** embed | `knowledge_index` | **429**，不写 confirmed |
+| 已闸 | memory-records **PATCH** re-embed | `knowledge_index` | 文本仍 200；删陈旧向量 |
+| 已闸 | realtime-voice **prefetch** embed | `knowledge_index` | 无向量继续 BM25/theme |
+| 已闸 | 复盘叙事 LLM | `reviews`（滑窗） | 429；等 `LLM_SYSTEM_WINDOW_MS` 或调 cap |
+| 已闸 | consolidate 摘要 LLM | `memory_consolidate` | 429（非 embed） |
+| 已闸 | chat / rag / system / research_auto_run 等 LLM | 各自系统键 | 429 + 滑窗 |
+
+#### 有意未闸（Non-Goal / 后续 epic）
+
+| 类 | 路径 | 现状 | 说明 |
+| --- | --- | --- | --- |
+| 查询侧 embed | `routes/chat.ts` embed | 先 `tryConsume("chat")` 再 embed | 与 chat LLM **同桶间接限流**；不另扣 `knowledge_index` |
+| 查询侧 embed | `routes/rag.ts` embed | 先 `tryConsume("rag_query")` | 同上 |
+| 会话侧 embed | `interview-sessions` / `interviewer-brain` / `embedQueryText` | 多为 `session.id` 桶 | 随专访结束 reset |
+| 结束沉淀 | `intelligence/finalize-llm.ts` 批量 embed | session / 结束路径 | 后续 epic 再评估是否单扣 `knowledge_index` |
+| 供应商流 | cascade **TTS / ASR** WS、omni **Realtime** 上游字节流 | **不**走 `llm-budget` | **有意设计**：`RATE_LIMIT_*` + 供应商配额；专访 **LLM 追问**仍走 session 桶 |
+
+#### 其它边角
 
 | 项 | 说明 |
 | --- | --- |
@@ -60,6 +88,7 @@
 | 语音 agent-context **prefetch embed** | **已闸**：`GET .../agent-context` 在嵌入用户最新话语前 `tryConsume("knowledge_index")`；漏传 budget → 日志 `llm_budget_missing` / 耗尽 → `llm_budget_exceeded`（capability `voice_prefetch_embed`），无向量继续 BM25/theme 召回。 |
 | Embedding | `knowledge_index` 等走预算（含 voice prefetch embed、knowledge rebuild / reindex、记忆 approve/PATCH）；本地 `EMBEDDING_PROVIDER=local` 仍计 **调用次数**（不产生云 embedding 费，但仍占进程闸）。 |
 | 未配置 key | 能力 **5xx / 诚实失败**，不会静默烧预算装成功。 |
+| 告警 | 429 分级见 [`runbooks/ALERTS.md`](./runbooks/ALERTS.md) **A-05**；`knowledge_index` / `reviews` 窗内 429 率见 **A-19**。 |
 
 ---
 
@@ -136,6 +165,12 @@
 
 无 embeddingClient（关键词-only 配置）时：approve 仍成功且 `embeddingReady:false`；PATCH 删陈旧向量后保存文本。
 
+### 3.8 复盘（reviews）
+
+| 步骤 | 桶 | 模型 |
+| --- | --- | --- |
+| `GET /api/reviews` 叙事 LLM | `reviews` **滑窗** | 每次生成计入；默认每窗最多 `LLM_MAX_CALLS_PER_SESSION`；到 cap → 429，**等窗滚动恢复**（非进程级死锁） |
+
 ---
 
 ## 4. 与 HTTP 限流的叠加（别只看 LLM 预算）
@@ -178,7 +213,7 @@
 | 长专访 / 多辅助信号顶满 session | 提高 cap，或减少 per-turn 辅助 LLM |
 | chat/rag 一小时 429 | 提高 cap 或 `LLM_SYSTEM_WINDOW_MS`；同时检查 strict 限流 |
 | 索引重建中途 429 | 分批、提高 cap、或拉长窗；观察 `knowledge_index` |
-| `reviews` 一小时 429 | 与其它系统桶相同：等滑窗或提高 cap / `LLM_SYSTEM_WINDOW_MS` |
+| `reviews` 一小时 429 | 与其它系统桶相同：等滑窗或提高 cap / `LLM_SYSTEM_WINDOW_MS`（**勿**再按「重启才能恢复」处理） |
 | 账单惊吓 | 先关 `PODCAST_AUTO_RENDER`、降 research 调度、限语音时长；控制台核对 TTS/ASR |
 
 ---
@@ -194,13 +229,37 @@
 
 ---
 
-## 8. 相关链接
+## 8. Opt-in 能力矩阵（默认关 ≠ 缺陷）
+
+下列能力 **默认关闭或需显式配置**，是产品选择；`GET /api/system/capabilities` 必须与下表一致（status 枚举：`ready` · `degraded` · `needs-key` · `needs-endpoint` · `disabled`）。完整对照见 [`DEPLOYMENT-CHECKLIST.md`](./DEPLOYMENT-CHECKLIST.md) §12。
+
+| 开关 | 默认 | 开启方式 | 关闭时用户可见 | capability id（约） |
+| --- | --- | --- | --- | --- |
+| `systemConfig.research.autoScheduleEnabled` | false | 配置页 / API | 仅手动搜索简报 | `research-auto-schedule` → `disabled` |
+| 敏感记忆进上下文 | 不含 | `includeSensitiveMemoriesInContext` | 召回过滤敏感条 | `memory-sensitive-context` → `disabled` |
+| 复盘 LLM | 需 key | `DASHSCOPE_API_KEY` | 503 + 本地雷达 | 与 `bailian-character` / key 同源 |
+| 播客 TTS 自动渲染 | 关 | `PODCAST_AUTO_RENDER_ON_CREATE` / 手动合成 | 脚本可生成、无音频 | `bailian-cosyvoice` 仍可 ready；自动 render 默认关 |
+| 语音路径 | cascade | 配置 omni / LiveKit | — | `bailian-realtime` 等 |
+| `VOICE_CRAFT_OUTPUT_GUARD` | false | env `true` | 无额外输出护栏 | `voice-craft-output-guard` → `disabled` |
+| 本地音频公网基址 | 未配 | `CORPUS_AUDIO_PUBLIC_BASE_URL` | 本地上传 422；公网 URL 仍可转写 | `corpus-audio-public` → `needs-endpoint` |
+| 存储档 | 生产 surreal | `PRODUCT_STORE` | memory：无 hybrid/governance | `state-store`；memory → `degraded` |
+
+**死表 / 预留图边（非预算）：** `promoted_from` · `corrects` 为 schema **reserved-no-consumer**（不投影、不审计、不接线）。见 [`runbooks/reserved-graph-edges.md`](./runbooks/reserved-graph-edges.md) · `packages/db/src/surreal/migrations/002_relations.surql`。
+
+**历史 sqlite：** R7 已删档；**仅**旧版 export JSON → 新版 import。见 [`runbooks/sqlite-legacy-migration.md`](./runbooks/sqlite-legacy-migration.md)（**无**官方迁移脚本）。
+
+---
+
+## 9. 相关链接
 
 | 文档 | 用途 |
 | --- | --- |
 | `apps/api/src/llm-budget.ts` | 预算实现 |
-| `docs/runbooks/README.md` | 429 / provider 5xx 处理 |
-| `docs/DEPLOYMENT-CHECKLIST.md` | 生产 env 勾选 |
+| [`docs/runbooks/README.md`](./runbooks/README.md) | 429 / provider 5xx 处理 |
+| [`docs/runbooks/ALERTS.md`](./runbooks/ALERTS.md) | A-05 预算 429 · A-18 import 索引失败 · A-19 桶 429 率 |
+| [`docs/runbooks/sqlite-legacy-migration.md`](./runbooks/sqlite-legacy-migration.md) | C12 旧 sqlite：export→import only |
+| [`docs/runbooks/reserved-graph-edges.md`](./runbooks/reserved-graph-edges.md) | 死表 reserved-no-consumer |
+| [`docs/DEPLOYMENT-CHECKLIST.md`](./DEPLOYMENT-CHECKLIST.md) | 生产 env · opt-in 矩阵 |
 | `docs/superpowers/2026-07-30-wave-d-analysis.md` | D3 切片全景 |
 | `docs/MAINTENANCE-ROADMAP.md` | 下一队列项 |
 

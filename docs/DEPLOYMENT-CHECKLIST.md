@@ -224,9 +224,46 @@ export PRODUCT_API_TOKEN='…'
 | 运维 | | | |
 | 产品 | | | |
 
+---
+
+## 12. Opt-in 能力与 capabilities 对照（默认关 ≠ 缺陷）
+
+上线前对照 `GET /api/system/capabilities`（需鉴权）。**status 枚举**（与 `system.ts` / `productApi.types.ts` 一致）：
+
+`ready` · `degraded` · `needs-key` · `needs-endpoint` · `disabled`
+
+| 能力 / 开关 | 默认 | capability id | 期望 status（默认态） | 开启后 |
+| --- | --- | --- | --- | --- |
+| 产品 API | 运行中 | `product-api` | `ready` | — |
+| 状态库 | 生产 surreal | `state-store` | surreal → `ready`（含 native hybrid/gov）；memory → `degraded` | 生产禁止 memory |
+| 百炼联网 / 角色 / embed | 需 key | `bailian-responses` · `bailian-character` · `embedding` | 无 key → `needs-key` | `ready` |
+| CosyVoice 播客 TTS | 需 key；**不**自动 render | `bailian-cosyvoice` | 无 key → `needs-key` | key 后 `ready`；`PODCAST_AUTO_RENDER_ON_CREATE` 仍默认关 |
+| SenseVoice ASR | 需 key | `bailian-sensevoice` | 无 key → `needs-key` | `ready` |
+| 本地音频公网基址 | 未配 | `corpus-audio-public` | **`needs-endpoint`** | 配 `CORPUS_AUDIO_PUBLIC_BASE_URL` → `ready` |
+| Realtime omni | 需 key；主路径仍建议 cascade | `bailian-realtime` | 无 key → `needs-key` | `ready` |
+| research 定时 | `autoScheduleEnabled: false` | `research-auto-schedule` | **`disabled`** | 配置页打开 → `ready`（仍受 `research_auto_run` 预算） |
+| 敏感记忆进上下文 | 不含 | `memory-sensitive-context` | **`disabled`** | 隐私设置打开 → `ready` |
+| craft 输出护栏 | `VOICE_CRAFT_OUTPUT_GUARD` 关 | `voice-craft-output-guard` | **`disabled`** | env true → `ready` |
+| pVAD / LiveKit interrupt | 实验/已接线控制面 | `voice-endpointing-pvad` · `voice-livekit-interrupt` | `ready`（控制面） | — |
+
+勾选：
+
+- [ ] capabilities 无生产危险 warning（对照 §4）
+- [ ] 未开的 opt-in 显示 `disabled` / `needs-key` / `needs-endpoint`，**不是**「未接线 bug」
+- [ ] 成本信封已闸表：[`COST-ENVELOPE.md`](./COST-ENVELOPE.md) §2.3
+- [ ] 告警：[`runbooks/ALERTS.md`](./runbooks/ALERTS.md) A-05 滑窗 · A-18 import 索引
+- [ ] 旧 sqlite：仅 export→import，见 [`runbooks/sqlite-legacy-migration.md`](./runbooks/sqlite-legacy-migration.md)
+- [ ] 死表边：[`runbooks/reserved-graph-edges.md`](./runbooks/reserved-graph-edges.md)（不强制接线）
+
+---
+
 **关联文档**
 
 - 集成矩阵与架构：`docs/superpowers/2026-07-30-integration-and-deployment-state.md`
 - 故障手册：`docs/runbooks/README.md`
+- 告警协议：`docs/runbooks/ALERTS.md`
+- 成本信封：`docs/COST-ENVELOPE.md`
+- 旧 sqlite：`docs/runbooks/sqlite-legacy-migration.md`
+- 预留图边：`docs/runbooks/reserved-graph-edges.md`
 - 开放项：`docs/superpowers/CURRENT-开放清单.md`
 - 用户运行说明：`README.md` →「部署步骤」

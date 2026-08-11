@@ -114,10 +114,11 @@ curl -sS -H "Authorization: Bearer $PRODUCT_API_TOKEN" \
 
 | | |
 | --- | --- |
-| **信号** | HTTP 429；日志 `rate_limit_exceeded` 或 `llm_budget_exceeded` |
+| **信号** | HTTP 429；日志 `rate_limit_exceeded` 或 `llm_budget_exceeded`（capability 可含 `reviews` / `knowledge_index` / `chat` / `rag_query` / `system` / session id 等） |
 | **阈值** | **P1：** 主路径（专访 turn / chat）**10 min 内 ≥ 10** 次 429，或用户明显卡死  **P2：** 偶发 1–3 次 |
-| **动作** | 1. 区分 event（限流 vs 预算）  2. 预算 → 等 `LLM_SYSTEM_WINDOW_MS` 滑窗或调 `LLM_MAX_CALLS_PER_SESSION`（含 `reviews` 等系统键；见 [COST-ENVELOPE](../COST-ENVELOPE.md) §2.1 / §6）  3. 限流 → 等 `Retry-After`；生产禁止 `RATE_LIMIT_DISABLED=true` |
+| **动作** | 1. 区分 event（限流 vs 预算）  2. **预算** → 等 `LLM_SYSTEM_WINDOW_MS` **滑窗**滚动或调 `LLM_MAX_CALLS_PER_SESSION`（**含 `reviews` 等全部系统键**；见 [COST-ENVELOPE](../COST-ENVELOPE.md) §2.1 / §2.3 / §6）——**不要**再按「`reviews` 单调桶只能重启」处理  3. **限流** → 等 `Retry-After`；生产禁止 `RATE_LIMIT_DISABLED=true`  4. 会话桶顶满 → 结束专访 `reset` 或新会话  5. 写入侧 embed 429 → 观察 `knowledge_index`（approve/reindex/voice prefetch 共用） |
 | **分级说明** | 主动打满预算的自测不是事故；非预期顶满才是 |
+| **系统键恢复** | `system` · `chat` · `rag_query` · `knowledge_index` · `memory_consolidate` · `research_auto_run` · **`reviews`** 均为滑窗桶；窗滚动后自动可再消费 |
 
 ### A-06 · 语音 TTFA 恶化（P2）
 
@@ -228,6 +229,35 @@ curl -sS -H "Authorization: Bearer $PRODUCT_API_TOKEN" \
 | **阈值** | 连续失败 → **P3**（内存环仍可用） |
 | **动作** | 查路径权限/磁盘；留空 env 即关闭落盘。**不改** `POST /api/system/runtime-metrics/voice` body schema |
 
+### A-18 · Import 知识索引重建失败（P2）
+
+| | |
+| --- | --- |
+| **信号** | stderr JSON `import_knowledge_rebuild_failed`；`POST /api/state/import` receipt `knowledgeIndex === "failed"`（热态已写入，`partial: true` 常见） |
+| **含义** | 备份/导入热态与材料已落库，但语义索引 rebuild 失败——chat/rag 召回可能空或旧；**不**自动回滚热态 |
+| **阈值** | 活跃迁移/恢复窗口内 **连续 ≥ 2** 次 `import_knowledge_rebuild_failed`，或单次 failed 且用户报「刚恢复的资料召不到」→ **P2** |
+| **动作** | 1. 读 import receipt / Profile「知识索引」字段  2. 查 embedding key 与 `knowledge_index` 预算 429（对照 A-05 / A-16）  3. 在资料/配置页点 **重建知识索引**（`rebuild` 路由）  4. 勿把 `partial` 仅当「录音缺失」——须区分 `knowledgeIndex=failed`  5. 勿为失败索引再跑全库 purge |
+| **关联** | A-16 reindex FAF；[COST-ENVELOPE](../COST-ENVELOPE.md) `knowledge_index`；UI 闭环属接线 epic PR3 |
+
+### A-19 · 系统预算桶 429 率升高（P3，观察）
+
+| | |
+| --- | --- |
+| **信号** | 日志 `llm_budget_exceeded` 中 capability / key 为 `reviews` 或 `knowledge_index`（及 `chat`/`rag_query` 等） |
+| **阈值** | **P3：** 同一系统键在 **1h 滑窗内** 非自测 429 **≥ 5** 次（成本/容量恶化信号，非主路径卡死）→ 升 **P2** 若用户侧可见功能持续不可用 |
+| **动作** | 1. 对照 [COST-ENVELOPE](../COST-ENVELOPE.md) §2.3：写入侧 embed 是否打满 `knowledge_index`；复盘是否连点打满 `reviews`  2. 调大 cap / 窗，或分批 rebuild / 降 research 调度  3. **等滑窗**即可恢复——**勿**把 `reviews` 当进程级死锁重启  4. 主路径卡死仍归 A-05 P1 |
+| **勿做** | 把 Vitest / 故意打满预算的演练当生产事故 |
+
+### A-20 · 遗留 sqlite 文件被忽略（P3 / 配置提醒）
+
+| | |
+| --- | --- |
+| **信号** | 启动日志一次性 `legacy_sqlite_file_ignored`（路径通常为 `PRODUCT_STATE_DB_PATH` 指向的旧 `.db`） |
+| **含义** | R7 后持久档仅为 Surreal；旧 sqlite 文件 **不会被读取或自动迁移** |
+| **阈值** | 出现即 **P3** 记一笔；若运维期望「旧数据还在」而库却空 → 升 **P2** 并走迁移 runbook |
+| **动作** | 见 [`sqlite-legacy-migration.md`](./sqlite-legacy-migration.md)：**唯一路径** = 旧版 export JSON → 新版 import；**无**官方 `migrate-sqlite-*` 脚本 |
+| **勿做** | 假设旁路复制 `.db` 到新机即可恢复；对本 epic 交付迁移脚本的预期 |
+
 ---
 
 ## 3. 建议巡检节奏（单机）
@@ -285,6 +315,9 @@ echo "$body" | jq -e '
 | stderr JSON | `reindex_failed` / `reindex_ok` / `reindex_discarded_stale_epoch` | A-16 |
 | health/metrics | `metrics.reindex.*` | A-16 |
 | stderr JSON | `metrics_jsonl_append_failed` | A-17 |
+| stderr JSON | `import_knowledge_rebuild_failed` | A-18 |
+| stderr JSON | `llm_budget_exceeded`（`reviews` / `knowledge_index` 等） | A-05 · A-19 |
+| stderr JSON | `legacy_sqlite_file_ignored` | A-20 |
 
 代码预算提示常量：
 
@@ -330,11 +363,14 @@ budgetHint.bargeInStopTargetMs = 200
 | 文档 | 用途 |
 | --- | --- |
 | [`docs/runbooks/README.md`](./README.md) | 故障逐步处置 |
-| [`docs/COST-ENVELOPE.md`](../COST-ENVELOPE.md) | 429 预算与场景上界 |
-| [`docs/DEPLOYMENT-CHECKLIST.md`](../DEPLOYMENT-CHECKLIST.md) | 上线勾选 |
+| [`docs/COST-ENVELOPE.md`](../COST-ENVELOPE.md) | 429 预算、已闸/有意未闸、opt-in 矩阵 |
+| [`docs/DEPLOYMENT-CHECKLIST.md`](../DEPLOYMENT-CHECKLIST.md) | 上线勾选 · opt-in |
+| [`sqlite-legacy-migration.md`](./sqlite-legacy-migration.md) | C12 旧 sqlite export→import |
+| [`reserved-graph-edges.md`](./reserved-graph-edges.md) | 死表 reserved-no-consumer |
 | [`docs/MAINTENANCE-ROADMAP.md`](../MAINTENANCE-ROADMAP.md) | 队列 |
 | `npx tsx scripts/voice-slo-smoke.ts` | 本地 TTFA 预算 mock |
 | `node scripts/backup-export-smoke.mjs` | export completeness |
 
 **D6.a 状态：closed（告警协议文档）**  
+**接线 epic 增补：** A-18 import 索引失败 · A-19 系统桶 429 率 · A-20 遗留 sqlite；A-05 与 `reviews` **滑窗**对齐。  
 **下一默认维护项：** 按产品痛点在 D1.a（播客过期刷新）与 D2.a（搜索 URL 去重）中二选一；无痛点则停在文档维护。

@@ -422,6 +422,15 @@ export async function registerSystemRoutes(
     const realtimeTransport = env.BAILIAN_REALTIME_TRANSPORT === "webrtc" ? "webrtc" : "websocket";
 
     const realtimeModels = resolveBailianRealtimeModels(env);
+    const isSurrealStore = options.stateStore !== "memory";
+    const autoScheduleEnabled = Boolean(state.systemConfig.research?.autoScheduleEnabled);
+    const includeSensitive = Boolean(state.systemConfig.memory?.includeSensitiveMemoriesInContext);
+    const craftGuardEnabled = ["1", "true", "yes", "on"].includes(
+      (env.VOICE_CRAFT_OUTPUT_GUARD ?? "").trim().toLowerCase()
+    );
+    const corpusPublicBase = (env.CORPUS_AUDIO_PUBLIC_BASE_URL ?? "").trim();
+    // CapabilityStatus 枚举: ready | degraded | needs-key | needs-endpoint | disabled
+    // （与 productApi.types SystemCapabilityStatus 对齐；opt-in 默认关用 disabled，缺公网基址用 needs-endpoint）
     const capabilities: SystemCapability[] = [
       {
         id: "product-api",
@@ -441,11 +450,12 @@ export async function registerSystemRoutes(
         // (.data/product-state.db 旁建 surreal/),并非必填 → requiredEnv 不再列它(旧文案误标必需)。
         label: "Product State Store",
         // R7:持久 = surreal 档;非 memory 即持久(唯一持久档为 SurrealDB 嵌入式 surrealkv)。
-        status: options.stateStore !== "memory" ? "ready" : "degraded",
+        // C17:memory 档故意无 searchHybrid / runGovernanceTransaction（配置态，非生产默认路径缺陷）。
+        status: isSurrealStore ? "ready" : "degraded",
         active: true,
-        detail: options.stateStore !== "memory"
-          ? "SurrealDB 状态库已启用（嵌入式 surrealkv，图/向量/混合检索生效），数据持久化。"
-          : "内存状态库已启用：数据不持久，重启后回到 seed 状态；导出仅为当前会话快照。",
+        detail: isSurrealStore
+          ? "SurrealDB 状态库已启用（嵌入式 surrealkv）：nativeRecall/searchHybrid 与 runGovernanceTransaction 可用，数据持久化。"
+          : "内存状态库已启用：数据不持久，重启后回到 seed；无 searchHybrid / 无 runGovernanceTransaction（配置态差异，非降级故障）。导出仅为当前会话快照。生产请用 PRODUCT_STORE=surreal。",
         requiredEnv: [],
         lastCheckedAt: generatedAt
       },
@@ -494,7 +504,7 @@ export async function registerSystemRoutes(
         status: options.bailianPodcastAudioClient ? "ready" : "needs-key",
         active: state.systemConfig.voice.ttsProvider === "bailian",
         detail: options.bailianPodcastAudioClient
-          ? "已配置服务端 TTS provider，播客脚本会渲染为真实音频 URL。"
+          ? "已配置服务端 TTS provider。创建播客默认不自动 render（PODCAST_AUTO_RENDER_ON_CREATE 默认关）；需手动合成或显式打开自动渲染。"
           : "缺少 DASHSCOPE_API_KEY 或 BAILIAN_API_KEY，播客将保留本地占位音频。",
         requiredEnv: ["DASHSCOPE_API_KEY"],
         model: env.BAILIAN_TTS_MODEL ?? BAILIAN_PODCAST_TTS_MODEL,
@@ -547,11 +557,12 @@ export async function registerSystemRoutes(
         id: "corpus-audio-public",
         kind: "voice",
         label: "语料本地音频公开基址",
-        status: (env.CORPUS_AUDIO_PUBLIC_BASE_URL ?? "").trim() ? "ready" : "degraded",
-        active: Boolean((env.CORPUS_AUDIO_PUBLIC_BASE_URL ?? "").trim()),
-        detail: (env.CORPUS_AUDIO_PUBLIC_BASE_URL ?? "").trim()
-          ? `本地上传可映射到公开 URL 后走 SenseVoice：${(env.CORPUS_AUDIO_PUBLIC_BASE_URL ?? "").trim()}`
-          : "未配置 CORPUS_AUDIO_PUBLIC_BASE_URL：本地音频会落盘并诚实 422；公网 URL 仍可转写。",
+        // 缺公网可拉基址 = needs-endpoint（枚举真值；非 key 缺失、亦非 runtime degraded）
+        status: corpusPublicBase ? "ready" : "needs-endpoint",
+        active: Boolean(corpusPublicBase),
+        detail: corpusPublicBase
+          ? `本地上传可映射到公开 URL 后走 SenseVoice：${corpusPublicBase}`
+          : "未配置 CORPUS_AUDIO_PUBLIC_BASE_URL（needs-endpoint）：本地音频会落盘并诚实 422；公网 URL 仍可转写。",
         requiredEnv: ["CORPUS_AUDIO_PUBLIC_BASE_URL"],
         lastCheckedAt: generatedAt
       },
@@ -601,6 +612,43 @@ export async function registerSystemRoutes(
         // Reuse the resolved transport (defaults to websocket) so the descriptor doesn't
         // claim "ready" on a websocket assumption while displaying "webrtc".
         transport: realtimeTransport,
+        lastCheckedAt: generatedAt
+      },
+      {
+        id: "research-auto-schedule",
+        kind: "search",
+        label: "研究定时调度（opt-in）",
+        // 默认 autoScheduleEnabled=false：产品选择，非接线缺陷
+        status: autoScheduleEnabled ? "ready" : "disabled",
+        active: autoScheduleEnabled,
+        detail: autoScheduleEnabled
+          ? "systemConfig.research.autoScheduleEnabled 已开；后台 tick 使用 research_auto_run 预算桶（与前台 system 隔离）。"
+          : "默认关闭（disabled_by_config）：仅手动搜索简报。配置页/API 打开 autoScheduleEnabled 后启用；见 COST-ENVELOPE / DEPLOYMENT-CHECKLIST §12。",
+        requiredEnv: [],
+        lastCheckedAt: generatedAt
+      },
+      {
+        id: "memory-sensitive-context",
+        kind: "storage",
+        label: "敏感记忆进入召回上下文（opt-in）",
+        status: includeSensitive ? "ready" : "disabled",
+        active: includeSensitive,
+        detail: includeSensitive
+          ? "includeSensitiveMemoriesInContext 已开：敏感条可进入 chat/专访召回上下文。"
+          : "默认关闭：敏感记忆不进上下文（召回过滤）。隐私设置打开 includeSensitive 后启用——非「未接线」。",
+        requiredEnv: [],
+        lastCheckedAt: generatedAt
+      },
+      {
+        id: "voice-craft-output-guard",
+        kind: "voice",
+        label: "Craft 输出护栏（实验 opt-in）",
+        status: craftGuardEnabled ? "ready" : "disabled",
+        active: craftGuardEnabled,
+        detail: craftGuardEnabled
+          ? "VOICE_CRAFT_OUTPUT_GUARD 已启用：输出护栏/截断实验路径生效。"
+          : "默认关闭（实验标记）：无额外 craft 输出护栏。设 VOICE_CRAFT_OUTPUT_GUARD=true 开启。",
+        requiredEnv: ["VOICE_CRAFT_OUTPUT_GUARD"],
         lastCheckedAt: generatedAt
       }
     ];

@@ -6,12 +6,13 @@ import { shutdownTelemetry } from "./telemetry";
 
 import Fastify, { type FastifyRequest, type FastifyReply } from "fastify";
 import fastifyStatic from "@fastify/static";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 // R7:sqlite 冷层与 dual-write/dual-surreal 已删除;持久化唯一走 surreal(startServer 经
 // createSurrealStores 注入),buildApiServer 默认工厂只构造内存仓库。
 import { loadLocalEnvFile } from "./env";
-import { resolveProductStoreSelection, type ProductStoreMode } from "./store-selection";
+import { resolveProductStoreSelection, isInMemoryDbPath, type ProductStoreMode } from "./store-selection";
 import { createInMemoryProductStateRepository, StateRevisionConflictError, type ProductStateRepository } from "./product-state-repository";
 import { createInMemoryRawMaterialRepository, type RawMaterialRepository } from "./raw-material-repository";
 import { createInMemoryAudioRepository, type AudioRepository } from "./audio-repository";
@@ -748,6 +749,22 @@ export async function startServer() {
       event: "product_store_deprecated",
       deprecatedProductStore: selection.deprecatedProductStore,
       detail: selection.reason
+    }));
+  }
+
+  // C12:若 PRODUCT_STATE_DB_PATH 锚点处仍有遗留 sqlite 文件,warn 一次——绝不自动读/迁移。
+  // 唯一推荐路径:旧版 export JSON → 新版 import(docs/runbooks/sqlite-legacy-migration.md)。
+  if (
+    productStore === "surreal" &&
+    productStateDbPath &&
+    !isInMemoryDbPath(productStateDbPath) &&
+    existsSync(productStateDbPath)
+  ) {
+    console.warn(JSON.stringify({
+      event: "legacy_sqlite_file_ignored",
+      path: productStateDbPath,
+      detail:
+        "R7 后持久档仅为 Surreal（旁路 .data/surreal）；此路径上的旧 sqlite 文件不会被读取或自动迁移。请用旧版 export JSON 后在新版 import。见 docs/runbooks/sqlite-legacy-migration.md"
     }));
   }
 

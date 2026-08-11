@@ -15,20 +15,22 @@ DEFINE FIELD IF NOT EXISTS weight ON belongs_to_theme TYPE option<float>;
 DEFINE TABLE IF NOT EXISTS about_theme SCHEMAFULL TYPE RELATION ENFORCED;
 
 -- promoted_from: question → note(functional)。
--- 【历史预留·已确认无消费者】R 系列全程未接线:edge-mapper.collectEdges 不投影、persist 不写、
+-- 【历史预留·reserved-no-consumer】R 系列全程未接线:edge-mapper.collectEdges 不投影、persist 不写、
 -- 召回/图审计(AUDITED_EDGE_TABLES)不消费,表恒空。刻意保留 DEFINE 不删——迁移按 filename 账本
 -- append-only(见 010 用新迁移 OVERWRITE 003 的先例,不改已发布迁移),已上线库亦已建此空表。
 -- 如将来要接「观点晋升溯源」语义,照 contradicts/evolves_into 的复活路径做纯应用层接线即可
 -- (表已存在,无需新迁移):collectEdges 加投影 + EdgeSpec.edge 联合类型 + AUDITED_EDGE_TABLES。
+-- 文档交叉链: docs/runbooks/reserved-graph-edges.md · docs/ontology · COST-ENVELOPE §8
 DEFINE TABLE IF NOT EXISTS promoted_from SCHEMAFULL TYPE RELATION ENFORCED;
 
 -- part_of: turn → session(Mereology)
 DEFINE TABLE IF NOT EXISTS part_of SCHEMAFULL TYPE RELATION ENFORCED;
 
 -- corrects: memory_correction → memory。
--- 【历史预留·已确认无消费者】同 promoted_from:R 系列未接线、表恒空、刻意保留 DEFINE。
+-- 【历史预留·reserved-no-consumer】同 promoted_from:R 系列未接线、表恒空、刻意保留 DEFINE。
 -- 「记忆修正」当前走 memory_correction 实体 + memory.status 域层建模,未用此图边;
 -- 如将来要图层可达,同样照 contradicts/evolves_into 的纯应用层复活路径接线(无需新迁移)。
+-- 文档交叉链: docs/runbooks/reserved-graph-edges.md · docs/ontology · COST-ENVELOPE §8
 DEFINE TABLE IF NOT EXISTS corrects SCHEMAFULL TYPE RELATION ENFORCED;
 
 -- contradicts: point ↔ point(symmetric,推理层检出,新能力)

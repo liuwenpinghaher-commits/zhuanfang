@@ -1046,8 +1046,9 @@ function summarizePersistDiff(prev: ProductState, next: ProductState): Record<st
 }
 
 /** 方案二:参与审计的边表 = edge-mapper 投影的全部边,排除 part_of(append-only 豁免,见接口注释)。
- *  promoted_from/corrects 是【已确认无消费者的历史预留死表】(edge-mapper 不投影、persist 不写、
- *  恒空),故不入审计;非"悬置待定"。若将来接线,照 002_relations.surql 注释的复活路径同步补入此表。 */
+ *  promoted_from/corrects 是【reserved-no-consumer 历史预留死表】(edge-mapper 不投影、persist 不写、
+ *  恒空),故不入审计;非"悬置待定"。若将来接线,照 002_relations.surql 注释的复活路径同步补入此表。
+ *  文档: docs/runbooks/reserved-graph-edges.md */
 const AUDITED_EDGE_TABLES = ["belongs_to_theme", "about_theme", "derived_from", "contradicts", "evolves_into"] as const;
 const AUDIT_SAMPLE_LIMIT = 20;
 
