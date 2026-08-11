@@ -1055,4 +1055,28 @@ describe("product api client", () => {
     const client = createProductApiClient("http://127.0.0.1:8787/", vi.fn());
     expect(client.sessionAudioUrl("sess-5")).toBe("http://127.0.0.1:8787/api/sessions/sess-5/audio");
   });
+
+  // B9 / K14: turn-complete non-2xx defaults fail-closed; opt-out restores fail-open
+  it("classifyTurnComplete: non-2xx → done===false fail-closed by default", async () => {
+    vi.unstubAllEnvs();
+    vi.stubEnv("VITE_TURN_COMPLETE_FAIL_OPEN", "");
+    const fetchImpl = vi.fn(async () => new Response("upstream down", { status: 503 }));
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+    const result = await client.classifyTurnComplete("sess-tc", "我觉得吧");
+    expect(result.done).toBe(false);
+    expect(result.failOpen).toBe(false);
+    expect(result.reason).toBe("http_error_failclosed");
+    vi.unstubAllEnvs();
+  });
+
+  it("classifyTurnComplete: non-2xx + VITE_TURN_COMPLETE_FAIL_OPEN=1 → done===true fail-open", async () => {
+    vi.stubEnv("VITE_TURN_COMPLETE_FAIL_OPEN", "1");
+    const fetchImpl = vi.fn(async () => new Response("upstream down", { status: 502 }));
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+    const result = await client.classifyTurnComplete("sess-tc", "你说的是什么意思");
+    expect(result.done).toBe(true);
+    expect(result.failOpen).toBe(true);
+    expect(result.reason).toBe("http_error_failopen");
+    vi.unstubAllEnvs();
+  });
 });

@@ -57,6 +57,36 @@ import {
   withAuthTokenQuery
 } from "./productApi.types";
 
+/** B9: client-side count of turn-complete HTTP fail-closed outcomes (debug/observability). */
+let turnCompleteFailClosedCount = 0;
+
+/**
+ * B10: voice telemetry silent drops (reportVoiceLatency / logCascadeDecision).
+ * Warn on the first 3 failures, then every 20th — cheap sampling, no new deps.
+ */
+let telemetryDropCount = 0;
+function noteTelemetryDrop(kind: "latency" | "cascade", err: unknown): void {
+  telemetryDropCount += 1;
+  if (telemetryDropCount <= 3 || telemetryDropCount % 20 === 0) {
+    console.warn(
+      JSON.stringify({
+        event: "voice_telemetry_drop",
+        kind,
+        drops: telemetryDropCount,
+        error: err instanceof Error ? err.message : String(err)
+      })
+    );
+  }
+}
+
+/** Opt-in only: VITE_TURN_COMPLETE_FAIL_OPEN=1|true restores legacy fail-open on non-2xx. */
+function isTurnCompleteFailOpenEnabled(): boolean {
+  const raw = String(import.meta.env.VITE_TURN_COMPLETE_FAIL_OPEN ?? "")
+    .trim()
+    .toLowerCase();
+  return raw === "1" || raw === "true";
+}
+
 export function createProductApiClient(
   baseUrl = getProductApiBaseUrl(),
   fetchImpl: FetchLike = fetch,
@@ -241,8 +271,9 @@ export function createProductApiClient(
           headers: { "content-type": "application/json" },
           body: JSON.stringify(sample)
         });
-      } catch {
-        /* best-effort telemetry — never block voice UX */
+      } catch (err) {
+        /* best-effort telemetry — never block voice UX; sample drop warns (B10) */
+        noteTelemetryDrop("latency", err);
       }
     },
     async getSystemCapabilities() {
@@ -693,8 +724,9 @@ export function createProductApiClient(
       };
     },
     async classifyTurnComplete(sessionId, transcript, signal) {
-      // authedFetch（非裸 fetch）：production bearer 鉴权下裸 fetch 恒 401，
-      // 级联判停会永远走 http-error fail-safe。失败语义保持不变（!ok → 立即应答）。
+      // authedFetch（非裸 fetch）：production bearer 鉴权下裸 fetch 恒 401。
+      // B9 / K14：非 2xx 默认 fail-closed（done:false → cascade armMaxWait 继续听）；
+      // 仅 VITE_TURN_COMPLETE_FAIL_OPEN=1|true 时恢复旧 fail-open（done:true 立即应答）。
       const res = await authedFetch(`${normalizedBaseUrl}/api/interview-sessions/${sessionId}/turn-complete`, {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ transcript }),
@@ -702,7 +734,36 @@ export function createProductApiClient(
         // endpoint LLM call instead of letting it run to completion server-side.
         ...(signal ? { signal } : {})
       });
-      if (!res.ok) return { done: true, reason: "http error → respond" };
+      if (!res.ok) {
+        if (isTurnCompleteFailOpenEnabled()) {
+          console.warn(
+            JSON.stringify({
+              event: "turn_complete_http_failopen",
+              status: res.status,
+              sessionId
+            })
+          );
+          return {
+            done: true,
+            reason: "http_error_failopen",
+            failOpen: true as const
+          };
+        }
+        turnCompleteFailClosedCount += 1;
+        console.warn(
+          JSON.stringify({
+            event: "turn_complete_http_failclosed",
+            status: res.status,
+            sessionId,
+            count: turnCompleteFailClosedCount
+          })
+        );
+        return {
+          done: false,
+          reason: "http_error_failclosed",
+          failOpen: false as const
+        };
+      }
       return res.json();
     },
     async logCascadeDecision(sessionId, trace) {
@@ -712,7 +773,10 @@ export function createProductApiClient(
           method: "POST", headers: { "content-type": "application/json" },
           body: JSON.stringify(trace)
         });
-      } catch { /* best-effort audit */ }
+      } catch (err) {
+        /* best-effort audit; sample drop warns (B10) */
+        noteTelemetryDrop("cascade", err);
+      }
     },
     async applyInterviewControl(sessionId, input) {
       const response = (await requestJson(`/api/interview-sessions/${sessionId}/control`, {

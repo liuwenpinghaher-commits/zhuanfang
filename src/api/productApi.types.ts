@@ -199,7 +199,11 @@ export interface ProductApiClient {
       strategyDecision?: InterviewSession["strategyTrace"] extends (infer T)[] | undefined ? T : never;
     }
   ): Promise<InterviewSessionResponse>;
-  classifyTurnComplete(sessionId: string, transcript: string, signal?: AbortSignal): Promise<{ done: boolean; reason: string }>;
+  classifyTurnComplete(
+    sessionId: string,
+    transcript: string,
+    signal?: AbortSignal
+  ): Promise<{ done: boolean; reason: string; failOpen?: boolean }>;
   logCascadeDecision(sessionId: string, trace: { layer: number; action: string; reason: string; silenceMs: number; expressionState: string; transcript: string }): Promise<void>;
   applyInterviewControl(sessionId: string, input: ApplyInterviewControlRequest): Promise<InterviewSessionResponse>;
   endInterviewSession(sessionId: string): Promise<EndInterviewSessionResponse>;
