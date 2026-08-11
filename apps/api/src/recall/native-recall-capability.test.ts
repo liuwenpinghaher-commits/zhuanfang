@@ -82,7 +82,7 @@ describe("C11 Surreal 能力清单 · 装配契约", () => {
     }
     const wrapped = withKnowledgeReindex(scoped, ...reindexArgs());
     for (const key of SURREAL_CAPABILITY_KEYS) {
-      expect(typeof (wrapped as Record<string, unknown>)[key], `capability ${key}`).toBe("function");
+      expect(typeof (wrapped as unknown as Record<string, unknown>)[key], `capability ${key}`).toBe("function");
       expect(key in wrapped, `in-probe ${key}`).toBe(true);
     }
     // 路由探测面仍可达
