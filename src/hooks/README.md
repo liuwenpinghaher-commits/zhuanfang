@@ -11,3 +11,5 @@
 | `useRealtimeVoiceControls` | 关闭会话、打断、开关实时录音（cascade/livekit/omni） |
 | `useInterviewSessionShell` | 会话壳 state + 防重入 guards（可选接入） |
 | `useRealtimeVoiceSession` | 语音 transport state 早期骨架（App 现用 Controls） |
+| `useServerReviews` | B6：视图门控 + 2s debounce 的 getReviews SWR（失败保留旧数据） |
+| `usePersistHealthPoll` | B7：30s getHealth 轮询，驱动 persist degraded 顶栏 banner |

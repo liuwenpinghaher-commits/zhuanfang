@@ -58,6 +58,86 @@ describe("ProfileView 显性档案保存", () => {
     expect(container?.textContent).not.toContain("已保存");
   });
 
+  it("C13: knowledgeIndex=failed 展示诚实文案与重建索引 CTA", async () => {
+    const state = createInitialProductState();
+    const onRebuildIndex = vi.fn(async () => ({ chunkCount: 3 }));
+    const onImport = vi.fn(async () => ({
+      state,
+      receipt: {
+        partial: true,
+        restored: { rawMaterials: 1, audios: 0 },
+        skipped: { rawMaterials: [], audios: [] },
+        missing: { audioSessions: [] as string[] },
+        knowledgeIndex: "failed" as const
+      }
+    }));
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    act(() => {
+      root?.render(
+        <ProfileView
+          state={state}
+          correctionText=""
+          onCorrectionText={vi.fn()}
+          onAddCorrection={vi.fn()}
+          onReset={vi.fn()}
+          onExport={vi.fn()}
+          onImport={onImport}
+          onPrivacyReport={vi.fn()}
+          onPurge={vi.fn()}
+          onSetProductState={vi.fn()}
+          onSaveProfile={vi.fn(async (s) => s)}
+          onRebuildIndex={onRebuildIndex}
+        />
+      );
+    });
+
+    // Simulate successful import path by re-rendering with receipt already shown:
+    // trigger via private-ish path — call onImport through file handler is heavy;
+    // instead mount with a controlled re-render after import by exercising rebuild CTA
+    // visibility through re-render with forced receipt state via import flow mock.
+    // Use FileReader-less path: invoke import by dispatching change with a stub file.
+    const fileInput = container?.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(
+      [
+        JSON.stringify({
+          state,
+          rawMaterials: [],
+          audios: []
+        })
+      ],
+      "backup.json",
+      { type: "application/json" }
+    );
+    // confirm() is required by handleImportFile
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    await act(async () => {
+      Object.defineProperty(fileInput, "files", { value: [file], configurable: true });
+      fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    // allow promise chain
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container?.textContent).toContain("备份已恢复，但语义索引重建失败");
+    expect(container?.textContent).toContain("索引重建失败，热态已写入");
+    expect(container?.textContent).not.toContain("已完整恢复并核对清单");
+    const rebuildBtn = Array.from(container?.querySelectorAll("button") ?? []).find((b) =>
+      (b.textContent ?? "").includes("重建知识索引")
+    );
+    expect(rebuildBtn).toBeTruthy();
+    await act(async () => {
+      rebuildBtn?.click();
+      await Promise.resolve();
+    });
+    expect(onRebuildIndex).toHaveBeenCalledTimes(1);
+    expect(container?.textContent).toContain("重建完成：3 块已写入索引");
+    confirmSpy.mockRestore();
+  });
+
   function renderProfile(state: ProductState, onSaveProfile: (state: ProductState) => Promise<ProductState>) {
     container = document.createElement("div");
     document.body.appendChild(container);

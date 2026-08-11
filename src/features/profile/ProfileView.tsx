@@ -1,4 +1,4 @@
-import { Brain, Download, FileText, PenLine, Settings, ShieldCheck, Trash2, Upload } from "lucide-react";
+import { Brain, Download, FileText, PenLine, RefreshCw, Settings, ShieldCheck, Trash2, Upload } from "lucide-react";
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { PrivacyReport } from "../../domain/privacy";
@@ -21,6 +21,8 @@ interface ProfileViewProps {
   onSaveProfile: (state: ProductState) => Promise<ProductState>;
   /** 跳转记忆治理（审批候选 / 编辑长期记忆）。 */
   onOpenMemory?: () => void;
+  /** C13: import 后 knowledgeIndex=failed 时的「重建知识索引」CTA。 */
+  onRebuildIndex?: () => Promise<{ chunkCount: number }>;
 }
 
 type GovernanceAction = "export" | "import" | "privacy" | "purge";
@@ -78,7 +80,8 @@ export function ProfileView({
   onPurge,
   onSetProductState,
   onSaveProfile,
-  onOpenMemory
+  onOpenMemory,
+  onRebuildIndex
 }: ProfileViewProps) {
   const [form, setForm] = useState({
     name: state.profile.name,
@@ -174,6 +177,9 @@ export function ProfileView({
   const [importError, setImportError] = useState<string | null>(null);
   const [privacyError, setPrivacyError] = useState<string | null>(null);
   const [purgeError, setPurgeError] = useState<string | null>(null);
+  const [rebuildingIndex, setRebuildingIndex] = useState(false);
+  const [rebuildIndexHint, setRebuildIndexHint] = useState<string | null>(null);
+  const [rebuildIndexError, setRebuildIndexError] = useState<string | null>(null);
 
   async function handleExport() {
     setLoadingAction("export");
@@ -225,6 +231,8 @@ export function ProfileView({
     setImportSuccess(false);
     setImportReceipt(null);
     setImportError(null);
+    setRebuildIndexHint(null);
+    setRebuildIndexError(null);
     try {
       const payload = JSON.parse(await file.text());
       const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : null;
@@ -238,6 +246,25 @@ export function ProfileView({
       setImportError(describeGovernanceError(err, "导入失败，请确认文件是有效的导出包。"));
     } finally {
       setLoadingAction(null);
+    }
+  }
+
+  async function handleRebuildIndex() {
+    if (!onRebuildIndex || rebuildingIndex) return;
+    setRebuildingIndex(true);
+    setRebuildIndexHint(null);
+    setRebuildIndexError(null);
+    try {
+      const { chunkCount } = await onRebuildIndex();
+      setRebuildIndexHint(`重建完成：${chunkCount} 块已写入索引。`);
+      // Clear failed flag in local receipt so CTA can stand down after success.
+      setImportReceipt((prev) =>
+        prev && prev.knowledgeIndex === "failed" ? { ...prev, knowledgeIndex: "rebuilt" } : prev
+      );
+    } catch (err) {
+      setRebuildIndexError(describeGovernanceError(err, "重建失败：知识索引需要后端在线。"));
+    } finally {
+      setRebuildingIndex(false);
     }
   }
 
@@ -499,10 +526,13 @@ export function ProfileView({
               导入数据
               <input type="file" accept="application/json,.json" hidden disabled={loadingAction !== null} onChange={handleImportFile} />
             </label>
-            {importSuccess && importReceipt && !importReceipt.partial && (
+            {importSuccess && importReceipt && !importReceipt.partial && importReceipt.knowledgeIndex !== "failed" && (
               <span className="field-status is-success">已完整恢复并核对清单</span>
             )}
-            {importSuccess && (!importReceipt || importReceipt.partial) && (
+            {importSuccess && importReceipt?.knowledgeIndex === "failed" && (
+              <span className="field-status text-warning">备份已恢复，但语义索引重建失败</span>
+            )}
+            {importSuccess && (!importReceipt || (importReceipt.partial && importReceipt.knowledgeIndex !== "failed")) && (
               /* C2#9:同上,琥珀色统一引用 --accent-amber token。 */
               <span className="field-status text-warning">
                 {importReceipt ? "已部分恢复，请核对缺失项" : "已恢复，但服务端未返回完整性清单"}
@@ -559,13 +589,29 @@ export function ProfileView({
 
           {importSuccess && (
             <section
-              className={`backup-integrity-card ${importReceipt?.partial === false ? "complete" : "partial"}`}
+              className={`backup-integrity-card ${
+                importReceipt?.partial === false && importReceipt.knowledgeIndex !== "failed" ? "complete" : "partial"
+              }`}
               aria-live="polite"
               aria-label="导入恢复清单"
 >
               <div className="backup-integrity-head">
-                <strong>{importReceipt?.partial === false ? "恢复清单已核对" : "恢复清单需要处理"}</strong>
-                <span>{importReceipt ? (importReceipt.partial ? "部分恢复" : "完整恢复") : "完整性未知"}</span>
+                <strong>
+                  {importReceipt?.knowledgeIndex === "failed"
+                    ? "索引重建失败，热态已写入"
+                    : importReceipt?.partial === false
+                      ? "恢复清单已核对"
+                      : "恢复清单需要处理"}
+                </strong>
+                <span>
+                  {importReceipt
+                    ? importReceipt.knowledgeIndex === "failed"
+                      ? "索引失败"
+                      : importReceipt.partial
+                        ? "部分恢复"
+                        : "完整恢复"
+                    : "完整性未知"}
+                </span>
               </div>
               {importReceipt ? (
                 <>
@@ -574,6 +620,11 @@ export function ProfileView({
                     <span>录音 {importReceipt.restored.audios} 段</span>
                     <span>知识索引 {importReceipt.knowledgeIndex}</span>
                   </div>
+                  {importReceipt.knowledgeIndex === "failed" && (
+                    <p className="field-help">
+                      热态与材料已恢复，但语义索引未能重建。检索/资料提问可能不完整，请点击下方按钮重试。
+                    </p>
+                  )}
                   {(importReceipt.missing.audioSessions.length > 0 || importReceipt.skipped.rawMaterials.length > 0 || importReceipt.skipped.audios.length > 0) && (
                     <ul>
                       {importReceipt.missing.audioSessions.length > 0 && (
@@ -582,6 +633,22 @@ export function ProfileView({
                       {importReceipt.skipped.rawMaterials.length > 0 && <li>跳过逐字稿 {importReceipt.skipped.rawMaterials.length} 项</li>}
                       {importReceipt.skipped.audios.length > 0 && <li>跳过录音 {importReceipt.skipped.audios.length} 项</li>}
                     </ul>
+                  )}
+                  {importReceipt.knowledgeIndex === "failed" && onRebuildIndex && (
+                    <div className="row-wrap mt-2">
+                      <button
+                        type="button"
+                        className={"primary-action" + (rebuildingIndex ? " btn-loading" : "")}
+                        disabled={rebuildingIndex || loadingAction !== null}
+                        aria-busy={rebuildingIndex}
+                        onClick={() => void handleRebuildIndex()}
+                      >
+                        {rebuildingIndex ? <span className="spinner" aria-hidden="true" /> : <RefreshCw size={16} aria-hidden />}
+                        {rebuildingIndex ? "重建中…" : "重建知识索引"}
+                      </button>
+                      {rebuildIndexHint && <span className="field-status is-success">{rebuildIndexHint}</span>}
+                      {rebuildIndexError && <span className="field-status is-danger">{rebuildIndexError}</span>}
+                    </div>
                   )}
                 </>
               ) : (

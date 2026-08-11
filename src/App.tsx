@@ -23,6 +23,8 @@ import { useSearchBriefActions } from "./hooks/useSearchBriefActions";
 import { useCorpusPlaybookActions } from "./hooks/useCorpusPlaybookActions";
 import { useInterviewSessionActions } from "./hooks/useInterviewSessionActions";
 import { useRealtimeVoiceControls } from "./hooks/useRealtimeVoiceControls";
+import { useServerReviews } from "./hooks/useServerReviews";
+import { usePersistHealthPoll } from "./hooks/usePersistHealthPoll";
 import {
   buildCognitiveRadar,
   buildInterviewCard,
@@ -46,7 +48,7 @@ import {
 import { addAnnotation, removeAnnotation } from "./domain/raw-material";
 import { deleteImportSource } from "./domain/material";
 import { createIdleCapabilityTask, failCapabilityTask, startCapabilityTask } from "./capabilities/task";
-import { productApiClient, isNetworkError, ApiError, type PersistHealthLite, type PurgeReceipt, type ResetReceipt, type ReviewsResponse } from "./api/productApi";
+import { productApiClient, isNetworkError, ApiError, type PurgeReceipt, type ResetReceipt } from "./api/productApi";
 import type { ColdLayerMode, RealtimeVoiceSessionResponse, StateImportResult, SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigUpdateRequest, VoiceInfo } from "./api/productApi";
 // WebRTC omni client is incomplete (no callbacks/turn recording); the connect path is
 // downlined to WebSocket in startVoiceSession. Type kept for the connection union only.
@@ -168,17 +170,21 @@ export default function App() {
   });
   const [apiPersistenceEnabled, setApiPersistenceEnabled] = useState(false);
   const [systemCapabilities, setSystemCapabilities] = useState<SystemCapabilitiesResponse | null>(null);
-  const [serverReviews, setServerReviews] = useState<ReviewsResponse | null>(null);
-  // P3-08:LLM 复盘取不到时静默退回确定性本地复盘——旅程8失败此前零信号。用此标记让复盘视图
-  // 如实标注"本地生成(LLM 复盘暂不可用)",而不是让用户误以为看的是 LLM 综述。
-  const [reviewsError, setReviewsError] = useState<string | null>(null);
-  const [reviewsLoading, setReviewsLoading] = useState(false);
   /** 手动重试复盘（不依赖资产签名变化）。 */
   const [reviewsNonce, setReviewsNonce] = useState(0);
   const [importing, setImporting] = useState(false);
   const [runtimeConfig, setRuntimeConfig] = useState<SystemConfigResponse | null>(null);
   const [runtimeConfigSaving, setRuntimeConfigSaving] = useState(false);
   const [view, setView] = useState<View>("home");
+  // B6: view-gated + debounced getReviews; P3-08 reviewsError surfaces LLM 不可用。
+  const { serverReviews, reviewsError, reviewsLoading } = useServerReviews({
+    apiPersistenceEnabled,
+    view,
+    productState,
+    reviewsNonce
+  });
+  // B7 / N-02: 30s GET /api/health → persist degraded top-bar banner.
+  const persistHealth = usePersistHealthPoll(apiPersistenceEnabled);
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => readStoredThemePreference());
   const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(() => getSystemTheme());
   const resolvedTheme = useMemo(
@@ -188,11 +194,6 @@ export default function App() {
   const [session, setSession] = useState<InterviewSession | null>(null);
   const [pendingMode, setPendingMode] = useState<InterviewMode>("decision");
   const [notice, setNotice] = useState<UiNotice | null>(null);
-  // N-02:权威库(surreal)落库健康度——degraded 期间常驻顶栏警告(独立持久状态,区别于一次性 notice)。
-  // 由低频轮询 route-agnostic 的 GET /api/health 驱动(见下方 health 轮询 effect):后端仅在
-  // consecutiveFailures>0 时带 persist.degraded → 亮灯,健康/内存档/离线 → null 清零。轮询覆盖全部
-  // "200+异步落库"写路径(资产确认/记忆编辑等从不 PUT /api/state,却共享同一 persistQueue)。
-  const [persistHealth, setPersistHealth] = useState<PersistHealthLite | null>(null);
   const [interviewInput, setInterviewInput] = useState("");
   const [failedTurnContent, setFailedTurnContent] = useState<string | null>(null);
   const [submittingTurn, setSubmittingTurn] = useState(false);
@@ -1466,8 +1467,17 @@ export default function App() {
     acceptAuthoritativeState(result.state);
     setSession(null);
     closeRealtimeVoiceSession();
+    // C13: knowledgeIndex failed must not claim full success (backend may also set partial).
     if (!result.receipt) {
       setNotice(buildNotice("warning", "备份已导入，但完整性未知", "服务端未返回恢复清单；请先核对逐字稿与录音，再执行清空操作。"));
+    } else if (result.receipt.knowledgeIndex === "failed") {
+      setNotice(
+        buildNotice(
+          "warning",
+          "备份已恢复，但语义索引重建失败",
+          "热态与材料已写入；请在资料/配置页点击「重建知识索引」。"
+        )
+      );
     } else if (result.receipt.partial) {
       setNotice(
         buildNotice(
@@ -1785,7 +1795,7 @@ export default function App() {
           </section>
         )}
         {/* N-02:权威库落库降级的持久顶栏警告——常驻于 degraded 期间(consecutiveFailures>0),
-            由 health 轮询 effect 驱动(GET /api/health 恢复报健康 → setPersistHealth(null))即消失。
+            由 usePersistHealthPoll(GET /api/health 30s) 驱动；恢复健康后 hook 返回 null 即消失。
             独立持久状态,区别于下方一次性 notice(它是持续状态而非瞬时提示,非复用 buildNotice)。
             role=alert + assertive 让读屏立即播报这条数据安全风险。 */}
         {persistHealth && persistHealth.consecutiveFailures > 0 && (
@@ -2291,6 +2301,7 @@ export default function App() {
             onSetProductState={setProductState}
             onSaveProfile={saveProfile}
             onOpenMemory={() => setView("memory")}
+            onRebuildIndex={() => productApiClient.rebuildKnowledgeIndex()}
           />
         )}
       </main>
