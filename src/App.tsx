@@ -892,8 +892,8 @@ export default function App() {
         }
       })
       .catch((err) => {
-        const conflict = err instanceof ApiError && (err.status === 409 || err.status === 422 || err.status === 404);
-        const isBudget = err instanceof ApiError && err.status === 429;
+        const status = err instanceof ApiError ? err.status : 0;
+        const conflict = err instanceof ApiError && (status === 409 || status === 422 || status === 404);
         const body =
           err instanceof ApiError && err.body && typeof err.body === "object"
             ? (err.body as { error?: unknown; state?: ProductState; blocked?: boolean })
@@ -908,22 +908,29 @@ export default function App() {
         if (body?.state && typeof body.state === "object" && "revision" in body.state) {
           adoptServerState(body.state as ProductState);
         }
-        // A4 预算 429 / embed 502 等会带 body.error：优先展示服务端文案，勿一律「需要后端在线」。
-        const title = isApproveBlock
-          ? "确认已拦截"
-          : isBudget
-            ? "预算已用尽"
-            : conflict
-              ? "操作未生效"
-              : "操作失败";
-        const detail = isApproveBlock
-          ? serverError || "候选与用户修正冲突，未写入长期记忆。请拒绝或改写后再确认。"
-          : conflict
-            ? serverError || "该记忆的状态已变化(可能已被处理或清理),请刷新后重试。"
-            : serverError ||
-              (isBudget
-                ? "本时段 LLM 预算已用尽，请稍后重试。"
-                : "记忆治理需要后端在线。");
+        // A4: 409 引导 resolve-conflict；429 预算；502 嵌入；优先展示 body.error，勿一律「需要后端在线」。
+        let title = "操作失败";
+        let detail = "记忆治理需要后端在线。";
+        if (isApproveBlock) {
+          title = "确认已拦截";
+          detail =
+            serverError ||
+            "候选存在矛盾或与用户修正冲突，未写入长期记忆。请用「保留 A/B」裁决，或拒绝/改写后再确认，勿直接重试。";
+        } else if (status === 429) {
+          title = "预算已用尽";
+          detail = serverError || "本时段语义向量预算已用尽，请稍后重试。";
+        } else if (status === 502) {
+          title = "嵌入服务不可用";
+          detail = serverError || "语义向量服务暂不可用，请稍后重试确认。";
+        } else if (status === 503) {
+          title = "服务暂不可用";
+          detail = serverError || "相关服务未配置或暂不可用，请稍后重试。";
+        } else if (conflict) {
+          title = "操作未生效";
+          detail = serverError || "该记忆的状态已变化(可能已被处理或清理),请刷新后重试。";
+        } else if (serverError) {
+          detail = serverError;
+        }
         setNotice(buildNotice("warning", title, detail));
         throw err;
       });
@@ -945,8 +952,16 @@ export default function App() {
       .finally(() => setConfirmingDecisionId(undefined));
   }
 
-  const approveCandidate = (id: string) => withMemoryAction(() => productApiClient.approveMemoryCandidate(id));
+  const approveCandidate = (id: string, mode?: "merge" | "add") =>
+    withMemoryAction(() => productApiClient.approveMemoryCandidate(id, mode ? { mode } : undefined));
   const rejectCandidate = (id: string) => withMemoryAction(() => productApiClient.rejectMemoryCandidate(id));
+  const resolveConflict = (
+    id: string,
+    body: { keepSide: "a" | "b" } | { keepRecordId: string; demoteRecordId: string }
+  ) =>
+    withMemoryAction(() => productApiClient.resolveMemoryConflict(id, body)).then(() => {
+      setNotice(buildNotice("success", "矛盾已裁决", "已保留所选侧，另一侧降级（不删除）。"));
+    });
   const editCandidate = (id: string, text: string) => withMemoryAction(() => productApiClient.updateMemoryCandidate(id, text));
   const deprecateRecord = (id: string) => {
     // 撤销会让记忆退出访谈与对话召回——状态突变需显式确认，与全站破坏性操作约定一致。
@@ -985,18 +1000,51 @@ export default function App() {
     // 整理会自动合并并删除被判定为近重复的记忆条目，不可撤销，需显式确认。
     if (!window.confirm("整理记忆会自动合并并删除被判定为近重复的记忆条目，且不可撤销。是否继续？")) return;
     return productApiClient
-      .consolidateMemory()
+      .consolidateMemory() // 默认 apply；queue 预览不走此确认路径
       .then((res) => {
         adoptServerState(res.state);
-        setNotice(
-          buildNotice(
-            "success",
-            "记忆已整理",
-            res.deprecated > 0 ? `合并了 ${res.deprecated} 条近重复记忆。` : "没有发现可合并的近重复记忆。"
-          )
+        // B8: notice 仅 apply 路径读 deprecated / contradictions / decayApplied；禁止读 queue 字段。
+        if (res.mode === "queue") {
+          const s = res.summary;
+          setNotice(
+            buildNotice(
+              "success",
+              "整理预览",
+              `待裁决矛盾 ${s.contradictionCandidates} 条；回声过滤 ${s.echoFilteredCount}；衰减预览 ${s.decayPreviewCount}。`
+            )
+          );
+          return;
+        }
+        const s = res.summary;
+        const parts: string[] = [];
+        parts.push(
+          s.deprecated > 0 ? `合并了 ${s.deprecated} 条近重复记忆` : "没有发现可合并的近重复记忆"
         );
+        if (s.contradictions > 0) {
+          parts.push(`新增 ${s.contradictions} 条待裁决矛盾`);
+        }
+        if (s.decayApplied) {
+          parts.push("已应用重要性衰减");
+        }
+        setNotice(buildNotice("success", "记忆已整理", `${parts.join("；")}。`));
       })
-      .catch(() => setNotice(buildNotice("warning", "操作失败", "整理记忆需要后端在线。")));
+      .catch((err) => {
+        const status = err instanceof ApiError ? err.status : 0;
+        const body =
+          err instanceof ApiError && err.body && typeof err.body === "object"
+            ? (err.body as { error?: unknown })
+            : null;
+        const serverError = body && typeof body.error === "string" ? body.error.trim() : "";
+        if (status === 429) {
+          setNotice(buildNotice("warning", "预算已用尽", serverError || "本时段记忆整理 LLM 预算已用尽，请稍后重试。"));
+        } else if (status === 502) {
+          setNotice(buildNotice("warning", "整理失败", serverError || "记忆整合摘要服务暂不可用，未做任何变更。"));
+        } else if (status === 503) {
+          setNotice(buildNotice("warning", "服务未配置", serverError || "记忆整合摘要 LLM 未配置，无法整理。"));
+        } else {
+          setNotice(buildNotice("warning", "操作失败", serverError || "整理记忆需要后端在线。"));
+        }
+      });
   };
 
   const assetResults = useMemo(() => searchProductAssets(productState, assetQuery), [productState, assetQuery]);
@@ -2256,6 +2304,7 @@ export default function App() {
             }}
             onApprove={approveCandidate}
             onReject={rejectCandidate}
+            onResolveConflict={resolveConflict}
             onEditCandidate={editCandidate}
             onDeprecate={deprecateRecord}
             onDeleteRecord={deleteRecord}

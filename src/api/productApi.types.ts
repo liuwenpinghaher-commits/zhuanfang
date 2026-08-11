@@ -16,6 +16,7 @@ import type {
   InterviewRawMaterial,
   InterviewSession,
   InterviewStrength,
+  MemoryCandidate,
   MonthlyReview,
   PodcastEpisode,
   ProductState,
@@ -26,6 +27,40 @@ import type {
 } from "../domain/types";
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+
+/** B5: POST /api/memory-candidates/:id/resolve-conflict body. */
+export type ResolveMemoryConflictBody =
+  | { keepRecordId: string; demoteRecordId: string }
+  | { keepSide: "a" | "b" };
+
+/** B8: consolidate apply 路径 summary（默认 POST 无 body / mode=apply）。 */
+export interface ConsolidateApplySummary {
+  deprecated: number;
+  contradictions: number;
+  decayApplied: boolean;
+}
+
+/** B8: consolidate queue 预览 summary（mode=queue，无 deprecated/decayApplied）。 */
+export interface ConsolidateQueueSummary {
+  contradictionCandidates: number;
+  echoFilteredCount: number;
+  decayPreviewCount: number;
+}
+
+export type ConsolidateApplyResult = {
+  mode?: "apply";
+  state: ProductState;
+  summary: ConsolidateApplySummary;
+};
+
+export type ConsolidateQueueResult = {
+  mode: "queue";
+  state: ProductState;
+  summary: ConsolidateQueueSummary;
+  candidates: MemoryCandidate[];
+};
+
+export type ConsolidateResult = ConsolidateApplyResult | ConsolidateQueueResult;
 
 export interface ProductApiClient {
   exportState(): Promise<StateExportBundle>;
@@ -106,7 +141,19 @@ export interface ProductApiClient {
     blocked?: boolean;
   }>;
   rejectMemoryCandidate(id: string, reviewNote?: string): Promise<ProductState>;
-  consolidateMemory(): Promise<{ state: ProductState; deprecated: number }>;
+  /**
+   * B5: 矛盾裁决 HITL — 保留一侧、降级另一侧（demote-not-delete）。
+   * body 二选一：显式 keep/demote record id，或 keepSide a|b（服务端用 findConflictPairRecords 解析）。
+   */
+  resolveMemoryConflict(
+    id: string,
+    body: ResolveMemoryConflictBody
+  ): Promise<ProductState>;
+  /**
+   * B8: 记忆整理。默认 apply（无 body / mode=apply）；mode=queue 仅预览、不落库。
+   * 返回值按 mode 判别联合消费 summary，禁止混读 deprecated 与 contradictionCandidates。
+   */
+  consolidateMemory(opts?: { mode?: "queue" | "apply" }): Promise<ConsolidateResult>;
   updateMemoryCandidate(id: string, text: string): Promise<ProductState>;
   deprecateMemoryRecord(id: string, reason?: string): Promise<ProductState>;
   /** Edit a confirmed long-term memory's text; server may recompute embedding (knowledge_index budget). */

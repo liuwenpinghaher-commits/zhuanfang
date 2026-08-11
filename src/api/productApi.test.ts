@@ -89,6 +89,96 @@ describe("product api client", () => {
     );
   });
 
+  it("B5: resolveMemoryConflict POSTs keepSide body and returns normalized state", async () => {
+    const serverState = { ...createInitialProductState(), revision: 7 };
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ state: serverState, keepRecordId: "r-a", demoteRecordId: "r-b" }), {
+        status: 200
+      })
+    );
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+
+    const result = await client.resolveMemoryConflict("cand-1", { keepSide: "a" });
+
+    expect(result.revision).toBe(7);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://127.0.0.1:8787/api/memory-candidates/cand-1/resolve-conflict",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ keepSide: "a" })
+      })
+    );
+  });
+
+  it("B8: consolidateMemory apply returns discriminated summary (deprecated/contradictions/decayApplied)", async () => {
+    const serverState = { ...createInitialProductState(), revision: 3 };
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          state: serverState,
+          summary: { deprecated: 2, contradictions: 1, decayApplied: true }
+        }),
+        { status: 200 }
+      )
+    );
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+
+    const result = await client.consolidateMemory();
+
+    expect(result.mode).toBe("apply");
+    if (result.mode !== "queue") {
+      expect(result.summary.deprecated).toBe(2);
+      expect(result.summary.contradictions).toBe(1);
+      expect(result.summary.decayApplied).toBe(true);
+    }
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://127.0.0.1:8787/api/memory/consolidate",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({})
+      })
+    );
+  });
+
+  it("B8: consolidateMemory queue returns preview summary without deprecated", async () => {
+    const serverState = { ...createInitialProductState(), revision: 4 };
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          mode: "queue",
+          state: serverState,
+          summary: {
+            contradictionCandidates: 2,
+            echoFilteredCount: 1,
+            decayPreviewCount: 3
+          },
+          candidates: []
+        }),
+        { status: 200 }
+      )
+    );
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+
+    const result = await client.consolidateMemory({ mode: "queue" });
+
+    expect(result.mode).toBe("queue");
+    if (result.mode === "queue") {
+      expect(result.summary.contradictionCandidates).toBe(2);
+      expect(result.summary.echoFilteredCount).toBe(1);
+      expect(result.summary.decayPreviewCount).toBe(3);
+      expect(result.candidates).toEqual([]);
+      // queue summary must not carry apply-only fields
+      expect("deprecated" in result.summary).toBe(false);
+    }
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://127.0.0.1:8787/api/memory/consolidate",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ mode: "queue" })
+      })
+    );
+  });
+
   it("F-03: resetState 500 部分失败时 ApiError 携带解析后的 body(state+resetReceipt 可取)", async () => {
     const state = createInitialProductState();
     const errorBody = {

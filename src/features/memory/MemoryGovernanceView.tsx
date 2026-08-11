@@ -14,7 +14,8 @@ import {
 } from "lucide-react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import { RawMaterialViewer } from "../notes/RawMaterialViewer";
-import type { InterviewRawMaterial, ProductState } from "../../domain/types";
+import { findConflictPairRecords } from "../../domain/memory-consolidation";
+import type { InterviewRawMaterial, MemoryCandidate, ProductState } from "../../domain/types";
 import type { SessionAudioMeta } from "../../api/productApi";
 
 interface MemoryGovernanceViewProps {
@@ -27,6 +28,14 @@ interface MemoryGovernanceViewProps {
   onImport: (title: string, content: string) => void;
   onApprove: (candidateId: string, mode?: "merge" | "add") => void;
   onReject: (candidateId: string) => void;
+  /**
+   * B5: 矛盾候选裁决。keepSide a|b 由服务端/域 findConflictPairRecords 解析为 keep/demote。
+   * 也可传显式 record id 对。
+   */
+  onResolveConflict?: (
+    candidateId: string,
+    body: { keepSide: "a" | "b" } | { keepRecordId: string; demoteRecordId: string }
+  ) => void | Promise<void>;
   onEditCandidate: (candidateId: string, text: string) => void;
   onDeprecate: (recordId: string) => void;
   onDeleteRecord: (recordId: string) => void;
@@ -46,6 +55,23 @@ interface CandidateOp {
   approve: ActionState;
   reject: ActionState;
   save: ActionState;
+  resolve: ActionState;
+}
+
+/** B5: 待裁决矛盾候选（suggestedUpdate=conflict 或文案前缀）。 */
+function isConflictCandidate(candidate: MemoryCandidate): boolean {
+  return candidate.suggestedUpdate === "conflict" || candidate.text.startsWith("【待裁决矛盾】");
+}
+
+function conflictSideLabels(candidate: MemoryCandidate): { a: string; b: string } {
+  const body = candidate.text.replace(/^【待裁决矛盾】/, "");
+  const parts = body.split(/｜|\|/);
+  const a = (parts[0] ?? "").replace(/^A：/, "").trim();
+  const b = (parts[1] ?? "").replace(/^B：/, "").trim();
+  return {
+    a: a.length > 48 ? a.slice(0, 48) + "…" : a || "侧 A",
+    b: b.length > 48 ? b.slice(0, 48) + "…" : b || "侧 B"
+  };
 }
 
 const MAX_IMPORT_CHARS = 20000;
@@ -69,6 +95,7 @@ export function MemoryGovernanceView({
   onImport,
   onApprove,
   onReject,
+  onResolveConflict,
   onEditCandidate,
   onDeprecate,
   onDeleteRecord,
@@ -153,7 +180,7 @@ export function MemoryGovernanceView({
   }
 
   function getOp(id: string): CandidateOp {
-    return candidateOps[id] ?? { approve: "idle", reject: "idle", save: "idle" };
+    return candidateOps[id] ?? { approve: "idle", reject: "idle", save: "idle", resolve: "idle" };
   }
 
   function setOp(id: string, patch: Partial<CandidateOp>) {
@@ -263,6 +290,17 @@ export function MemoryGovernanceView({
       setOp(candidateId, { reject: "done" });
     } catch {
       setOp(candidateId, { reject: "error" });
+    }
+  }
+
+  async function handleResolveConflict(candidateId: string, keepSide: "a" | "b") {
+    if (!onResolveConflict) return;
+    setOp(candidateId, { resolve: "loading" });
+    try {
+      await Promise.resolve(onResolveConflict(candidateId, { keepSide }));
+      setOp(candidateId, { resolve: "done" });
+    } catch {
+      setOp(candidateId, { resolve: "error" });
     }
   }
 
@@ -441,18 +479,30 @@ export function MemoryGovernanceView({
                   const isApproving = op.approve === "loading";
                   const isRejecting = op.reject === "loading";
                   const isSaving = op.save === "loading";
-                  const anyLoading = isApproving || isRejecting || isSaving;
+                  const isResolving = op.resolve === "loading";
+                  const anyLoading = isApproving || isRejecting || isSaving || isResolving;
                   const justSaved = savedId === candidate.id;
                   const hint = dedupHint(candidate);
+                  const isConflict = isConflictCandidate(candidate);
+                  const pair = isConflict ? findConflictPairRecords(state, candidate) : {};
+                  const canResolve =
+                    Boolean(onResolveConflict) && Boolean(pair.aId && pair.bId && pair.aId !== pair.bId);
+                  const sideLabels = isConflict ? conflictSideLabels(candidate) : null;
 
                   return (
                     <article
-                      className={`memory-card record-row${isEditing ? " edit-active" : ""}`}
+                      className={`memory-card record-row${isEditing ? " edit-active" : ""}${isConflict ? " is-conflict" : ""}`}
                       key={candidate.id}
                     >
                       <div className="record-main memory-card-main">
                         <div className="memory-card-meta">
                           <span className="status-pill">评分 {candidate.reviewScore}</span>
+                          {isConflict && (
+                            <span className="status-pill is-warning" title="需人工裁决保留哪一侧">
+                              <ShieldAlert size={14} aria-hidden="true" />
+                              待裁决矛盾
+                            </span>
+                          )}
                           {candidate.sensitivity === "sensitive" ? (
                             <span className="status-pill is-stale">
                               <SensitiveIcon />
@@ -471,7 +521,16 @@ export function MemoryGovernanceView({
                         {candidate.reviewSignals?.length > 0 && (
                           <span className="label">{candidate.reviewSignals.join(" · ")}</span>
                         )}
-                        {hint && (
+                        {isConflict && sideLabels && (
+                          <div className="dedup-hint" role="note">
+                            <ShieldAlert size={14} aria-hidden="true" className="icon-inline" />
+                            <span>
+                              请选择保留哪一侧（另一侧降级、不删除）。
+                              直接「确认」会被拦截——请用下方裁决按钮。
+                            </span>
+                          </div>
+                        )}
+                        {hint && !isConflict && (
                           <div className="dedup-hint">
                             <GitMerge size={14} aria-hidden="true" className="icon-inline" />
                             <span>
@@ -522,39 +581,70 @@ export function MemoryGovernanceView({
 
                       {!isEditing && (
                         <div className="note-actions memory-card-actions">
-                          <button
-                            className={`primary-action${isApproving ? " btn-loading" : ""}`}
-                            type="button"
-                            disabled={anyLoading}
-                            onClick={() => handleApprove(candidate.id, hint ? "merge" : "add")}
-                            aria-busy={isApproving}
-                            title={hint ? "合并到近重复的既有记忆（保留本条文案）" : "新增一条已确认记忆"}
-                          >
-                            {isApproving && <span className="spinner" aria-hidden="true" />}
-                            <Check size={16} />
-                            {hint ? "合并记住" : "确认记住"}
-                          </button>
-                          {hint && (
+                          {isConflict ? (
+                            <>
+                              <button
+                                className={`primary-action${isResolving ? " btn-loading" : ""}`}
+                                type="button"
+                                disabled={anyLoading || !canResolve}
+                                onClick={() => handleResolveConflict(candidate.id, "a")}
+                                aria-busy={isResolving}
+                                title={canResolve ? `保留 A：${sideLabels?.a ?? ""}` : "无法解析矛盾两侧记录，请刷新或丢弃"}
+                              >
+                                {isResolving && <span className="spinner" aria-hidden="true" />}
+                                <Check size={16} />
+                                保留 A
+                              </button>
+                              <button
+                                className="secondary-action"
+                                type="button"
+                                disabled={anyLoading || !canResolve}
+                                onClick={() => handleResolveConflict(candidate.id, "b")}
+                                title={canResolve ? `保留 B：${sideLabels?.b ?? ""}` : "无法解析矛盾两侧记录，请刷新或丢弃"}
+                              >
+                                <GitMerge size={16} />
+                                保留 B
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                className={`primary-action${isApproving ? " btn-loading" : ""}`}
+                                type="button"
+                                disabled={anyLoading}
+                                onClick={() => handleApprove(candidate.id, hint ? "merge" : "add")}
+                                aria-busy={isApproving}
+                                title={hint ? "合并到近重复的既有记忆（保留本条文案）" : "新增一条已确认记忆"}
+                              >
+                                {isApproving && <span className="spinner" aria-hidden="true" />}
+                                <Check size={16} />
+                                {hint ? "合并记住" : "确认记住"}
+                              </button>
+                              {hint && (
+                                <button
+                                  className="secondary-action"
+                                  type="button"
+                                  disabled={anyLoading}
+                                  onClick={() => handleApprove(candidate.id, "add")}
+                                  title="不合并，作为新的独立记忆写入"
+                                >
+                                  <GitMerge size={16} />
+                                  仍新增
+                                </button>
+                              )}
+                            </>
+                          )}
+                          {!isConflict && (
                             <button
                               className="secondary-action"
                               type="button"
                               disabled={anyLoading}
-                              onClick={() => handleApprove(candidate.id, "add")}
-                              title="不合并，作为新的独立记忆写入"
+                              onClick={() => startEdit(candidate.id, candidate.text)}
                             >
-                              <GitMerge size={16} />
-                              仍新增
+                              <Pencil size={16} />
+                              修正
                             </button>
                           )}
-                          <button
-                            className="secondary-action"
-                            type="button"
-                            disabled={anyLoading}
-                            onClick={() => startEdit(candidate.id, candidate.text)}
-                          >
-                            <Pencil size={16} />
-                            修正
-                          </button>
                           <button
                             className={`secondary-action${isRejecting ? " btn-loading" : ""}`}
                             type="button"

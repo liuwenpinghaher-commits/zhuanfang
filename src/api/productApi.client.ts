@@ -11,6 +11,7 @@ import type {
 import type {
   AnalyzeCorpusImportResponse,
   AutoRunResearchResponse,
+  ConsolidateResult,
   CreateAutoBriefResponse,
   CreateSearchBriefResponse,
   EndInterviewSessionResponse,
@@ -29,6 +30,7 @@ import type {
   RealtimeVoiceSessionResponse,
   RefreshSearchBriefResponse,
   ResetReceipt,
+  ResolveMemoryConflictBody,
   ReviewsResponse,
   SendInterviewTurnRequest,
   SessionAudioMeta,
@@ -40,6 +42,7 @@ import type {
   VoiceInfo,
   VoiceListResponse
 } from "./productApi.types";
+import type { MemoryCandidate } from "../domain/types";
 import {
   ApiError,
   bytesToBase64,
@@ -370,12 +373,50 @@ export function createProductApiClient(
       })) as { state: ProductState };
       return normalizeProductState(response.state);
     },
-    async consolidateMemory() {
-      const response = (await requestJson("/api/memory/consolidate", { method: "POST" })) as {
+    async resolveMemoryConflict(id, body: ResolveMemoryConflictBody) {
+      const response = (await requestJson(`/api/memory-candidates/${id}/resolve-conflict`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body)
+      })) as { state: ProductState };
+      return normalizeProductState(response.state);
+    },
+    async consolidateMemory(opts) {
+      // B8: mode=queue 只预览；默认 apply（空 body）与现网一致。
+      const mode = opts?.mode === "queue" ? "queue" : "apply";
+      const response = (await requestJson("/api/memory/consolidate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(mode === "queue" ? { mode: "queue" } : {})
+      })) as {
+        mode?: "queue" | "apply";
         state: ProductState;
-        summary: { deprecated: number };
+        summary?: Record<string, unknown>;
+        candidates?: MemoryCandidate[];
       };
-      return { state: normalizeProductState(response.state), deprecated: response.summary?.deprecated ?? 0 };
+      const state = normalizeProductState(response.state);
+      const summary = response.summary ?? {};
+      if (response.mode === "queue" || mode === "queue") {
+        return {
+          mode: "queue" as const,
+          state,
+          summary: {
+            contradictionCandidates: Number(summary.contradictionCandidates ?? 0) || 0,
+            echoFilteredCount: Number(summary.echoFilteredCount ?? 0) || 0,
+            decayPreviewCount: Number(summary.decayPreviewCount ?? 0) || 0
+          },
+          candidates: Array.isArray(response.candidates) ? response.candidates : []
+        } satisfies ConsolidateResult;
+      }
+      return {
+        mode: "apply" as const,
+        state,
+        summary: {
+          deprecated: Number(summary.deprecated ?? 0) || 0,
+          contradictions: Number(summary.contradictions ?? 0) || 0,
+          decayApplied: summary.decayApplied === true
+        }
+      } satisfies ConsolidateResult;
     },
     async updateMemoryCandidate(id, text) {
       const response = (await requestJson(`/api/memory-candidates/${id}`, {

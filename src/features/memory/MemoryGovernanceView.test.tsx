@@ -555,6 +555,61 @@ describe("approval actions", () => {
   });
 });
 
+// ── 5b. B5 conflict resolution UI ─────────────────────────────────────────
+describe("conflict resolution (B5)", () => {
+  it("conflict candidate hides normal approve and offers 保留 A/B", async () => {
+    const onApprove = vi.fn();
+    const onResolveConflict = vi.fn();
+    const recA = makeRecord({ id: "r-a", text: "用户偏好完全授权" });
+    const recB = makeRecord({ id: "r-b", text: "用户拒绝任何授权" });
+    const conflict = makeCandidate({
+      id: "c-conflict",
+      text: "【待裁决矛盾】A：用户偏好完全授权 ｜ B：用户拒绝任何授权",
+      suggestedUpdate: "conflict",
+      similarToRecordId: "r-a"
+    });
+    const state = makeState({
+      memoryCandidates: [conflict],
+      memoryRecords: [recA, recB]
+    });
+    renderView(
+      <MemoryGovernanceView
+        state={state}
+        importing={false}
+        onImport={noop}
+        onApprove={onApprove}
+        onReject={noop}
+        onResolveConflict={onResolveConflict}
+        onEditCandidate={noop}
+        onDeprecate={noop}
+        onDeleteRecord={noop}
+        onEditRecord={noop}
+        onConsolidate={noop}
+        onAddAnnotation={noop}
+        onRemoveAnnotation={noop}
+        getRawMaterial={async () => null} />
+    );
+
+    expect(container.textContent).toContain("待裁决矛盾");
+    expect(container.textContent).toContain("保留 A");
+    expect(container.textContent).toContain("保留 B");
+    // Normal approve path must not be the primary CTA
+    const confirmBtn = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("确认记住")
+    );
+    expect(confirmBtn).toBeUndefined();
+
+    const keepA = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("保留 A")
+    )!;
+    await act(async () => {
+      keepA.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onResolveConflict).toHaveBeenCalledWith("c-conflict", { keepSide: "a" });
+    expect(onApprove).not.toHaveBeenCalled();
+  });
+});
+
 // ── 6. Import: content-length guard ───────────────────────────────────────
 describe("import content length guard", () => {
   it("shows error when content exceeds 20000 chars (SSR html check)", () => {
