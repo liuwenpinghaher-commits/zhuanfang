@@ -116,7 +116,7 @@ curl -sS -H "Authorization: Bearer $PRODUCT_API_TOKEN" \
 | --- | --- |
 | **信号** | HTTP 429；日志 `rate_limit_exceeded` 或 `llm_budget_exceeded` |
 | **阈值** | **P1：** 主路径（专访 turn / chat）**10 min 内 ≥ 10** 次 429，或用户明显卡死  **P2：** 偶发 1–3 次 |
-| **动作** | 1. 区分 event（限流 vs 预算）  2. 预算 → 等滑窗或调 `LLM_*`（见 [COST-ENVELOPE](../COST-ENVELOPE.md)）  3. 限流 → 等 `Retry-After`；生产禁止 `RATE_LIMIT_DISABLED=true`  4. `reviews` 单调桶顶满 → 考虑重启（信封 §2.3） |
+| **动作** | 1. 区分 event（限流 vs 预算）  2. 预算 → 等 `LLM_SYSTEM_WINDOW_MS` 滑窗或调 `LLM_MAX_CALLS_PER_SESSION`（含 `reviews` 等系统键；见 [COST-ENVELOPE](../COST-ENVELOPE.md) §2.1 / §6）  3. 限流 → 等 `Retry-After`；生产禁止 `RATE_LIMIT_DISABLED=true` |
 | **分级说明** | 主动打满预算的自测不是事故；非预期顶满才是 |
 
 ### A-06 · 语音 TTFA 恶化（P2）

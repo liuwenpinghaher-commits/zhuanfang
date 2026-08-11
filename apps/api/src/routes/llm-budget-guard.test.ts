@@ -185,13 +185,52 @@ describe("llm-budget guard: GET /api/reviews", () => {
     await server.close();
   });
 
-  // reviews 已纳入 SYSTEM_BUDGET_KEYS：耗尽后 429，滑窗滚动后可再次 consume（不再是孤立单调桶）。
-  it("reviews 滑窗：耗尽 tryConsume false → 窗口过后可再 consume", async () => {
+  // reviews 已纳入 SYSTEM_BUDGET_KEYS：HTTP 耗尽 429 → 滑窗滚动后 GET 可再成功（不再是孤立单调桶）。
+  // tryConsume 层 rollover 单测在 llm-budget.test.ts；此处覆盖路由端到端恢复。
+  it("reviews 滑窗：HTTP 429 后窗口滚动 → GET 可再成功且 LLM 被调用", async () => {
+    const reviewsJson = JSON.stringify({
+      monthly: {
+        periodLabel: "本月",
+        topTheme: "x",
+        progress: "p",
+        stillOpen: "o",
+        nextAction: "n",
+        keyQuote: "q"
+      },
+      yearly: {
+        periodLabel: "本年",
+        topTheme: "y",
+        progress: "p",
+        stillOpen: "o",
+        nextAction: "n",
+        keyQuote: "q"
+      },
+      radar: { dimensions: [] }
+    });
+    const { client, complete } = makeMockChatClient(reviewsJson);
+
+    const repo = createInMemoryProductStateRepository();
+    const server = Fastify({ logger: false });
     const budget = createLlmBudget({ maxCallsPerSession: 1, systemWindowMs: 20 });
-    expect(budget.tryConsume("reviews")).toBe(true);
-    expect(budget.tryConsume("reviews")).toBe(false); // cap hit within the window
+    budget.tryConsume("reviews"); // exhaust within window
+
+    await registerReviewRoutes(server, repo, {
+      bailianChatClient: client as any,
+      llmBudget: budget
+    });
+    await server.ready();
+
+    const blocked = await server.inject({ method: "GET", url: "/api/reviews" });
+    expect(blocked.statusCode).toBe(429);
+    expect(complete).not.toHaveBeenCalled();
+
     await new Promise((r) => setTimeout(r, 30)); // let the window elapse
-    expect(budget.tryConsume("reviews")).toBe(true); // window rolled over — not permanently stuck
+
+    const recovered = await server.inject({ method: "GET", url: "/api/reviews" });
+    expect(recovered.statusCode).toBe(200);
+    expect(complete).toHaveBeenCalledTimes(1);
+
+    await server.close();
   });
 });
 

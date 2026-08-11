@@ -27,6 +27,15 @@ describe("llm budget", () => {
     expect(b.tryConsume("system")).toBe(true);   // window rolled over — not permanently stuck
   });
 
+  // reviews is a SYSTEM_BUDGET_KEYS member (was formerly an isolated monotonic bucket).
+  it("rolls over the reviews bucket after its sliding window elapses", async () => {
+    const b = createLlmBudget({ maxCallsPerSession: 1, systemWindowMs: 20 });
+    expect(b.tryConsume("reviews")).toBe(true);
+    expect(b.tryConsume("reviews")).toBe(false); // cap hit within the window
+    await new Promise((r) => setTimeout(r, 30)); // let the window elapse
+    expect(b.tryConsume("reviews")).toBe(true);   // window rolled over — not permanently stuck
+  });
+
   it("does NOT auto-roll a per-session key (only system buckets get the window)", async () => {
     const b = createLlmBudget({ maxCallsPerSession: 1, systemWindowMs: 5 });
     expect(b.tryConsume("session-abc")).toBe(true);
