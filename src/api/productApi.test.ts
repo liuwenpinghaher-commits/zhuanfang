@@ -1,6 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import { createInitialProductState, createSessionDraft } from "../domain/engine";
-import { createProductApiClient, ApiError } from "./productApi";
+import {
+  createProductApiClient,
+  ApiError,
+  resetProductApiClientTelemetryCountersForTests
+} from "./productApi";
 
 describe("product api client", () => {
   it("loads and normalizes product state from the API", async () => {
@@ -1056,27 +1060,146 @@ describe("product api client", () => {
     expect(client.sessionAudioUrl("sess-5")).toBe("http://127.0.0.1:8787/api/sessions/sess-5/audio");
   });
 
-  // B9 / K14: turn-complete non-2xx defaults fail-closed; opt-out restores fail-open
-  it("classifyTurnComplete: non-2xx → done===false fail-closed by default", async () => {
-    vi.unstubAllEnvs();
-    vi.stubEnv("VITE_TURN_COMPLETE_FAIL_OPEN", "");
-    const fetchImpl = vi.fn(async () => new Response("upstream down", { status: 503 }));
-    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
-    const result = await client.classifyTurnComplete("sess-tc", "我觉得吧");
-    expect(result.done).toBe(false);
-    expect(result.failOpen).toBe(false);
-    expect(result.reason).toBe("http_error_failclosed");
-    vi.unstubAllEnvs();
-  });
+  // B9 / K14 + B10: turn-complete fail-closed default; telemetry drop sampling
+  describe("classifyTurnComplete + voice telemetry (B9/B10)", () => {
+    beforeEach(() => {
+      vi.unstubAllEnvs();
+      resetProductApiClientTelemetryCountersForTests();
+    });
 
-  it("classifyTurnComplete: non-2xx + VITE_TURN_COMPLETE_FAIL_OPEN=1 → done===true fail-open", async () => {
-    vi.stubEnv("VITE_TURN_COMPLETE_FAIL_OPEN", "1");
-    const fetchImpl = vi.fn(async () => new Response("upstream down", { status: 502 }));
-    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
-    const result = await client.classifyTurnComplete("sess-tc", "你说的是什么意思");
-    expect(result.done).toBe(true);
-    expect(result.failOpen).toBe(true);
-    expect(result.reason).toBe("http_error_failopen");
-    vi.unstubAllEnvs();
+    it("non-2xx → done===false fail-closed by default + warn event", async () => {
+      vi.stubEnv("VITE_TURN_COMPLETE_FAIL_OPEN", "");
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const fetchImpl = vi.fn(async () => new Response("upstream down", { status: 503 }));
+      const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+      const result = await client.classifyTurnComplete("sess-tc", "我觉得吧");
+      expect(result.done).toBe(false);
+      expect(result.failOpen).toBe(false);
+      expect(result.reason).toBe("http_error_failclosed");
+      const payloads = warn.mock.calls.map((c) => {
+        try {
+          return JSON.parse(String(c[0]));
+        } catch {
+          return null;
+        }
+      });
+      expect(payloads.some((p) => p?.event === "turn_complete_http_failclosed" && p?.status === 503)).toBe(true);
+      warn.mockRestore();
+    });
+
+    it("unset env (no stub value) still fail-closed on non-2xx", async () => {
+      // do not stub VITE_TURN_COMPLETE_FAIL_OPEN at all
+      const fetchImpl = vi.fn(async () => new Response("nope", { status: 500 }));
+      const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+      const result = await client.classifyTurnComplete("sess-tc", "嗯");
+      expect(result.done).toBe(false);
+      expect(result.failOpen).toBe(false);
+    });
+
+    it("VITE_TURN_COMPLETE_FAIL_OPEN=1 → done===true fail-open + warn event", async () => {
+      vi.stubEnv("VITE_TURN_COMPLETE_FAIL_OPEN", "1");
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const fetchImpl = vi.fn(async () => new Response("upstream down", { status: 502 }));
+      const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+      const result = await client.classifyTurnComplete("sess-tc", "你说的是什么意思");
+      expect(result.done).toBe(true);
+      expect(result.failOpen).toBe(true);
+      expect(result.reason).toBe("http_error_failopen");
+      const payloads = warn.mock.calls.map((c) => {
+        try {
+          return JSON.parse(String(c[0]));
+        } catch {
+          return null;
+        }
+      });
+      expect(payloads.some((p) => p?.event === "turn_complete_http_failopen")).toBe(true);
+      warn.mockRestore();
+    });
+
+    it("VITE_TURN_COMPLETE_FAIL_OPEN=true (alias) → fail-open", async () => {
+      vi.stubEnv("VITE_TURN_COMPLETE_FAIL_OPEN", "true");
+      const fetchImpl = vi.fn(async () => new Response("x", { status: 401 }));
+      const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+      const result = await client.classifyTurnComplete("sess-tc", "hello");
+      expect(result.done).toBe(true);
+      expect(result.failOpen).toBe(true);
+    });
+
+    it("network throw → same fail-closed mapping as non-2xx (not cascade throw fail-open)", async () => {
+      const fetchImpl = vi.fn(async () => {
+        throw new TypeError("Failed to fetch");
+      });
+      const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+      const result = await client.classifyTurnComplete("sess-tc", "网络挂了");
+      expect(result.done).toBe(false);
+      expect(result.failOpen).toBe(false);
+      expect(result.reason).toBe("http_error_failclosed");
+    });
+
+    it("AbortError rethrows so cascade can supersede", async () => {
+      const fetchImpl = vi.fn(async () => {
+        const err = new Error("aborted");
+        err.name = "AbortError";
+        throw err;
+      });
+      const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+      const ac = new AbortController();
+      ac.abort();
+      await expect(client.classifyTurnComplete("sess-tc", "x", ac.signal)).rejects.toMatchObject({
+        name: "AbortError"
+      });
+    });
+
+    it("failclosed warns are sampled: first 3 + every 20th", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const fetchImpl = vi.fn(async () => new Response("x", { status: 503 }));
+      const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+      for (let i = 0; i < 4; i++) {
+        await client.classifyTurnComplete("sess-tc", "a");
+      }
+      const failclosedWarns = warn.mock.calls.filter((c) => String(c[0]).includes("turn_complete_http_failclosed"));
+      // counts 1,2,3 sample; count 4 does not
+      expect(failclosedWarns.length).toBe(3);
+      warn.mockRestore();
+    });
+
+    it("B10: logCascadeDecision non-2xx notes voice_telemetry_drop (not silent)", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const fetchImpl = vi.fn(async () => new Response("nope", { status: 401 }));
+      const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+      await client.logCascadeDecision("sess-tc", {
+        layer: 2,
+        action: "wait",
+        reason: "test",
+        silenceMs: 0,
+        expressionState: "neutral",
+        transcript: "x"
+      });
+      const payloads = warn.mock.calls.map((c) => {
+        try {
+          return JSON.parse(String(c[0]));
+        } catch {
+          return null;
+        }
+      });
+      expect(
+        payloads.some((p) => p?.event === "voice_telemetry_drop" && p?.kind === "cascade" && String(p?.error).includes("401"))
+      ).toBe(true);
+      warn.mockRestore();
+    });
+
+    it("B10: reportVoiceLatency throw samples voice_telemetry_drop; 4th drop silent", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const fetchImpl = vi.fn(async () => {
+        throw new Error("net down");
+      });
+      const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+      for (let i = 0; i < 4; i++) {
+        await client.reportVoiceLatency({ path: "cascade", ttfaMs: 1 });
+      }
+      const dropWarns = warn.mock.calls.filter((c) => String(c[0]).includes("voice_telemetry_drop"));
+      expect(dropWarns.length).toBe(3);
+      warn.mockRestore();
+    });
   });
 });

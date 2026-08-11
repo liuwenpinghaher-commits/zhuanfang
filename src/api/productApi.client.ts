@@ -57,17 +57,25 @@ import {
   withAuthTokenQuery
 } from "./productApi.types";
 
-/** B9: client-side count of turn-complete HTTP fail-closed outcomes (debug/observability). */
-let turnCompleteFailClosedCount = 0;
+/**
+ * B9: client-side count of turn-complete HTTP/network fail outcomes
+ * (fail-closed or fail-open). Used for sampled console.warn throttling.
+ */
+let turnCompleteHttpOutcomeCount = 0;
 
 /**
  * B10: voice telemetry silent drops (reportVoiceLatency / logCascadeDecision).
  * Warn on the first 3 failures, then every 20th — cheap sampling, no new deps.
  */
 let telemetryDropCount = 0;
+
+function shouldSampleWarn(count: number): boolean {
+  return count <= 3 || count % 20 === 0;
+}
+
 function noteTelemetryDrop(kind: "latency" | "cascade", err: unknown): void {
   telemetryDropCount += 1;
-  if (telemetryDropCount <= 3 || telemetryDropCount % 20 === 0) {
+  if (shouldSampleWarn(telemetryDropCount)) {
     console.warn(
       JSON.stringify({
         event: "voice_telemetry_drop",
@@ -79,12 +87,84 @@ function noteTelemetryDrop(kind: "latency" | "cascade", err: unknown): void {
   }
 }
 
-/** Opt-in only: VITE_TURN_COMPLETE_FAIL_OPEN=1|true restores legacy fail-open on non-2xx. */
+/** Opt-in only: VITE_TURN_COMPLETE_FAIL_OPEN=1|true restores legacy fail-open on non-2xx / network error. */
 function isTurnCompleteFailOpenEnabled(): boolean {
   const raw = String(import.meta.env.VITE_TURN_COMPLETE_FAIL_OPEN ?? "")
     .trim()
     .toLowerCase();
   return raw === "1" || raw === "true";
+}
+
+function isAbortLikeError(err: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return true;
+  if (err && typeof err === "object" && "name" in err && (err as { name?: string }).name === "AbortError") {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Map turn-complete transport failure (HTTP non-2xx or network throw) to cascade decision.
+ * Default fail-closed; opt-out fail-open via VITE_TURN_COMPLETE_FAIL_OPEN.
+ * Warns are sampled (first 3 + every 20th) to avoid console spam under sustained 5xx.
+ */
+function mapTurnCompleteTransportFailure(
+  sessionId: string,
+  detail: { status?: number; error?: unknown }
+): { done: boolean; reason: string; failOpen?: boolean } {
+  turnCompleteHttpOutcomeCount += 1;
+  const count = turnCompleteHttpOutcomeCount;
+  const failOpen = isTurnCompleteFailOpenEnabled();
+  if (failOpen) {
+    if (shouldSampleWarn(count)) {
+      console.warn(
+        JSON.stringify({
+          event: "turn_complete_http_failopen",
+          status: detail.status,
+          sessionId,
+          count,
+          error:
+            detail.error instanceof Error
+              ? detail.error.message
+              : detail.error != null
+                ? String(detail.error)
+                : undefined
+        })
+      );
+    }
+    return {
+      done: true,
+      reason: "http_error_failopen",
+      failOpen: true as const
+    };
+  }
+  if (shouldSampleWarn(count)) {
+    console.warn(
+      JSON.stringify({
+        event: "turn_complete_http_failclosed",
+        status: detail.status,
+        sessionId,
+        count,
+        error:
+          detail.error instanceof Error
+            ? detail.error.message
+            : detail.error != null
+              ? String(detail.error)
+              : undefined
+      })
+    );
+  }
+  return {
+    done: false,
+    reason: "http_error_failclosed",
+    failOpen: false as const
+  };
+}
+
+/** @internal vitest only — reset module-level B9/B10 counters between cases. */
+export function resetProductApiClientTelemetryCountersForTests(): void {
+  telemetryDropCount = 0;
+  turnCompleteHttpOutcomeCount = 0;
 }
 
 export function createProductApiClient(
@@ -725,54 +805,37 @@ export function createProductApiClient(
     },
     async classifyTurnComplete(sessionId, transcript, signal) {
       // authedFetch（非裸 fetch）：production bearer 鉴权下裸 fetch 恒 401。
-      // B9 / K14：非 2xx 默认 fail-closed（done:false → cascade armMaxWait 继续听）；
-      // 仅 VITE_TURN_COMPLETE_FAIL_OPEN=1|true 时恢复旧 fail-open（done:true 立即应答）。
-      const res = await authedFetch(`${normalizedBaseUrl}/api/interview-sessions/${sessionId}/turn-complete`, {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ transcript }),
-        // Pass the barge-in AbortSignal so an interrupted turn cancels the in-flight
-        // endpoint LLM call instead of letting it run to completion server-side.
-        ...(signal ? { signal } : {})
-      });
-      if (!res.ok) {
-        if (isTurnCompleteFailOpenEnabled()) {
-          console.warn(
-            JSON.stringify({
-              event: "turn_complete_http_failopen",
-              status: res.status,
-              sessionId
-            })
-          );
-          return {
-            done: true,
-            reason: "http_error_failopen",
-            failOpen: true as const
-          };
+      // B9 / K14：传输失败（HTTP 非 2xx **或** 网络 throw）默认 fail-closed（done:false →
+      // cascade armMaxWait 继续听）；仅 VITE_TURN_COMPLETE_FAIL_OPEN=1|true 时 fail-open。
+      // Abort/supersede 仍上抛，由 cascade 检测 signal.aborted 后 early-return。
+      try {
+        const res = await authedFetch(`${normalizedBaseUrl}/api/interview-sessions/${sessionId}/turn-complete`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ transcript }),
+          // Pass the barge-in AbortSignal so an interrupted turn cancels the in-flight
+          // endpoint LLM call instead of letting it run to completion server-side.
+          ...(signal ? { signal } : {})
+        });
+        if (!res.ok) {
+          return mapTurnCompleteTransportFailure(sessionId, { status: res.status });
         }
-        turnCompleteFailClosedCount += 1;
-        console.warn(
-          JSON.stringify({
-            event: "turn_complete_http_failclosed",
-            status: res.status,
-            sessionId,
-            count: turnCompleteFailClosedCount
-          })
-        );
-        return {
-          done: false,
-          reason: "http_error_failclosed",
-          failOpen: false as const
-        };
+        return res.json();
+      } catch (err) {
+        if (isAbortLikeError(err, signal)) throw err;
+        return mapTurnCompleteTransportFailure(sessionId, { error: err });
       }
-      return res.json();
     },
     async logCascadeDecision(sessionId, trace) {
       try {
         // authedFetch：同 classifyTurnComplete，production 鉴权下裸 fetch 会 401 丢审计。
-        await authedFetch(`${normalizedBaseUrl}/api/interview-sessions/${sessionId}/decisions`, {
+        // B10: non-2xx does not throw from bare fetch — check res.ok so auth/5xx drops are sampled.
+        const res = await authedFetch(`${normalizedBaseUrl}/api/interview-sessions/${sessionId}/decisions`, {
           method: "POST", headers: { "content-type": "application/json" },
           body: JSON.stringify(trace)
         });
+        if (!res.ok) {
+          noteTelemetryDrop("cascade", new Error(`http ${res.status}`));
+        }
       } catch (err) {
         /* best-effort audit; sample drop warns (B10) */
         noteTelemetryDrop("cascade", err);
