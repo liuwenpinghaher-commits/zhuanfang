@@ -41,7 +41,7 @@ describe("asNativeRecall 注入矩阵(R7:memory|surreal)", () => {
 
 // P2b 生产可达性回归:路由拿到的是 withKnowledgeReindex 包装 repo。此前包装只回 4 个接口方法,
 // 把原生召回能力全部吞掉 → asNativeRecall(wrapped) 恒 undefined,原生召回在生产静默失效
-// (fail-safe 回落掩盖)。修复 = spread 能力透传;此处钉死两种档位。
+// (fail-safe 回落掩盖)。修复 = live getter + Proxy 转发(禁止 object spread Proxy)。
 describe("withKnowledgeReindex 能力透传(生产接线回归)", () => {
   const reindexArgs = () =>
     [{} as Parameters<typeof withKnowledgeReindex>[1], () => undefined, createLlmBudget()] as const;
@@ -56,7 +56,7 @@ describe("withKnowledgeReindex 能力透传(生产接线回归)", () => {
 });
 
 // C11:能力清单同源 + 装配链 withKnowledgeReindex(userScopedFacade(fakeSurreal)) 契约钉。
-// 主路径已由 ...inner spread + Proxy 转发修好;本测防再吞 runGovernanceTransaction/recall*/health。
+// USER_SCOPED=1 时 inner 是 Proxy;withKnowledgeReindex 必须 live 转发,不可 {...inner}。
 describe("C11 Surreal 能力清单 · 装配契约", () => {
   const reindexArgs = () =>
     [{} as Parameters<typeof withKnowledgeReindex>[1], () => undefined, createLlmBudget()] as const;
@@ -75,9 +75,15 @@ describe("C11 Surreal 能力清单 · 装配契约", () => {
       getOrCreate: () => fakeSurrealFullCaps() as ReturnType<typeof createInMemoryProductStateRepository>,
       fallbackUsername: "c11-test-user",
     });
+    // 钉死「Proxy 能力在 spread 后丢失」的反例:裸 spread 不应出现在生产 withKnowledgeReindex。
+    const spreadKeys = Object.keys({ ...scoped });
+    for (const key of SURREAL_CAPABILITY_KEYS) {
+      expect(spreadKeys.includes(key), `spread must NOT own ${key} (Proxy trap only)`).toBe(false);
+    }
     const wrapped = withKnowledgeReindex(scoped, ...reindexArgs());
     for (const key of SURREAL_CAPABILITY_KEYS) {
       expect(typeof (wrapped as Record<string, unknown>)[key], `capability ${key}`).toBe("function");
+      expect(key in wrapped, `in-probe ${key}`).toBe(true);
     }
     // 路由探测面仍可达
     expect(asNativeRecall(wrapped)).toBeDefined();

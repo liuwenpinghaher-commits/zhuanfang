@@ -72,6 +72,7 @@ import { createLlmBudget } from "./llm-budget";
 import { createRateLimiter, rateLimitBucket } from "./rate-limit";
 import { resolveRequestTimeoutMs } from "./request-timeout";
 import { resolveBailianApiKey } from "./runtime-secrets";
+import { SURREAL_CAPABILITY_KEYS } from "./recall/surreal-capability-keys";
 import { registerAssetRoutes } from "./routes/assets";
 import { registerCorpusRoutes } from "./routes/corpus";
 import { registerHealthRoutes } from "./routes/health";
@@ -605,13 +606,14 @@ export function withKnowledgeReindex(
 ): ProductStateRepository {
   const resolveKnowledge = (): KnowledgeIndexRepository =>
     typeof knowledgeRepo === "function" ? knowledgeRepo() : knowledgeRepo;
-  return {
-    // 能力透传(P2b 生产可达性修复):此前只回 4 个接口方法,把 inner(surreal handle)的原生召回
-    // /治理事务/审计能力全部吞掉 → 路由层 asNativeRecall(wrapped) 恒 undefined,原生召回在生产静默
-    // 失效、fail-safe 回落把问题掩成"一切正常"。spread 透传 own 方法(repo 各实现均为闭包方法的对象
-    // 字面量,不依赖 this,解包安全),使 surreal 档的原生能力(recall*/runGovernanceTransaction/
-    // getPersistHealth/auditGraphConsistency)真正可达;后声明的同名键覆盖 spread,读写语义不变。
-    ...inner,
+
+  // Core overrides: reindex on replace; other ProductStateRepository methods stay thin wrappers.
+  // C11 / USER_SCOPED: must NOT use `{ ...inner }` object spread — user-scoped facades are Proxies
+  // whose capabilities (runGovernanceTransaction / recall* / getPersistHealth / …) live only in
+  // the get trap, not as own enumerable props. Spread drops them → asNativeRecall/asGovernanceTx
+  // undefined after wrap, and journal fallback replaces ACID gov tx on PRODUCT_USER_SCOPED_STATE=1.
+  // Forward via live getters + Proxy so every lookup hits `inner` (per-request resolve under ALS).
+  const core: ProductStateRepository = {
     getState: () => inner.getState(),
     resetState: () => inner.resetState(),
     getInterviewSession: (id) => inner.getInterviewSession(id),
@@ -627,8 +629,44 @@ export function withKnowledgeReindex(
         void reindexOnStateChange(prev, result, knowledgeForUser, getEmbeddingClient(), budget);
       }
       return result;
-    }
+    },
   };
+
+  // Pin SURREAL_CAPABILITY_KEYS as live getters (import consumed by assembly, not tests alone).
+  // Each access re-reads `inner` so user-scoped Proxy resolve() stays request-current.
+  const coreRec = core as ProductStateRepository & Record<string, unknown>;
+  for (const key of SURREAL_CAPABILITY_KEYS) {
+    Object.defineProperty(coreRec, key, {
+      enumerable: true,
+      configurable: true,
+      get() {
+        const value = (inner as unknown as Record<string, unknown>)[key];
+        if (typeof value === "function") {
+          return (value as (...args: unknown[]) => unknown).bind(inner);
+        }
+        return value;
+      },
+    });
+  }
+
+  // Proxy: forward optional extras not in SURREAL_CAPABILITY_KEYS (flush/confirmPersisted/
+  // getGovernanceGeneration/recallRagChunks/…) and support `in` probes for capability detection.
+  return new Proxy(core, {
+    get(target, prop, receiver) {
+      if (prop in target) {
+        return Reflect.get(target, prop, receiver);
+      }
+      const value = (inner as unknown as Record<string | symbol, unknown>)[prop as string];
+      if (typeof value === "function") {
+        return (value as (...args: unknown[]) => unknown).bind(inner);
+      }
+      return value;
+    },
+    has(target, prop) {
+      if (prop in target) return true;
+      return prop in (inner as object);
+    },
+  });
 }
 
 function refreshRuntimeProviderClients(

@@ -469,6 +469,10 @@ export async function buildSurrealProductStateRepositoryOnConnection(
   // (PUT /api/state)await——把"200 但没落库"的谎言窗口在主数据通道上关死。
   let lastEnqueueResult: Promise<void> = Promise.resolve();
   let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+  // C16/Issue3:与 snapshot 一并记住最近一笔整状态写的 purge 意图。A-18 恢复重放时必须带上
+  // 同一 streamPurgeMode,否则 journal 满窗 import 失败后恢复回落 slide-out 会再踩缺口 #6。
+  type PersistOpts = { streamPurgeMode?: "slide-out" | "governance-keep" };
+  let lastEnqueuePersistOpts: PersistOpts | undefined;
 
   // A-18 熔断恢复:persist 失败后定时把【当前】内存态重新落库(旧自愈只等"下一笔写",
   // 但熔断拒写后不会再有下一笔——必须由后台重试主动恢复)。成功清零 → 熔断解除。
@@ -478,7 +482,7 @@ export async function buildSurrealProductStateRepositoryOnConnection(
       recoveryTimer = undefined;
       if (persistHealth.consecutiveFailures > 0) {
         console.warn(JSON.stringify({ event: "surreal_persist_recovery_retry" }));
-        enqueuePersist(state);
+        enqueuePersist(state, lastEnqueuePersistOpts);
       }
     }, PERSIST_RECOVERY_RETRY_MS);
     recoveryTimer.unref?.();
@@ -486,8 +490,10 @@ export async function buildSurrealProductStateRepositoryOnConnection(
 
   function enqueuePersist(
     snapshot: ProductState,
-    persistOpts?: { streamPurgeMode?: "slide-out" | "governance-keep" },
+    persistOpts?: PersistOpts,
   ): Promise<void> {
+    // 每笔 enqueue 覆盖意图(含 undefined=默认 slide-out),保证恢复与最近一次写语义一致。
+    lastEnqueuePersistOpts = persistOpts;
     const run = persistQueue.then(async () => {
       // 瞬态冲突有界重试(P4 真实业务 E2E 实测):原生召回读(HNSW/BM25/图遍历)与 persist
       // 写事务在同一嵌入式连接上并发时,surrealkv 乐观事务偶发 "failed transaction"——
@@ -635,7 +641,8 @@ export async function buildSurrealProductStateRepositoryOnConnection(
       // A-18 熔断:上一笔落库失败 → 拒新写(503),防"已确认 200"的写重启蒸发。
       if (persistHealth.consecutiveFailures > 0) throw new PersistUnavailableError(persistHealth.lastError);
       state = computeResetNextState();
-      enqueuePersist(state);
+      // C16:整库清空对称治理 keep 清扫(空 next 下 isSlideOut 本就恒 false,显式 flag 防恢复路径歧义)。
+      enqueuePersist(state, { streamPurgeMode: "governance-keep" });
       return structuredClone(state);
     },
     replaceState(next: ProductState, replaceOpts?: ReplaceStateOptions) {
@@ -1364,7 +1371,7 @@ async function buildPersistStatements(
   //    · **C16 streamPurgeMode**(缺口 #6 closed):纯 diff 无法区分「滚动滑出」与「满窗 import
   //      替换」(备份恰满窗且全部新于活库时 removeIds 被误判为滑出)。治理路径(executeGovernance
   //      Transaction reset|replace + journal replaceStateDurable 的 streamPurgeMode=governance-keep)
-  //      跳过 isSlideOut,凡有 remove 即 keep 清扫;默认 slide-out 仍保全史。
+  //      **恒** keep 清扫(DB 流水 = next keep 集,含「同 id 覆盖 + 窗口外孤儿」);默认 slide-out 仍保全史。
   for (const m of STREAM_MAPPINGS) {
     const prevArr = ((prev as unknown as Record<string, unknown>)[m.stateKey] as Array<Record<string, unknown> & { id: string }>) ?? [];
     const nextArr = ((next as unknown as Record<string, unknown>)[m.stateKey] as Array<Record<string, unknown> & { id: string }>) ?? [];
@@ -1378,10 +1385,11 @@ async function buildPersistStatements(
       const e = prevById.get(id);
       return e !== undefined && streamTs(e, m) <= oldestKeptTs;
     };
-    // governance-keep:跳过 isSlideOut;有 remove 即全表 keep 清扫(关闭满窗 import 缺口 #6)。
+    // governance-keep:整库替换意图 → 始终 DELETE WHERE id NOT IN keep(对齐 next;清窗口外孤儿)。
+    // 即便 removeIds 为空(同 id 满窗覆盖)也须清扫,否则 ae_old 等保全史残留。
     // slide-out(默认):仅当存在非滑出移除时才清扫(常规 append 保全史)。
     const shouldPurgeStream = streamPurgeMode === "governance-keep"
-      ? removeIds.length > 0
+      ? true
       : removeIds.some((id) => !isSlideOut(id));
     if (shouldPurgeStream) {
       const kv = `keep_${m.table}`;

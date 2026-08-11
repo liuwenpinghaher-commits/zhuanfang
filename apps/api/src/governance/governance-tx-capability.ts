@@ -32,7 +32,7 @@ export function hasGovernanceTx(x: unknown): x is GovernanceTransactionPort {
 /**
  * 探测某个 repo 是否具备治理事务能力(与 asNativeRecall 同款注入矩阵)。R7 后仅两档:
  * - `surreal` 档:只有 createSurrealStores 装配路径(冷热共用一个嵌入式连接)的 handle 才带
- *   runGovernanceTransaction(经 withKnowledgeReindex 的 `...inner` spread 透传)→ 直接返回。
+ *   runGovernanceTransaction(经 withKnowledgeReindex 的 live getter/Proxy 转发)→ 直接返回。
  *   standalone createSurrealProductStateRepository(自开自关连接、无冷层)不暴露此方法。
  * - `memory` 档:无此方法 → undefined,路由回落既有 journal/best-effort。
  * (dual-write/dual-surreal 已随 R7 删除,不再有 getAuthoritative 委托层。)

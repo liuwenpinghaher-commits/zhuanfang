@@ -1,12 +1,12 @@
 /**
  * C11 · Surreal 能力键同源清单。
  *
- * 生产装配链:createSurrealStores → (optional) user-scoped Proxy facade → withKnowledgeReindex(...inner spread)。
- * 路由经 `asNativeRecall` / `asGovernanceTx` / 直接 typeof 探测这些方法;清单与探测字段同源,
- * 避免 hasNativeRecall / asGovernanceTx / 装配契约测三处各自维护而漂移。
+ * 生产装配链:createSurrealStores → (optional) user-scoped Proxy facade → withKnowledgeReindex(Proxy 转发)。
+ * `withKnowledgeReindex` import 本清单(钉住探测面);路由经 `asNativeRecall` / `asGovernanceTx` /
+ * typeof 探测。禁止对 user-scoped Proxy 做 object spread(会丢掉 get-trap 能力键)。
  *
  * 不进本清单:recallRagChunks?(可选)、flush/confirmPersisted/getGovernanceGeneration(基础/代际,
- * 已有专测)。装配约定见各 port 注释——勿堆进根 AGENTS.md。
+ * 由 withKnowledgeReindex Proxy 同样转发)。装配约定见 server.ts——勿堆进根 AGENTS.md。
  */
 export const SURREAL_CAPABILITY_KEYS = [
   "runGovernanceTransaction",

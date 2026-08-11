@@ -427,6 +427,35 @@ describe("N-03 冷层直写守卫(治理在途拒绝 put/replaceSource,防隐私
 });
 
 describe("C16 streamPurgeMode · 满窗 import 缺口 #6 (governance-keep)", () => {
+  it("同 id 满窗覆盖 + 窗口外孤儿:governance-keep 仍 keep 清扫(removeIds 为空)", async () => {
+    const s = await makeStores();
+    await s.productState.flush();
+    const window = makeAuditEvents(1, MAX_EVENT_LOG);
+    s.productState.replaceState({ ...s.productState.getState(), auditEvents: window });
+    await s.productState.flush();
+    const oldTs = "2020-01-01T00:00:00.000Z";
+    await s.productState.query(
+      "UPSERT $rid CONTENT { type: 'memory_referenced', label: '老', detail: '', severity: 'info', entityType: 'memory', entityId: 'm_old', createdAt: $d, rest: {} };",
+      { rid: new RecordId("audit_event", [oldTs, "ae_old"]), d: new Date(oldTs) },
+    );
+    // next 与 prev 同 id 集 → removeIds 为空;仅内容微调。governance-keep 须仍清扫 ae_old。
+    const sameIds = window.map((e, i) => (i === 0 ? { ...e, label: "覆盖后标签" } : e));
+    await s.productState.runGovernanceTransaction!(
+      { kind: "replace", next: { ...s.productState.getState(), auditEvents: sameIds } as ProductState },
+      {},
+    );
+    const [rows] = await s.productState.query<[Array<{ count?: number }>]>("SELECT count() FROM audit_event GROUP ALL;");
+    expect(rows?.[0]?.count, "仅 keep 窗口,孤儿 ae_old 删除").toBe(MAX_EVENT_LOG);
+    const [ids] = await s.productState.query<[Array<{ id?: unknown }>]>("SELECT id FROM audit_event;");
+    const domainIds = (ids ?? []).map((row) => {
+      const id = row.id as { id?: unknown } | undefined;
+      const arr = id && typeof id === "object" && "id" in id ? (id as { id: unknown }).id : id;
+      return Array.isArray(arr) ? String(arr[1]) : String(arr ?? "");
+    });
+    expect(domainIds).not.toContain("ae_old");
+    expect(domainIds).toContain("ae_1");
+  }, 120000);
+
   it("runGovernanceTransaction replace: 满窗且全部新于活库 → prev 窗口行 + 窗口外历史不得残留", async () => {
     const s = await makeStores();
     await s.productState.flush();
