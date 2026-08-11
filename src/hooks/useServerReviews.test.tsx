@@ -134,4 +134,40 @@ describe("useServerReviews", () => {
     expect(container?.querySelector("[data-has]")?.getAttribute("data-has")).toBe("1");
     expect(container?.querySelector("[data-error]")?.getAttribute("data-error")).toContain("503");
   });
+
+  it("资产签名连变两次：2s debounce 内只再拉一次", async () => {
+    getReviews.mockResolvedValue({
+      monthly: { title: "m" },
+      yearly: { title: "y" },
+      radar: { axes: [] }
+    });
+    mount({ apiPersistenceEnabled: true, view: "themes", productState: baseState });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const initialCalls = getReviews.mock.calls.length;
+    expect(initialCalls).toBe(1);
+
+    // assetSig includes revision — bump twice inside the debounce window.
+    remount({
+      apiPersistenceEnabled: true,
+      view: "themes",
+      productState: { ...baseState, revision: baseState.revision + 1 }
+    });
+    remount({
+      apiPersistenceEnabled: true,
+      view: "themes",
+      productState: { ...baseState, revision: baseState.revision + 2 }
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_500);
+    });
+    expect(getReviews.mock.calls.length).toBe(initialCalls);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+    });
+    // Only one debounced fetch after the double bump.
+    expect(getReviews.mock.calls.length).toBe(initialCalls + 1);
+  });
 });

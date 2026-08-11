@@ -80,4 +80,23 @@ describe("usePersistHealthPoll", () => {
     });
     expect(container?.textContent).toBe("null");
   });
+
+  it("曾 degraded 后网络失败保留 prior banner", async () => {
+    getHealth.mockResolvedValueOnce({
+      ok: true,
+      persist: { degraded: true, consecutiveFailures: 2, lastErrorAt: "2026-02-01T00:00:00.000Z" }
+    });
+    mount(true);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(container?.textContent).toBe("2|2026-02-01T00:00:00.000Z");
+
+    getHealth.mockRejectedValueOnce(new Error("network down"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    // Prior degraded banner sticky — network fail must not clear or invent new state.
+    expect(container?.textContent).toBe("2|2026-02-01T00:00:00.000Z");
+  });
 });

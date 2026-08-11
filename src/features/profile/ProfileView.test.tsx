@@ -134,7 +134,19 @@ describe("ProfileView 显性档案保存", () => {
       await Promise.resolve();
     });
     expect(onRebuildIndex).toHaveBeenCalledTimes(1);
+    // Issue 1: success hint lives outside failed-only branch — still visible after receipt flips.
     expect(container?.textContent).toContain("重建完成：3 块已写入索引");
+    // CTA stands down once knowledgeIndex is rebuilt.
+    expect(
+      Array.from(container?.querySelectorAll("button") ?? []).some((b) =>
+        (b.textContent ?? "").includes("重建知识索引")
+      )
+    ).toBe(false);
+    // Metrics show rebuilt; pure index-fail clears partial (Issue 2).
+    expect(container?.textContent).toContain("知识索引 rebuilt");
+    expect(container?.textContent).toContain("完整恢复");
+    expect(container?.textContent).toContain("已完整恢复并核对清单");
+    expect(container?.textContent).not.toContain("已部分恢复，请核对缺失项");
     confirmSpy.mockRestore();
   });
 

@@ -256,11 +256,18 @@ export function ProfileView({
     setRebuildIndexError(null);
     try {
       const { chunkCount } = await onRebuildIndex();
+      // Hint must live outside the knowledgeIndex==="failed" branch so batched
+      // setState (hint + receipt→rebuilt) does not unmount the success message.
       setRebuildIndexHint(`重建完成：${chunkCount} 块已写入索引。`);
-      // Clear failed flag in local receipt so CTA can stand down after success.
-      setImportReceipt((prev) =>
-        prev && prev.knowledgeIndex === "failed" ? { ...prev, knowledgeIndex: "rebuilt" } : prev
-      );
+      setImportReceipt((prev) => {
+        if (!prev || prev.knowledgeIndex !== "failed") return prev;
+        // C13: recompute partial — pure index-fail cases clear partial after rebuild.
+        const stillPartial =
+          prev.missing.audioSessions.length > 0 ||
+          prev.skipped.rawMaterials.length > 0 ||
+          prev.skipped.audios.length > 0;
+        return { ...prev, knowledgeIndex: "rebuilt", partial: stillPartial };
+      });
     } catch (err) {
       setRebuildIndexError(describeGovernanceError(err, "重建失败：知识索引需要后端在线。"));
     } finally {
@@ -634,6 +641,7 @@ export function ProfileView({
                       {importReceipt.skipped.audios.length > 0 && <li>跳过录音 {importReceipt.skipped.audios.length} 项</li>}
                     </ul>
                   )}
+                  {/* CTA only while index is still failed; success/error hints render below so they survive receipt flip to rebuilt. */}
                   {importReceipt.knowledgeIndex === "failed" && onRebuildIndex && (
                     <div className="row-wrap mt-2">
                       <button
@@ -646,9 +654,13 @@ export function ProfileView({
                         {rebuildingIndex ? <span className="spinner" aria-hidden="true" /> : <RefreshCw size={16} aria-hidden />}
                         {rebuildingIndex ? "重建中…" : "重建知识索引"}
                       </button>
-                      {rebuildIndexHint && <span className="field-status is-success">{rebuildIndexHint}</span>}
-                      {rebuildIndexError && <span className="field-status is-danger">{rebuildIndexError}</span>}
                     </div>
+                  )}
+                  {rebuildIndexError && (
+                    <span className="field-status is-danger">{rebuildIndexError}</span>
+                  )}
+                  {rebuildIndexHint && (
+                    <span className="field-status is-success">{rebuildIndexHint}</span>
                   )}
                 </>
               ) : (
