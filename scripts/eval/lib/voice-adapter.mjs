@@ -102,8 +102,16 @@ export async function deliverVoiceScenario({
     }
 
     const listening = page.getByText("聆听");
-    await listening.waitFor({ timeout: 40000 });
-    await page.waitForTimeout(1200);
+    const speaking = page.getByText("AI 正在回应");
+    const listenDeadline = Date.now() + 45000;
+    while (Date.now() < listenDeadline) {
+      const isListening = await listening.isVisible().catch(() => false);
+      const isSpeaking = await speaking.isVisible().catch(() => false);
+      if (isListening && !isSpeaking) break;
+      await page.waitForTimeout(500);
+    }
+    await listening.waitFor({ timeout: 5000 });
+    await page.waitForTimeout(1800);
     const hasMic = await page.evaluate(() => Boolean(window.__fakeMic));
     const statusText = await page.locator(".status-dot").locator("xpath=..").innerText().catch(() => "");
     log(JSON.stringify({ event: "eval_voice_ready", hasMic, statusText: String(statusText).slice(0, 80) }));

@@ -833,7 +833,6 @@ export function connectCascadedPipeline(
   // ── Public API ─────────────────────────────────────────────────────────────
   return {
     async startListening(openingText?: string) {
-      setState("listening");
       if (openingText && openingText.trim()) {
         setState("speaking");
         suppressMic();
@@ -841,10 +840,10 @@ export function connectCascadedPipeline(
         try { await tts.speak([openingText.trim()]); } catch (error) { reportTtsPlaybackInterrupted(error); }
         turnAssembler.noteTtsPlayback({ text: openingText.trim(), startedAtMs, endedAtMs: Date.now() });
         releaseMicAfterGuard();
-        if (!closed) setState("listening");
       }
       if (closed) return; // closed mid-opening — don't open the mic
       await asr.start();
+      if (!closed) setState("listening");
     },
 
     updatePreSignals(next: InteractionPreSignals | null) {
