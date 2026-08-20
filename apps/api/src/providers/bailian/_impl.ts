@@ -227,7 +227,7 @@ export interface BailianPodcastAudioRequest {
 }
 
 export interface BailianPodcastAudioResult {
-  providerId: "bailian-cosyvoice";
+  providerId: "bailian-cosyvoice" | "bailian-qwen-audio-tts";
   model: string;
   voice: string;
   audioUrl: string;
@@ -243,7 +243,7 @@ export interface BailianAudioTranscriptionRequest {
 }
 
 export interface BailianAudioTranscriptionResult {
-  providerId: "bailian-sensevoice";
+  providerId: "bailian-sensevoice" | "bailian-qwen-audio-asr";
   model: string;
   sourceUrl: string;
   taskId: string;
