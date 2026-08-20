@@ -929,8 +929,8 @@ function normalizeVoiceConfig(systemConfig: Partial<SystemConfig>, fallbackConfi
   // Custom enrolled clone voices (e.g. "custom-voice-xxx", "cosyvoice-clone-xxx") are
   // preserved as-is — this is a blacklist correction, NOT a whitelist enforcement.
   // ponytail: 只纠正已知非法 legacy 占位值;custom 克隆声音原样保留
-  const defaultVoice = isInvalidVoiceId(voiceConfig.defaultVoice) ? "longanyang" : voiceConfig.defaultVoice;
-  const podcastVoice = isInvalidVoiceId(voiceConfig.podcastVoice) ? "longanhuan" : voiceConfig.podcastVoice;
+  const defaultVoice = isInvalidVoiceId(voiceConfig.defaultVoice) ? "longanlingxin" : voiceConfig.defaultVoice;
+  const podcastVoice = isInvalidVoiceId(voiceConfig.podcastVoice) ? "longanlingxin" : voiceConfig.podcastVoice;
 
   return {
     ...voiceConfig,

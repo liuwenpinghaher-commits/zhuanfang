@@ -315,7 +315,7 @@ expect(response.json()).toMatchObject({ ok: true, ready: true, service: "intervi
 
     expect(response.statusCode).toBe(200);
     expect(realtime).toMatchObject({
-      model: "qwen3.5-omni-flash-realtime",
+      model: "qwen-audio-3.0-realtime-plus",
       status: "ready"
     });
 
@@ -327,12 +327,12 @@ expect(response.json()).toMatchObject({ ok: true, ready: true, service: "intervi
       expect.objectContaining({
         key: "BAILIAN_REALTIME_MODEL",
         configured: false,
-        value: "qwen3.5-omni-flash-realtime"
+        value: "qwen-audio-3.0-realtime-plus"
       }),
       expect.objectContaining({
         key: "BAILIAN_REALTIME_FALLBACK_MODEL",
         configured: false,
-        value: "qwen3-omni-flash-realtime"
+        value: "qwen-audio-3.0-realtime-plus"
       })
     ]));
     await server.close();
@@ -722,7 +722,7 @@ expect(response.json()).toMatchObject({ ok: true, ready: true, service: "intervi
       episode: {
         noteId,
         format: "solo",
-        voice: "longanyang",
+        voice: "longanqian",
         status: "draft",
         audioRenderStatus: "pending"
       },
@@ -735,7 +735,7 @@ expect(response.json()).toMatchObject({ ok: true, ready: true, service: "intervi
     const persistedStateResponse = await server.inject({ method: "GET", url: "/api/state" });
     expect(persistedStateResponse.json().podcastEpisodes[0]).toMatchObject({
       noteId,
-      voice: "longanyang"
+      voice: "longanqian"
     });
   });
 
@@ -1089,12 +1089,12 @@ it("renders podcast audio through Bailian CosyVoice when the audio client is con
       bailianPodcastAudioClient: {
         async synthesize(input) {
           expect(input.text).toContain("播客脚本正文");
-          // calm-host is normalized to verified CosyVoice preset longanyang
-          expect(input.voice).toBe("longanyang");
+          // calm-host is normalized to verified qwen-audio preset longanqian
+          expect(input.voice).toBe("longanqian");
           return {
-            providerId: "bailian-cosyvoice",
-            model: "cosyvoice-v3-plus",
-            voice: "longanyang",
+            providerId: "bailian-qwen-audio-tts",
+            model: "qwen-audio-3.0-tts-plus",
+            voice: "longanqian",
             audioUrl: "https://dashscope-result.example.com/podcast.mp3",
             expiresAt: 1791705600
           };
@@ -1130,7 +1130,7 @@ it("renders podcast audio through Bailian CosyVoice when the audio client is con
       expect(synthResponse.json()).toMatchObject({
         episode: {
           noteId,
-          voice: "longanyang",
+          voice: "longanqian",
           audioUrl: "https://dashscope-result.example.com/podcast.mp3"
         }
       });
@@ -1138,7 +1138,7 @@ it("renders podcast audio through Bailian CosyVoice when the audio client is con
       const persistedStateResponse = await server.inject({ method: "GET", url: "/api/state" });
       expect(persistedStateResponse.json().podcastEpisodes[0]).toMatchObject({
         noteId,
-        voice: "longanyang",
+        voice: "longanqian",
         audioUrl: "https://dashscope-result.example.com/podcast.mp3"
       });
     } finally {
@@ -1158,8 +1158,8 @@ it("renders podcast audio through Bailian CosyVoice when the audio client is con
     expect(JSON.stringify(response.json())).not.toContain("secret-that-must-not-leak");
     expect(response.json()).toMatchObject({
       provider: "bailian",
-      model: "qwen3.5-omni-flash-realtime",
-      fallbackModel: "qwen3-omni-flash-realtime",
+      model: "qwen-audio-3.0-realtime-plus",
+      fallbackModel: "qwen-audio-3.0-realtime-plus",
       transport: "websocket",
       fallbackTransport: "websocket",
       vad: "server_vad",
@@ -1182,7 +1182,7 @@ it("renders podcast audio through Bailian CosyVoice when the audio client is con
       bailianRealtimeVoiceClient: {
         async createWebrtcAnswer(input) {
           expect(input).toEqual({
-            model: "qwen3.5-omni-flash-realtime",
+            model: "qwen-audio-3.0-realtime-plus",
             offerSdp: "offer-sdp"
           });
           return "answer-sdp";
@@ -1202,7 +1202,7 @@ it("renders podcast audio through Bailian CosyVoice when the audio client is con
     expect(JSON.stringify(sessionResponse.json())).not.toContain("Bearer");
     expect(sessionResponse.json()).toMatchObject({
       provider: "bailian",
-      model: "qwen3.5-omni-flash-realtime",
+      model: "qwen-audio-3.0-realtime-plus",
       transport: "websocket",
       status: "ready",
       sessionUpdate: {

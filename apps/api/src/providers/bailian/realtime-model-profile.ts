@@ -27,12 +27,12 @@ export interface BailianRealtimeModelProfile {
   outputAudioFormat: "pcm";
 }
 
-/** Canonical Omni defaults — source of truth for BAILIAN_REALTIME_* constants. */
+/** Canonical realtime defaults — source of truth for BAILIAN_REALTIME_* constants. */
 export const BAILIAN_REALTIME_PROFILE_OMNI_DEFAULT: BailianRealtimeModelProfile = {
   id: "omni-default",
-  model: "qwen3.5-omni-flash-realtime",
-  fallbackModel: "qwen3-omni-flash-realtime",
-  voice: "Ethan",
+  model: "qwen-audio-3.0-realtime-plus",
+  fallbackModel: "qwen-audio-3.0-realtime-plus",
+  voice: "longanlingxin",
   inputAudioFormat: "pcm",
   outputAudioFormat: "pcm"
 };
@@ -41,7 +41,7 @@ export const BAILIAN_REALTIME_PROFILE_OMNI_DEFAULT: BailianRealtimeModelProfile 
 export const BAILIAN_REALTIME_MODEL = BAILIAN_REALTIME_PROFILE_OMNI_DEFAULT.model;
 /** Stable export: fallback Omni realtime model (from omni-default profile). */
 export const BAILIAN_REALTIME_FALLBACK_MODEL = BAILIAN_REALTIME_PROFILE_OMNI_DEFAULT.fallbackModel;
-/** Default Omni path voice (Ethan). Separate from Cosy TTS defaults. */
+/** Default realtime path voice. Separate from cascade TTS defaults. */
 export const BAILIAN_REALTIME_DEFAULT_VOICE = BAILIAN_REALTIME_PROFILE_OMNI_DEFAULT.voice;
 
 const PROFILE_BY_ID: Record<BailianRealtimeProfileId, BailianRealtimeModelProfile | null> = {

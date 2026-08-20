@@ -27,6 +27,9 @@ import {
   createBailianRealtimeVoiceClientFromEnv,
   createBailianSearchClientFromEnv,
   createBailianVoiceEnrollmentClientFromEnv,
+  BAILIAN_PODCAST_TTS_MODEL,
+  BAILIAN_PODCAST_TTS_VOICE,
+  resolveBailianTtsWsUrl,
   type BailianAudioTranscriptionClient,
   type BailianChatClient,
   type BailianCharacterInterviewClient,
@@ -650,14 +653,19 @@ function refreshRuntimeProviderClients(
     ((env.EMBEDDING_PROVIDER ?? "").trim().toLowerCase() === "local"
       ? createLocalEmbeddingClient()
       : createBailianEmbeddingClientFromEnv(env) ?? undefined);
-  // Streaming TTS client for the TTS WebSocket proxy (browser ↔ CosyVoice).
+  // Streaming TTS client for the TTS WebSocket proxy (browser ↔ qwen-audio TTS).
   // If no API key is configured, the proxy will reject upgrades with 4001 at
   // connect time — safe to leave undefined here.
   const ttsApiKey = resolveBailianApiKey(env);
   providerClients.streamingTtsClient =
     options.streamingTtsClient ??
     (ttsApiKey
-      ? (options.streamingTtsClientFactory ?? createBailianStreamingTtsClient)({ apiKey: ttsApiKey })
+      ? (options.streamingTtsClientFactory ?? createBailianStreamingTtsClient)({
+          apiKey: ttsApiKey,
+          model: env.BAILIAN_TTS_MODEL?.trim() || BAILIAN_PODCAST_TTS_MODEL,
+          voice: env.BAILIAN_TTS_VOICE?.trim() || BAILIAN_PODCAST_TTS_VOICE,
+          wsUrl: resolveBailianTtsWsUrl(env)
+        })
       : undefined);
 }
 export async function startServer() {

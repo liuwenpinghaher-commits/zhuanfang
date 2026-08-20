@@ -164,19 +164,19 @@ export const initialProductState: ProductState = {
       {
         id: "bailian-qwen-tts",
         kind: "voice",
-        label: "百炼 CosyVoice",
+        label: "Qwen-Audio TTS",
         status: "needs-key",
         active: true,
-        description: "使用 cosyvoice-v3-plus 与已验证音色（longanhuan / longanyang）把播客脚本渲染为真实音频；无效 voice id 会归一到预设。",
+        description: "使用 qwen-audio-3.0-tts-plus 与系统音色（longanlingxin）把播客脚本渲染为真实音频；无效 voice id 会归一到预设。",
         lastCheckedAt: "2026-06-10T00:00:00.000Z"
       },
       {
         id: "bailian-character",
         kind: "llm",
-        label: "百炼角色扮演 qwen-plus-character",
+        label: "百炼角色扮演 qwen3.7-plus",
         status: "needs-key",
         active: true,
-        description: "参考百炼角色扮演模型，用于自然专访口吻、多角色前缀和 partial assistant 输出。",
+        description: "用 qwen3.7-plus 做自然专访口吻、多角色前缀和 partial assistant 输出。",
         lastCheckedAt: "2026-06-10T00:00:00.000Z"
       },
       {
@@ -206,15 +206,15 @@ export const initialProductState: ProductState = {
     },
     voice: {
       ttsProvider: "bailian",
-      defaultVoice: "longanyang",
-      podcastVoice: "longanhuan",
+      defaultVoice: "longanlingxin",
+      podcastVoice: "longanlingxin",
       podcastFormat: "solo",
       realtimeMode: "cascade"
     },
     models: {
-      planningModel: "deepseek-v4-flash-0731",
-      interviewModel: "deepseek-v4-flash-0731",
-      synthesisModel: "deepseek-v4-flash-0731"
+      planningModel: "qwen3.6-flash",
+      interviewModel: "qwen3.7-plus",
+      synthesisModel: "qwen3.7-plus"
     },
     interview: {
       playbookVersion: "base-v1",

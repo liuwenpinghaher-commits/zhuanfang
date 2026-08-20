@@ -119,7 +119,7 @@ describe("bailian provider client", () => {
     expect(result.sources[0].url).not.toContain("dashscope.aliyun");
   });
 
-  it("uses CosyVoice v3-plus for rendered podcast audio by default", async () => {
+  it("uses qwen-audio-3.0-tts-plus for rendered podcast audio by default", async () => {
     const fetchImpl = vi.fn(async () =>
       new Response(
         JSON.stringify({
@@ -129,7 +129,7 @@ describe("bailian provider client", () => {
               expires_at: 1791705600
             }
           },
-          request_id: "request-cosyvoice"
+          request_id: "request-qwen-audio-tts"
         }),
         { status: 200 }
       )
@@ -144,7 +144,7 @@ describe("bailian provider client", () => {
     });
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer",
+      "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
       expect.objectContaining({
         method: "POST",
         headers: {
@@ -155,18 +155,17 @@ describe("bailian provider client", () => {
     );
     const requestBody = JSON.parse(getLastFetchCall(fetchImpl as FetchMock)[1]?.body as string);
     expect(requestBody).toMatchObject({
-      model: "cosyvoice-v3-plus",
+      model: "qwen-audio-3.0-tts-plus",
       input: {
         text: "开场：这是一段确认后的播客脚本。",
-        voice: "longanyang",
-        format: "mp3",
-        sample_rate: 24000
+        voice: "longanlingxin",
+        language_type: "Chinese"
       }
     });
     expect(result).toEqual({
-      providerId: "bailian-cosyvoice",
-      model: "cosyvoice-v3-plus",
-      voice: "longanyang",
+      providerId: "bailian-qwen-audio-tts",
+      model: "qwen-audio-3.0-tts-plus",
+      voice: "longanlingxin",
       audioUrl: "https://dashscope-result.example.com/podcast.mp3",
       expiresAt: 1791705600,
       durationSec: undefined
@@ -183,6 +182,7 @@ describe("bailian provider client", () => {
     const client = createBailianPodcastAudioClient({
       apiKey: "test-key",
       fetchImpl,
+      model: "cosyvoice-v3-plus",
       format: "wav",
       sampleRate: 16000,
       rate: 1.25,
@@ -230,6 +230,7 @@ describe("bailian provider client", () => {
     const client = createBailianAudioTranscriptionClient({
       apiKey: "test-key",
       fetchImpl,
+      model: "sensevoice-v1",
       // 给足够大的 attempts，确保是时间上限先触发
       pollAttempts: 100,
       pollIntervalMs: 0,
@@ -304,6 +305,7 @@ describe("bailian provider client", () => {
     const client = createBailianAudioTranscriptionClient({
       apiKey: "test-key",
       fetchImpl,
+      model: "sensevoice-v1",
       pollAttempts: 1,
       pollIntervalMs: 0
     });
@@ -315,7 +317,7 @@ describe("bailian provider client", () => {
 
     expect(fetchImpl).toHaveBeenNthCalledWith(
       1,
-      "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription",
+      "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/asr/transcription",
       expect.objectContaining({
         method: "POST",
         headers: {
@@ -339,7 +341,7 @@ describe("bailian provider client", () => {
     });
     expect(fetchImpl).toHaveBeenNthCalledWith(
       2,
-      "https://dashscope.aliyuncs.com/api/v1/tasks/task-audio-1",
+      "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1/tasks/task-audio-1",
       expect.objectContaining({
         method: "POST",
         headers: {
@@ -361,6 +363,67 @@ describe("bailian provider client", () => {
       transcriptionUrl: "https://transcription.example.com/result.json",
       durationSec: 12,
       text: "主持人：能不能讲一个具体时刻？\n被访者：他们只等我拍板。"
+    });
+  });
+
+  it("uses qwen-audio-3.0-asr-flash chat completions by default", async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          id: "chatcmpl-asr-1",
+          choices: [{ message: { role: "assistant", content: "他们只等我拍板。" } }],
+          usage: { seconds: 3 }
+        }),
+        { status: 200 }
+      )
+    );
+    const client = createBailianAudioTranscriptionClient({
+      apiKey: "test-key",
+      fetchImpl
+    });
+
+    const result = await client.transcribe({
+      sourceUrl: "https://example.com/interview-audio.mp3",
+      languageHint: "zh"
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `${BAILIAN_DEFAULT_BASE_URL}/chat/completions`,
+      expect.objectContaining({
+        method: "POST",
+        headers: {
+          authorization: "Bearer test-key",
+          "content-type": "application/json"
+        }
+      })
+    );
+    const requestBody = JSON.parse(getLastFetchCall(fetchImpl as FetchMock)[1]?.body as string);
+    expect(requestBody).toMatchObject({
+      model: "qwen-audio-3.0-asr-flash",
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_audio",
+              input_audio: { data: "https://example.com/interview-audio.mp3" }
+            }
+          ]
+        }
+      ],
+      asr_options: {
+        language: "zh",
+        enable_itn: true
+      }
+    });
+    expect(result).toEqual({
+      providerId: "bailian-qwen-audio-asr",
+      model: "qwen-audio-3.0-asr-flash",
+      sourceUrl: "https://example.com/interview-audio.mp3",
+      taskId: "chatcmpl-asr-1",
+      transcriptionUrl: "https://example.com/interview-audio.mp3",
+      durationSec: 3,
+      text: "他们只等我拍板。"
     });
   });
 
@@ -842,6 +905,7 @@ describe("createBailianAudioTranscriptionClientFromEnv — maxPollTotalMs from e
     // plus our test doubles, mirroring exactly what FromEnv now produces.
     const client = createBailianAudioTranscriptionClient({
       apiKey: "test-key",
+      model: "sensevoice-v1",
       // env-parsed values (matching what FromEnv would produce for BAILIAN_ASR_POLL_TOTAL_MS=500)
       pollAttempts: 20,
       pollIntervalMs: 500,

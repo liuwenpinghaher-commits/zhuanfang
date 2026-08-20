@@ -8,18 +8,20 @@ import { resolveRequestTimeoutMs } from "../../request-timeout";
 import { normalizeCosyVoiceId } from "../../voice-presets";
 import { resolveBailianApiKey } from "../../runtime-secrets";
 
-/** Default OpenAI-compatible base for text LLMs (token-plan). Audio/realtime keep DashScope URLs below. */
+/** Default OpenAI-compatible base for text + Qwen-Audio ASR (token-plan MaaS). */
 export const BAILIAN_DEFAULT_BASE_URL = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1";
-export const BAILIAN_DEFAULT_AUDIO_BASE_URL = "https://dashscope.aliyuncs.com";
-/** Public DashScope WebRTC signaling URL (no workspace allowlist). Override with BAILIAN_REALTIME_WEBRTC_ENDPOINT. */
-export const BAILIAN_DEFAULT_WEBRTC_ENDPOINT = "https://dashscope.aliyuncs.com/api/v1/webrtc/realtime";
-/** Default text LLM on token-plan (search / planning fallback). */
-export const BAILIAN_LATEST_PLUS_MODEL = "deepseek-v4-flash-0731";
-/** Default interview character text model (same token-plan text stack). */
-export const BAILIAN_ROLE_PLAY_MODEL = "deepseek-v4-flash-0731";
-export const BAILIAN_PODCAST_TTS_MODEL = "cosyvoice-v3-plus";
-// cosyvoice-v3-plus requires v3-series voices (longanyang/longanhuan_v3); v1/v2 voices return engine error 418.
-export const BAILIAN_PODCAST_TTS_VOICE = "longanyang";
+/** Native DashScope-style host on the same MaaS workspace (TTS HTTP, task poll). */
+export const BAILIAN_DEFAULT_AUDIO_BASE_URL = "https://token-plan.cn-beijing.maas.aliyuncs.com";
+/** WebRTC signaling on the same MaaS workspace. Override with BAILIAN_REALTIME_WEBRTC_ENDPOINT. */
+export const BAILIAN_DEFAULT_WEBRTC_ENDPOINT = "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1/webrtc/realtime";
+export const BAILIAN_DEFAULT_TTS_WS_URL = "wss://token-plan.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference";
+export const BAILIAN_DEFAULT_REALTIME_WS_BASE = "wss://token-plan.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime";
+/** Search / planning: fast text. */
+export const BAILIAN_LATEST_PLUS_MODEL = "qwen3.6-flash";
+/** Interview character text model. */
+export const BAILIAN_ROLE_PLAY_MODEL = "qwen3.7-plus";
+export const BAILIAN_PODCAST_TTS_MODEL = "qwen-audio-3.0-tts-plus";
+export const BAILIAN_PODCAST_TTS_VOICE = "longanlingxin";
 // Realtime model/voice defaults live in realtime-model-profile (omni-default). Re-export for stable import paths.
 export {
   BAILIAN_REALTIME_MODEL,
@@ -35,9 +37,9 @@ export type {
   BailianRealtimeProfileId,
   BailianRealtimeModelProfile
 } from "./realtime-model-profile";
-export const BAILIAN_TRANSCRIPTION_MODEL = "sensevoice-v1";
-// General-purpose text model for server-side synthesis (diary, review, corpus, intel).
-export const BAILIAN_GENERAL_MODEL = "deepseek-v4-flash-0731";
+export const BAILIAN_TRANSCRIPTION_MODEL = "qwen-audio-3.0-asr-flash";
+/** Diary / review / corpus / intel. */
+export const BAILIAN_GENERAL_MODEL = "qwen3.7-plus";
 export const BAILIAN_EMBEDDING_MODEL = "text-embedding-v3";
 /**
  * Embeddings are a DashScope compatible-mode API. The chat default (token-plan / MaaS)
@@ -56,6 +58,54 @@ export function resolveBailianEmbeddingBaseUrl(
     return chat.replace(/\/$/, "");
   }
   return BAILIAN_DEFAULT_EMBEDDING_BASE_URL;
+}
+
+export function resolveBailianMaasHttpOrigin(
+  baseUrl: string | undefined = BAILIAN_DEFAULT_BASE_URL
+): string {
+  const raw = (baseUrl ?? "").trim() || BAILIAN_DEFAULT_BASE_URL;
+  try {
+    const url = new URL(raw.includes("://") ? raw : `https://${raw}`);
+    return `${url.protocol}//${url.host}`;
+  } catch {
+    return BAILIAN_DEFAULT_AUDIO_BASE_URL;
+  }
+}
+
+export function resolveBailianTtsWsUrl(
+  env: Record<string, string | undefined> = process.env
+): string {
+  const explicit = (env.BAILIAN_TTS_WS_URL ?? "").trim();
+  if (explicit) return explicit.replace(/\/$/, "");
+  const origin = resolveBailianMaasHttpOrigin(env.BAILIAN_BASE_URL);
+  return `${origin.replace(/^http/, "ws")}/api-ws/v1/inference`;
+}
+
+export function resolveBailianRealtimeWsUrl(
+  model: string,
+  env: Record<string, string | undefined> = process.env
+): string {
+  const explicit = (env.BAILIAN_REALTIME_WS_URL ?? "").trim();
+  const base = explicit
+    ? explicit.replace(/\/$/, "").replace(/\?.*$/, "")
+    : `${resolveBailianMaasHttpOrigin(env.BAILIAN_BASE_URL).replace(/^http/, "ws")}/api-ws/v1/realtime`;
+  const path = /\/realtime$/i.test(base) ? base : `${base}/api-ws/v1/realtime`;
+  return `${path}?model=${encodeURIComponent(model)}`;
+}
+
+function isQwenAudioTtsModel(model: string): boolean {
+  return /qwen-audio-3\.0-tts/i.test(model);
+}
+
+function isQwenAudioAsrFlashModel(model: string): boolean {
+  return /qwen-audio-3\.0-asr-flash/i.test(model) && !/filetrans|streaming/i.test(model);
+}
+
+function mapAsrLanguageHint(hint: string | undefined): string | undefined {
+  const value = (hint ?? "").trim().toLowerCase();
+  if (!value || value === "auto") return undefined;
+  if (value === "zh-cn" || value === "zh_cn" || value === "chinese") return "zh";
+  return value;
 }
 
 // ── Per-request timeouts (P1-09) ──────────────────────────────────────────────
@@ -252,6 +302,8 @@ interface BailianPodcastAudioClientOptions {
 interface BailianAudioTranscriptionClientOptions {
   apiKey: string;
   audioBaseUrl?: string;
+  /** OpenAI-compatible chat base (token-plan) for qwen-audio-3.0-asr-flash. */
+  chatBaseUrl?: string;
   model?: string;
   languageHint?: string;
   pollAttempts?: number;
@@ -712,45 +764,57 @@ export function createBailianPodcastAudioClient(options: BailianPodcastAudioClie
 
   return {
     async synthesize(input) {
-      // Only verified CosyVoice-v3 ids; longyuan_v3 etc. map away (provider 400/418).
       const voice = normalizeCosyVoiceId(input.voice?.trim() || defaultVoice, normalizeCosyVoiceId(defaultVoice));
       const format = input.format ?? defaultFormat;
       const text = (input.text ?? "").trim();
-      // Long scripts need more than 60s wall clock; scale softly with length, cap 180s.
       const timeoutMs = Math.min(180_000, Math.max(60_000, 45_000 + Math.ceil(text.length / 4) * 1000));
-      const response = await fetchImpl(`${audioBaseUrl}/api/v1/services/audio/tts/SpeechSynthesizer`, {
+      const qwenAudio = isQwenAudioTtsModel(model);
+      const url = qwenAudio
+        ? `${audioBaseUrl}/api/v1/services/aigc/multimodal-generation/generation`
+        : `${audioBaseUrl}/api/v1/services/audio/tts/SpeechSynthesizer`;
+      const body = qwenAudio
+        ? {
+            model,
+            input: {
+              text,
+              voice,
+              language_type: "Chinese"
+            }
+          }
+        : {
+            model,
+            input: {
+              text,
+              voice,
+              format,
+              sample_rate: sampleRate,
+              rate,
+              enable_markdown_filter: enableMarkdownFilter,
+              enable_aigc_tag: enableAigcTag
+            }
+          };
+      const response = await fetchImpl(url, {
         method: "POST",
         headers: {
           authorization: `Bearer ${options.apiKey}`,
           "content-type": "application/json"
         },
-        body: JSON.stringify({
-          model,
-          input: {
-            text,
-            voice,
-            format,
-            sample_rate: sampleRate,
-            rate,
-            enable_markdown_filter: enableMarkdownFilter,
-            enable_aigc_tag: enableAigcTag
-          }
-        }),
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(timeoutMs)
       });
 
       if (!response.ok) {
-        throw new Error(`Bailian CosyVoice request failed: ${response.status}`);
+        throw new Error(`Bailian TTS request failed: ${response.status}`);
       }
 
       const payload = (await response.json()) as BailianPodcastAudioOutput;
       const audioUrl = payload.output?.audio?.url;
       if (typeof audioUrl !== "string" || !audioUrl.trim()) {
-        throw new Error("Bailian CosyVoice response did not include an audio URL.");
+        throw new Error("Bailian TTS response did not include an audio URL.");
       }
 
       return {
-        providerId: "bailian-cosyvoice",
+        providerId: qwenAudio ? "bailian-qwen-audio-tts" : "bailian-cosyvoice",
         model,
         voice,
         audioUrl: audioUrl.trim(),
@@ -765,6 +829,7 @@ export function createBailianAudioTranscriptionClient(
   options: BailianAudioTranscriptionClientOptions
 ): BailianAudioTranscriptionClient {
   const audioBaseUrl = (options.audioBaseUrl ?? BAILIAN_DEFAULT_AUDIO_BASE_URL).replace(/\/$/, "");
+  const chatBaseUrl = (options.chatBaseUrl ?? BAILIAN_DEFAULT_BASE_URL).replace(/\/$/, "");
   const model = options.model ?? BAILIAN_TRANSCRIPTION_MODEL;
   const languageHint = options.languageHint ?? "auto";
   const pollAttempts = options.pollAttempts ?? 20;
@@ -778,6 +843,71 @@ export function createBailianAudioTranscriptionClient(
   return {
     async transcribe(input) {
       const sourceUrl = input.sourceUrl.trim();
+      if (isQwenAudioAsrFlashModel(model)) {
+        const asrLanguage = mapAsrLanguageHint(input.languageHint ?? languageHint);
+        const response = await fetchImpl(`${chatBaseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${options.apiKey}`,
+            "content-type": "application/json"
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              {
+                role: "user",
+                content: [
+                  {
+                    type: "input_audio",
+                    input_audio: { data: sourceUrl }
+                  }
+                ]
+              }
+            ],
+            asr_options: {
+              ...(asrLanguage ? { language: asrLanguage } : {}),
+              enable_itn: true
+            }
+          }),
+          signal: AbortSignal.timeout(ASR_REQUEST_TIMEOUT_MS)
+        });
+        if (!response.ok) {
+          throw new Error(`Bailian Qwen-Audio ASR failed: ${response.status}`);
+        }
+        const payload = (await response.json()) as {
+          id?: string;
+          choices?: Array<{ message?: { content?: unknown } }>;
+          usage?: { seconds?: number };
+        };
+        const content = payload.choices?.[0]?.message?.content;
+        const text =
+          typeof content === "string"
+            ? content.trim()
+            : Array.isArray(content)
+              ? content
+                  .map((part) =>
+                    typeof part === "string"
+                      ? part
+                      : typeof part === "object" && part && "text" in part
+                        ? String((part as { text?: unknown }).text ?? "")
+                        : ""
+                  )
+                  .join("")
+                  .trim()
+              : "";
+        if (!text) {
+          throw new Error("Bailian Qwen-Audio ASR did not include text.");
+        }
+        return {
+          providerId: "bailian-qwen-audio-asr",
+          model,
+          sourceUrl,
+          taskId: typeof payload.id === "string" ? payload.id : "",
+          transcriptionUrl: sourceUrl,
+          durationSec: normalizeOptionalNumber(payload.usage?.seconds),
+          text
+        };
+      }
       const submitResponse = await fetchImpl(`${audioBaseUrl}/api/v1/services/audio/asr/transcription`, {
         method: "POST",
         headers: {
@@ -983,6 +1113,7 @@ export function createBailianAudioTranscriptionClientFromEnv(
   return createBailianAudioTranscriptionClient({
     apiKey,
     audioBaseUrl: env.BAILIAN_AUDIO_BASE_URL,
+    chatBaseUrl: env.BAILIAN_BASE_URL,
     model: env.BAILIAN_ASR_MODEL ?? BAILIAN_TRANSCRIPTION_MODEL,
     languageHint: env.BAILIAN_ASR_LANGUAGE_HINT,
     pollAttempts: normalizeEnvInteger(env.BAILIAN_ASR_POLL_ATTEMPTS, 20),
@@ -1483,7 +1614,7 @@ export function createBailianVoiceEnrollmentClient(options: {
           input: {
             action: "create",
             audio: input.audioBase64,
-            target_model: "qwen3.5-omni-plus-realtime",
+            target_model: "qwen-audio-3.0-realtime-plus",
             ...(input.preferredName ? { preferred_name: input.preferredName } : {})
           }
         })

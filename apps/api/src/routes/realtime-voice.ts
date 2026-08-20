@@ -11,6 +11,10 @@ import {
 import { connectRealtimeAsrProxy } from "../realtime/asrProxyConnection";
 import {
   resolveBailianRealtimeModels,
+  resolveBailianRealtimeWsUrl,
+  resolveBailianTtsWsUrl,
+  BAILIAN_PODCAST_TTS_MODEL,
+  BAILIAN_PODCAST_TTS_VOICE,
   type BailianRealtimeVoiceClient,
   type BailianVoiceEnrollmentClient,
   type BailianEmbeddingClient
@@ -158,8 +162,8 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     }
     try {
       const voices = await options.voiceEnrollmentClient.listVoices();
-      const preset = voices.filter((v) => !v.targetModel || v.targetModel === "qwen3.5-omni-plus-realtime");
-      const custom = voices.filter((v) => v.targetModel && v.targetModel !== "qwen3.5-omni-plus-realtime");
+      const preset = voices.filter((v) => !v.targetModel || v.targetModel === "qwen-audio-3.0-realtime-plus");
+      const custom = voices.filter((v) => v.targetModel && v.targetModel !== "qwen-audio-3.0-realtime-plus");
       return { preset, custom };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -660,7 +664,14 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
         const apiKey = resolveBailianApiKey(runtimeEnv);
         const ttsClient: BailianStreamingTtsClient | undefined =
           options.streamingTtsClient ??
-          (apiKey ? createBailianStreamingTtsClient({ apiKey }) : undefined);
+          (apiKey
+            ? createBailianStreamingTtsClient({
+                apiKey,
+                model: runtimeEnv.BAILIAN_TTS_MODEL?.trim() || BAILIAN_PODCAST_TTS_MODEL,
+                voice: runtimeEnv.BAILIAN_TTS_VOICE?.trim() || BAILIAN_PODCAST_TTS_VOICE,
+                wsUrl: resolveBailianTtsWsUrl(runtimeEnv)
+              })
+            : undefined);
 
         ws.on("close", onBrowserClose);
         ws.on("error", onBrowserError);
@@ -802,6 +813,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
         primaryModel: record.model,
         fallbackModel: record.fallbackModel,
         createUpstream: createRealtimeUpstream,
+        resolveUpstreamUrl: (model) => resolveBailianRealtimeWsUrl(model, runtimeEnv),
         heartbeatIntervalMs,
         heartbeatMaxMissedPongs,
         handshakeTimeoutMs: realtimeHandshakeTimeoutMs,

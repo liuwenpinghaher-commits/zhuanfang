@@ -177,8 +177,8 @@ describe("createBailianStreamingTtsClient", () => {
     const msgs = parseSent(inst);
     const runTask = msgs.find((m) => m.header?.action === "run-task");
     expect(runTask, "run-task should be sent on open").toBeTruthy();
-    expect(runTask.payload.model).toBe("cosyvoice-v3-plus");
-    expect(runTask.payload.parameters.voice).toBe("longanyang");
+    expect(runTask.payload.model).toBe("qwen-audio-3.0-tts-plus");
+    expect(runTask.payload.parameters.voice).toBe("longanlingxin");
     expect(runTask.header.task_id).toBeTruthy();
 
     // Simulate server: task-started → client should send continue-task per segment + finish-task

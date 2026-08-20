@@ -384,8 +384,8 @@ describe("realtime-voice /interrupt route", () => {
         apiKeyConfigured: true,
         configured: true,
         transport: "websocket",
-        model: "qwen3.5-omni-flash-realtime",
-        fallbackModel: "qwen3-omni-flash-realtime"
+        model: "qwen-audio-3.0-realtime-plus",
+        fallbackModel: "qwen-audio-3.0-realtime-plus"
       });
       expect(session.status).toBe("ready");
       expect(session.sessionUpdate.session.voice).toBe("Cherry");

@@ -2,7 +2,7 @@
  * Bailian CosyVoice streaming TTS client over WebSocket duplex protocol.
  *
  * Protocol (verified live via scripts/spike-cascaded.mjs):
- *   1. Connect wss://dashscope.aliyuncs.com/api-ws/v1/inference, Authorization: Bearer <key>
+ *   1. Connect wss://token-plan.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference, Authorization: Bearer <key>
  *   2. Send run-task (with model/voice/format parameters)
  *   3. Wait for JSON event {header:{event:"task-started"}}
  *   4. Send continue-task per text segment
@@ -13,9 +13,9 @@
 
 import WebSocket from "ws";
 import { randomUUID } from "node:crypto";
-import { BAILIAN_PODCAST_TTS_MODEL, BAILIAN_PODCAST_TTS_VOICE } from "./bailian";
+import { BAILIAN_DEFAULT_TTS_WS_URL, BAILIAN_PODCAST_TTS_MODEL, BAILIAN_PODCAST_TTS_VOICE } from "./bailian";
 
-const BAILIAN_WS_TTS_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/inference";
+const BAILIAN_WS_TTS_URL = BAILIAN_DEFAULT_TTS_WS_URL;
 
 // ── Timeouts (P1-09) ──────────────────────────────────────────────────────────
 // A half-dead DashScope WS (socket open but never emitting task-started / audio)

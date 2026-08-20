@@ -14,7 +14,11 @@ import WebSocket from "ws";
 const SR = 16000;             // 必须 == cascadedAsrSource 的 AudioContext({sampleRate:16000})
 const INTRA_SILENCE_MS = 300; // 轮内句间静音(< server_vad silence_duration_ms 1500)
 const SEG_MAX = 80;           // 单次 continue-task 文本上限(保守分段,避免超长)
-const WS_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/inference";
+const WS_URL =
+  process.env.BAILIAN_TTS_WS_URL ||
+  "wss://token-plan.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference";
+const TTS_MODEL = process.env.BAILIAN_TTS_MODEL || "qwen-audio-3.0-tts-plus";
+const TTS_VOICE = process.env.BAILIAN_TTS_VOICE || "longanlingxin";
 
 function loadEnv(url) {
   const e = {};
@@ -53,8 +57,8 @@ function ttsSegment(text, tag) {
     let done = false;
     const finish = (buf, err) => { if (done) return; done = true; try { ws.close(); } catch {} err ? reject(err) : resolve(buf); };
     const timer = setTimeout(() => finish(null, new Error("tts timeout")), 30000);
-    const params = { text_type: "PlainText", voice: "longanyang", format: "pcm", sample_rate: SR };
-    ws.on("open", () => ws.send(JSON.stringify({ header: { action: "run-task", task_id: taskId, streaming: "duplex" }, payload: { task_group: "audio", task: "tts", function: "SpeechSynthesizer", model: "cosyvoice-v3-plus", parameters: params, input: {} } })));
+    const params = { text_type: "PlainText", voice: TTS_VOICE, format: "pcm", sample_rate: SR };
+    ws.on("open", () => ws.send(JSON.stringify({ header: { action: "run-task", task_id: taskId, streaming: "duplex" }, payload: { task_group: "audio", task: "tts", function: "SpeechSynthesizer", model: TTS_MODEL, parameters: params, input: {} } })));
     ws.on("message", (data, isBinary) => {
       if (isBinary || (Buffer.isBuffer(data) && data[0] !== 0x7b)) { chunks.push(Buffer.from(data)); return; }
       let msg = {}; try { msg = JSON.parse(data.toString()); } catch { chunks.push(Buffer.from(data)); return; }

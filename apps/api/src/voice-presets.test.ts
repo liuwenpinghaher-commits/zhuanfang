@@ -9,17 +9,17 @@ describe("normalizeCosyVoiceId", () => {
   });
 
   it("maps legacy longyuan_v3 to longanhuan", () => {
-    expect(normalizeCosyVoiceId("longyuan_v3")).toBe("longanhuan");
+    expect(normalizeCosyVoiceId("longyuan_v3")).toBe("longanlingxin");
   });
 
   it("maps calm-host / warm-interviewer aliases", () => {
-    expect(normalizeCosyVoiceId("calm-host")).toBe("longanyang");
-    expect(normalizeCosyVoiceId("warm-interviewer")).toBe("longanhuan");
+    expect(normalizeCosyVoiceId("calm-host")).toBe("longanqian");
+    expect(normalizeCosyVoiceId("warm-interviewer")).toBe("longanlingxin");
   });
 
   it("falls back on empty/unknown", () => {
-    expect(normalizeCosyVoiceId("")).toBe("longanhuan");
-    expect(normalizeCosyVoiceId("not-a-real-voice")).toBe("longanhuan");
+    expect(normalizeCosyVoiceId("")).toBe("longanlingxin");
+    expect(normalizeCosyVoiceId("not-a-real-voice")).toBe("longanlingxin");
     expect(normalizeCosyVoiceId(undefined, "longanyang")).toBe("longanyang");
   });
 });

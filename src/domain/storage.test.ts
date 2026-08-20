@@ -78,7 +78,7 @@ describe("product state storage", () => {
     expect(normalized.systemConfig.providers.map((provider) => provider.id)).toContain("bailian-responses");
     expect(normalized.systemConfig.providers.find((provider) => provider.id === "bailian-qwen-tts")).toMatchObject({
       active: true,
-      label: "百炼 CosyVoice"
+      label: "Qwen-Audio TTS"
     });
     expect(normalized.systemConfig.providers.find((provider) => provider.id === "bailian-responses")).toMatchObject({
       active: true
@@ -90,9 +90,9 @@ describe("product state storage", () => {
     expect(normalized.systemConfig.search.activeProvider).toBe("bailian");
     expect(normalized.systemConfig.voice.ttsProvider).toBe("bailian");
     expect(normalized.systemConfig.models).toMatchObject({
-      planningModel: "deepseek-v4-flash-0731",
-      interviewModel: "deepseek-v4-flash-0731",
-      synthesisModel: "deepseek-v4-flash-0731"
+      planningModel: "qwen3.6-flash",
+      interviewModel: "qwen3.7-plus",
+      synthesisModel: "qwen3.7-plus"
     });
   });
 
@@ -311,14 +311,14 @@ describe("product state storage", () => {
   });
 
   describe("P2-11: defaultVoice validation", () => {
-    const VALID_VOICES = ["longanyang", "longanhuan"];
+    const VALID_VOICES = ["longanlingxin", "longanqian", "longanyang", "longanhuan"];
 
-    it("createInitialProductState returns a valid defaultVoice (longanyang or longanhuan)", () => {
+    it("createInitialProductState returns a valid defaultVoice", () => {
       const state = createInitialProductState();
       expect(VALID_VOICES).toContain(state.systemConfig.voice.defaultVoice);
     });
 
-    it("normalizeProductState falls back illegal defaultVoice to longanyang", () => {
+    it("normalizeProductState falls back illegal defaultVoice to longanlingxin", () => {
       const state = createInitialProductState();
       const normalized = normalizeProductState({
         ...state,
@@ -331,7 +331,7 @@ describe("product state storage", () => {
         }
       });
       expect(VALID_VOICES).toContain(normalized.systemConfig.voice.defaultVoice);
-      expect(normalized.systemConfig.voice.defaultVoice).toBe("longanyang");
+      expect(normalized.systemConfig.voice.defaultVoice).toBe("longanlingxin");
     });
 
     it("normalizeProductState preserves a valid defaultVoice", () => {

@@ -23,6 +23,7 @@ export interface RealtimeAsrProxyOptions {
   primaryModel: string;
   fallbackModel: string;
   createUpstream: (url: string, options: { headers: Record<string, string> }) => WebSocket;
+  resolveUpstreamUrl?: (model: string) => string;
   heartbeatIntervalMs: number;
   heartbeatMaxMissedPongs: number;
   handshakeTimeoutMs: number;
@@ -39,6 +40,7 @@ export function connectRealtimeAsrProxy(options: RealtimeAsrProxyOptions): void 
     primaryModel,
     fallbackModel,
     createUpstream,
+    resolveUpstreamUrl,
     heartbeatIntervalMs,
     heartbeatMaxMissedPongs,
     handshakeTimeoutMs,
@@ -131,7 +133,9 @@ export function connectRealtimeAsrProxy(options: RealtimeAsrProxyOptions): void 
     if (cleaned) return;
     let socket: WebSocket;
     try {
-      const url = `wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=${encodeURIComponent(model)}`;
+      const url = resolveUpstreamUrl
+        ? resolveUpstreamUrl(model)
+        : `wss://token-plan.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=${encodeURIComponent(model)}`;
       socket = createUpstream(url, { headers: { Authorization: `Bearer ${apiKey}` } });
     } catch (error) {
       const reason = error instanceof Error ? error.message : "unknown";
