@@ -769,16 +769,15 @@ export function createBailianPodcastAudioClient(options: BailianPodcastAudioClie
       const text = (input.text ?? "").trim();
       const timeoutMs = Math.min(180_000, Math.max(60_000, 45_000 + Math.ceil(text.length / 4) * 1000));
       const qwenAudio = isQwenAudioTtsModel(model);
-      const url = qwenAudio
-        ? `${audioBaseUrl}/api/v1/services/aigc/multimodal-generation/generation`
-        : `${audioBaseUrl}/api/v1/services/audio/tts/SpeechSynthesizer`;
+      const url = `${audioBaseUrl}/api/v1/services/audio/tts/SpeechSynthesizer`;
       const body = qwenAudio
         ? {
             model,
             input: {
               text,
               voice,
-              language_type: "Chinese"
+              format,
+              sample_rate: sampleRate
             }
           }
         : {

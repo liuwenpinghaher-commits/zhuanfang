@@ -144,7 +144,7 @@ describe("bailian provider client", () => {
     });
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+      "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer",
       expect.objectContaining({
         method: "POST",
         headers: {
@@ -159,7 +159,8 @@ describe("bailian provider client", () => {
       input: {
         text: "开场：这是一段确认后的播客脚本。",
         voice: "longanlingxin",
-        language_type: "Chinese"
+        format: "mp3",
+        sample_rate: 24000
       }
     });
     expect(result).toEqual({

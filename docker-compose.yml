@@ -35,11 +35,11 @@ services:
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
       BAILIAN_API_KEY: ${BAILIAN_API_KEY:-}
       BAILIAN_BASE_URL: ${BAILIAN_BASE_URL:-https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1}
-      BAILIAN_AUDIO_BASE_URL: ${BAILIAN_AUDIO_BASE_URL:-https://dashscope.aliyuncs.com}
-      BAILIAN_MODEL: ${BAILIAN_MODEL:-deepseek-v4-flash-0731}
-      BAILIAN_GENERAL_MODEL: ${BAILIAN_GENERAL_MODEL:-deepseek-v4-flash-0731}
-      BAILIAN_SEARCH_MODEL: ${BAILIAN_SEARCH_MODEL:-deepseek-v4-flash-0731}
-      BAILIAN_CHARACTER_MODEL: ${BAILIAN_CHARACTER_MODEL:-deepseek-v4-flash-0731}
+      BAILIAN_AUDIO_BASE_URL: ${BAILIAN_AUDIO_BASE_URL:-https://token-plan.cn-beijing.maas.aliyuncs.com}
+      BAILIAN_MODEL: ${BAILIAN_MODEL:-qwen3.7-plus}
+      BAILIAN_GENERAL_MODEL: ${BAILIAN_GENERAL_MODEL:-qwen3.7-plus}
+      BAILIAN_SEARCH_MODEL: ${BAILIAN_SEARCH_MODEL:-qwen3.6-flash}
+      BAILIAN_CHARACTER_MODEL: ${BAILIAN_CHARACTER_MODEL:-qwen3.7-plus}
       BAILIAN_REALTIME_WEBRTC_ENDPOINT: ${BAILIAN_REALTIME_WEBRTC_ENDPOINT:-}
       BAILIAN_REALTIME_TRANSPORT: ${BAILIAN_REALTIME_TRANSPORT:-websocket}
       BAILIAN_REALTIME_MODEL: ${BAILIAN_REALTIME_MODEL:-}
@@ -47,8 +47,11 @@ services:
       BAILIAN_REALTIME_VAD: ${BAILIAN_REALTIME_VAD:-}
       BAILIAN_REALTIME_ENABLE_SEARCH: ${BAILIAN_REALTIME_ENABLE_SEARCH:-}
       BAILIAN_REALTIME_VOICE: ${BAILIAN_REALTIME_VOICE:-}
-      BAILIAN_TTS_MODEL: ${BAILIAN_TTS_MODEL:-cosyvoice-v3-plus}
-      BAILIAN_TTS_VOICE: ${BAILIAN_TTS_VOICE:-longanyang}
+      BAILIAN_TTS_MODEL: ${BAILIAN_TTS_MODEL:-qwen-audio-3.0-tts-plus}
+      BAILIAN_TTS_VOICE: ${BAILIAN_TTS_VOICE:-longanlingxin}
+      BAILIAN_ASR_MODEL: ${BAILIAN_ASR_MODEL:-qwen-audio-3.0-asr-flash}
+      BAILIAN_TTS_WS_URL: ${BAILIAN_TTS_WS_URL:-wss://token-plan.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference}
+      BAILIAN_REALTIME_WS_URL: ${BAILIAN_REALTIME_WS_URL:-wss://token-plan.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime}
       ANYSEARCH_API_KEY: ${ANYSEARCH_API_KEY:-}
       ANYSEARCH_BASE_URL: ${ANYSEARCH_BASE_URL:-https://api.anysearch.com}
       ANYSEARCH_ALLOW_ANONYMOUS: ${ANYSEARCH_ALLOW_ANONYMOUS:-false}
