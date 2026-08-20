@@ -2,7 +2,7 @@ import { recordVoiceLatency } from "../observability/runtime-metrics";
 import type { FastifyInstance } from "fastify";
 import type { IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
-import { isAuthGuardActive, isAuthorized, readCookieToken } from "../auth";
+import { isAuthGuardActive, isAuthorized } from "../auth";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   attachWebSocketHeartbeat,
@@ -586,11 +586,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     if (!isAuthorized(runtimeEnv, {
       authHeader: request.headers.authorization,
       tokenQuery: url.searchParams.get("token") ?? undefined,
-      cookieToken: readCookieToken(
-        typeof request.headers.cookie === "string"
-          ? request.headers.cookie
-          : undefined
-      )
+      cookieHeader: typeof request.headers.cookie === "string" ? request.headers.cookie : undefined
     })) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();

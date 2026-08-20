@@ -23,7 +23,10 @@ set -a
 set +a
 DASHSCOPE_API_KEY=$(docker exec app-zhuanfang-1 printenv DASHSCOPE_API_KEY 2>/dev/null || true)
 BAILIAN_API_KEY=$(docker exec app-zhuanfang-1 printenv BAILIAN_API_KEY 2>/dev/null || true)
-echo "key_lens dashscope=${#DASHSCOPE_API_KEY} bailian=${#BAILIAN_API_KEY}"
+BAILIAN_TTS_MODEL=$(docker exec app-zhuanfang-1 printenv BAILIAN_TTS_MODEL 2>/dev/null || true)
+BAILIAN_TTS_VOICE=$(docker exec app-zhuanfang-1 printenv BAILIAN_TTS_VOICE 2>/dev/null || true)
+BAILIAN_TTS_WS_URL=$(docker exec app-zhuanfang-1 printenv BAILIAN_TTS_WS_URL 2>/dev/null || true)
+echo "key_lens dashscope=${#DASHSCOPE_API_KEY} bailian=${#BAILIAN_API_KEY} tts=${BAILIAN_TTS_MODEL:-qwen-audio-3.0-tts-plus}"
 
 export EVAL_API_BASE="${EVAL_API_BASE:-https://zhuanfang.qing.blue}"
 export EVAL_USERNAME="${EVAL_USERNAME:-eval_sim}"
@@ -35,12 +38,16 @@ export EVAL_MODALITY=voice
 export EVAL_SKIP_TEXT=1
 export EVAL_WRAPPING_AUTH="$AUTH"
 export EVAL_WRAPPING_SCOPED="$SCOPED"
-export EVAL_TTS_LOCAL=1
+# Real qwen-audio TTS on the same token-plan key; tts-bridge falls back to espeak if WS fails.
+unset EVAL_TTS_LOCAL || true
 # Prefer Playwright's Chromium (matches tests/e2e fakeMic). Chrome channel is fallback.
 unset EVAL_CHROME_CHANNEL || true
 export EVAL_VOICE_IDS="${EVAL_VOICE_IDS:-}"
 export DASHSCOPE_API_KEY="${DASHSCOPE_API_KEY:-}"
 export BAILIAN_API_KEY="${BAILIAN_API_KEY:-}"
+export BAILIAN_TTS_MODEL="${BAILIAN_TTS_MODEL:-qwen-audio-3.0-tts-plus}"
+export BAILIAN_TTS_VOICE="${BAILIAN_TTS_VOICE:-longanlingxin}"
+export BAILIAN_TTS_WS_URL="${BAILIAN_TTS_WS_URL:-wss://token-plan.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference}"
 export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 unset PRODUCT_API_TOKEN || true
 
