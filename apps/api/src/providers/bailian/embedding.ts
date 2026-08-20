@@ -2,7 +2,9 @@
 export {
   createBailianEmbeddingClient,
   createBailianEmbeddingClientFromEnv,
-  BAILIAN_EMBEDDING_MODEL
+  resolveBailianEmbeddingBaseUrl,
+  BAILIAN_EMBEDDING_MODEL,
+  BAILIAN_DEFAULT_EMBEDDING_BASE_URL
 } from "./_impl";
 export type {
   BailianEmbeddingClient

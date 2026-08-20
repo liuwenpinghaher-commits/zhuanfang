@@ -12,6 +12,7 @@ export default defineConfig({
       "src/realtime/**/*.test.ts",
       "src/api/**/*.test.ts",
       "apps/api/src/routes/**/*.test.ts",
+      "apps/api/src/providers/bailian-embedding.test.ts",
       "scripts/eval/lib/**/*.test.ts"
     ],
     pool: "forks",

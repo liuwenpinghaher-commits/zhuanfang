@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { createBailianEmbeddingClient } from "./bailian";
+import {
+  BAILIAN_DEFAULT_EMBEDDING_BASE_URL,
+  createBailianEmbeddingClient,
+  resolveBailianEmbeddingBaseUrl
+} from "./bailian";
 
 // 生产客户端做维度校验:非 1024 维(=HNSW DIMENSION)的坏向量绝不入库,直接抛错。
 // 测试 mock 因此必须返回真实维度的向量。
@@ -66,5 +70,28 @@ describe("createBailianEmbeddingClient", () => {
   it("returns null when apiKey is omitted", () => {
     const client = createBailianEmbeddingClient({} as { apiKey: string });
     expect(client).toBeNull();
+  });
+
+  it("does not POST embeddings to the chat token-plan URL", async () => {
+    expect(
+      resolveBailianEmbeddingBaseUrl({
+        BAILIAN_BASE_URL: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+      })
+    ).toBe(BAILIAN_DEFAULT_EMBEDDING_BASE_URL);
+    expect(
+      resolveBailianEmbeddingBaseUrl({
+        BAILIAN_BASE_URL: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        BAILIAN_EMBEDDING_BASE_URL: "https://example.test/emb/v1"
+      })
+    ).toBe("https://example.test/emb/v1");
+
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ data: [{ embedding: vec1024([1]) }] }), { status: 200 })
+    );
+    const client = createBailianEmbeddingClient({ apiKey: "k", fetchImpl });
+    await client!.embed(["授权"]);
+    const url = String(fetchImpl.mock.calls[0][0]);
+    expect(url).toBe("https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings");
+    expect(url).not.toMatch(/token-plan/);
   });
 });

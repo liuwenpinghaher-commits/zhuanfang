@@ -39,6 +39,24 @@ export const BAILIAN_TRANSCRIPTION_MODEL = "sensevoice-v1";
 // General-purpose text model for server-side synthesis (diary, review, corpus, intel).
 export const BAILIAN_GENERAL_MODEL = "deepseek-v4-flash-0731";
 export const BAILIAN_EMBEDDING_MODEL = "text-embedding-v3";
+/**
+ * Embeddings are a DashScope compatible-mode API. The chat default (token-plan / MaaS)
+ * does not serve POST /embeddings — it returns 400 and blocks session create.
+ */
+export const BAILIAN_DEFAULT_EMBEDDING_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+
+/** Chat token-plan / MaaS URLs must not be used for /embeddings. */
+export function resolveBailianEmbeddingBaseUrl(
+  env: Record<string, string | undefined> = process.env
+): string {
+  const explicit = (env.BAILIAN_EMBEDDING_BASE_URL ?? "").trim();
+  if (explicit) return explicit.replace(/\/$/, "");
+  const chat = (env.BAILIAN_BASE_URL ?? "").trim();
+  if (chat && !/token-plan|maas\.aliyuncs/i.test(chat)) {
+    return chat.replace(/\/$/, "");
+  }
+  return BAILIAN_DEFAULT_EMBEDDING_BASE_URL;
+}
 
 // ── Per-request timeouts (P1-09) ──────────────────────────────────────────────
 // Hard wall-clock caps so a half-dead DashScope connection (TCP connected but
@@ -1548,7 +1566,7 @@ export function createBailianEmbeddingClient(
     return null;
   }
 
-  const baseUrl = (options.baseUrl ?? BAILIAN_DEFAULT_BASE_URL).replace(/\/$/, "");
+  const baseUrl = (options.baseUrl ?? BAILIAN_DEFAULT_EMBEDDING_BASE_URL).replace(/\/$/, "");
   const model = options.model ?? BAILIAN_EMBEDDING_MODEL;
   const fetchImpl = options.fetchImpl ?? fetch;
 
@@ -1598,7 +1616,7 @@ export function createBailianEmbeddingClientFromEnv(
 
   return createBailianEmbeddingClient({
     apiKey,
-    baseUrl: env.BAILIAN_BASE_URL,
+    baseUrl: resolveBailianEmbeddingBaseUrl(env),
     model: env.BAILIAN_EMBEDDING_MODEL ?? BAILIAN_EMBEDDING_MODEL
   });
 }
