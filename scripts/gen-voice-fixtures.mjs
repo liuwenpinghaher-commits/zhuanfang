@@ -21,8 +21,15 @@ function loadEnv(url) {
   try { for (const l of readFileSync(url, "utf8").split(/\r?\n/)) { const m = l.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/); if (m && !l.trim().startsWith("#")) e[m[1]] = m[2]; } } catch {}
   return e;
 }
-const KEY = loadEnv(new URL("../.env.local", import.meta.url)).DASHSCOPE_API_KEY;
-if (!KEY) { console.error("缺 DASHSCOPE_API_KEY(.env.local)"); process.exit(1); }
+const fileEnv = loadEnv(new URL("../.env.local", import.meta.url));
+const KEY = (
+  process.env.DASHSCOPE_API_KEY ||
+  process.env.BAILIAN_API_KEY ||
+  fileEnv.DASHSCOPE_API_KEY ||
+  fileEnv.BAILIAN_API_KEY ||
+  ""
+).trim();
+if (!KEY) { console.error("缺 DASHSCOPE_API_KEY/BAILIAN_API_KEY"); process.exit(1); }
 
 const silence = (ms) => Buffer.alloc(Math.round((ms / 1000) * SR) * 2); // s16le mono 全 0
 

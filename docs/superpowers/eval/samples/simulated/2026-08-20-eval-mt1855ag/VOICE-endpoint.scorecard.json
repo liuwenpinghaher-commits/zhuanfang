@@ -1,0 +1,21 @@
+{
+  "source": "simulated",
+  "scenarioId": "VOICE-endpoint",
+  "user_value_verdict": "insufficient_data",
+  "gateHumanValue": "insufficient_data",
+  "engineering_pr_claims_go": false,
+  "gate_status": "insufficient_data",
+  "hard": {
+    "userTurns": 0,
+    "turns": 0
+  },
+  "voice": {
+    "ok": false,
+    "userTurns": 0,
+    "error": "locator.click: Timeout 20000ms exceeded.\nCall log:\n  - waiting for getByRole('button', { name: /一键开始/ })\n"
+  },
+  "gates": {
+    "humanValue": "insufficient_data",
+    "engineeringGo": false
+  }
+}

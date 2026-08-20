@@ -30,6 +30,17 @@ docker exec -i app-zhuanfang-1 node --input-type=module -e "
 "
 ```
 
+## 语音评测（部署机）
+
+部署机已装 Node 22、Google Chrome、Playwright Chromium、espeak-ng/sox。
+
+```bash
+ssh ubuntu@82.157.130.140
+bash /opt/zhuanfang/app/scripts/eval/run-voice-on-demo.sh
+```
+
+假麦克风能进「聆听中」。CosyVoice / DashScope 语音若对该密钥 401，本机朗读仍能灌音频，但识别落字需要一把对 `dashscope.aliyuncs.com` 音频接口有效的密钥。
+
 ## 死命令
 
 - 进程里出现 `PRODUCT_API_TOKEN` → 立刻退出 2，零写。

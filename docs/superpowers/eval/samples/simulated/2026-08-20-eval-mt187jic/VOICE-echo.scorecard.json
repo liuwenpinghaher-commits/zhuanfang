@@ -1,0 +1,21 @@
+{
+  "source": "simulated",
+  "scenarioId": "VOICE-echo",
+  "user_value_verdict": "insufficient_data",
+  "gateHumanValue": "insufficient_data",
+  "engineering_pr_claims_go": false,
+  "gate_status": "insufficient_data",
+  "hard": {
+    "userTurns": 0,
+    "turns": 0
+  },
+  "voice": {
+    "ok": false,
+    "userTurns": 0,
+    "error": "locator.click: Timeout 25000ms exceeded.\nCall log:\n  - waiting for getByLabel('开始录音')\n"
+  },
+  "gates": {
+    "humanValue": "insufficient_data",
+    "engineeringGo": false
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "source": "simulated",
+  "scenarioId": "VOICE-barge",
+  "user_value_verdict": "insufficient_data",
+  "gateHumanValue": "insufficient_data",
+  "engineering_pr_claims_go": false,
+  "gate_status": "insufficient_data",
+  "hard": {
+    "userTurns": 0,
+    "turns": 0
+  },
+  "voice": {
+    "ok": false,
+    "scenarioId": "VOICE-barge",
+    "userTurns": 0,
+    "echoSpokeEarly": false,
+    "bargeAttempted": false,
+    "error": "missing_pcm"
+  },
+  "gates": {
+    "humanValue": "insufficient_data",
+    "engineeringGo": false
+  }
+}

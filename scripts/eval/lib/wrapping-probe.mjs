@@ -140,10 +140,17 @@ export async function runWrappingProbe({ env = process.env, client, log = consol
   let sshFlagsOk = !isPublic;
 
   if (isPublic) {
+    const envAuth = env.EVAL_WRAPPING_AUTH;
+    const envScoped = env.EVAL_WRAPPING_SCOPED;
+    if (envAuth != null && envScoped != null && String(envAuth) !== "" && String(envScoped) !== "") {
+      sshFlagsOk = parseOnFlag(envAuth) && parseOnFlag(envScoped);
+      log(JSON.stringify({ event: "eval_wrapping_flags", auth: parseOnFlag(envAuth), scoped: parseOnFlag(envScoped), source: "env" }));
+    } else {
     const ssh = await sshPrintenv(env);
     const parsed = parseSshFlagOutput(ssh.out);
     log(JSON.stringify({ event: "eval_wrapping_flags", auth: parsed.auth, scoped: parsed.scoped, source: "ssh", exit: ssh.code }));
     sshFlagsOk = ssh.code === 0 && parsed.bothOn;
+    }
     const decision = nextProbeAction("start", {
       tokenPresent: false,
       isPublicDemo: true,

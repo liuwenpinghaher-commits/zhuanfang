@@ -311,7 +311,8 @@ async function main() {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  const scenarioIds = ids.length ? ids : pack.ids;
+  const skipText = String(env.EVAL_SKIP_TEXT ?? "") === "1";
+  const scenarioIds = skipText ? [] : ids.length ? ids : pack.ids;
   const coverageAll = [];
   const ran = [];
 
@@ -371,9 +372,21 @@ async function main() {
   if (modality === "voice" || modality === "both") {
     const voice = await import("./lib/voice-adapter.mjs");
     const tts = await import("./lib/tts-bridge.mjs");
-    for (const id of pack.voiceIds ?? []) {
+    const origin = String(apiBase).replace(/\/$/, "");
+    const voiceIds = String(env.EVAL_VOICE_IDS ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    for (const id of voiceIds.length ? voiceIds : pack.voiceIds ?? []) {
       const scenario = loadScenario(id);
       const text = scenario.guest?.behaviors?.[0]?.text ?? "评测语音一句。";
+      try {
+        assertPurgeAllowed({ env, meUsername: await client.me(), wrappingProven: isolation.proven });
+        await client.purgeAll();
+        await client.createSession({ mode: "daily", topicHint: scenario.id });
+      } catch (err) {
+        log(JSON.stringify({ event: "eval_voice_prepare_failed", id, error: String(err.message ?? err).slice(0, 200) }));
+      }
       let utterances = [];
       try {
         const fixture = await tts.synthesizeCanonical(text, env);
@@ -381,17 +394,48 @@ async function main() {
       } catch (err) {
         log(JSON.stringify({ event: "eval_tts_skip", id, error: err.message }));
       }
+      let voiceResult = { ok: false, userTurns: 0, error: "not_run" };
       try {
-        await voice.deliverVoiceScenario({
+        voiceResult = await voice.deliverVoiceScenario({
           scenario,
           cookie: client.cookie,
-          origin: apiBase.replace(/\/$/, ""),
+          origin,
           utterances,
+          username: env.EVAL_USERNAME,
+          password: env.EVAL_PASSWORD,
+          pollUserTurns: async () => {
+            const st = await client.getState();
+            const sessions = st.sessions ?? [];
+            return sessions.reduce(
+              (n, s) => n + (s.turns ?? []).filter((t) => t.role === "user").length,
+              0
+            );
+          },
           log
         });
       } catch (err) {
-        log(JSON.stringify({ event: "eval_voice_skip", id, error: err.message }));
+        voiceResult = { ok: false, userTurns: 0, error: String(err.message ?? err).slice(0, 400) };
+        log(JSON.stringify({ event: "eval_voice_skip", id, error: voiceResult.error }));
       }
+      const scorecard = {
+        source: "simulated",
+        scenarioId: id,
+        user_value_verdict: "insufficient_data",
+        gateHumanValue: "insufficient_data",
+        engineering_pr_claims_go: false,
+        gate_status: "insufficient_data",
+        hard: { userTurns: voiceResult.userTurns ?? 0, turns: voiceResult.userTurns ?? 0 },
+        voice: voiceResult,
+        gates: { humanValue: "insufficient_data", engineeringGo: false }
+      };
+      assertSimulatedGate(scorecard);
+      const transcript = [
+        { role: "user", content: text },
+        { role: "system", content: JSON.stringify(voiceResult) }
+      ];
+      writeScenarioArtifacts({ rootDir: outDir, scenarioId: id, transcript, scorecard });
+      ran.push(id);
+      log(JSON.stringify({ event: "eval_scenario_done", id, userTurns: voiceResult.userTurns ?? 0, voiceOk: voiceResult.ok }));
     }
   }
 

@@ -24,5 +24,6 @@ describe("text driver import graph", () => {
     expect(src).not.toMatch(/voice-cascade\.spec/);
     expect(src).toMatch(/await import\("playwright"\)/);
     expect(src).toMatch(/zf_session/);
+    expect(src).toMatch(/fake-mic/);
   });
 });
