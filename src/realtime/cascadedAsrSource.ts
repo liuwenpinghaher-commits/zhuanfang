@@ -301,6 +301,8 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
     frameMs = Math.round((4096 / audioCtx.sampleRate) * 1000);
 
     processor.onaudioprocess = (e) => {
+      const debug = window as unknown as { __asrTicks?: number };
+      debug.__asrTicks = (debug.__asrTicks ?? 0) + 1;
       if (closed || lifecycle !== "ready" || !ws || ws.readyState !== WebSocket.OPEN) return;
 
       const inputData = e.inputBuffer.getChannelData(0);
@@ -334,7 +336,10 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
     };
 
     sourceNode.connect(processor);
-    processor.connect(audioCtx.destination);
+    const mute = audioCtx.createGain();
+    mute.gain.value = 0;
+    processor.connect(mute);
+    mute.connect(audioCtx.destination);
   }
 
   type SocketFailure = Error & { code?: number; reason?: string };

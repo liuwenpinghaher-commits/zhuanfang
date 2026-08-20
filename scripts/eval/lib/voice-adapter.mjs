@@ -134,6 +134,9 @@ export async function deliverVoiceScenario({
     const beforeSpeak = await userTurnCount(pollUserTurns);
     const playedMs = await page.evaluate((b64) => window.__fakeMic.play(b64), pcm);
     log(JSON.stringify({ event: "eval_voice_spoke", playedMs, beforeSpeak }));
+    await page.waitForTimeout(400);
+    const ticks = await page.evaluate(() => Number(window.__asrTicks ?? 0));
+    log(JSON.stringify({ event: "eval_asr_ticks", ticks }));
     await page.waitForTimeout(2200);
     const deadline = Date.now() + 50000;
     let dumped = false;
