@@ -134,9 +134,13 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
   let stream: MediaStream | null = null;
   let audioCtx: AudioContext | null = null;
   let processor: ScriptProcessorNode | null = null;
+  let workletNode: AudioWorkletNode | null = null;
+  let muteNode: GainNode | null = null;
   let sourceNode: MediaStreamAudioSourceNode | null = null;
   let analyser: AnalyserNode | null = null;
   let freqData: Uint8Array<ArrayBuffer> | null = null;
+  let pcmTap: "worklet" | "silero" | "script" | "none" = "none";
+  let pendingPcm: string[] = [];
   let closed = false;
   let lifecycle: AsrConnectionState | "idle" = "idle";
   let socketGeneration = 0;
@@ -216,7 +220,118 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
     return expressionDetector.evaluate(exprInput);
   }
 
+  type AsrDebugWindow = Window & {
+    __asrTicks?: number;
+    __asrPeak?: number;
+    __asrCapture?: string;
+    __asrFeedPcm?: (data: ArrayLike<number>) => void;
+    __zhuanfangAudioUnlock?: AudioContext;
+  };
+
+  function debugWindow(): AsrDebugWindow | null {
+    return typeof window === "undefined" ? null : window as AsrDebugWindow;
+  }
+
+  function incrementAsrTicks() {
+    const w = debugWindow();
+    if (!w) return;
+    w.__asrTicks = (w.__asrTicks ?? 0) + 1;
+  }
+
+  function resampleTo16k(input: Float32Array, fromRate: number): Float32Array {
+    if (!fromRate || Math.abs(fromRate - 16000) < 1) return input;
+    const ratio = fromRate / 16000;
+    const outLen = Math.max(1, Math.floor(input.length / ratio));
+    const out = new Float32Array(outLen);
+    for (let i = 0; i < outLen; i++) {
+      out[i] = input[Math.min(input.length - 1, Math.floor(i * ratio))] ?? 0;
+    }
+    return out;
+  }
+
+  function sendPcmFrame(inputData: Float32Array, sourceRate?: number) {
+    incrementAsrTicks();
+    const ctxRate = sourceRate ?? audioCtx?.sampleRate ?? 16000;
+    const samples = resampleTo16k(inputData, ctxRate);
+    if (samples.length === 0) return;
+
+    let level = 0;
+    for (let i = 0; i < samples.length; i++) {
+      const v = Math.abs(samples[i] ?? 0);
+      if (v > level) level = v;
+    }
+    latestEnergy = Math.max(level, sileroSpeechProb);
+    const wPeak = debugWindow();
+    if (wPeak) wPeak.__asrPeak = Math.max(wPeak.__asrPeak ?? 0, level);
+    if (analyser && freqData && audioCtx) {
+      analyser.getByteFrequencyData(freqData);
+      featureTracker.onCentroid(spectralCentroid(freqData, audioCtx.sampleRate));
+    }
+    const ENERGY_THRESHOLD = 0.08;
+    if (level > ENERGY_THRESHOLD || sileroSpeechProb > 0.35) {
+      lowEnergyFrames = 0;
+      lastHighEnergyAtMs = Date.now();
+    } else {
+      lowEnergyFrames++;
+    }
+    latestExpressionState = evaluateExpressionState(level);
+
+    const int16 = new Int16Array(samples.length);
+    for (let i = 0; i < samples.length; i++) {
+      int16[i] = Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32767)));
+    }
+    const bytes = new Uint8Array(int16.buffer);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    const audio = btoa(binary);
+    if (!ws || ws.readyState !== WebSocket.OPEN || lifecycle !== "ready") {
+      pendingPcm.push(audio);
+      if (pendingPcm.length > 80) pendingPcm.shift();
+      return;
+    }
+    ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio }));
+  }
+
+  function flushPendingPcm() {
+    if (!ws || ws.readyState !== WebSocket.OPEN || lifecycle !== "ready") return;
+    const queued = pendingPcm;
+    pendingPcm = [];
+    for (const audio of queued) {
+      ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio }));
+    }
+  }
+
+  function feedPcmFromEval(data: ArrayLike<number>) {
+    const arr = data instanceof Float32Array ? data : Float32Array.from(data);
+    sendPcmFrame(arr, 16000);
+  }
+
+  function resolvePcmTapWorkletUrl(): string {
+    const base =
+      typeof import.meta !== "undefined" && import.meta.env?.BASE_URL
+        ? String(import.meta.env.BASE_URL)
+        : "/";
+    const root = base.endsWith("/") ? base : `${base}/`;
+    return `${root}pcm-tap.worklet.js`;
+  }
+
+  function acquireCaptureContext(): AudioContext {
+    const w = debugWindow();
+    const existing = w?.__zhuanfangAudioUnlock;
+    if (existing && existing.state !== "closed") {
+      return existing;
+    }
+    return new AudioContext({ sampleRate: 16000 });
+  }
+
   function stopMic() {
+    const w = debugWindow();
+    if (w) {
+      w.__asrFeedPcm = undefined;
+      w.__asrCapture = "stopped";
+    }
     if (sileroVadCtrl) {
       try { sileroVadCtrl.destroy(); } catch { /* ok */ }
       sileroVadCtrl = null;
@@ -225,6 +340,15 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
     if (processor) {
       try { processor.disconnect(); } catch { /* ok */ }
       processor = null;
+    }
+    if (workletNode) {
+      try { workletNode.port.onmessage = null; } catch { /* ok */ }
+      try { workletNode.disconnect(); } catch { /* ok */ }
+      workletNode = null;
+    }
+    if (muteNode) {
+      try { muteNode.disconnect(); } catch { /* ok */ }
+      muteNode = null;
     }
     if (sourceNode) {
       try { sourceNode.disconnect(); } catch { /* ok */ }
@@ -235,6 +359,9 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
       analyser = null;
     }
     if (audioCtx && audioCtx.state !== "closed") {
+      if (w && w.__zhuanfangAudioUnlock === audioCtx) {
+        w.__zhuanfangAudioUnlock = undefined;
+      }
       audioCtx.close().catch(() => { /* ok */ });
       audioCtx = null;
     }
@@ -242,6 +369,8 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
       for (const track of stream.getTracks()) track.stop();
       stream = null;
     }
+    pcmTap = "none";
+    pendingPcm = [];
   }
 
   async function startMic() {
@@ -257,6 +386,14 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
       })
     );
 
+    const hookWin = debugWindow();
+    if (hookWin) {
+      hookWin.__asrTicks = hookWin.__asrTicks ?? 0;
+      hookWin.__asrPeak = hookWin.__asrPeak ?? 0;
+      hookWin.__asrCapture = "starting";
+      hookWin.__asrFeedPcm = feedPcmFromEval;
+    }
+
     stream = await getStream();
     // Tee the live mic stream to the caller (e.g. whole-session recorder) before
     // building the ASR graph. Defensive: a throwing/failing recorder must never
@@ -271,23 +408,8 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
         }));
       }
     }
-    if (enableSileroVad) {
-      try {
-        sileroVadCtrl = await createSileroVadController(stream, {
-          onFrame: (probs) => {
-            sileroSpeechProb = probs.isSpeech;
-          }
-        });
-        if (sileroVadCtrl.ready) await sileroVadCtrl.start();
-      } catch (err) {
-        console.warn(JSON.stringify({
-          event: "asr_silero_start_failed",
-          error: err instanceof Error ? err.message : String(err)
-        }));
-        sileroVadCtrl = null;
-      }
-    }
-    audioCtx = new AudioContext({ sampleRate: 16000 });
+
+    audioCtx = acquireCaptureContext();
     if (audioCtx.state === "suspended") {
       await audioCtx.resume().catch(() => undefined);
     }
@@ -297,49 +419,90 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
     freqData = new Uint8Array(analyser.frequencyBinCount) as Uint8Array<ArrayBuffer>;
     sourceNode.connect(analyser);
 
-    processor = audioCtx.createScriptProcessor(4096, 1, 1);
-    frameMs = Math.round((4096 / audioCtx.sampleRate) * 1000);
+    async function connectMuted(node: AudioNode) {
+      muteNode = audioCtx!.createGain();
+      muteNode.gain.value = 0;
+      node.connect(muteNode);
+      muteNode.connect(audioCtx!.destination);
+    }
 
-    processor.onaudioprocess = (e) => {
-      const debug = window as unknown as { __asrTicks?: number };
-      debug.__asrTicks = (debug.__asrTicks ?? 0) + 1;
-      if (closed || lifecycle !== "ready" || !ws || ws.readyState !== WebSocket.OPEN) return;
+    if (audioCtx.audioWorklet) {
+      try {
+        await audioCtx.audioWorklet.addModule(resolvePcmTapWorkletUrl());
+        workletNode = new AudioWorkletNode(audioCtx, "pcm-tap", {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [1],
+        });
+        workletNode.port.onmessage = (event) => {
+          const data = event.data;
+          if (data instanceof Float32Array) sendPcmFrame(data);
+        };
+        sourceNode.connect(workletNode);
+        await connectMuted(workletNode);
+        pcmTap = "worklet";
+        frameMs = Math.round((128 / audioCtx.sampleRate) * 1000);
+      } catch (err) {
+        console.warn(JSON.stringify({
+          event: "asr_pcm_worklet_failed",
+          error: err instanceof Error ? err.message : String(err),
+        }));
+        workletNode = null;
+      }
+    }
 
-      const inputData = e.inputBuffer.getChannelData(0);
-      // Encode PCM16 as base64 and send to proxy
-      const int16 = new Int16Array(inputData.length);
-      for (let i = 0; i < inputData.length; i++) {
-        int16[i] = Math.max(-32768, Math.min(32767, Math.round(inputData[i] * 32767)));
-      }
-      const bytes = new Uint8Array(int16.buffer);
-      let binary = "";
-      for (let i = 0; i < bytes.length; i++) {
-        binary += String.fromCharCode(bytes[i]);
-      }
-      ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: btoa(binary) }));
+    if (enableSileroVad) {
+      void createSileroVadController(stream, {
+        onFrame: (probs, frame) => {
+          sileroSpeechProb = probs.isSpeech;
+          if (pcmTap === "silero" && frame && frame.length) {
+            frameMs = Math.round((frame.length / 16000) * 1000);
+            sendPcmFrame(frame, 16000);
+          }
+        }
+      }).then(async (ctrl) => {
+        if (closed) {
+          try { ctrl.destroy(); } catch { /* ok */ }
+          return;
+        }
+        sileroVadCtrl = ctrl;
+        if (ctrl.ready) {
+          await ctrl.start();
+          if (pcmTap === "none") pcmTap = "silero";
+        }
+      }).catch((err) => {
+        console.warn(JSON.stringify({
+          event: "asr_silero_start_failed",
+          error: err instanceof Error ? err.message : String(err)
+        }));
+        sileroVadCtrl = null;
+      });
+    }
 
-      // Update expression state + recent energy for pVAD-lite endpointing
-      const level = Math.max(...Array.from(inputData).map(Math.abs));
-      latestEnergy = Math.max(level, sileroSpeechProb);
-      if (analyser && freqData) {
-        analyser.getByteFrequencyData(freqData);
-        featureTracker.onCentroid(spectralCentroid(freqData, audioCtx!.sampleRate));
-      }
-      const ENERGY_THRESHOLD = 0.08;
-      if (level > ENERGY_THRESHOLD || sileroSpeechProb > 0.35) {
-        lowEnergyFrames = 0;
-        lastHighEnergyAtMs = Date.now();
-      } else {
-        lowEnergyFrames++;
-      }
-      latestExpressionState = evaluateExpressionState(level);
-    };
+    if (pcmTap !== "worklet") {
+      processor = audioCtx.createScriptProcessor(4096, 1, 1);
+      frameMs = Math.round((4096 / audioCtx.sampleRate) * 1000);
+      processor.onaudioprocess = (e) => {
+        sendPcmFrame(e.inputBuffer.getChannelData(0));
+      };
+      sourceNode.connect(processor);
+      if (!muteNode) await connectMuted(processor);
+      else processor.connect(muteNode);
+      pcmTap = "script";
+    }
 
-    sourceNode.connect(processor);
-    const mute = audioCtx.createGain();
-    mute.gain.value = 0;
-    processor.connect(mute);
-    mute.connect(audioCtx.destination);
+    const w = debugWindow();
+    if (w) {
+      w.__asrTicks = w.__asrTicks ?? 0;
+      w.__asrCapture = pcmTap;
+      w.__asrFeedPcm = feedPcmFromEval;
+    }
+    console.info(JSON.stringify({
+      event: "asr_pcm_tap_ready",
+      pcmTap,
+      contextState: audioCtx.state,
+      sampleRate: audioCtx.sampleRate,
+    }));
   }
 
   type SocketFailure = Error & { code?: number; reason?: string };
@@ -463,6 +626,7 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
             settled = true;
             latestProviderPartial = "";
             emitConnectionState("ready", 0);
+            flushPendingPcm();
             resolve();
             break;
           case "input_audio_buffer.speech_started":

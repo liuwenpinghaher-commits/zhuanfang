@@ -253,6 +253,7 @@ export function connectCascadedPipeline(
 
   let state: CascadePipelineState = "idle";
   let closed = false;
+  let asrStarted = false;
   // Turn transcript = committed (sum of finalized segments) + partial (latest
   // cumulative delta of the in-progress segment). omni deltas are CUMULATIVE, so
   // partial is REPLACED on each delta; appending would duplicate every word
@@ -401,7 +402,10 @@ export function connectCascadedPipeline(
     const interruption = error instanceof Error ? error : new Error(String(error));
     callbacks.onTtsPlaybackInterrupted?.(interruption);
     releaseMicAfterGuard();
-    setState("listening");
+    // Opening TTS can fail before the mic/ASR graph exists. Flipping to
+    // "listening" here races the guest into a dead capture. After ASR start,
+    // the same interrupt should return the UI to listening.
+    if (asrStarted && !closed) setState("listening");
   }
 
   // ── Barge-in ──────────────────────────────────────────────────────────────
@@ -833,16 +837,25 @@ export function connectCascadedPipeline(
   // ── Public API ─────────────────────────────────────────────────────────────
   return {
     async startListening(openingText?: string) {
-      if (openingText && openingText.trim()) {
+      const opening = openingText?.trim() || "";
+      if (opening) suppressMic();
+      await asr.start();
+      asrStarted = true;
+      if (closed) return; // closed while the mic was coming up — don't speak
+      if (opening) {
         setState("speaking");
-        suppressMic();
         const startedAtMs = Date.now();
-        try { await tts.speak([openingText.trim()]); } catch (error) { reportTtsPlaybackInterrupted(error); }
-        turnAssembler.noteTtsPlayback({ text: openingText.trim(), startedAtMs, endedAtMs: Date.now() });
+        try {
+          await Promise.race([
+            tts.speak([opening]),
+            new Promise<never>((_, reject) => {
+              setTimeout(() => reject(new Error("opening tts timeout")), 12_000);
+            }),
+          ]);
+        } catch (error) { reportTtsPlaybackInterrupted(error); }
+        turnAssembler.noteTtsPlayback({ text: opening, startedAtMs, endedAtMs: Date.now() });
         releaseMicAfterGuard();
       }
-      if (closed) return; // closed mid-opening — don't open the mic
-      await asr.start();
       if (!closed) setState("listening");
     },
 

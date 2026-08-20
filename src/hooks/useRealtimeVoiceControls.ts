@@ -231,7 +231,7 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
       try {
         const AC = window.AudioContext;
         if (AC) {
-          const unlock = new AC();
+          const unlock = new AC({ sampleRate: 16000 });
           await unlock.resume();
           (window as unknown as { __zhuanfangAudioUnlock?: AudioContext }).__zhuanfangAudioUnlock = unlock;
         }

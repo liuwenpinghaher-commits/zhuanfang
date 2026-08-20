@@ -65,6 +65,11 @@ function buildHarness() {
       disconnect: vi.fn(),
       connect: vi.fn(),
     })),
+    createGain: vi.fn(() => ({
+      gain: { value: 0 },
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    })),
     close: vi.fn().mockResolvedValue(undefined),
   };
 
@@ -558,6 +563,11 @@ function buildReconnectHarness(wsFactory: (attempt: number) => "error" | "close"
       disconnect: vi.fn(),
       connect: vi.fn(),
     })),
+    createGain: vi.fn(() => ({
+      gain: { value: 0 },
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    })),
     close: vi.fn().mockResolvedValue(undefined),
   };
 
@@ -874,6 +884,11 @@ function buildMidSessionRecoveryHarness() {
     createMediaStreamSource: vi.fn(() => sourceNode),
     createScriptProcessor: vi.fn(() => processor),
     createAnalyser: vi.fn(() => analyser),
+    createGain: vi.fn(() => ({
+      gain: { value: 0 },
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    })),
     close: vi.fn().mockResolvedValue(undefined),
   };
   (globalThis as Record<string, unknown>).AudioContext = class MockAudioContext {
@@ -1107,6 +1122,24 @@ describe("createBrowserAsrSource — 会中 ASR 恢复", () => {
     harness.sockets[1].close(1006, "network");
     expect(handlers.onTranscriptDelta).toHaveBeenCalledWith("新的最终句", true);
     expect(onRecoveryTranscript).toHaveBeenCalledTimes(1);
+  });
+
+  it("ready 后麦克风帧会发出 input_audio_buffer.append", async () => {
+    const { source } = sourceWith();
+    await connectRecoverySocket(source, harness.sockets, 0);
+    const handler = harness.processor.onaudioprocess as
+      | ((event: { inputBuffer: { getChannelData: () => Float32Array } }) => void)
+      | null;
+    expect(handler).toEqual(expect.any(Function));
+    const inputData = new Float32Array(8);
+    inputData[0] = 0.4;
+    handler!({ inputBuffer: { getChannelData: () => inputData } });
+    const appends = harness.sockets[0].sent
+      .map((value) => JSON.parse(value) as { type: string; audio?: string })
+      .filter((message) => message.type === "input_audio_buffer.append");
+    expect(appends).toHaveLength(1);
+    expect(String(appends[0].audio ?? "")).not.toHaveLength(0);
+    source.stop();
   });
 
   it("旧 socket 的迟到事件不能污染新 socket", async () => {

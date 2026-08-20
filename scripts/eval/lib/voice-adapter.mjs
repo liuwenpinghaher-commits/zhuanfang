@@ -109,15 +109,25 @@ export async function deliverVoiceScenario({
 
     const listening = page.getByText("聆听");
     const speaking = page.getByText("AI 正在回应");
-    const listenDeadline = Date.now() + 45000;
+    await page.waitForFunction(
+      () => {
+        const capture = String(window.__asrCapture ?? "");
+        return typeof window.__asrFeedPcm === "function"
+          && capture !== ""
+          && capture !== "starting";
+      },
+      { timeout: 30000 }
+    ).catch(() => undefined);
+    const listenDeadline = Date.now() + 20000;
     while (Date.now() < listenDeadline) {
       const isListening = await listening.isVisible().catch(() => false);
       const isSpeaking = await speaking.isVisible().catch(() => false);
+      const capture = await page.evaluate(() => String(window.__asrCapture ?? "")).catch(() => "");
       if (isListening && !isSpeaking) break;
+      if (capture && capture !== "starting" && !isSpeaking) break;
       await page.waitForTimeout(500);
     }
-    await listening.waitFor({ timeout: 5000 });
-    await page.waitForTimeout(1800);
+    await page.waitForTimeout(800);
     const hasMic = await page.evaluate(() => Boolean(window.__fakeMic));
     await page.evaluate(async () => {
       try {
@@ -135,8 +145,36 @@ export async function deliverVoiceScenario({
     const playedMs = await page.evaluate((b64) => window.__fakeMic.play(b64), pcm);
     log(JSON.stringify({ event: "eval_voice_spoke", playedMs, beforeSpeak }));
     await page.waitForTimeout(400);
-    const ticks = await page.evaluate(() => Number(window.__asrTicks ?? 0));
-    log(JSON.stringify({ event: "eval_asr_ticks", ticks }));
+    const captureInfo = await page.evaluate(() => ({
+      ticks: Number(window.__asrTicks ?? 0),
+      peak: Number(window.__asrPeak ?? 0),
+      capture: String(window.__asrCapture ?? ""),
+      hasFeed: typeof window.__asrFeedPcm === "function"
+    }));
+    log(JSON.stringify({ event: "eval_asr_ticks", ...captureInfo }));
+    if (captureInfo.hasFeed) {
+      const fed = await page.evaluate(async (b64) => {
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const i16 = new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 2));
+        const f32 = new Float32Array(i16.length);
+        for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
+        const feed = window.__asrFeedPcm;
+        const CHUNK = 4096;
+        for (let i = 0; i < f32.length; i += CHUNK) {
+          feed(Array.from(f32.subarray(i, i + CHUNK)));
+          await new Promise((r) => setTimeout(r, 40));
+        }
+        feed(new Array(16000).fill(0));
+        return {
+          samples: f32.length,
+          ticks: Number(window.__asrTicks ?? 0),
+          peak: Number(window.__asrPeak ?? 0)
+        };
+      }, pcm);
+      log(JSON.stringify({ event: "eval_asr_feed", ...fed }));
+    }
     await page.waitForTimeout(2200);
     const deadline = Date.now() + 50000;
     let dumped = false;

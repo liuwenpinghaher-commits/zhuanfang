@@ -8,7 +8,8 @@ import type { MicVAD } from "@ricky0123/vad-web";
 export interface SileroVadHandlers {
   onSpeechStart?: () => void;
   onSpeechEnd?: (audio: Float32Array) => void;
-  onFrame?: (probs: { isSpeech: number; notSpeech: number }) => void;
+  /** `frame` is 16 kHz Float32 samples from the VAD worklet (when provided). */
+  onFrame?: (probs: { isSpeech: number; notSpeech: number }, frame?: Float32Array) => void;
 }
 
 export interface SileroVadController {
@@ -85,9 +86,9 @@ export async function createSileroVadController(
       preSpeechPadMs: 200,
       onSpeechStart: () => handlers.onSpeechStart?.(),
       onSpeechEnd: (audio) => handlers.onSpeechEnd?.(audio),
-      onFrameProcessed: (probs) => {
+      onFrameProcessed: (probs, frame) => {
         speechProb = probs.isSpeech;
-        handlers.onFrame?.(probs);
+        handlers.onFrame?.(probs, frame);
       }
     });
     ready = true;
