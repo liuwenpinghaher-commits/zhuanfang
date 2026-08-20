@@ -1,0 +1,120 @@
+{
+  "source": "simulated",
+  "scenarioId": "ADV-short-abstract",
+  "user_value_verdict": "insufficient_data",
+  "gateHumanValue": "insufficient_data",
+  "engineering_pr_claims_go": false,
+  "gate_status": "insufficient_data",
+  "hard": {
+    "chars": 444,
+    "turns": 16,
+    "userTurns": 8,
+    "avgQ": 45,
+    "repeats": 0,
+    "asideLeak": 0
+  },
+  "craft": {
+    "counselorHits": 0,
+    "multiQuestionHits": 0,
+    "singleQuestionRate": 1
+  },
+  "strategyAlign": {
+    "score": 0.4125,
+    "names": [
+      "concrete_example_probe",
+      "mechanism_probe",
+      "premise_challenge",
+      "perspective_shift",
+      "perspective_shift",
+      "perspective_shift",
+      "synthesis",
+      "blindspot_probe"
+    ]
+  },
+  "valueProxy": {
+    "insight": {
+      "score": null,
+      "note": "judge optional; hard-recall only"
+    },
+    "tension": {
+      "score": null,
+      "note": "na unless potentialTension"
+    },
+    "unexpected": {
+      "result": "na"
+    }
+  },
+  "coverage": [
+    {
+      "id": "C-turn-live",
+      "result": "pass",
+      "note": "live llm"
+    },
+    {
+      "id": "C-strategy-content-concrete",
+      "result": "pass",
+      "note": ""
+    },
+    {
+      "id": "C-assets",
+      "result": "pass",
+      "note": ""
+    },
+    {
+      "id": "C-isolation",
+      "result": "pass",
+      "note": ""
+    },
+    {
+      "id": "C-control-hold",
+      "result": "gap",
+      "note": ""
+    },
+    {
+      "id": "C-control-dig",
+      "result": "gap",
+      "note": ""
+    },
+    {
+      "id": "C-control-close",
+      "result": "gap",
+      "note": ""
+    },
+    {
+      "id": "C-challenge-budget",
+      "result": "gap",
+      "note": ""
+    },
+    {
+      "id": "C-emotion",
+      "result": "gap",
+      "note": ""
+    },
+    {
+      "id": "C-fail-loud",
+      "result": "observed",
+      "note": "demo configured"
+    },
+    {
+      "id": "C-embed-502",
+      "result": "unit",
+      "note": "verified_by=unit"
+    },
+    {
+      "id": "C-strategy-align",
+      "result": "na",
+      "note": "see scorecard.strategyAlign"
+    }
+  ],
+  "assets": {
+    "notes": 1,
+    "points": 1,
+    "debts": 1
+  },
+  "gates": {
+    "craftGolden": "separate-vitest",
+    "humanValue": "insufficient_data",
+    "engineeringGo": false
+  },
+  "hostCalls": 12
+}

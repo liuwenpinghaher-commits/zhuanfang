@@ -1,0 +1,105 @@
+{
+  "source": "simulated",
+  "scenarioId": "ADV-control-six",
+  "user_value_verdict": "insufficient_data",
+  "gateHumanValue": "insufficient_data",
+  "engineering_pr_claims_go": false,
+  "gate_status": "insufficient_data",
+  "hard": {
+    "chars": 0,
+    "turns": 0,
+    "userTurns": 0,
+    "avgQ": 0,
+    "repeats": 0,
+    "asideLeak": 0
+  },
+  "craft": {
+    "counselorHits": 0,
+    "multiQuestionHits": 0,
+    "singleQuestionRate": 1
+  },
+  "strategyAlign": {
+    "score": 0,
+    "reason": "empty_trace"
+  },
+  "valueProxy": {
+    "insight": {
+      "score": null,
+      "note": "judge optional; hard-recall only"
+    },
+    "tension": {
+      "score": null,
+      "note": "na unless potentialTension"
+    },
+    "unexpected": {
+      "result": "na"
+    }
+  },
+  "coverage": [
+    {
+      "id": "C-control-six",
+      "result": "fail",
+      "note": ""
+    },
+    {
+      "id": "C-isolation",
+      "result": "pass",
+      "note": ""
+    },
+    {
+      "id": "C-control-hold",
+      "result": "gap",
+      "note": ""
+    },
+    {
+      "id": "C-control-dig",
+      "result": "gap",
+      "note": ""
+    },
+    {
+      "id": "C-control-close",
+      "result": "gap",
+      "note": ""
+    },
+    {
+      "id": "C-challenge-budget",
+      "result": "gap",
+      "note": ""
+    },
+    {
+      "id": "C-emotion",
+      "result": "gap",
+      "note": ""
+    },
+    {
+      "id": "C-fail-loud",
+      "result": "observed",
+      "note": "demo configured"
+    },
+    {
+      "id": "C-embed-502",
+      "result": "unit",
+      "note": "verified_by=unit"
+    },
+    {
+      "id": "C-strategy-align",
+      "result": "na",
+      "note": "see scorecard.strategyAlign"
+    }
+  ],
+  "assets": {
+    "notes": 0,
+    "points": 0,
+    "debts": 0
+  },
+  "gates": {
+    "craftGolden": "separate-vitest",
+    "humanValue": "insufficient_data",
+    "engineeringGo": false
+  },
+  "hostCalls": 38,
+  "failLoud": {
+    "status": 502,
+    "message": "POST /api/interview-sessions/session-1787209020621-6952da/end 502: {\"error\":\"专访归档失败：Bailian chat completion returned empty content (deepseek-v4-flash-0731).。会话未结束，可重试。\"}"
+  }
+}

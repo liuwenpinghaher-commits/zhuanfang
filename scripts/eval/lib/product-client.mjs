@@ -119,7 +119,18 @@ export function createProductClient({ apiBase, journal }) {
       return await request("POST", `/api/interview-sessions/${sessionId}/control`, { action }, { write: true });
     },
     async endSession(sessionId, extra = {}) {
-      return await request("POST", `/api/interview-sessions/${sessionId}/end`, extra, { write: true });
+      let lastErr;
+      for (let attempt = 1; attempt <= 4; attempt++) {
+        try {
+          return await request("POST", `/api/interview-sessions/${sessionId}/end`, extra, { write: true });
+        } catch (err) {
+          lastErr = err;
+          const empty = /empty content|专访归档失败/i.test(String(err?.message ?? ""));
+          if (err?.status !== 502 || !empty || attempt === 4) throw err;
+          await new Promise((r) => setTimeout(r, 2000 * attempt));
+        }
+      }
+      throw lastErr;
     },
     async interrupt(sessionId) {
       return await request("POST", `/api/interview-sessions/${sessionId}/interrupt`, {}, { write: true });

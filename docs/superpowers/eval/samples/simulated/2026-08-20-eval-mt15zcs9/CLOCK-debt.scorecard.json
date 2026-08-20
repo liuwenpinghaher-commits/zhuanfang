@@ -1,0 +1,105 @@
+{
+  "source": "simulated",
+  "scenarioId": "CLOCK-debt",
+  "user_value_verdict": "insufficient_data",
+  "gateHumanValue": "insufficient_data",
+  "engineering_pr_claims_go": false,
+  "gate_status": "insufficient_data",
+  "hard": {
+    "chars": 216,
+    "turns": 6,
+    "userTurns": 3,
+    "avgQ": 62,
+    "repeats": 0,
+    "asideLeak": 0
+  },
+  "craft": {
+    "counselorHits": 0,
+    "multiQuestionHits": 0,
+    "singleQuestionRate": 1
+  },
+  "strategyAlign": {
+    "score": 0.3,
+    "names": [
+      "mechanism_probe",
+      "debt_followup",
+      "mechanism_probe"
+    ]
+  },
+  "valueProxy": {
+    "insight": {
+      "score": null,
+      "note": "judge optional; hard-recall only"
+    },
+    "tension": {
+      "score": null,
+      "note": "na unless potentialTension"
+    },
+    "unexpected": {
+      "result": "na"
+    }
+  },
+  "coverage": [
+    {
+      "id": "C-strategy-clock-debt",
+      "result": "pass",
+      "note": ""
+    },
+    {
+      "id": "C-isolation",
+      "result": "pass",
+      "note": ""
+    },
+    {
+      "id": "C-control-hold",
+      "result": "gap",
+      "note": ""
+    },
+    {
+      "id": "C-control-dig",
+      "result": "gap",
+      "note": ""
+    },
+    {
+      "id": "C-control-close",
+      "result": "gap",
+      "note": ""
+    },
+    {
+      "id": "C-challenge-budget",
+      "result": "gap",
+      "note": ""
+    },
+    {
+      "id": "C-emotion",
+      "result": "gap",
+      "note": ""
+    },
+    {
+      "id": "C-fail-loud",
+      "result": "observed",
+      "note": "demo configured"
+    },
+    {
+      "id": "C-embed-502",
+      "result": "unit",
+      "note": "verified_by=unit"
+    },
+    {
+      "id": "C-strategy-align",
+      "result": "na",
+      "note": "see scorecard.strategyAlign"
+    }
+  ],
+  "assets": {
+    "notes": 1,
+    "points": 1,
+    "debts": 0
+  },
+  "gates": {
+    "craftGolden": "separate-vitest",
+    "humanValue": "insufficient_data",
+    "engineeringGo": false
+  },
+  "hostCalls": 45
+}

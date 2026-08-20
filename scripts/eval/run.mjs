@@ -153,17 +153,21 @@ async function runInterviewScenario({ client, scenario, env, budgets, isolation,
   }
 
   let endResult = {};
-  if (scenario.endPath === "do-not-save" || scenario.expect?.system?.endPath === "do-not-save") {
-    if (mem.doNotSavePosts !== 1) {
-      await client.postControl(sessionId, "do-not-save");
+  try {
+    if (scenario.endPath === "do-not-save" || scenario.expect?.system?.endPath === "do-not-save") {
+      if (mem.doNotSavePosts !== 1) {
+        await client.postControl(sessionId, "do-not-save");
+        budgets.host += 1;
+        mem.doNotSavePosts = 1;
+      }
+      endResult = await client.endSession(sessionId);
       budgets.host += 1;
-      mem.doNotSavePosts = 1;
+    } else if (scenario.endPath !== "none") {
+      endResult = await client.endSession(sessionId);
+      budgets.host += 1;
     }
-    endResult = await client.endSession(sessionId);
-    budgets.host += 1;
-  } else if (scenario.endPath !== "none") {
-    endResult = await client.endSession(sessionId);
-    budgets.host += 1;
+  } catch (err) {
+    mem.failLoud = { status: err.status, message: String(err.message ?? err).slice(0, 400) };
   }
 
   return { mem, endResult, sessionId };
@@ -361,7 +365,7 @@ async function main() {
     coverageAll.push(...scorecard.coverage);
     ran.push(id);
     log(JSON.stringify({ event: "eval_scenario_done", id, userTurns: mem.transcript.filter((t) => t.role === "user").length, dns: mem.doNotSavePosts, failLoud: Boolean(mem.failLoud) }));
-    await new Promise((r) => setTimeout(r, 2000));
+    await new Promise((r) => setTimeout(r, tier === "full" ? 4000 : 2000));
   }
 
   if (modality === "voice" || modality === "both") {

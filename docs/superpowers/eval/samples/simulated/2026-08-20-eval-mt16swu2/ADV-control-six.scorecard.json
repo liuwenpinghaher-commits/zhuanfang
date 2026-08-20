@@ -1,0 +1,108 @@
+{
+  "source": "simulated",
+  "scenarioId": "ADV-control-six",
+  "user_value_verdict": "insufficient_data",
+  "gateHumanValue": "insufficient_data",
+  "engineering_pr_claims_go": false,
+  "gate_status": "insufficient_data",
+  "hard": {
+    "chars": 380,
+    "turns": 12,
+    "userTurns": 6,
+    "avgQ": 47,
+    "repeats": 0,
+    "asideLeak": 0
+  },
+  "craft": {
+    "counselorHits": 0,
+    "multiQuestionHits": 1,
+    "singleQuestionRate": 0.8333333333333334
+  },
+  "strategyAlign": {
+    "score": 0.4166666666666667,
+    "names": [
+      "mechanism_probe",
+      "premise_challenge",
+      "concrete_example_probe",
+      "perspective_shift",
+      "perspective_shift",
+      "perspective_shift"
+    ]
+  },
+  "valueProxy": {
+    "insight": {
+      "score": null,
+      "note": "judge optional; hard-recall only"
+    },
+    "tension": {
+      "score": null,
+      "note": "na unless potentialTension"
+    },
+    "unexpected": {
+      "result": "na"
+    }
+  },
+  "coverage": [
+    {
+      "id": "C-control-six",
+      "result": "pass",
+      "note": "skip,softer,sharper,different-angle,summary"
+    },
+    {
+      "id": "C-isolation",
+      "result": "pass",
+      "note": ""
+    },
+    {
+      "id": "C-control-hold",
+      "result": "gap",
+      "note": ""
+    },
+    {
+      "id": "C-control-dig",
+      "result": "gap",
+      "note": ""
+    },
+    {
+      "id": "C-control-close",
+      "result": "gap",
+      "note": ""
+    },
+    {
+      "id": "C-challenge-budget",
+      "result": "gap",
+      "note": ""
+    },
+    {
+      "id": "C-emotion",
+      "result": "gap",
+      "note": ""
+    },
+    {
+      "id": "C-fail-loud",
+      "result": "observed",
+      "note": "demo configured"
+    },
+    {
+      "id": "C-embed-502",
+      "result": "unit",
+      "note": "verified_by=unit"
+    },
+    {
+      "id": "C-strategy-align",
+      "result": "na",
+      "note": "see scorecard.strategyAlign"
+    }
+  ],
+  "assets": {
+    "notes": 1,
+    "points": 0,
+    "debts": 0
+  },
+  "gates": {
+    "craftGolden": "separate-vitest",
+    "humanValue": "insufficient_data",
+    "engineeringGo": false
+  },
+  "hostCalls": 14
+}
