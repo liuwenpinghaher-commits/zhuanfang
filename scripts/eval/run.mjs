@@ -311,14 +311,25 @@ async function main() {
     if (budgets.host >= budgets.hostMax) break;
     const scenario = loadScenario(id);
     log(JSON.stringify({ event: "eval_scenario_start", id }));
-    const { mem, endResult, sessionId } = await runInterviewScenario({
-      client,
-      scenario,
-      env,
-      budgets,
-      isolation,
-      log
-    });
+    let mem = { transcript: [], strategyTrace: [], doNotSavePosts: 0, controlsPosted: [] };
+    let endResult = {};
+    let sessionId = "";
+    try {
+      const ranOne = await runInterviewScenario({
+        client,
+        scenario,
+        env,
+        budgets,
+        isolation,
+        log
+      });
+      mem = ranOne.mem;
+      endResult = ranOne.endResult;
+      sessionId = ranOne.sessionId;
+    } catch (err) {
+      mem.failLoud = { status: err.status, message: String(err.message ?? err).slice(0, 400) };
+      log(JSON.stringify({ event: "eval_scenario_fail_loud", id, status: err.status, error: String(err.message ?? err).slice(0, 240) }));
+    }
     const state = await client.getState().catch(() => ({}));
     const assets = {
       notes: (state.notes ?? []).filter((n) => n.sessionId === sessionId).length,
@@ -333,11 +344,19 @@ async function main() {
       hostCalls: budgets.host,
       assets
     });
+    if (mem.failLoud) {
+      scorecard.failLoud = mem.failLoud;
+      const live = scorecard.coverage.find((c) => c.id === "C-turn-live");
+      if (live) {
+        live.result = "fail";
+        live.note = `create/turn 5xx: ${mem.failLoud.status ?? ""}`;
+      }
+    }
     assertSimulatedGate(scorecard);
     writeScenarioArtifacts({ rootDir: outDir, scenarioId: id, transcript: mem.transcript, scorecard });
     coverageAll.push(...scorecard.coverage);
     ran.push(id);
-    log(JSON.stringify({ event: "eval_scenario_done", id, userTurns: mem.transcript.filter((t) => t.role === "user").length, dns: mem.doNotSavePosts }));
+    log(JSON.stringify({ event: "eval_scenario_done", id, userTurns: mem.transcript.filter((t) => t.role === "user").length, dns: mem.doNotSavePosts, failLoud: Boolean(mem.failLoud) }));
   }
 
   if (modality === "voice" || modality === "both") {

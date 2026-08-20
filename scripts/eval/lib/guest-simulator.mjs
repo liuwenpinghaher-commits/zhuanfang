@@ -13,23 +13,42 @@ const COUNSELOR_PATTERN_RES = [
 
 export { COUNSELOR_PATTERN_RES };
 
+/**
+ * Pick the most specific matching `at`. Exact `turn==N` always beats `turn>=M`,
+ * even when the range is listed first (design-order overlapping lists).
+ * First-match is wrong: it would bind shame/dns to short_answer forever.
+ */
 export function matchBehavior(behaviors, turnIndex) {
   const list = Array.isArray(behaviors) ? behaviors : [];
+  let best = null;
+  let bestScore = -1;
   for (const b of list) {
-    if (behaviorMatches(b.at, turnIndex)) return b;
+    const score = behaviorSpecificity(b.at, turnIndex);
+    if (score > bestScore) {
+      best = b;
+      bestScore = score;
+    }
   }
-  return null;
+  return best;
+}
+
+/** Higher score = more specific. 0 means no match. */
+export function behaviorSpecificity(at, turnIndex) {
+  if (at == null) return 0;
+  const s = String(at).replace(/\s/g, "");
+  const mEq = s.match(/^turn==(\d+)$/);
+  if (mEq) return turnIndex === Number(mEq[1]) ? 1000 + Number(mEq[1]) : 0;
+  const mGe = s.match(/^turn>=(\d+)$/);
+  if (mGe) {
+    const n = Number(mGe[1]);
+    return turnIndex >= n ? 100 + n : 0;
+  }
+  if (s === `turn==${turnIndex}` || Number(at) === turnIndex) return 1000 + turnIndex;
+  return 0;
 }
 
 function behaviorMatches(at, turnIndex) {
-  if (at == null) return false;
-  const s = String(at).replace(/\s/g, "");
-  const mEq = s.match(/^turn==(\d+)$/);
-  if (mEq) return turnIndex === Number(mEq[1]);
-  const mGe = s.match(/^turn>=(\d+)$/);
-  if (mGe) return turnIndex >= Number(mGe[1]);
-  if (s === `turn==${turnIndex}` || Number(at) === turnIndex) return true;
-  return false;
+  return behaviorSpecificity(at, turnIndex) > 0;
 }
 
 const CANNED = {
