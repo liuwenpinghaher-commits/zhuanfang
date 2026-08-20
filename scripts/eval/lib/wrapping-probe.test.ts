@@ -46,6 +46,17 @@ describe("looksLikeOwnerBook (shipped)", () => {
       })
     ).toBe(false);
   });
+
+  it("purged eval store with live session ids is not owner", () => {
+    expect(
+      looksLikeOwnerBook({
+        profile: { name: "" },
+        sessions: [{ id: "session-1787206981304-26566c" }],
+        notes: [],
+        memoryRecords: []
+      })
+    ).toBe(false);
+  });
 });
 
 describe("wrapping-probe order helper (shipped)", () => {

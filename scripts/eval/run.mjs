@@ -303,11 +303,15 @@ async function main() {
   const outDir = join(HERE, "../../docs/superpowers/eval/samples/simulated", `${date}-${runId}`);
   mkdirSync(outDir, { recursive: true });
 
-  const ids = pack.ids;
+  const ids = String(env.EVAL_SCENARIO_IDS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const scenarioIds = ids.length ? ids : pack.ids;
   const coverageAll = [];
   const ran = [];
 
-  for (const id of ids) {
+  for (const id of scenarioIds) {
     if (budgets.host >= budgets.hostMax) break;
     const scenario = loadScenario(id);
     log(JSON.stringify({ event: "eval_scenario_start", id }));
@@ -357,6 +361,7 @@ async function main() {
     coverageAll.push(...scorecard.coverage);
     ran.push(id);
     log(JSON.stringify({ event: "eval_scenario_done", id, userTurns: mem.transcript.filter((t) => t.role === "user").length, dns: mem.doNotSavePosts, failLoud: Boolean(mem.failLoud) }));
+    await new Promise((r) => setTimeout(r, 2000));
   }
 
   if (modality === "voice" || modality === "both") {

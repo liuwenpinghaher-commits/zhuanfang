@@ -44,6 +44,8 @@ export function looksLikeOwnerBook(state) {
   if (name.startsWith("eval-marker-")) return false;
   if (isMiaSeedFingerprint(state)) return false;
   if (isPurgedEmptyBook(state)) return false;
+  // Isolate purge zeros profile.name; later eval sessions are not the owner's book.
+  if (name === "") return false;
 
   const sessionIds = ids(state.sessions);
   const noteIds = ids(state.notes);
