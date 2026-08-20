@@ -1243,7 +1243,7 @@ export interface AudioTranscriptionInput {
 }
 
 export interface AudioTranscription {
-  providerId: "bailian-sensevoice" | "local-fallback";
+  providerId: "bailian-sensevoice" | "bailian-qwen-audio-asr" | "local-fallback";
   model: string;
   status: "ready" | "degraded";
   title: string;
