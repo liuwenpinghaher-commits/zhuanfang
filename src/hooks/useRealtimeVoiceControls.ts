@@ -229,7 +229,7 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
 
     try {
       try {
-        const AC = window.AudioContext || window.webkitAudioContext;
+        const AC = window.AudioContext;
         if (AC) {
           const unlock = new AC();
           await unlock.resume();
