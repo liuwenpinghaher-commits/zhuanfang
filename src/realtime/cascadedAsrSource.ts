@@ -288,6 +288,9 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
       }
     }
     audioCtx = new AudioContext({ sampleRate: 16000 });
+    if (audioCtx.state === "suspended") {
+      await audioCtx.resume().catch(() => undefined);
+    }
     sourceNode = audioCtx.createMediaStreamSource(stream);
     analyser = audioCtx.createAnalyser();
     analyser.fftSize = 1024;

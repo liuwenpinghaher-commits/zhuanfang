@@ -29,7 +29,8 @@ export async function installFakeMic(context) {
           ctx
             .resume()
             .catch(() => {})
-            .finally(() => src.start());
+            .then(() => src.start())
+            .catch(() => resolve(0));
         });
       }
     };

@@ -63,6 +63,12 @@ export async function deliverVoiceScenario({
     ]);
     await installFakeMic(context);
     page = await context.newPage();
+    page.on("console", (msg) => {
+      const t = String(msg.text() ?? "");
+      if (/asr_|cascade|transcript|error|warn|WebSocket|401|403/i.test(t)) {
+        log(JSON.stringify({ event: "eval_browser_console", t: t.slice(0, 240) }));
+      }
+    });
     await page.goto(origin.replace(/\/$/, "") + "/", { waitUntil: "domcontentloaded", timeout: 60000 });
     await maybeLogin(page, username, password);
     log(JSON.stringify({ event: "eval_voice_page", url: origin, scenario: scenario.id }));
@@ -113,16 +119,35 @@ export async function deliverVoiceScenario({
     await listening.waitFor({ timeout: 5000 });
     await page.waitForTimeout(1800);
     const hasMic = await page.evaluate(() => Boolean(window.__fakeMic));
+    await page.evaluate(async () => {
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        const c = new Ctx();
+        await c.resume();
+        await c.close();
+      } catch {
+        /* ignore */
+      }
+    });
     const statusText = await page.locator(".status-dot").locator("xpath=..").innerText().catch(() => "");
     log(JSON.stringify({ event: "eval_voice_ready", hasMic, statusText: String(statusText).slice(0, 80) }));
     const beforeSpeak = await userTurnCount(pollUserTurns);
-    await speak(page, pcm, { vadSilenceMs: 1800 });
+    const playedMs = await page.evaluate((b64) => window.__fakeMic.play(b64), pcm);
+    log(JSON.stringify({ event: "eval_voice_spoke", playedMs, beforeSpeak }));
+    await page.waitForTimeout(2200);
     const deadline = Date.now() + 50000;
+    let dumped = false;
     while (Date.now() < deadline) {
       const n = await userTurnCount(pollUserTurns);
       if (n > beforeSpeak) {
         result.userTurns = n;
         break;
+      }
+      if (!dumped) {
+        dumped = true;
+        const panel = await page.locator(".voice-panel").innerText().catch(() => "");
+        const notice = await page.locator(".notice, .banner, [class*='notice']").first().innerText().catch(() => "");
+        log(JSON.stringify({ event: "eval_voice_ui", panel: String(panel).slice(0, 200), notice: String(notice).slice(0, 160) }));
       }
       await page.waitForTimeout(2000);
     }
