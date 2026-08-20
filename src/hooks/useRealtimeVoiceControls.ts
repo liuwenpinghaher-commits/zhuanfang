@@ -228,6 +228,16 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
     togglingRef.current = true;
 
     try {
+      try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (AC) {
+          const unlock = new AC();
+          await unlock.resume();
+          (window as unknown as { __zhuanfangAudioUnlock?: AudioContext }).__zhuanfangAudioUnlock = unlock;
+        }
+      } catch {
+        /* headless / autoplay policy: capture resume happens again in ASR start */
+      }
       const voiceSession = await productApiClient.createRealtimeVoiceSession({
         ...(session ? { interviewSessionId: session.id } : {}),
         instructions: buildRealtimeVoiceInstructions(session, card, productState.memoryCorrections ?? []),
