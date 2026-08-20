@@ -107,7 +107,8 @@ export async function registerInterviewSessionRoutes(
     // confirmed memories by cosine instead of substring. P2b: resolveInterviewTopicHint 与域内
     // topicHint 对齐;surreal 权威时预召回原生图遍历/HNSW/溯源,作为纯数据喂给同步 createSessionDraft。
     // 配置边界:无 embedding client → queryEmbedding undefined(关键词召回配置态);无原生 repo →
-    // recall undefined(域层召回)。运行时失败(embed 错/召回错)→ 如实 502,不再静默少注入召回。
+    // recall undefined(域层召回)。运行时 embed/召回失败 → 同样降级为关键词草稿并继续建场；
+    // 追问 LLM 本身失败才 5xx。召回是增强，不能挡住开场。
     const recallTopic = resolveInterviewTopicHint(state, {
       ...(topicHint ? { topicHint } : {}),
       ...(searchBriefId ? { searchBriefId } : {})
@@ -125,8 +126,9 @@ export async function registerInterviewSessionRoutes(
         : undefined;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(JSON.stringify({ event: "session_create_recall_failed", error: message }));
-      return reply.code(502).send({ error: `创建会话失败（记忆召回不可用）：${message}` });
+      console.warn(JSON.stringify({ event: "session_create_recall_failed", error: message, degraded: "keyword" }));
+      queryEmbedding = undefined;
+      recall = undefined;
     }
     const session = createSessionDraft(state, normalizeMode(payload.mode), normalizeStrength(payload.strength, state), {
       ...(searchBriefId ? { searchBriefId } : {}),

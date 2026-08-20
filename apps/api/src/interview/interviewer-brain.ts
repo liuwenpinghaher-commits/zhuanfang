@@ -170,7 +170,8 @@ export async function handleTurnsRequest(
     turnEmbedding = await embedQueryText(content, deps.embeddingClient);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return reply.code(502).send({ error: `本轮记忆召回嵌入失败：${message}。本轮未记录，请重试。` });
+    console.warn(JSON.stringify({ event: "session_turn_embed_failed", error: message, degraded: "frozen_guide" }));
+    turnEmbedding = undefined;
   }
   // C-P1-02 + R-P1-01: mid-session native prefetch; BM25/queryText follows latest user
   // text; theme graph only when a theme name appears in the utterance (no open-time freeze).
@@ -196,8 +197,8 @@ export async function handleTurnsRequest(
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(JSON.stringify({ event: "session_turn_recall_failed", error: message }));
-      return reply.code(502).send({ error: `本轮记忆召回失败：${message}。本轮未记录，请重试。` });
+      console.warn(JSON.stringify({ event: "session_turn_recall_failed", error: message, degraded: "frozen_guide" }));
+      turnRecall = undefined;
     }
   }
   // Refresh guide from mid-session query semantics. Card materials refresh from the
