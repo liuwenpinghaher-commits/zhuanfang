@@ -1,0 +1,20 @@
+{
+  "id": "ADV-short-shame-dns",
+  "capabilities": ["C-control-dns", "C-isolation", "C-value-unexpected"],
+  "isolation": "isolate",
+  "maxUserTurns": 8,
+  "endPath": "do-not-save",
+  "guest": {
+    "behaviors": [
+      { "at": "turn>=1", "kind": "short_answer", "maxChars": 40 },
+      { "at": "turn==0", "kind": "short_answer", "maxChars": 40, "text": "最近工作压力大，不想展开。" },
+      { "at": "turn==4", "kind": "shame_contract", "text": "这个……算了不说了。" },
+      { "at": "turn==7", "kind": "do_not_write", "text": "刚才那段别写进档案。" }
+    ]
+  },
+  "expect": {
+    "host": { "mustNot": ["advice_list", "fake_template_followup"] },
+    "system": { "endPath": "do-not-save", "doNotSavePosts": 1, "longTermAssetsPersisted": false },
+    "driver_action": ["optional_softer_after_shame"]
+  }
+}

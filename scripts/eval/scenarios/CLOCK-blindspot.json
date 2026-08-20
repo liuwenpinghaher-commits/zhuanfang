@@ -1,0 +1,11 @@
+{
+  "id": "CLOCK-blindspot",
+  "capabilities": ["C-strategy-clock-blindspot"],
+  "isolation": "isolate",
+  "maxUserTurns": 8,
+  "fixture": "clock-blindspot",
+  "window": { "previousUserTurns": [7, 8, 9, 10], "strategy": "blindspot_probe", "count": 1 },
+  "guest": {
+    "behaviors": [{ "at": "turn>=0", "kind": "short_answer", "maxChars": 40 }]
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "id": "CLOCK-decision",
+  "capabilities": ["C-strategy-clock-decision", "C-strategy-align"],
+  "isolation": "isolate",
+  "maxUserTurns": 3,
+  "fixture": "clock-decision",
+  "window": { "previousUserTurns": [1, 2, 3], "strategy": "decision_review", "count": 1 },
+  "guest": {
+    "behaviors": [
+      { "at": "turn==0", "text": "最近在忙别的，先随便聊聊近况。" },
+      { "at": "turn>=1", "kind": "short_answer", "maxChars": 40 }
+    ]
+  }
+}

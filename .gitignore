@@ -30,5 +30,7 @@ agent/*.pyc
 .DS_Store
 **/.DS_Store
 
+scripts/eval/.tts-cache/
+
 .deploy-artifact/
 zhuanfang-deploy.tgz

@@ -1,0 +1,12 @@
+{
+  "id": "VOICE-barge",
+  "capabilities": ["C-voice-bargein"],
+  "isolation": "isolate",
+  "maxUserTurns": 2,
+  "modality": "voice",
+  "guest": {
+    "behaviors": [
+      { "at": "turn==0", "kind": "barge_in", "text": "等一下，我想打断你。" }
+    ]
+  }
+}

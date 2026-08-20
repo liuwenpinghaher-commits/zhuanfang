@@ -1,0 +1,7 @@
+{
+  "tier": "smoke",
+  "maxHostCalls": 50,
+  "maxGuestCalls": 40,
+  "maxJudgeCalls": 8,
+  "ids": ["ADV-short-abstract", "ADV-short-shame-dns", "ADV-control-six"]
+}

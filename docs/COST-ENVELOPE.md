@@ -199,3 +199,16 @@
 
 **D3.a 状态：closed（文档信封）**  
 **关联：D6.a 告警协议见 [`docs/runbooks/ALERTS.md`](./runbooks/ALERTS.md)。**
+
+---
+
+## 9. 对抗评测档（`scripts/eval/run.mjs`）
+
+| 档 | 场次 | host 上限 | guest 上限 |
+| --- | --- | --- | --- |
+| `EVAL_TIER=smoke`（默认） | 3 短文本 | 50 | 40 |
+| `EVAL_TIER=full` | ≤10 文本 | 180 | 120 |
+| `EVAL_MODALITY=voice\|both` | +≤3 语音（白天可打公网 ASR） | 计入 180 | 计入 120 |
+| `EVAL_TIER=populate` | 旧 10 人设，**不是**能力评测 | 可吃满 200/场 | — |
+
+入口：`node scripts/eval/run.mjs`。`scripts/run-all-interviews.sh` 仅 populate，且不再裸 curl 清库。

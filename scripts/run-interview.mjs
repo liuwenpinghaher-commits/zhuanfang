@@ -4,6 +4,14 @@
 // Drives a session until >= targetChars, then /end (finalize), and dumps everything for
 // quality analysis. Usage: node scripts/run-interview.mjs <personaFile> <outFile> [targetChars]
 import { readFileSync, writeFileSync } from "node:fs";
+import { assertEvalProcessSafe, assertPurgeAllowed, defaultEvalApiBase } from "./eval/lib/purge-guard.mjs";
+
+try {
+  assertEvalProcessSafe(process.env);
+} catch (err) {
+  console.error(err.message);
+  process.exit(err.exitCode === 2 ? 2 : 1);
+}
 
 function loadEnv(url) {
   const env = {};
@@ -19,7 +27,7 @@ const env = loadEnv(new URL("../.env.local", import.meta.url));
 const KEY = env.DASHSCOPE_API_KEY;
 const CHAT_URL = (env.BAILIAN_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1") + "/chat/completions";
 const INTERVIEWEE_MODEL = env.INTERVIEWEE_MODEL || "qwen-plus";
-const API = env.PRODUCT_API_BASE || "http://127.0.0.1:3210";
+const API = defaultEvalApiBase({ ...env, ...process.env, EVAL_API_BASE: process.env.EVAL_API_BASE || process.env.PRODUCT_API_BASE || env.PRODUCT_API_BASE });
 
 const personaFile = process.argv[2];
 const outFile = process.argv[3];
@@ -95,9 +103,30 @@ async function intervieweeReply(history, question) {
   log(`\n=== 访谈开始：${persona.name}（${persona.role}）目标 ${TARGET_CHARS} 字 ===`);
   // Clean, isolated state per interview: purge seed/demo + any prior interview so this
   // session's guide, memory recall, and finalized assets come PURELY from this conversation.
-  if (process.env.SKIP_PURGE !== "1") {
+  if (process.env.EVAL_ALLOW_PURGE === "1") {
+    const user = process.env.EVAL_USERNAME;
+    const pass = process.env.EVAL_PASSWORD;
+    if (!user || !pass) {
+      throw Object.assign(new Error(JSON.stringify({ event: "eval_purge_blocked", reason: "eval_session_login_required" })), { exitCode: 2 });
+    }
+    const login = await fetch(`${API}/api/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: user, password: pass }),
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!login.ok) {
+      throw Object.assign(new Error(JSON.stringify({ event: "eval_purge_blocked", reason: "eval_session_login_required" })), { exitCode: 2 });
+    }
+    assertPurgeAllowed({
+      env: process.env,
+      meUsername: user,
+      wrappingProven: process.env.EVAL_WRAPPING_PROVEN === "1"
+    });
     await api("/api/state/purge", { confirm: "PURGE_PERSONAL_DATA", scope: "all" });
     log("  state purged → clean slate");
+  } else {
+    log("  skip purge (EVAL_ALLOW_PURGE!=1; SKIP_PURGE is retired)");
   }
   const created = await api("/api/interview-sessions", { mode: "daily", topicHint: persona.topicHint });
   const id = created.session.id;
@@ -153,4 +182,4 @@ async function intervieweeReply(history, question) {
   writeFileSync(outFile, JSON.stringify(result, null, 2));
   log(`\n=== 完成：${chars} 字 / ${transcript.length} 轮 / ${elapsedMin.toFixed(1)} 分钟 / 降级 ${degraded} 次 ===`);
   log(`输出：${outFile}`);
-})().catch((e) => { console.error("DRIVER ERROR:", e.message); process.exit(1); });
+})().catch((e) => { console.error("DRIVER ERROR:", e.message); process.exit(e.exitCode === 2 ? 2 : 1); });

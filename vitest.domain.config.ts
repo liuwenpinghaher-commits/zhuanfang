@@ -11,7 +11,8 @@ export default defineConfig({
       "src/domain/**/*.test.ts",
       "src/realtime/**/*.test.ts",
       "src/api/**/*.test.ts",
-      "apps/api/src/routes/**/*.test.ts"
+      "apps/api/src/routes/**/*.test.ts",
+      "scripts/eval/lib/**/*.test.ts"
     ],
     pool: "forks",
     fileParallelism: false,

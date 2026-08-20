@@ -1,0 +1,10 @@
+{
+  "id": "VOICE-echo",
+  "capabilities": ["C-voice-echo", "C-voice-one-shot"],
+  "isolation": "isolate",
+  "maxUserTurns": 1,
+  "modality": "voice",
+  "guest": {
+    "behaviors": [{ "at": "turn==0", "text": "我先说一句：授权让我最难受的是那次救火。" }]
+  }
+}

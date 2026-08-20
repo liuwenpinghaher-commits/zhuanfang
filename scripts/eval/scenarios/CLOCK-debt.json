@@ -1,0 +1,14 @@
+{
+  "id": "CLOCK-debt",
+  "capabilities": ["C-strategy-clock-debt", "C-strategy-align"],
+  "isolation": "isolate",
+  "maxUserTurns": 3,
+  "fixture": "clock-debt",
+  "window": { "previousUserTurns": [1, 2], "strategy": "debt_followup", "count": 1 },
+  "guest": {
+    "behaviors": [
+      { "at": "turn==0", "text": "今天想聊训练，不谈什么债。" },
+      { "at": "turn>=1", "kind": "short_answer", "maxChars": 40 }
+    ]
+  }
+}

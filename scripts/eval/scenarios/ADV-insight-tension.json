@@ -1,0 +1,15 @@
+{
+  "id": "ADV-insight-tension",
+  "capabilities": ["C-value-insight", "C-value-tension"],
+  "isolation": "isolate",
+  "maxUserTurns": 12,
+  "endPath": "finalize",
+  "guest": {
+    "behaviors": [
+      { "at": "turn==0", "text": "我一直觉得该放手。" },
+      { "at": "turn==5", "kind": "self_correction", "text": "不对，三月三号例会上老陈把权限表拍桌上，我才改口。" },
+      { "at": "turn==8", "text": "我选短期把控，代价是团队继续等我拍板。" },
+      { "at": "turn>=1", "kind": "short_answer", "maxChars": 60 }
+    ]
+  }
+}

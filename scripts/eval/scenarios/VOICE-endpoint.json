@@ -1,0 +1,11 @@
+{
+  "id": "VOICE-endpoint",
+  "capabilities": ["C-voice-asr-endpointing"],
+  "isolation": "isolate",
+  "maxUserTurns": 2,
+  "modality": "voice",
+  "intraSilenceMs": 300,
+  "guest": {
+    "behaviors": [{ "at": "turn==0", "text": "我讲完这一句就不补了。" }]
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "tier": "full",
+  "maxHostCalls": 180,
+  "maxGuestCalls": 120,
+  "maxJudgeCalls": 30,
+  "maxTextScenarios": 10,
+  "maxVoiceScenarios": 3,
+  "ids": [
+    "ADV-short-abstract",
+    "ADV-short-shame-dns",
+    "ADV-control-six",
+    "CLOCK-debt",
+    "CLOCK-decision",
+    "CLOCK-contradiction",
+    "CLOCK-blindspot",
+    "FLOW-memory",
+    "ADV-insight-tension",
+    "ADV-turn15"
+  ],
+  "voiceIds": ["VOICE-echo", "VOICE-endpoint", "VOICE-barge"]
+}

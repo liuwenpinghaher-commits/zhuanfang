@@ -1,0 +1,22 @@
+{
+  "id": "FLOW-memory",
+  "capabilities": ["C-memory-confirm-recall", "C-memory-conflict-409", "C-hitl-contradiction"],
+  "isolation": "accumulate",
+  "maxUserTurns": 4,
+  "flow": "memory-s1-s1b-s2",
+  "s1b": {
+    "pendingId": "c_eval_conflict",
+    "suggestedUpdate": "conflict",
+    "approveMode": "add",
+    "force": false,
+    "expectStatus": 409,
+    "expectBlocked": true,
+    "notSecondApprove": true
+  },
+  "guest": {
+    "behaviors": [
+      { "at": "turn==0", "text": "远程优于现场，这是我确认过的判断。" },
+      { "at": "turn>=1", "kind": "short_answer", "maxChars": 40 }
+    ]
+  }
+}

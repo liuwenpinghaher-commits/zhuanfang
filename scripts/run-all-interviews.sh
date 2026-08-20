@@ -1,28 +1,45 @@
 #!/usr/bin/env bash
-# Run all 10 personas end-to-end through the REAL system: each runs a >=20K-char interview,
-# finalizes, then is quality-analyzed. Sequential (shared state). Usage: bash scripts/run-all-interviews.sh
+# Populate-only 10-persona battery. NOT the capability eval.
+# Capability eval: node scripts/eval/run.mjs (EVAL_TIER=smoke|full).
 #
-# Two modes:
-#   ACCUMULATE (default) — purge ONCE at the start, then every interview accumulates into the same
-#     state, so 专访档案 + 认知资产库 end up holding ALL 10 interviews. Use this to populate the app.
-#   ISOLATE (ISOLATE=1)  — each interview purges to a clean state first, so per-interview quality is
-#     measured without cross-contamination. NOTE: only the LAST interview survives in the archive.
+# This script never issues a bare curl POST /api/state/purge.
+# Purge requires EVAL_TIER=populate + EVAL_ALLOW_PURGE=1 + eval session login
+# (handled inside run-interview.mjs). Without cookies, this shell exits non-zero.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+
+if [ -n "${PRODUCT_API_TOKEN:-}" ]; then
+  echo '{"event":"eval_token_refused","reason":"PRODUCT_API_TOKEN_present"}'
+  exit 2
+fi
+
+if [ "${EVAL_TIER:-}" != "populate" ]; then
+  echo "run-all-interviews.sh is populate-only. Use: node scripts/eval/run.mjs"
+  echo "Refusing default 20k cooperative battery."
+  exit 2
+fi
+
+API="${EVAL_API_BASE:-${PRODUCT_API_BASE:-http://127.0.0.1:3210}}"
+case "$API" in
+  *qing.blue*)
+    if [ -z "${EVAL_USERNAME:-}" ] || [ -z "${EVAL_PASSWORD:-}" ]; then
+      echo '{"event":"eval_purge_blocked","reason":"qing_blue_requires_eval_login"}'
+      exit 2
+    fi
+    ;;
+esac
+
+# Never curl purge. Cookie-less purge is forbidden.
+if [ "${EVAL_ALLOW_PURGE:-0}" = "1" ] && [ -z "${EVAL_USERNAME:-}" ]; then
+  echo '{"event":"eval_purge_blocked","reason":"eval_session_login_required"}'
+  exit 2
+fi
+
 OUT=/tmp/interviews
 mkdir -p "$OUT"
 TARGET="${TARGET_CHARS:-20000}"
-API="${PRODUCT_API_BASE:-http://127.0.0.1:3210}"
 
-if [ "${ISOLATE:-0}" = "1" ]; then
-  echo "MODE = ISOLATE (每次专访独立净化；只有最后一次会留在档案里，适合逐次质量测量)"
-  # run-interview.mjs purges per-interview by default
-else
-  echo "MODE = ACCUMULATE (开头清一次，10 次专访累积进同一档案/资产库)"
-  curl -fsS -X POST "$API/api/state/purge" -H 'content-type: application/json' \
-    -d '{"confirm":"PURGE_PERSONAL_DATA","scope":"all"}' >/dev/null && echo "  initial purge ok"
-  export SKIP_PURGE=1  # subsequent interviews skip the per-interview purge → accumulate
-fi
+echo "MODE = POPULATE (no shell purge; run-interview.mjs honors EVAL_ALLOW_PURGE + login)"
 
 for p in scripts/personas/*.json; do
   n=$(basename "$p" .json)
@@ -51,6 +68,5 @@ for(const f of files){
   }catch(e){rows.push({persona:f, error:e.message});}
 }
 console.table(rows);
-const ok=rows.filter(r=>!r.error&&r.met20k&&parseInt(r.iv)>=48&&parseInt(r.asset)>=15);
-console.log(`\n达标(20K+ & 访谈>=48/60 & 资产>=15/20): ${ok.length}/${rows.length}`);
+console.log("populate complete (20k is not a capability-eval pass line)");
 '

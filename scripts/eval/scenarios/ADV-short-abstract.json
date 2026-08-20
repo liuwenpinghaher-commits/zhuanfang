@@ -1,0 +1,19 @@
+{
+  "id": "ADV-short-abstract",
+  "capabilities": ["C-turn-live", "C-strategy-content-concrete", "C-strategy-align", "C-assets", "C-isolation"],
+  "isolation": "isolate",
+  "maxUserTurns": 8,
+  "fixture": "concrete-moment",
+  "endPath": "finalize",
+  "guest": {
+    "seed": "授权这事儿吧，得看整体情况，很难一句话说清。",
+    "behaviors": [
+      { "at": "turn==0", "kind": "abstract", "text": "授权这事儿吧，得看整体情况，很难一句话说清。" },
+      { "at": "turn>=1", "kind": "short_answer", "maxChars": 40 }
+    ]
+  },
+  "expect": {
+    "host": { "mustNot": ["advice_list", "fake_template_followup"] },
+    "system": { "endPath": "finalize" }
+  }
+}

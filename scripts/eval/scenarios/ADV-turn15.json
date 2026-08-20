@@ -1,0 +1,10 @@
+{
+  "id": "ADV-turn15",
+  "capabilities": ["C-turn15", "C-strategy-align"],
+  "isolation": "isolate",
+  "maxUserTurns": 15,
+  "endPath": "finalize",
+  "guest": {
+    "behaviors": [{ "at": "turn>=0", "kind": "short_answer", "maxChars": 50 }]
+  }
+}
