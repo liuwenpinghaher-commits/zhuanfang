@@ -108,6 +108,24 @@ function mapAsrLanguageHint(hint: string | undefined): string | undefined {
   return value;
 }
 
+function guessAudioFormat(sourceUrl: string): string {
+  const path = sourceUrl.split("?")[0]?.toLowerCase() ?? "";
+  if (path.startsWith("data:audio/wav")) return "wav";
+  if (path.startsWith("data:audio/mpeg") || path.startsWith("data:audio/mp3")) return "mp3";
+  if (path.endsWith(".wav")) return "wav";
+  if (path.endsWith(".opus")) return "opus";
+  if (path.endsWith(".ogg")) return "ogg";
+  if (path.endsWith(".m4a") || path.endsWith(".aac")) return "m4a";
+  return "mp3";
+}
+
+function extractQwenAudioAsrText(payload: Record<string, unknown>): string {
+  const output = payload.output as Record<string, unknown> | undefined;
+  const sentence = (output?.sentence ?? payload.sentence) as Record<string, unknown> | undefined;
+  const text = output?.text ?? payload.text ?? sentence?.text;
+  return typeof text === "string" ? text.trim() : "";
+}
+
 // ── Per-request timeouts (P1-09) ──────────────────────────────────────────────
 // Hard wall-clock caps so a half-dead DashScope connection (TCP connected but
 // never streaming) can't hang a route/turn forever. Each fetch that previously
@@ -828,7 +846,6 @@ export function createBailianAudioTranscriptionClient(
   options: BailianAudioTranscriptionClientOptions
 ): BailianAudioTranscriptionClient {
   const audioBaseUrl = (options.audioBaseUrl ?? BAILIAN_DEFAULT_AUDIO_BASE_URL).replace(/\/$/, "");
-  const chatBaseUrl = (options.chatBaseUrl ?? BAILIAN_DEFAULT_BASE_URL).replace(/\/$/, "");
   const model = options.model ?? BAILIAN_TRANSCRIPTION_MODEL;
   const languageHint = options.languageHint ?? "auto";
   const pollAttempts = options.pollAttempts ?? 20;
@@ -844,66 +861,56 @@ export function createBailianAudioTranscriptionClient(
       const sourceUrl = input.sourceUrl.trim();
       if (isQwenAudioAsrFlashModel(model)) {
         const asrLanguage = mapAsrLanguageHint(input.languageHint ?? languageHint);
-        const response = await fetchImpl(`${chatBaseUrl}/chat/completions`, {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${options.apiKey}`,
-            "content-type": "application/json"
-          },
-          body: JSON.stringify({
-            model,
-            messages: [
-              {
-                role: "user",
-                content: [
+        const response = await fetchImpl(
+          `${audioBaseUrl}/api/v1/services/aigc/multimodal-generation/generation`,
+          {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${options.apiKey}`,
+              "content-type": "application/json",
+              "X-DashScope-SSE": "disable"
+            },
+            body: JSON.stringify({
+              model,
+              input: {
+                messages: [
                   {
-                    type: "input_audio",
-                    input_audio: { data: sourceUrl }
+                    role: "user",
+                    content: [
+                      {
+                        type: "input_audio",
+                        input_audio: { data: sourceUrl }
+                      }
+                    ]
                   }
                 ]
+              },
+              parameters: {
+                format: guessAudioFormat(sourceUrl),
+                sample_rate: "16000",
+                ...(asrLanguage ? { language_hints: [asrLanguage] } : {})
               }
-            ],
-            asr_options: {
-              ...(asrLanguage ? { language: asrLanguage } : {}),
-              enable_itn: true
-            }
-          }),
-          signal: AbortSignal.timeout(ASR_REQUEST_TIMEOUT_MS)
-        });
+            }),
+            signal: AbortSignal.timeout(ASR_REQUEST_TIMEOUT_MS)
+          }
+        );
         if (!response.ok) {
           throw new Error(`Bailian Qwen-Audio ASR failed: ${response.status}`);
         }
-        const payload = (await response.json()) as {
-          id?: string;
-          choices?: Array<{ message?: { content?: unknown } }>;
-          usage?: { seconds?: number };
-        };
-        const content = payload.choices?.[0]?.message?.content;
-        const text =
-          typeof content === "string"
-            ? content.trim()
-            : Array.isArray(content)
-              ? content
-                  .map((part) =>
-                    typeof part === "string"
-                      ? part
-                      : typeof part === "object" && part && "text" in part
-                        ? String((part as { text?: unknown }).text ?? "")
-                        : ""
-                  )
-                  .join("")
-                  .trim()
-              : "";
+        const payload = (await response.json()) as Record<string, unknown>;
+        const text = extractQwenAudioAsrText(payload);
         if (!text) {
           throw new Error("Bailian Qwen-Audio ASR did not include text.");
         }
+        const usage = payload.usage as { duration?: number } | undefined;
+        const requestId = typeof payload.request_id === "string" ? payload.request_id : "";
         return {
           providerId: "bailian-qwen-audio-asr",
           model,
           sourceUrl,
-          taskId: typeof payload.id === "string" ? payload.id : "",
+          taskId: requestId,
           transcriptionUrl: sourceUrl,
-          durationSec: normalizeOptionalNumber(payload.usage?.seconds),
+          durationSec: normalizeOptionalNumber(usage?.duration),
           text
         };
       }

@@ -367,13 +367,13 @@ describe("bailian provider client", () => {
     });
   });
 
-  it("uses qwen-audio-3.0-asr-flash chat completions by default", async () => {
+  it("uses qwen-audio-3.0-asr-flash multimodal generation by default", async () => {
     const fetchImpl = vi.fn(async () =>
       new Response(
         JSON.stringify({
-          id: "chatcmpl-asr-1",
-          choices: [{ message: { role: "assistant", content: "他们只等我拍板。" } }],
-          usage: { seconds: 3 }
+          request_id: "asr-1",
+          output: { text: "他们只等我拍板。" },
+          usage: { duration: 3 }
         }),
         { status: 200 }
       )
@@ -389,39 +389,43 @@ describe("bailian provider client", () => {
     });
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      `${BAILIAN_DEFAULT_BASE_URL}/chat/completions`,
+      "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
       expect.objectContaining({
         method: "POST",
         headers: {
           authorization: "Bearer test-key",
-          "content-type": "application/json"
+          "content-type": "application/json",
+          "X-DashScope-SSE": "disable"
         }
       })
     );
     const requestBody = JSON.parse(getLastFetchCall(fetchImpl as FetchMock)[1]?.body as string);
     expect(requestBody).toMatchObject({
       model: "qwen-audio-3.0-asr-flash",
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "input_audio",
-              input_audio: { data: "https://example.com/interview-audio.mp3" }
-            }
-          ]
-        }
-      ],
-      asr_options: {
-        language: "zh",
-        enable_itn: true
+      input: {
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_audio",
+                input_audio: { data: "https://example.com/interview-audio.mp3" }
+              }
+            ]
+          }
+        ]
+      },
+      parameters: {
+        format: "mp3",
+        sample_rate: "16000",
+        language_hints: ["zh"]
       }
     });
     expect(result).toEqual({
       providerId: "bailian-qwen-audio-asr",
       model: "qwen-audio-3.0-asr-flash",
       sourceUrl: "https://example.com/interview-audio.mp3",
-      taskId: "chatcmpl-asr-1",
+      taskId: "asr-1",
       transcriptionUrl: "https://example.com/interview-audio.mp3",
       durationSec: 3,
       text: "他们只等我拍板。"
