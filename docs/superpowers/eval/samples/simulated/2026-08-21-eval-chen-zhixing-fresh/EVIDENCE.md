@@ -21,4 +21,5 @@
 - 15 轮嘉宾 + 15 轮主持，8251 字，17.5 分钟，降级 0
 - `/end` HTTP 200，session status=`completed`，endError 缺省
 - 待确认记忆 17（还没点头进长期记忆）、观点 6、问题 3、知识债 3
-- 产物原文见 `PRODUCTS.json`，驱动精简回放见 `driver.json`
+- 产物原文见 `PRODUCTS.json`
+- `driver.json` 是当时裁过的回放，**不是**驱动原始输出；本批收工毫秒未入仓，不事后用时间线冒充。下场起必须把驱动 `outFile` 原样入仓（含 `ended` / `endAttempts` / `endMs`）

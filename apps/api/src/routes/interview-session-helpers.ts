@@ -264,7 +264,7 @@ export async function extractSessionMemoryCandidates(
     return [];
   }
   const extracted = await extractCandidateMemories(session.title, transcript, chatClient);
-  return toSessionMemoryCandidates(extracted, session.id, session.title, nowIso());
+  return toSessionMemoryCandidates(extracted, session.id, session.title, nowIso(), session.turns);
 }
 
 // 轻量推理(欠账②)编排:规则粗筛同主题观点对 → LLM 精判对立/取代 → 应用关系到 state。

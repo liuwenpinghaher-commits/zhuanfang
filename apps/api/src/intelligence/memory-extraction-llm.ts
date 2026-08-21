@@ -147,14 +147,41 @@ export async function extractCandidateMemories(
 // interview session. Mirrors the import-source conversion (ingestImportSource),
 // but stamps sourceType="interview_session"/sourceId so the candidate links back
 // to the conversation it came from. withMemoryCandidateReview scores each one.
+export function normalizeEvidenceText(s: string): string {
+  return String(s || "")
+    .replace(/[“”«»「」『』„\"']/g, "")
+    .replace(/[‘’]/g, "")
+    .replace(/\s+/g, "")
+    .replace(/[.…⋯]+/g, "");
+}
+
+export function matchTurnIdForQuote(
+  quote: string,
+  turns: Array<{ id?: string; content?: string }>,
+  sessionId: string
+): { sessionId: string; turnId: string } | undefined {
+  const q = normalizeEvidenceText(quote);
+  if (!q) return undefined;
+  for (const turn of turns) {
+    if (!turn.id || !turn.content) continue;
+    const hay = normalizeEvidenceText(turn.content);
+    if (hay.includes(q.slice(0, Math.min(48, q.length)))) {
+      return { sessionId, turnId: turn.id };
+    }
+  }
+  return undefined;
+}
+
 export function toSessionMemoryCandidates(
   candidates: ImportedMemoryCandidate[],
   sessionId: string,
   sessionTitle: string,
-  createdAt: string
+  createdAt: string,
+  turns: Array<{ id?: string; content?: string }> = []
 ): MemoryCandidate[] {
-  return candidates.map((candidate) =>
-    withMemoryCandidateReview({
+  return candidates.map((candidate) => {
+    const anchor = matchTurnIdForQuote(candidate.evidenceQuote, turns, sessionId);
+    return withMemoryCandidateReview({
       id: makeId("memory-candidate"),
       text: candidate.text,
       status: "pending" as const,
@@ -163,7 +190,8 @@ export function toSessionMemoryCandidates(
       evidenceQuote: candidate.evidenceQuote,
       reason: `从专访《${sessionTitle}》的对话中抽取，需你确认后才进入长期记忆。`,
       sensitivity: candidate.sensitivity,
-      createdAt
-    })
-  );
+      createdAt,
+      ...(anchor ? { evidenceAnchors: [anchor] } : {})
+    });
+  });
 }

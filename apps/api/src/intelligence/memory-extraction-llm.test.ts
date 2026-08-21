@@ -15,7 +15,9 @@ import type { BailianChatClient } from "../providers/bailian";
 import {
   extractCandidateMemories,
   MEMORY_EXTRACT_TIMEOUT_MS,
-  splitTranscriptForMemoryExtract
+  matchTurnIdForQuote,
+  splitTranscriptForMemoryExtract,
+  toSessionMemoryCandidates
 } from "./memory-extraction-llm";
 import type { BailianChatCompleteRequest } from "../providers/bailian";
 
@@ -173,6 +175,25 @@ describe("extractCandidateMemories", () => {
       }
     };
     await expect(extractCandidateMemories("长资料", longBody, chat)).rejects.toThrow("slice timeout");
+  });
+
+  it("matchTurnIdForQuote attaches the user turn that contains the quote", () => {
+    const hit = matchTurnIdForQuote("授权那次救火", [
+      { id: "t1", content: "闲聊天气" },
+      { id: "t2", content: "授权让我最难受的是那次救火。" }
+    ], "s1");
+    expect(hit).toEqual({ sessionId: "s1", turnId: "t2" });
+  });
+
+  it("toSessionMemoryCandidates stamps evidenceAnchors when a turn matches", () => {
+    const out = toSessionMemoryCandidates(
+      [{ text: "救火很难受", evidenceQuote: "那次救火", sensitivity: "normal" }],
+      "s1",
+      "题",
+      "2026-08-21T00:00:00.000Z",
+      [{ id: "t2", content: "授权让我最难受的是那次救火。" }]
+    );
+    expect(out[0]?.evidenceAnchors?.[0]?.turnId).toBe("t2");
   });
 
   it("short body: one complete() call with explicit extract timeout", async () => {

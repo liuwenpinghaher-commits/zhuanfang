@@ -33,16 +33,24 @@
     "qualityIsTrendOnly": true,
     "pendingHitlCandidatesNotConfirmedMemory": true,
     "productAudit": {
-      "who": "Grok session 2026-08-21, against GET /api/state PRODUCTS.json + transcript.md",
+      "who": "Grok session 2026-08-21, against PRODUCTS.json + transcript.md",
+      "quoteMatchMethod": "normalize: strip CJK/ASCII quotes, collapse whitespace, split on ellipsis; then substring. Unnormalized exact-substring is not the pass criterion.",
+      "recompute": "node scripts/eval/lib/audit-products.mjs --products docs/superpowers/eval/samples/simulated/2026-08-21-eval-chen-zhixing-fresh/PRODUCTS.json --transcript docs/superpowers/eval/samples/simulated/2026-08-21-eval-chen-zhixing-fresh/INTERVIEW-chen-zhixing-fresh.transcript.md",
       "memories": 17,
       "points": 6,
+      "totalReviewed": 23,
       "defects": [
-        "两条记忆都在讲古德哈特：把考核指标当目标会让团队压缩数据分布、泛化归零"
+        { "id": "M-goodhart-pair", "severity": "normal", "criterion": "near-dup", "note": "两条记忆都在讲：指标一当目标，团队就压缩数据分布、泛化归零" },
+        { "id": "P2-near-memory", "severity": "normal", "criterion": "cross-class-near-dup", "note": "观点与记忆互含「预训练本质是压缩」" },
+        { "id": "M15-placeholder", "severity": "normal", "criterion": "placeholder", "note": "表述写「低于X%」，引文里是 80%" },
+        { "id": "P2.2-missing-de", "severity": "mild", "criterion": "quote-drift", "note": "引文比原话少一个「的」，非捏造" }
       ],
-      "defectRate": 0.12,
+      "defectRate": 0.174,
+      "defectRateNote": "4/23 strict ledger; quality is trend-only",
       "hallucinatedPeopleOrNumbers": 0,
-      "allEvidenceQuotesInTranscript": true,
-      "ellipsisInTwoQuotesNotExactSubstring": 2,
+      "allEvidenceQuotesInTranscriptAfterNormalize": true,
+      "unnormalizedExactSubstringMisses": 9,
+      "ellipsisInQuotes": 6,
       "pipelineOnlyNotHumanQuality": true,
       "passThreshold": "defectRate <= 0.20"
     },

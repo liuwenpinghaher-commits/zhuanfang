@@ -224,7 +224,8 @@ async function intervieweeReply(history, question) {
   }
   endMs = Date.now() - endStarted;
   writeFileSync(outFile, JSON.stringify(result(), null, 2));
-  log(`\n=== 完成：${chars} 字 / ${transcript.length} 轮 / ${result().elapsedMin} 分钟 / 降级 ${degraded} 次 / 收工 ${endMs}ms${endError ? " / 未归档" : ""} ===`);
+  log(`\n=== 完成：${chars} 字 / ${transcript.length} 轮 / ${result().elapsedMin} 分钟 / 降级 ${degraded} 次 / 收工 ${endMs}ms / 尝试 ${endAttempts} 次${endError ? " / 未归档" : ""} ===`);
   log(`输出：${outFile}`);
+  log("  keep this file as-is in the sample dir (ended/endAttempts/endMs). do not slim.");
   if (endError) process.exit(1);
 })().catch((e) => { console.error("DRIVER ERROR:", e.message); process.exit(e.exitCode === 2 ? 2 : 1); });
