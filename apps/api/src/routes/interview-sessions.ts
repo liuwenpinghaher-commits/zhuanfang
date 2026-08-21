@@ -288,7 +288,9 @@ export async function registerInterviewSessionRoutes(
         options.bailianChatClient,
         budget
       );
+      console.warn(JSON.stringify({ event: "end_stage", stage: "extract_ok", sessionId: session.id, candidates: providedCandidates.length }));
       result = await finalizeSessionWithLlm(baseState, session, options.bailianChatClient, providedCandidates, options.embeddingClient);
+      console.warn(JSON.stringify({ event: "end_stage", stage: "finalize_ok", sessionId: session.id }));
       // 轻量推理(欠账②):finalize 之后,对全量观点做矛盾/演化检出。规则粗筛 → LLM 精判 →
       // 应用关系(双向 contradicts + supersedes)。失败与 finalize 一体原子中止(此时尚未持久化)。
       reasonedState = await applySessionCognitiveRelations(

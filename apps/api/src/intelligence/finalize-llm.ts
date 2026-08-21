@@ -75,8 +75,9 @@ export async function finalizeSessionWithLlm(
     // ample room (a full asset set is ~3000 tokens).
     maxTokens: 5000,
     // ...and generating that much over a dense 20K transcript takes well over the 60s default
-    // for technical guests — which timed out → aborted → degrade. Allow up to 3 min.
-    timeoutMs: 180000
+    // for technical guests — which timed out → aborted → degrade. A live 15-turn / 8k-char
+    // book still aborted at 180s after extract succeeded (~248s total). Allow up to 4 min.
+    timeoutMs: 240000
   });
 
   const parsed = parseFinalizeJson(raw, session);
