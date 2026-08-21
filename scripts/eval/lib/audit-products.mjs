@@ -1,6 +1,13 @@
 // Recompute quote-match / placeholder stats for an INTERVIEW sample.
 // Usage: node scripts/eval/lib/audit-products.mjs --products PATH --transcript PATH
+//
+// Quote convention (must match apps/api/src/intelligence/memory-extraction-llm.ts):
+//   strip CJK/ASCII quotes, collapse whitespace, strip ellipsis (…/⋯/three+ dots),
+//   never a lone period; then prefix-includes of EVIDENCE_QUOTE_PREFIX_CHARS.
 import { readFileSync } from "node:fs";
+
+/** Keep in lockstep with EVIDENCE_QUOTE_PREFIX_CHARS in memory-extraction-llm.ts */
+export const EVIDENCE_QUOTE_PREFIX_CHARS = 48;
 
 function arg(name) {
   const i = process.argv.indexOf(name);
@@ -12,16 +19,25 @@ export function normalizeQuote(s) {
     .replace(/[“”«»「」『』„\"']/g, "")
     .replace(/[‘’]/g, "")
     .replace(/\s+/g, "")
-    .replace(/[.…⋯]+/g, "");
+    .replace(/[…⋯]+/g, "")
+    .replace(/\.{3,}/g, "");
+}
+
+function hasEllipsis(quote) {
+  return /[…⋯]/.test(quote) || /\.{3}/.test(quote);
 }
 
 export function quoteInTranscript(quote, transcript, { normalize = true } = {}) {
   const t = normalize ? normalizeQuote(transcript) : transcript;
   const q = normalize ? normalizeQuote(quote) : quote;
   if (!q) return false;
-  if (t.includes(q.slice(0, Math.min(40, q.length)))) return true;
-  const parts = String(quote || "").split(/[.…⋯]+/).map((p) => (normalize ? normalizeQuote(p) : p)).filter((p) => p.length >= 8);
-  return parts.length > 0 && parts.every((p) => t.includes(p.slice(0, 40)));
+  const n = EVIDENCE_QUOTE_PREFIX_CHARS;
+  if (t.includes(q.slice(0, Math.min(n, q.length)))) return true;
+  const parts = String(quote || "")
+    .split(/[…⋯]+|\.{3,}/)
+    .map((p) => (normalize ? normalizeQuote(p) : p))
+    .filter((p) => p.length >= 8);
+  return parts.length > 0 && parts.every((p) => t.includes(p.slice(0, n)));
 }
 
 function main() {
@@ -40,7 +56,7 @@ function main() {
   let normMiss = 0;
   for (const m of mem) {
     const q = m.evidenceQuote || "";
-    if (/[.…⋯]/.test(q)) ellipsis += 1;
+    if (hasEllipsis(q)) ellipsis += 1;
     if (!quoteInTranscript(q, transcript, { normalize: false })) exactMiss += 1;
     if (!quoteInTranscript(q, transcript, { normalize: true })) normMiss += 1;
   }

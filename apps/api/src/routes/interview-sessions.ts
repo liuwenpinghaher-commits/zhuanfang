@@ -21,6 +21,7 @@ import { generatePreSignals } from "../intelligence/pre-signals-llm";
 import { classifyTurnComplete } from "../intelligence/turn-endpoint-llm";
 import type { ProductStateRepository } from "../product-state-repository";
 import { replaceStateDurable } from "../product-state-repository";
+import { runStateCommand } from "../state-command";
 import { createLlmBudget } from "../llm-budget";
 import { offloadCompletedSession } from "./raw-material";
 import { reindexTranscript } from "./knowledge";
@@ -133,22 +134,28 @@ export async function registerInterviewSessionRoutes(
       queryEmbedding = undefined;
       recall = undefined;
     }
-    const session = createSessionDraft(state, normalizeMode(payload.mode), normalizeStrength(payload.strength, state), {
+    const mode = normalizeMode(payload.mode);
+    const draftInput = {
       ...(searchBriefId ? { searchBriefId } : {}),
       ...(topicHint ? { topicHint } : {}),
       ...(relatedThemeIds.length > 0 ? { relatedThemeIds } : {}),
       ...(queryEmbedding ? { queryEmbedding } : {}),
       ...(recall ? { recall } : {})
-    });
-    // The deterministic card (createSessionDraft → buildInterviewCard) is already
-    // de-hardcoded/personalized, so "开始专访" returns instantly. The LLM card
-    // enrichment used to block here ~5s on a live call; moved off the create
-    // critical path for responsiveness. The diary still uses real LLM at /end.
-    const nextState = upsertSession(state, session);
-
-    // state 必须是 replaceState 返回的权威态(revision 已 bump):回传入参会让前端 adoptServerState
-    // 记下过期 revision,finalize/创建后的第一次编辑 PUT 必 409、被"改动已被其他更新覆盖"丢弃(真实业务 E2E 实测)。
-    const persisted = /*durable*/await replaceStateDurable(repository, nextState);
+    };
+    // Embed/recall already ran off the write slot (route is exempt). Final write is a
+    // short CAS so a hanging create cannot freeze login.
+    let session: InterviewSession | null = null;
+    const persisted = await runStateCommand(
+      repository,
+      (latest) => {
+        session = createSessionDraft(latest, mode, normalizeStrength(payload.strength, latest), draftInput);
+        return upsertSession(latest, session);
+      },
+      { writeGate: options.writeGate, label: "command:session-create" }
+    );
+    if (!session || !persisted) {
+      return reply.code(500).send({ error: "建场未能写入。" });
+    }
     return { session, state: persisted };
   });
 

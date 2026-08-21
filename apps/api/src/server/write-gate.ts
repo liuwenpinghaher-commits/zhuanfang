@@ -273,6 +273,12 @@ export const WRITE_GATE_EXEMPTIONS: WriteGateExemption[] = [
     method: "POST",
     matches: (p) => /^\/api\/interview-sessions\/[^/]+\/turns\/cancel$/.test(p),
     reason: "取消在飞 LLM,自身无整态写;主持句由仍活着的 stream CAS 落库"
+  },
+  {
+    // PR-6: 建场 embed/召回可达 15s。handler 不整段持槽；终写 CAS 追加一场会话。
+    method: "POST",
+    matches: (p) => p === "/api/interview-sessions",
+    reason: "慢 embed+召回;终写=CAS 追加一场(commit 经写门)。/end 与 /turns 不命中本条"
   }
 ];
 

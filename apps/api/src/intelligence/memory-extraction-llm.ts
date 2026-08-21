@@ -147,12 +147,16 @@ export async function extractCandidateMemories(
 // interview session. Mirrors the import-source conversion (ingestImportSource),
 // but stamps sourceType="interview_session"/sourceId so the candidate links back
 // to the conversation it came from. withMemoryCandidateReview scores each one.
+/** Shared with `scripts/eval/lib/audit-products.mjs`. Ellipsis only, never a single `.`. */
+export const EVIDENCE_QUOTE_PREFIX_CHARS = 48;
+
 export function normalizeEvidenceText(s: string): string {
   return String(s || "")
     .replace(/[“”«»「」『』„\"']/g, "")
     .replace(/[‘’]/g, "")
     .replace(/\s+/g, "")
-    .replace(/[.…⋯]+/g, "");
+    .replace(/[…⋯]+/g, "")
+    .replace(/\.{3,}/g, "");
 }
 
 export function matchTurnIdForQuote(
@@ -165,7 +169,7 @@ export function matchTurnIdForQuote(
   for (const turn of turns) {
     if (!turn.id || !turn.content) continue;
     const hay = normalizeEvidenceText(turn.content);
-    if (hay.includes(q.slice(0, Math.min(48, q.length)))) {
+    if (hay.includes(q.slice(0, Math.min(EVIDENCE_QUOTE_PREFIX_CHARS, q.length)))) {
       return { sessionId, turnId: turn.id };
     }
   }

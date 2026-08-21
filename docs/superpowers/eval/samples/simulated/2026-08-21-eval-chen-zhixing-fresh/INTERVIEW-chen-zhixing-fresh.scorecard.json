@@ -34,7 +34,7 @@
     "pendingHitlCandidatesNotConfirmedMemory": true,
     "productAudit": {
       "who": "Grok session 2026-08-21, against PRODUCTS.json + transcript.md",
-      "quoteMatchMethod": "normalize: strip CJK/ASCII quotes, collapse whitespace, split on ellipsis; then substring. Unnormalized exact-substring is not the pass criterion.",
+      "quoteMatchMethod": "normalize: strip CJK/ASCII quotes, collapse whitespace, strip ellipsis (…/⋯/three+ dots, not a lone period); then 48-char prefix includes. Same rule as memory-extraction-llm.ts EVIDENCE_QUOTE_PREFIX_CHARS. Unnormalized exact-substring is not the pass criterion.",
       "recompute": "node scripts/eval/lib/audit-products.mjs --products docs/superpowers/eval/samples/simulated/2026-08-21-eval-chen-zhixing-fresh/PRODUCTS.json --transcript docs/superpowers/eval/samples/simulated/2026-08-21-eval-chen-zhixing-fresh/INTERVIEW-chen-zhixing-fresh.transcript.md",
       "memories": 17,
       "points": 6,
@@ -50,7 +50,7 @@
       "hallucinatedPeopleOrNumbers": 0,
       "allEvidenceQuotesInTranscriptAfterNormalize": true,
       "unnormalizedExactSubstringMisses": 9,
-      "ellipsisInQuotes": 6,
+      "ellipsisInQuotes": 5,
       "pipelineOnlyNotHumanQuality": true,
       "passThreshold": "defectRate <= 0.20"
     },

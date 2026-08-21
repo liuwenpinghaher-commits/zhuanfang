@@ -13,9 +13,11 @@ import { describe, expect, it } from "vitest";
 import type { ImportedMemoryCandidate } from "../../../../src/domain/import";
 import type { BailianChatClient } from "../providers/bailian";
 import {
+  EVIDENCE_QUOTE_PREFIX_CHARS,
   extractCandidateMemories,
   MEMORY_EXTRACT_TIMEOUT_MS,
   matchTurnIdForQuote,
+  normalizeEvidenceText,
   splitTranscriptForMemoryExtract,
   toSessionMemoryCandidates
 } from "./memory-extraction-llm";
@@ -175,6 +177,12 @@ describe("extractCandidateMemories", () => {
       }
     };
     await expect(extractCandidateMemories("长资料", longBody, chat)).rejects.toThrow("slice timeout");
+  });
+
+  it("normalizeEvidenceText keeps a decimal point and uses the 48-char prefix", () => {
+    expect(EVIDENCE_QUOTE_PREFIX_CHARS).toBe(48);
+    expect(normalizeEvidenceText("仿真通过率 0.15")).toContain("0.15");
+    expect(normalizeEvidenceText("先…然后")).toBe("先然后");
   });
 
   it("matchTurnIdForQuote attaches the user turn that contains the quote", () => {

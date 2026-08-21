@@ -325,7 +325,10 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
             }
           );
         },
-        { writeGate: options.writeGate, label: `command:interrupt:${sessionId}` }
+        // Interrupt already holds the HTTP write slot (route is not exempt). Passing
+        // writeGate here would enqueue behind that same slot and deadlock until the
+        // 480s force-release. Naked CAS is the documented path for holders.
+        { label: `command:interrupt:${sessionId}` }
       );
     }
 

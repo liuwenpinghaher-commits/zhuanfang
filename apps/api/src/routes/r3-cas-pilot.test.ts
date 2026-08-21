@@ -10,9 +10,10 @@ import {
   type ProductStateRepository
 } from "../product-state-repository";
 import { StateRevisionConflictError } from "../product-state-repository";
-import { createEmptyProductState, createInitialProductState } from "../../../../src/domain/engine";
-import type { MemoryCandidate, ProductState } from "../../../../src/domain/types";
-import type { BailianEmbeddingClient } from "../providers/bailian";
+import { appendUserTurnOnly, createEmptyProductState, createInitialProductState, createSessionDraft } from "../../../../src/domain/engine";
+import type { InterviewSession, MemoryCandidate, ProductState } from "../../../../src/domain/types";
+import type { BailianChatClient, BailianEmbeddingClient } from "../providers/bailian";
+import { createFakeChatClient } from "../test-helpers/fake-llm-clients";
 
 // ═══ R3 · 试点路由 CAS 换轨:全栈(buildApiServer)行为测试 ═══════════════════════════════
 // 覆盖:①并发不同实体 → 双双成功且都落库(无丢失更新);②并发同一实体 → 确定性一胜一 409;
@@ -39,6 +40,35 @@ function candidate(id: string, text: string): MemoryCandidate {
 function seedWithCandidates(ids: string[]): ProductState {
   return { ...createEmptyProductState(), memoryCandidates: ids.map((id) => candidate(id, `候选-${id}`)) };
 }
+
+function sessionReadyToEnd(): InterviewSession {
+  return appendUserTurnOnly(createSessionDraft(createEmptyProductState(), "daily"), "挂起收工的一句");
+}
+
+function hangingExtractChat(): { client: BailianChatClient; release: () => void } {
+  let release!: () => void;
+  const hang = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const inner = createFakeChatClient();
+  return {
+    release: () => release(),
+    client: {
+      async complete(req) {
+        const prompt = req.messages.map((m) => m.content).join("\n");
+        if (prompt.includes("长期记住") && prompt.includes("candidates")) {
+          await hang;
+        }
+        return inner.complete(req);
+      }
+    }
+  };
+}
+
+const instantEmbed = {
+  providerId: "instant-test",
+  embed: (texts: string[]) => Promise.resolve(texts.map(() => [0.1, 0.2]))
+} as unknown as BailianEmbeddingClient;
 
 describe("R3 试点路由 CAS 换轨(全栈)", () => {
   it("并发编辑两个不同候选 → 都 200 且都落库(无丢失更新)", async () => {
@@ -184,8 +214,10 @@ describe("R3 试点路由 CAS 换轨(全栈)", () => {
     expect(isWriteGateExempt("POST", "/api/state/reset")).toBe(false);
     expect(isWriteGateExempt("POST", "/api/state/purge")).toBe(false);
     expect(isWriteGateExempt("POST", "/api/state/import")).toBe(false);
-    // Long-holder remains create-session embed and /end. Login and /turns no longer hold the slot.
+    // Long-holder is /end only. Login, /turns, and session-create no longer hold the slot.
+    expect(isWriteGateExempt("POST", "/api/interview-sessions")).toBe(true);
     expect(isWriteGateExempt("POST", "/api/interview-sessions/s1/end")).toBe(false);
+    expect(isWriteGateExempt("POST", "/api/realtime-voice/sessions/x/interrupt")).toBe(false);
     expect(isWriteGateExempt("POST", "/api/auth/login")).toBe(true);
     expect(isWriteGateExempt("POST", "/api/auth/logout")).toBe(true);
     expect(isWriteGateExempt("POST", "/api/interview-sessions/s1/turns")).toBe(true);
@@ -208,26 +240,25 @@ describe("R3 试点路由 CAS 换轨(全栈)", () => {
   });
 
   it("D3 场景:长持锁写在途——试点 handler 不排队(422 立即返回),有效写经写门排后、两笔都不丢", async () => {
-    const repo = createInMemoryProductStateRepository(seedWithCandidates(["c1"]));
-    // 可控悬挂的 embedding client:让 POST /api/interview-sessions(锁内路由)在"读态之后、
-    // 写态之前"挂起 —— 精确复刻 D3 反向 clobber 的读写窗口。
-    let releaseEmbed!: (v: number[][]) => void;
-    const hangingEmbed = new Promise<number[][]>((resolve) => {
-      releaseEmbed = resolve;
+    const hangSession = sessionReadyToEnd();
+    const repo = createInMemoryProductStateRepository({
+      ...seedWithCandidates(["c1"]),
+      sessions: [hangSession]
     });
-    const embeddingClient = {
-      providerId: "hanging-test",
-      embed: () => hangingEmbed
-    } as unknown as BailianEmbeddingClient;
-    const server = buildApiServer({ productStateRepository: repo, env: {}, embeddingClient });
+    const hanging = hangingExtractChat();
+    const server = buildApiServer({
+      productStateRepository: repo,
+      env: {},
+      embeddingClient: instantEmbed,
+      bailianChatClient: hanging.client
+    });
     await server.ready();
     try {
-      // ① 锁内长写启动:占住全局写 slot,并停在 await embed 的读写窗口中间。
-      const longWrite = server.inject({ method: "POST", url: "/api/interview-sessions", payload: {} });
-      await new Promise((r) => setTimeout(r, 30)); // 让 preHandler 拿到 slot 并推进到 await embed
+      // ① 锁内长写启动:占住全局写 slot,并停在 /end 抽取 LLM 窗口中间。
+      const longWrite = server.inject({ method: "POST", url: `/api/interview-sessions/${hangSession.id}/end` });
+      await new Promise((r) => setTimeout(r, 40));
 
       // ② 试点路由的【校验类失败】不排队:空 text→422,在长写仍挂着时立即返回。
-      //    (旧全局锁下该请求会被 preHandler 排到长写之后——这正是豁免带来的可观测差异。)
       const invalid = await Promise.race([
         server.inject({ method: "PATCH", url: "/api/memory-candidates/c1", payload: {} }).then((r) => r.statusCode),
         new Promise<string>((r) => setTimeout(() => r("timeout"), 500))
@@ -241,16 +272,15 @@ describe("R3 试点路由 CAS 换轨(全栈)", () => {
         validSettled = true;
       });
       await new Promise((r) => setTimeout(r, 50));
-      expect(validSettled).toBe(false); // commit 没有裸落进长写的读写窗口中间
+      expect(validSettled).toBe(false);
 
-      // ④ 放行长写 → 两笔按序落库,谁都不丢:会话创建(长写)与候选编辑(试点写)同时存活。
-      releaseEmbed([[0.1, 0.2]]);
+      hanging.release();
       const [longRes, validRes] = await Promise.all([longWrite, validWrite]);
       expect(longRes.statusCode).toBe(200);
       expect(validRes.statusCode).toBe(200);
       const finalState = repo.getState();
-      expect(finalState.sessions.length).toBe(1); // 长写的成果在
-      expect(finalState.memoryCandidates[0]!.text).toBe("窗口期编辑"); // 试点写的成果也在(未被整态回滚)
+      expect(finalState.sessions.find((s) => s.id === hangSession.id)?.status).toBe("completed");
+      expect(finalState.memoryCandidates[0]!.text).toBe("窗口期编辑");
     } finally {
       await server.close();
     }
@@ -261,15 +291,12 @@ describe("R3 试点路由 CAS 换轨(全栈)", () => {
 // 动机:豁免表↔路由 CAS↔注册传 writeGate 是三向约定,任一处静默漏配(尤其"注册时漏传
 // writeGate")都会让该路由的 commit 绕过全局写门、裸落进长持锁写的读写窗口 → 无声反向 clobber
 // (最隐蔽的失败模式)。此测试对每条豁免 CAS 路由构造 D3 窗口,断言其 commit【确实经写门序列化】:
-//   构造:用 topicHint 携哨兵的 create-session 长写在 embed 处永久挂起、持有全局写 slot;
+//   构造:用一场已有用户句的 /end 在抽取 LLM 处永久挂起、持有全局写 slot;
 //   ①有效写不排队进 handler,但其 CAS commit 必须【卡在写门后】(长写释放前不 settle)——
 //     若漏传 writeGate,commit 会在长写挂起期间裸执行、提前 settle → 本断言变红;
-//   ②放行长写后,长写(整态 replaceState 无 expectedRevision)与试点写【双双存活】——
-//     若漏传 writeGate,长写 resume 会以读时旧基整态回滚掉试点写 → 落库校验变红。
-// 两道断言正交,任一命中即证明"漏传 writeGate→绕门 clobber"。哨兵只让 create-session 的 topic
-// embed 挂起;试点路由自身若有 embed(PATCH 记忆记录),其文本不含哨兵 → 即时 resolve,不受影响。
-
-const HANG_SENTINEL = "R3_D3_HANG_SENTINEL";
+//   ②放行长写后,/end 与试点写【双双存活】——
+//     若漏传 writeGate,/end resume 会以读时旧基整态回滚掉试点写 → 落库校验变红。
+// 两道断言正交,任一命中即证明"漏传 writeGate→绕门 clobber"。建场 embed 已豁免,不能再当 hang holder。
 
 function memoryRecord(id: string, text: string) {
   return {
@@ -394,41 +421,39 @@ describe("R3(I1)豁免 CAS 路由 × writeGate 接线守卫", () => {
 
   for (const c of buildWiringCases()) {
     it(`${c.label} 的 CAS commit 经写门序列化(漏传 writeGate 即变红)`, async () => {
-      const repo = createInMemoryProductStateRepository(c.build());
-      // 哨兵 embedding client:仅 create-session 的 topic(含哨兵)挂起并持锁;其余 embed 即时 resolve。
-      let releaseHang!: (v: number[][]) => void;
-      const hang = new Promise<number[][]>((resolve) => {
-        releaseHang = resolve;
+      const hangSession = sessionReadyToEnd();
+      const built = c.build();
+      const repo = createInMemoryProductStateRepository({
+        ...built,
+        sessions: [...built.sessions, hangSession]
       });
-      const embeddingClient = {
-        providerId: "d3-wiring-test",
-        embed: (texts: string[]) =>
-          texts.some((t) => t.includes(HANG_SENTINEL)) ? hang : Promise.resolve(texts.map(() => [0.1, 0.2]))
-      } as unknown as BailianEmbeddingClient;
-      const server = buildApiServer({ productStateRepository: repo, env: {}, embeddingClient });
+      const hanging = hangingExtractChat();
+      const server = buildApiServer({
+        productStateRepository: repo,
+        env: {},
+        embeddingClient: instantEmbed,
+        bailianChatClient: hanging.client
+      });
       await server.ready();
       try {
-        // ① 锁内长写(create-session,topicHint 携哨兵)抓住全局写 slot 并在 embed 处永久挂起。
-        const longWrite = server.inject({ method: "POST", url: "/api/interview-sessions", payload: { topicHint: HANG_SENTINEL } });
-        await tick(30); // 让 preHandler 拿到 slot 并推进到 await embed
+        const longWrite = server.inject({ method: "POST", url: `/api/interview-sessions/${hangSession.id}/end` });
+        await tick(40);
 
-        // ② 试点有效写:handler 不排队(豁免),但其 CAS commit 必须卡在写门后 → 长写释放前不 settle。
         const pilotWrite = server.inject({ method: c.method, url: c.url, payload: c.payload as never });
         let settled = false;
         void pilotWrite.then(() => {
           settled = true;
         });
         await tick(60);
-        expect(settled).toBe(false); // ★漏传 writeGate → commit 裸执行提前 settle,此断言变红
+        expect(settled).toBe(false);
 
-        // ③ 放行长写 → 长写(整态无 expectedRevision)与试点写双双存活(无反向 clobber)。
-        releaseHang([[0.1, 0.2]]);
+        hanging.release();
         const [longRes, pilotRes] = await Promise.all([longWrite, pilotWrite]);
         expect(longRes.statusCode).toBe(200);
         expect(pilotRes.statusCode).toBe(200);
         const finalState = repo.getState();
-        expect(finalState.sessions.length).toBe(1); // 长写成果在
-        c.verify(finalState); // ★漏传 writeGate → 长写 resume 整态回滚试点写,此断言变红
+        expect(finalState.sessions.find((s) => s.id === hangSession.id)?.status).toBe("completed");
+        c.verify(finalState);
       } finally {
         await server.close();
       }

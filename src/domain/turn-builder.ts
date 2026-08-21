@@ -247,7 +247,7 @@ export function receiveUserTurnWithAssistant(
   };
 }
 
-/** Persist the guest utterance alone (stream/JSON start). Same last user text is a no-op. */
+/** Persist the guest utterance alone (stream/JSON start). Consecutive identical text is a no-op so a retry does not double the line. */
 export function appendUserTurnOnly(session: InterviewSession, userText: string): InterviewSession {
   const trimmed = userText.trim();
   if (!trimmed) {
