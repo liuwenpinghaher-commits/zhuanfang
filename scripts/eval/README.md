@@ -18,7 +18,9 @@ EVAL_TIER=full EVAL_MODALITY=voice node scripts/eval/run.mjs
 没有 HTTP 注册。密码只放未跟踪文件 `/opt/zhuanfang/app/.env.eval.local`，不要进 git，不要复用 `smoke_a`。
 
 ```bash
-ssh -i ~/.ssh/id_tencent_lh ubuntu@82.157.130.140
+# SSH 目标与密钥从本机环境读取，不要写进仓库
+# EVAL_SSH_HOST  EVAL_SSH_KEY
+ssh -i "$EVAL_SSH_KEY" "$EVAL_SSH_HOST"
 # 容器内调用 createUser（路径随镜像）
 docker exec -i app-zhuanfang-1 node --input-type=module -e "
   import { createUser, userExists } from './apps/api/src/auth/users.ts';
@@ -35,7 +37,7 @@ docker exec -i app-zhuanfang-1 node --input-type=module -e "
 部署机已装 Node 22、Google Chrome、Playwright Chromium、espeak-ng/sox。
 
 ```bash
-ssh ubuntu@82.157.130.140
+ssh -i "$EVAL_SSH_KEY" "$EVAL_SSH_HOST"
 bash /opt/zhuanfang/app/scripts/eval/run-voice-on-demo.sh
 ```
 

@@ -7,7 +7,7 @@
 | **日期** | 2026-08-21 |
 | **状态** | Draft · Rev D（Open Q1 已拍板：demo 另配 embeddings 专用钥，不进 git，不用本机向量模型） |
 | **仓库** | `/home/admin/projects/zhuanfang` |
-| **验收环境** | 已部署 demo `https://zhuanfang.qing.blue`（SSH `ubuntu@82.157.130.140`，应用 `/opt/zhuanfang/app`） |
+| **验收环境** | 已部署 demo `https://zhuanfang.qing.blue`（宿主机 SSH 从部署配置读取，不写入仓库） |
 | **本文性质** | 系统改造（评测只作证据）。评测框架见 `docs/plans/2026-08-20-unified-adversarial-eval.md`，不在此重造。 |
 | **现场指标** | 2026-08-21 `GET /api/health` 进程环（n=14，**不是**结构常数）：`ttfaP50Ms=31136`、`sttToLlm p50=13570`、`llmTtft p50=17754`、`ttsTtfb p50=0`、`vadEndToStt p50=147`、`interruptCount=1`。方向：两段空等（落轮 ~13s + 整段 LLM ~18s）。验收必须用**热更后的新样本**（n≥10），见 §Observability。 |
 

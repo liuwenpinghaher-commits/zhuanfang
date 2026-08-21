@@ -77,8 +77,15 @@ export function markerVisibleInState(state, marker) {
 
 async function sshPrintenv(env) {
   const { spawn } = await import("node:child_process");
-  const host = env.EVAL_SSH_HOST || "ubuntu@82.157.130.140";
-  const key = env.EVAL_SSH_KEY || `${process.env.HOME}/.ssh/id_tencent_lh`;
+  const host = String(env.EVAL_SSH_HOST ?? "").trim();
+  const key = String(env.EVAL_SSH_KEY ?? "").trim();
+  if (!host || !key) {
+    return {
+      code: 1,
+      out: "",
+      err: "EVAL_SSH_HOST and EVAL_SSH_KEY must be set; do not hardcode deploy SSH in the repo"
+    };
+  }
   const container = env.EVAL_SSH_CONTAINER || "app-zhuanfang-1";
   const args = [
     "-i",

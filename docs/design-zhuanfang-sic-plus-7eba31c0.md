@@ -770,7 +770,7 @@ flowchart TB
 - `docs/interview-rubric.md`、`docs/runbooks/ALERTS.md`  
 - `docs/MAINTENANCE-ROADMAP.md`（**D4.\* = a11y，≠ GATE-HUMAN-VALUE**）  
 - 代码：`auth.ts`、`auth-bootstrap.ts`、`server.ts`、`user-scoped-repository.ts`、`health.ts`、`rag.ts`、`chat.ts`、`strategy.ts`、`turn-builder.ts`、`types.ts`、`runtime-metrics.ts`、`shutdown.ts`、`knowledge.ts`、`main.tsx`  
-- Demo：`www.qing.blue` / `ubuntu@82.157.130.140` `/opt/zhuanfang/app`
+- Demo：`www.qing.blue` / 宿主机应用目录从部署配置读取（不写入仓库）
 
 ---
 

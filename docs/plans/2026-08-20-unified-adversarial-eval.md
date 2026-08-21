@@ -9,7 +9,7 @@
 | 状态 | Draft |
 | 仓库 | `/home/admin/projects/zhuanfang` |
 | HEAD | `e9db733` (`docs(sic+): record demo USER_SCOPED=1 dual-user isolation smoke`) |
-| 验收环境 | 已部署 demo：`https://zhuanfang.qing.blue`（SSH `ubuntu@82.157.130.140`，应用 `/opt/zhuanfang/app`） |
+| 验收环境 | 已部署 demo：`https://zhuanfang.qing.blue`（宿主机 SSH 从部署配置读取，不写入仓库） |
 
 ---
 
@@ -200,7 +200,7 @@ docs/superpowers/eval/samples/
 | 角色 | 机器 | 做什么 |
 |------|------|--------|
 | 驱动器（文本） | Grok 机可以 | 轻量 HTTP。`EVAL_MODALITY=text` 时 **不得** import `playwright` / `fakeMic` |
-| 驱动器（语音） | **demo 宿主机** `ubuntu@82.157.130.140`，**不是** `app-zhuanfang-1` 容器 | 对 `https://zhuanfang.qing.blue` 跑 fakeMic；浏览器已装在宿主机。禁止容器内 `npx playwright install`。**允许工作日白天**打公网 ASR；不要等夜里/周末。仍须 `EVAL_MODALITY=voice\|both`，Grok 机不得跑 Playwright |
+| 驱动器（语音） | **demo 宿主机**（SSH 从 `EVAL_SSH_HOST` 读取），**不是** `app-zhuanfang-1` 容器 | 对 `https://zhuanfang.qing.blue` 跑 fakeMic；浏览器已装在宿主机。禁止容器内 `npx playwright install`。**允许工作日白天**打公网 ASR；不要等夜里/周末。仍须 `EVAL_MODALITY=voice\|both`，Grok 机不得跑 Playwright |
 | 被测系统 | demo compose | 评测仓 `/app/.data/users/user_eval_sim/surreal` |
 | CI vitest | 现有 | craft-golden、echo-guard、**新增 `assertSimulatedGate`** |
 
@@ -725,8 +725,8 @@ Scheme C 报告不自动改写。
 2. **PR-0.5** 在 demo 机创建用户（无 HTTP）。可复制：
 
 ```bash
-# 在 ubuntu@82.157.130.140，密码只写入未跟踪文件
-ssh -i ~/.ssh/id_tencent_lh ubuntu@82.157.130.140
+# 在 demo 宿主机（SSH 从 EVAL_SSH_HOST / EVAL_SSH_KEY 读取），密码只写入未跟踪文件
+ssh -i "$EVAL_SSH_KEY" "$EVAL_SSH_HOST"
 # 容器内调用库函数（路径随镜像；实现 PR 以实际 dist 为准）
 docker exec -i app-zhuanfang-1 node --input-type=module -e "
   import { createUser, userExists } from './apps/api/src/auth/users.ts';
