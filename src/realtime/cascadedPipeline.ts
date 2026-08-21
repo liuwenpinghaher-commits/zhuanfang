@@ -845,14 +845,7 @@ export function connectCascadedPipeline(
       if (opening) {
         setState("speaking");
         const startedAtMs = Date.now();
-        try {
-          await Promise.race([
-            tts.speak([opening]),
-            new Promise<never>((_, reject) => {
-              setTimeout(() => reject(new Error("opening tts timeout")), 12_000);
-            }),
-          ]);
-        } catch (error) { reportTtsPlaybackInterrupted(error); }
+        try { await tts.speak([opening]); } catch (error) { reportTtsPlaybackInterrupted(error); }
         turnAssembler.noteTtsPlayback({ text: opening, startedAtMs, endedAtMs: Date.now() });
         releaseMicAfterGuard();
       }

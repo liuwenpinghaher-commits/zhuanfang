@@ -1,8 +1,9 @@
 {
   "id": "VOICE-endpoint",
+  "topicHint": "授权那次救火",
   "capabilities": ["C-voice-asr-endpointing"],
   "isolation": "isolate",
-  "maxUserTurns": 2,
+  "maxUserTurns": 1,
   "modality": "voice",
   "intraSilenceMs": 300,
   "guest": {

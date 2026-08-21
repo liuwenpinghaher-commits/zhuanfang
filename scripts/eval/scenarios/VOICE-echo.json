@@ -1,5 +1,6 @@
 {
   "id": "VOICE-echo",
+  "topicHint": "授权那次救火",
   "capabilities": ["C-voice-echo", "C-voice-one-shot"],
   "isolation": "isolate",
   "maxUserTurns": 1,

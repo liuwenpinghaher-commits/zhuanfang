@@ -21,6 +21,7 @@ import { guestReply, isCounselorPattern } from "./lib/guest-simulator.mjs";
 import { buildScorecard } from "./lib/scorer.mjs";
 import { writeCoverageSummary, writeScenarioArtifacts } from "./lib/artifacts.mjs";
 import { assertSimulatedGate } from "./lib/simulated-gate.mjs";
+import { assessVoiceBook } from "./lib/voice-book.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCENARIO_DIR = join(HERE, "scenarios");
@@ -315,6 +316,7 @@ async function main() {
   const scenarioIds = skipText ? [] : ids.length ? ids : pack.ids;
   const coverageAll = [];
   const ran = [];
+  let voiceFailed = false;
 
   for (const id of scenarioIds) {
     if (budgets.host >= budgets.hostMax) break;
@@ -379,20 +381,44 @@ async function main() {
       .filter(Boolean);
     for (const id of voiceIds.length ? voiceIds : pack.voiceIds ?? []) {
       const scenario = loadScenario(id);
-      const text = scenario.guest?.behaviors?.[0]?.text ?? "评测语音一句。";
+      const topicHint = scenario.topicHint || "授权那次救火";
+      const lines = (scenario.guest?.behaviors ?? []).map((b) => b.text).filter(Boolean);
       try {
         assertPurgeAllowed({ env, meUsername: await client.me(), wrappingProven: isolation.proven });
-        await client.purgeAll();
-        await client.createSession({ mode: "daily", topicHint: scenario.id });
+        let prepared = false;
+        for (let attempt = 1; attempt <= 3 && !prepared; attempt++) {
+          try {
+            await client.purgeAll();
+            await client.createSession({ mode: "daily", topicHint });
+            prepared = true;
+          } catch (err) {
+            log(JSON.stringify({ event: "eval_voice_prepare_retry", id, attempt, error: String(err.message ?? err).slice(0, 160) }));
+            await new Promise((r) => setTimeout(r, 2000 * attempt));
+          }
+        }
+        if (!prepared) throw new Error("voice prepare failed after retries");
       } catch (err) {
         log(JSON.stringify({ event: "eval_voice_prepare_failed", id, error: String(err.message ?? err).slice(0, 200) }));
       }
       let utterances = [];
       try {
-        const fixture = await tts.synthesizeCanonical(text, env);
-        utterances = fixture.utterances ?? [];
+        for (const line of lines.length ? lines : ["评测语音一句。"]) {
+          const fixture = await tts.synthesizeCanonical(line, env);
+          utterances = utterances.concat(fixture.utterances ?? []);
+        }
       } catch (err) {
         log(JSON.stringify({ event: "eval_tts_skip", id, error: err.message }));
+      }
+      async function pollBook() {
+        const st = await client.getState();
+        const session = (st.sessions ?? [])[0] ?? {};
+        const turns = session.turns ?? [];
+        return {
+          title: session.title || session.card?.title || "",
+          turns: turns.map((t) => ({ role: t.role, content: t.content })),
+          userTurns: turns.filter((t) => t.role === "user").length,
+          assistantTurns: turns.filter((t) => t.role === "assistant").length
+        };
       }
       let voiceResult = { ok: false, userTurns: 0, error: "not_run" };
       try {
@@ -403,20 +429,25 @@ async function main() {
           utterances,
           username: env.EVAL_USERNAME,
           password: env.EVAL_PASSWORD,
-          pollUserTurns: async () => {
-            const st = await client.getState();
-            const sessions = st.sessions ?? [];
-            return sessions.reduce(
-              (n, s) => n + (s.turns ?? []).filter((t) => t.role === "user").length,
-              0
-            );
-          },
+          pollBook,
           log
         });
       } catch (err) {
         voiceResult = { ok: false, userTurns: 0, error: String(err.message ?? err).slice(0, 400) };
         log(JSON.stringify({ event: "eval_voice_skip", id, error: voiceResult.error }));
       }
+      let session = {};
+      let turns = [];
+      try {
+        const book = await pollBook();
+        session = { title: book.title, card: { title: book.title } };
+        turns = book.turns ?? [];
+      } catch (err) {
+        log(JSON.stringify({ event: "eval_voice_book_read_failed", id, error: String(err.message ?? err).slice(0, 160) }));
+      }
+      const quality = assessVoiceBook({ scenario, session, turns, voice: voiceResult });
+      voiceResult.ok = Boolean(voiceResult.ok) && quality.pass;
+      if (!voiceResult.ok) voiceFailed = true;
       const scorecard = {
         source: "simulated",
         scenarioId: id,
@@ -424,23 +455,33 @@ async function main() {
         gateHumanValue: "insufficient_data",
         engineering_pr_claims_go: false,
         gate_status: "insufficient_data",
-        hard: { userTurns: voiceResult.userTurns ?? 0, turns: voiceResult.userTurns ?? 0 },
-        voice: voiceResult,
+        hard: {
+          userTurns: turns.filter((t) => t.role === "user").length,
+          turns: turns.length
+        },
+        voice: { ...voiceResult, turns: undefined, quality },
         gates: { humanValue: "insufficient_data", engineeringGo: false }
       };
       assertSimulatedGate(scorecard);
-      const transcript = [
-        { role: "user", content: text },
-        { role: "system", content: JSON.stringify(voiceResult) }
-      ];
+      const transcript = turns.length
+        ? turns
+        : [{ role: "user", content: lines[0] ?? "" }, { role: "system", content: JSON.stringify(voiceResult) }];
       writeScenarioArtifacts({ rootDir: outDir, scenarioId: id, transcript, scorecard });
       ran.push(id);
-      log(JSON.stringify({ event: "eval_scenario_done", id, userTurns: voiceResult.userTurns ?? 0, voiceOk: voiceResult.ok }));
+      log(JSON.stringify({
+        event: "eval_scenario_done",
+        id,
+        userTurns: scorecard.hard.userTurns,
+        voiceOk: voiceResult.ok,
+        notes: quality.notes
+      }));
+      await new Promise((r) => setTimeout(r, 3000));
     }
   }
 
   writeCoverageSummary(outDir, coverageAll);
   log(JSON.stringify({ event: "eval_run_complete", ran, outDir, hostCalls: budgets.host }));
+  if (voiceFailed) process.exitCode = 1;
 }
 
 main().catch((err) => {

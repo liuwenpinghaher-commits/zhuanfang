@@ -1,0 +1,42 @@
+{
+  "source": "simulated",
+  "scenarioId": "VOICE-echo",
+  "user_value_verdict": "insufficient_data",
+  "gateHumanValue": "insufficient_data",
+  "engineering_pr_claims_go": false,
+  "gate_status": "insufficient_data",
+  "hard": {
+    "userTurns": 1,
+    "turns": 2
+  },
+  "voice": {
+    "ok": true,
+    "scenarioId": "VOICE-echo",
+    "userTurns": 1,
+    "assistantTurns": 1,
+    "echoSpokeEarly": true,
+    "echoCreatedTurn": false,
+    "bargeAttempted": false,
+    "title": "日常复盘：继续追问：授权那次救火",
+    "quality": {
+      "pass": true,
+      "doubled": false,
+      "thinHost": false,
+      "title": "日常复盘：继续追问：授权那次救火",
+      "user": [
+        "我先说一句，授权让我最难受的是那次救火。"
+      ],
+      "assistant": [
+        "具体是哪一次救火？当时发生了什么？"
+      ],
+      "echoOk": true,
+      "endpointOk": true,
+      "bargeOk": true,
+      "notes": []
+    }
+  },
+  "gates": {
+    "humanValue": "insufficient_data",
+    "engineeringGo": false
+  }
+}

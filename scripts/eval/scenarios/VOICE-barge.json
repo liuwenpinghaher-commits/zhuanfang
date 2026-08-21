@@ -1,12 +1,14 @@
 {
   "id": "VOICE-barge",
+  "topicHint": "授权那次救火",
   "capabilities": ["C-voice-bargein"],
   "isolation": "isolate",
   "maxUserTurns": 2,
   "modality": "voice",
   "guest": {
     "behaviors": [
-      { "at": "turn==0", "kind": "barge_in", "text": "等一下，我想打断你。" }
+      { "at": "turn==0", "text": "我先说一句：授权让我最难受的是那次救火。" },
+      { "at": "turn==1", "kind": "barge_in", "text": "等一下，我想打断你。" }
     ]
   }
 }

@@ -5,9 +5,17 @@
  */
 import { installFakeMic, speak } from "./fake-mic.mjs";
 
-async function userTurnCount(pollUserTurns) {
-  if (typeof pollUserTurns !== "function") return 0;
-  return Number(await pollUserTurns()) || 0;
+async function emptyBook() {
+  return { title: "", turns: [], userTurns: 0, assistantTurns: 0 };
+}
+
+async function readBook(pollBook) {
+  if (typeof pollBook !== "function") return emptyBook();
+  try {
+    return { ...(await emptyBook()), ...(await pollBook()) };
+  } catch {
+    return emptyBook();
+  }
 }
 
 async function maybeLogin(page, username, password) {
@@ -20,6 +28,87 @@ async function maybeLogin(page, username, password) {
   }
 }
 
+async function waitCaptureReady(page) {
+  await page.waitForFunction(
+    () => {
+      const capture = String(window.__asrCapture ?? "");
+      return typeof window.__asrFeedPcm === "function"
+        && capture !== ""
+        && capture !== "starting";
+    },
+    { timeout: 30000 }
+  ).catch(() => undefined);
+}
+
+async function waitListening(page, timeoutMs = 25000) {
+  const listening = page.getByText("聆听");
+  const speaking = page.getByText("AI 正在回应");
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const isListening = await listening.isVisible().catch(() => false);
+    const isSpeaking = await speaking.isVisible().catch(() => false);
+    if (isListening && !isSpeaking) return true;
+    await page.waitForTimeout(400);
+  }
+  return false;
+}
+
+async function feedPcm(page, pcmB64) {
+  return page.evaluate(async (b64) => {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const i16 = new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 2));
+    const f32 = new Float32Array(i16.length);
+    for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
+    const feed = window.__asrFeedPcm;
+    if (typeof feed !== "function") return { samples: 0, ticks: 0, peak: 0 };
+    const CHUNK = 4096;
+    for (let i = 0; i < f32.length; i += CHUNK) {
+      feed(Array.from(f32.subarray(i, i + CHUNK)));
+      await new Promise((r) => setTimeout(r, 40));
+    }
+    feed(new Array(16000).fill(0));
+    return {
+      samples: f32.length,
+      ticks: Number(window.__asrTicks ?? 0),
+      peak: Number(window.__asrPeak ?? 0)
+    };
+  }, pcmB64);
+}
+
+async function deliverUtterance(page, pcm, log) {
+  const peakBefore = await page.evaluate(() => Number(window.__asrPeak ?? 0));
+  const playedMs = await page.evaluate((b64) => window.__fakeMic.play(b64), pcm);
+  await page.waitForTimeout(Math.min(500, Number(playedMs) + 80));
+  const info = await page.evaluate(() => ({
+    ticks: Number(window.__asrTicks ?? 0),
+    peak: Number(window.__asrPeak ?? 0),
+    capture: String(window.__asrCapture ?? ""),
+    hasFeed: typeof window.__asrFeedPcm === "function"
+  }));
+  log(JSON.stringify({ event: "eval_asr_ticks", playedMs, ...info }));
+  const gotSound = info.peak - peakBefore >= 0.02 || info.peak >= 0.05;
+  if (!gotSound && info.hasFeed) {
+    const fed = await feedPcm(page, pcm);
+    log(JSON.stringify({ event: "eval_asr_feed", ...fed }));
+  }
+  await page.waitForTimeout(Math.max(900, Number(playedMs) * 0.15 + 900));
+  return info;
+}
+
+async function waitUntil(pollBook, pred, timeoutMs, log, event) {
+  const deadline = Date.now() + timeoutMs;
+  let last = await readBook(pollBook);
+  while (Date.now() < deadline) {
+    if (pred(last)) return last;
+    await new Promise((r) => setTimeout(r, 800));
+    last = await readBook(pollBook);
+  }
+  log(JSON.stringify({ event, userTurns: last.userTurns, assistantTurns: last.assistantTurns, title: String(last.title ?? "").slice(0, 80) }));
+  return last;
+}
+
 export async function deliverVoiceScenario({
   scenario,
   cookie,
@@ -27,12 +116,16 @@ export async function deliverVoiceScenario({
   utterances,
   username,
   password,
+  pollBook,
   pollUserTurns,
   log = console.log
 }) {
   if (!origin.startsWith("https://")) {
     throw new Error("voice adapter requires HTTPS origin (zf_session Secure)");
   }
+  const bookPoll = pollBook ?? (typeof pollUserTurns === "function"
+    ? async () => ({ userTurns: Number(await pollUserTurns()) || 0, assistantTurns: 0, turns: [], title: "" })
+    : null);
   const pw = await import("playwright");
   const { chromium } = pw;
   const launchOpts = {
@@ -46,7 +139,9 @@ export async function deliverVoiceScenario({
     ok: false,
     scenarioId: scenario.id,
     userTurns: 0,
+    assistantTurns: 0,
     echoSpokeEarly: false,
+    echoCreatedTurn: false,
     bargeAttempted: false
   };
   let page;
@@ -86,123 +181,96 @@ export async function deliverVoiceScenario({
     }
     const rec = page.getByLabel("开始录音");
     await rec.click({ timeout: 45000 });
+    const speakingAppeared = page.getByText("AI 正在回应").waitFor({ state: "visible", timeout: 25000 }).then(() => true).catch(() => false);
 
-    const pcm = utterances?.[0]?.pcmBase64;
-    if (!pcm) {
+    const storyPcm = utterances?.[0]?.pcmBase64;
+    if (!storyPcm) {
       result.ok = false;
       result.error = "missing_pcm";
       return result;
     }
+    const bargePcm = utterances?.[1]?.pcmBase64 ?? storyPcm;
+
+    await waitCaptureReady(page);
 
     if (scenario.id === "VOICE-echo") {
-      const speaking = page.getByText("AI 正在回应");
-      const speakingVisible = await speaking.isVisible({ timeout: 8000 }).catch(() => false);
+      const speakingVisible = await speakingAppeared;
       if (speakingVisible) {
-        const before = await userTurnCount(pollUserTurns);
-        await speak(page, pcm, { vadSilenceMs: 800 });
+        const before = await readBook(bookPoll);
+        await deliverUtterance(page, storyPcm, log);
         result.echoSpokeEarly = true;
-        await page.waitForTimeout(1500);
-        const afterEcho = await userTurnCount(pollUserTurns);
-        result.echoCreatedTurn = afterEcho > before;
+        await page.waitForTimeout(1600);
+        const afterEcho = await readBook(bookPoll);
+        result.echoCreatedTurn = afterEcho.userTurns > before.userTurns;
+        log(JSON.stringify({
+          event: "eval_echo_early",
+          createdTurn: result.echoCreatedTurn,
+          before: before.userTurns,
+          after: afterEcho.userTurns
+        }));
       }
     }
 
-    const listening = page.getByText("聆听");
-    const speaking = page.getByText("AI 正在回应");
-    await page.waitForFunction(
-      () => {
-        const capture = String(window.__asrCapture ?? "");
-        return typeof window.__asrFeedPcm === "function"
-          && capture !== ""
-          && capture !== "starting";
-      },
-      { timeout: 30000 }
-    ).catch(() => undefined);
-    const listenDeadline = Date.now() + 20000;
-    while (Date.now() < listenDeadline) {
-      const isListening = await listening.isVisible().catch(() => false);
-      const isSpeaking = await speaking.isVisible().catch(() => false);
-      const capture = await page.evaluate(() => String(window.__asrCapture ?? "")).catch(() => "");
-      if (isListening && !isSpeaking) break;
-      if (capture && capture !== "starting" && !isSpeaking) break;
-      await page.waitForTimeout(500);
-    }
-    await page.waitForTimeout(800);
-    const hasMic = await page.evaluate(() => Boolean(window.__fakeMic));
-    await page.evaluate(async () => {
-      try {
-        const Ctx = window.AudioContext || window.webkitAudioContext;
-        const c = new Ctx();
-        await c.resume();
-        await c.close();
-      } catch {
-        /* ignore */
-      }
-    });
+    await waitListening(page, 28000);
+    await page.waitForTimeout(600);
     const statusText = await page.locator(".status-dot").locator("xpath=..").innerText().catch(() => "");
-    log(JSON.stringify({ event: "eval_voice_ready", hasMic, statusText: String(statusText).slice(0, 80) }));
-    const beforeSpeak = await userTurnCount(pollUserTurns);
-    const playedMs = await page.evaluate((b64) => window.__fakeMic.play(b64), pcm);
-    log(JSON.stringify({ event: "eval_voice_spoke", playedMs, beforeSpeak }));
-    await page.waitForTimeout(400);
-    const captureInfo = await page.evaluate(() => ({
-      ticks: Number(window.__asrTicks ?? 0),
-      peak: Number(window.__asrPeak ?? 0),
-      capture: String(window.__asrCapture ?? ""),
-      hasFeed: typeof window.__asrFeedPcm === "function"
-    }));
-    log(JSON.stringify({ event: "eval_asr_ticks", ...captureInfo }));
-    if (captureInfo.hasFeed) {
-      const fed = await page.evaluate(async (b64) => {
-        const bin = atob(b64);
-        const bytes = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-        const i16 = new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 2));
-        const f32 = new Float32Array(i16.length);
-        for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
-        const feed = window.__asrFeedPcm;
-        const CHUNK = 4096;
-        for (let i = 0; i < f32.length; i += CHUNK) {
-          feed(Array.from(f32.subarray(i, i + CHUNK)));
-          await new Promise((r) => setTimeout(r, 40));
-        }
-        feed(new Array(16000).fill(0));
-        return {
-          samples: f32.length,
-          ticks: Number(window.__asrTicks ?? 0),
-          peak: Number(window.__asrPeak ?? 0)
-        };
-      }, pcm);
-      log(JSON.stringify({ event: "eval_asr_feed", ...fed }));
-    }
-    await page.waitForTimeout(2200);
-    const deadline = Date.now() + 50000;
-    let dumped = false;
-    while (Date.now() < deadline) {
-      const n = await userTurnCount(pollUserTurns);
-      if (n > beforeSpeak) {
-        result.userTurns = n;
-        break;
-      }
-      if (!dumped) {
-        dumped = true;
-        const panel = await page.locator(".voice-panel").innerText().catch(() => "");
-        const notice = await page.locator(".notice, .banner, [class*='notice']").first().innerText().catch(() => "");
-        log(JSON.stringify({ event: "eval_voice_ui", panel: String(panel).slice(0, 200), notice: String(notice).slice(0, 160) }));
-      }
-      await page.waitForTimeout(2000);
-    }
-    result.userTurns = await userTurnCount(pollUserTurns);
+    log(JSON.stringify({ event: "eval_voice_ready", statusText: String(statusText).slice(0, 80) }));
+
+    const beforeStory = await readBook(bookPoll);
+    await deliverUtterance(page, storyPcm, log);
+    const hostSpeech = scenario.id === "VOICE-barge"
+      ? page.getByText("AI 正在回应").waitFor({ state: "visible", timeout: 50000 }).then(() => true).catch(() => false)
+      : Promise.resolve(false);
+    await waitUntil(
+      bookPoll,
+      (b) => b.userTurns > beforeStory.userTurns,
+      50000,
+      log,
+      "eval_voice_wait_user"
+    );
+    await waitUntil(
+      bookPoll,
+      (b) => b.assistantTurns > beforeStory.assistantTurns,
+      45000,
+      log,
+      "eval_voice_wait_host"
+    );
 
     if (scenario.id === "VOICE-barge") {
-      const hostSpeaking = await page.getByText("AI 正在回应").isVisible({ timeout: 20000 }).catch(() => false);
-      if (hostSpeaking) {
+      const hostSpeaking = await hostSpeech;
+      const bookNow = await readBook(bookPoll);
+      const hostStarted = hostSpeaking || bookNow.assistantTurns > beforeStory.assistantTurns;
+      if (hostStarted) {
         result.bargeAttempted = true;
-        await speak(page, pcm, { vadSilenceMs: 1700 });
+        const beforeBarge = await readBook(bookPoll);
+        await speak(page, bargePcm, { vadSilenceMs: 900 });
+        const bargePeak = await page.evaluate(() => Number(window.__asrPeak ?? 0));
+        if (bargePeak < 0.05) await feedPcm(page, bargePcm);
+        await waitUntil(
+          bookPoll,
+          (b) => b.userTurns > beforeBarge.userTurns || b.assistantTurns > beforeBarge.assistantTurns,
+          25000,
+          log,
+          "eval_voice_wait_barge"
+        );
+        log(JSON.stringify({ event: "eval_barge_spoke" }));
+      } else {
+        log(JSON.stringify({ event: "eval_barge_no_host_speech" }));
       }
     }
 
-    result.ok = result.userTurns > 0;
+    const finalBook = await readBook(bookPoll);
+    result.userTurns = finalBook.userTurns;
+    result.assistantTurns = finalBook.assistantTurns;
+    result.turns = finalBook.turns;
+    result.title = finalBook.title;
+    result.ok = result.userTurns > 0 && result.assistantTurns > 0;
+    if (scenario.id === "VOICE-echo") {
+      result.ok = result.ok && result.echoSpokeEarly && !result.echoCreatedTurn;
+    }
+    if (scenario.id === "VOICE-barge") {
+      result.ok = result.ok && result.bargeAttempted;
+    }
     if (!result.ok) {
       try {
         await page.screenshot({ path: `voice-fail-${scenario.id}.png`, fullPage: true });
@@ -210,7 +278,7 @@ export async function deliverVoiceScenario({
         /* */
       }
     }
-    log(JSON.stringify({ event: "eval_voice_done", ...result }));
+    log(JSON.stringify({ event: "eval_voice_done", ...result, turns: undefined }));
     return result;
   } catch (err) {
     try {
