@@ -18,11 +18,8 @@
     "userChars": 6888,
     "hostChars": 984,
     "chars": 7872,
-    "statusAtDump": "active",
-    "ended": true,
-    "endError": "专访归档失败：The operation was aborted due to timeout。会话未结束，可重试。",
-    "endRetry": { "status": 502, "ms": 60168 },
-    "endAfterDeploy": { "status": 200, "ms": 251823, "pendingMemory": 13, "points": 7, "questions": 3, "debts": 3 }
+    "statusAtDump": "completed",
+    "ended": true
   },
   "book": {
     "throughLine": "从一次万卡刷榜实验，一路追到配比签字、接管轨迹怎么做成偏好、发版谁背锅、留存掉了怎么补、算力烧光后怎么跟老板要卡",
@@ -46,8 +43,39 @@
     "title": "日常复盘：继续追问：在头部实验室训练大模型的真实经历、对 AI 范式与技术预测的判断、组织与个人的关系",
     "cardTitleWrapsTopicHint": true,
     "guidePerspectivesStillZero": true,
-    "memoriesExtracted": 0,
-    "pointsExtracted": 0
+    "memoriesExtracted": 13,
+    "pointsExtracted": 7,
+    "questionsExtracted": 3,
+    "debtsExtracted": 3
+  },
+  "humanNotes": {
+    "failedEndsBeforeSuccess": [
+      { "status": 502, "ms": 60168, "when": "before deploy" }
+    ],
+    "successfulEnd": {
+      "http": 200,
+      "ms": 251823,
+      "sameSessionRetry": true,
+      "notFreshFullFlow": true,
+      "image": "sha256:a91423bc282717b24df113be859d98cb3a36c6c68c90fc3506d500b2ac507649",
+      "serverLog": [
+        "{\"event\":\"end_stage\",\"stage\":\"extract_ok\",\"sessionId\":\"session-1787297953231-372e89\",\"candidates\":13}",
+        "{\"event\":\"end_stage\",\"stage\":\"finalize_ok\",\"sessionId\":\"session-1787297953231-372e89\"}"
+      ]
+    },
+    "productAudit": {
+      "who": "Grok session 2026-08-21, against GET /api/state + transcript.md",
+      "memories": 13,
+      "points": 7,
+      "defects": [
+        "两条记忆都在讲「打补丁解不了多目标、必须回到数据飞轮」（过阻尼那条 vs 既不啰嗦又不笨那条），近义重复"
+      ],
+      "defectRate": 0.15,
+      "hallucinatedPeopleOrNumbers": 0,
+      "allEvidenceQuotesInTranscript": true,
+      "pipelineOnlyNotHumanQuality": true,
+      "passThreshold": "defectRate <= 0.20"
+    }
   },
   "gates": {
     "humanValue": "insufficient_data",

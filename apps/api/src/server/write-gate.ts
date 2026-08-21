@@ -76,8 +76,9 @@ import { registerSearchRoutes } from "../routes/search";
 import { startResearchScheduler } from "../research-scheduler";
 import { registerStateRoutes } from "../routes/state";
 import { registerSystemRoutes } from "../routes/system";
-
-
+import { MEMORY_EXTRACT_TIMEOUT_MS } from "../intelligence/memory-extraction-llm";
+import { FINALIZE_TIMEOUT_MS } from "../intelligence/finalize-llm";
+import { COGNITIVE_RELATIONS_TIMEOUT_MS } from "../intelligence/cognitive-relations-llm";
 
 // Global write serialization. Every mutating endpoint is a read-modify-write on the single
 // shared ProductState with an await window in the middle (LLM / embedding / provider round-
@@ -91,17 +92,19 @@ export const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 // 写 slot 观测/自愈参数(真实业务 E2E 实测的死锁形态:某 mutating 请求的响应永不完成——客户端
 // 中途断连/永挂 await——onResponse/onError 均不触发,slot 永久持有,所有后续写排队冻结,而读全部正常)。
 export const WRITE_SLOT_WAIT_WARN_MS = 10_000;   // 等锁超过此时长开始点名持锁者(每 10s 一条,凶手 URL 直接进日志)
-// 审计修复(P2-20 + 回归审查 R3-B):上限须盖过**最长合法写**,否则合法长写被强放后以旧基整态覆盖
-// 窗口内并发写(反向 clobber)。实测最长合法写:/end = 记忆抽取(60s)+finalize(180s)+矛盾精判(60s)
-// +embedding(2×15s)≈330s;consolidate 已由 MAX_SUMMARY_CLUSTERS 限规模到上限内(见 memory-candidates)。
-// 故上限提到 360s 覆盖 /end;真僵尸(断连腰斩)仍被 close 钩子即时放行,本上限只兜"永挂 await"极端
-// (合法写不再触发它 → 消除"强放-覆盖")。多出的 120s 仅在真死锁时多冻结,close 钩子已覆盖常见断连。
-export const WRITE_SLOT_MAX_HOLD_MS = 360_000;   // 持锁上限:盖过最长合法写(/end~330s),使合法长写不被强放-覆盖
-// P3-10:把"上限须盖过 /end 最长合法写"从注释里的口头不变量变成可守护的常量。/end 各阶段预算:
-// 记忆抽取 60s + finalize 180s + 矛盾精判 60s + embedding 2×15s = 330s。invariant:预算 ≤ 持锁上限
-// (差额即"强放余量",当前 30s)。END_WRITE_PHASE_BUDGET_MS 上调越界会被 server 守护测试逮红,
-// 而不是等生产里合法长写被强放-覆盖才发现。
-export const END_WRITE_PHASE_BUDGET_MS = 60_000 + 180_000 + 60_000 + 2 * 15_000;   // = 330_000
+/** One embedding round-trip budget inside /end (theme attribution × 2 batches). */
+export const END_EMBED_PHASE_MS = 15_000;
+/** Slack so a legal /end is never force-released. */
+export const WRITE_SLOT_HOLD_SLACK_MS = 30_000;
+// Budget is derived from the live stage timeouts. Hard-coding 330s after extract/finalize
+// were raised left a legal /end (450s worst-case) above the 360s hold — the P3-10
+// invariant would not fire because the constant itself was stale.
+export const END_WRITE_PHASE_BUDGET_MS =
+  MEMORY_EXTRACT_TIMEOUT_MS +
+  FINALIZE_TIMEOUT_MS +
+  COGNITIVE_RELATIONS_TIMEOUT_MS +
+  2 * END_EMBED_PHASE_MS;
+export const WRITE_SLOT_MAX_HOLD_MS = END_WRITE_PHASE_BUDGET_MS + WRITE_SLOT_HOLD_SLACK_MS;
 export interface WriteGate {
   /** 内部写方(调度器/auto-run 终写)经此与 HTTP 串行写互斥;fn 应保持短小(读-合并-写)。 */
   runExclusive<T>(label: string, fn: () => Promise<T> | T): Promise<T>;

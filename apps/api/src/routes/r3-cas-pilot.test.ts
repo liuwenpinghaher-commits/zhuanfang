@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { buildApiServer, isWriteGateExempt, WRITE_SLOT_MAX_HOLD_MS, END_WRITE_PHASE_BUDGET_MS } from "../server";
+import { MEMORY_EXTRACT_TIMEOUT_MS } from "../intelligence/memory-extraction-llm";
+import { FINALIZE_TIMEOUT_MS } from "../intelligence/finalize-llm";
+import { COGNITIVE_RELATIONS_TIMEOUT_MS } from "../intelligence/cognitive-relations-llm";
+import { END_EMBED_PHASE_MS, WRITE_SLOT_HOLD_SLACK_MS } from "../server/write-gate";
 import {
   createInMemoryProductStateRepository,
   GovernanceInFlightError,
@@ -156,10 +160,11 @@ describe("R3 试点路由 CAS 换轨(全栈)", () => {
   it("P3-10:持锁上限须盖过 /end 最长合法写预算(强放余量 >0,不变量不再只活在注释)", () => {
     // invariant:sum(/end 各阶段超时) ≤ 持锁上限。否则合法长写会被强放,以旧基整态覆盖窗口内并发写
     // (反向 clobber)。此前只有注释口头保证;这里钉死,预算上调越界即红。
-    expect(END_WRITE_PHASE_BUDGET_MS).toBe(330_000); // 抽取60+finalize180+矛盾60+embed2×15
+    expect(END_WRITE_PHASE_BUDGET_MS).toBe(
+      MEMORY_EXTRACT_TIMEOUT_MS + FINALIZE_TIMEOUT_MS + COGNITIVE_RELATIONS_TIMEOUT_MS + 2 * END_EMBED_PHASE_MS
+    );
     expect(WRITE_SLOT_MAX_HOLD_MS).toBeGreaterThanOrEqual(END_WRITE_PHASE_BUDGET_MS);
-    // 强放余量(上限 - 预算)必须为正——留出真死锁兜底空间;当前恰 30s。
-    expect(WRITE_SLOT_MAX_HOLD_MS - END_WRITE_PHASE_BUDGET_MS).toBeGreaterThan(0);
+    expect(WRITE_SLOT_MAX_HOLD_MS - END_WRITE_PHASE_BUDGET_MS).toBeGreaterThanOrEqual(WRITE_SLOT_HOLD_SLACK_MS);
   });
 
   it("豁免名单:试点路由豁免;宽事务(整包 PUT//end/治理/approve/consolidate)不豁免", () => {

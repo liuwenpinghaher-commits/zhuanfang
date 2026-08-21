@@ -149,6 +149,32 @@ describe("extractCandidateMemories", () => {
     ]);
   });
 
+  it("splitTranscriptForMemoryExtract: short stays one chunk; long overlaps without dropping the tail", () => {
+    expect(splitTranscriptForMemoryExtract("短")).toEqual(["短"]);
+    const text = "A".repeat(5000) + "B".repeat(500);
+    const chunks = splitTranscriptForMemoryExtract(text, 5000, 200);
+    expect(chunks.length).toBe(2);
+    expect(chunks[0]?.length).toBe(5000);
+    expect(chunks[1]?.startsWith("A".repeat(200))).toBe(true);
+    expect(chunks[chunks.length - 1]?.endsWith("B".repeat(500))).toBe(true);
+    expect(chunks.join("").includes("B".repeat(500))).toBe(true);
+  });
+
+  it("one slice failure aborts the whole extract (no partial candidates)", async () => {
+    const longBody = "甲".repeat(4500) + "乙".repeat(4500);
+    let calls = 0;
+    const chat: BailianChatClient = {
+      async complete() {
+        calls += 1;
+        if (calls === 1) throw new Error("slice timeout");
+        return JSON.stringify({
+          candidates: [{ text: "不该留下", evidenceQuote: "原文", sensitivity: "normal" }]
+        });
+      }
+    };
+    await expect(extractCandidateMemories("长资料", longBody, chat)).rejects.toThrow("slice timeout");
+  });
+
   it("short body: one complete() call with explicit extract timeout", async () => {
     const captured: BailianChatCompleteRequest[] = [];
     const chat: BailianChatClient = {

@@ -79,8 +79,7 @@ async function api(path, body, { retries = 4, timeoutMs = 300000 } = {}) {
         method: "POST",
         headers: cookieHeader(),
         body: JSON.stringify(body),
-        // /end budget is extract 60s + finalize 180s + contradiction 60s + embed ~30s ≈ 330s.
-        // Client timeout must cover the product write-slot ceiling (360s).
+        // Client timeout must cover the product write-slot ceiling (budget + slack ≥ 480s).
         signal: AbortSignal.timeout(timeoutMs)
       });
       captureCookie(res);
@@ -208,7 +207,7 @@ async function intervieweeReply(history, question) {
 
   log(`  /end finalize…`);
   try {
-    ended = await api(`/api/interview-sessions/${id}/end`, {}, { retries: 2, timeoutMs: 360000 });
+    ended = await api(`/api/interview-sessions/${id}/end`, {}, { retries: 2, timeoutMs: 520000 });
   } catch (e) {
     endError = e.message;
     log(`  /end failed, session still active: ${endError}`);

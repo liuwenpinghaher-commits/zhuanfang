@@ -41,7 +41,7 @@ const MEMORY_CANDIDATE_TEXT_MAX_CHARS = 16 * 1024;
 
 // 审计修复(P1-6 + 回归审查 R3-B):consolidate 摘要循环此前绕过 LLM 预算且无上限——预算硬闸被
 // 单点击穿,且 N×60s 串行 LLM 是超写锁上限致"强放-覆盖"的确定性入口。单轮封顶到写锁上限内:
-// 4 簇 × 每簇最坏 60s(bailian 默认超时)= 240s < WRITE_SLOT_MAX_HOLD_MS(360s),确保 consolidate
+// 4 簇 × 每簇最坏 60s(bailian 默认超时)= 240s，须低于 WRITE_SLOT_MAX_HOLD_MS（现由 /end 阶段预算推导）
 // 本身不破线被强放。超出的簇本轮不摘要(dedup 本身已完成、loser 已 deprecate,摘要是可选 HITL)。
 const MAX_SUMMARY_CLUSTERS = 4;
 

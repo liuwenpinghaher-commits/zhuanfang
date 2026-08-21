@@ -27,6 +27,9 @@ import { cosineSimilarity } from "../../../../src/domain/vector";
 
 const THEME_MATURITIES: LongTermTheme["maturity"][] = ["萌芽", "重复", "聚焦", "成型", "变化", "关闭"];
 
+/** Per-stage /end budget for archive JSON generation. */
+export const FINALIZE_TIMEOUT_MS = 240_000;
+
 const SYSTEM_PROMPT = [
   "你是一位资深专访编辑。一次专访结束后，你的任务是基于【真实对话内容】产出两样东西：",
   "1) 双轨笔记：轨道一「我说了什么」（用户的核心事件/判断/情绪/矛盾），轨道二「我学到了什么」（被挑战的假设、新视角、值得沉淀的问题）。",
@@ -77,7 +80,7 @@ export async function finalizeSessionWithLlm(
     // ...and generating that much over a dense 20K transcript takes well over the 60s default
     // for technical guests — which timed out → aborted → degrade. A live 15-turn / 8k-char
     // book still aborted at 180s after extract succeeded (~248s total). Allow up to 4 min.
-    timeoutMs: 240000
+    timeoutMs: FINALIZE_TIMEOUT_MS
   });
 
   const parsed = parseFinalizeJson(raw, session);

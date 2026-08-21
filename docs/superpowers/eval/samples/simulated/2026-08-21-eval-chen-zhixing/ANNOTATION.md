@@ -4,7 +4,7 @@
 
 - 标注者：Grok 会话（对照线上会话 `session-1787297953231-372e89` 与 `transcript.md`）
 - 时间：2026-08-21
-- 本批降为**趋势参考件**，不计入任何验收门
+- 本批降为**趋势参考件**，不计入任何验收门。成功收工是**同一场重试**，不是新开 15 轮。详见 `EVIDENCE.md` 与 scorecard `humanNotes`。
 - 下面这些是硬事实，不受标注方式影响：
   - `user_value_verdict` / `gateHumanValue` = `insufficient_data`（模拟嘉宾，不能当真人价值）
   - 嘉宾 15 轮、主持人 15 轮、约 7872 字已写进书
