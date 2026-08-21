@@ -1,0 +1,45 @@
+{
+  "source": "simulated",
+  "scenarioId": "INTERVIEW-chen-zhixing-fresh",
+  "persona": "陈知行",
+  "annotation": "see ANNOTATION.md and EVIDENCE.md",
+  "referenceOnly": true,
+  "driverCookieMode": "full-session",
+  "user_value_verdict": "insufficient_data",
+  "gateHumanValue": "insufficient_data",
+  "engineering_pr_claims_go": false,
+  "gate_status": "insufficient_data",
+  "sessionId": "session-1787318660278-d49970",
+  "hard": {
+    "userTurns": 15,
+    "assistantTurns": 15,
+    "turns": 30,
+    "chars": 8251,
+    "elapsedMin": 17.5,
+    "degraded": 0,
+    "statusAtDump": "completed",
+    "ended": true
+  },
+  "book": {
+    "memoriesExtracted": 17,
+    "pointsExtracted": 6,
+    "questionsExtracted": 3,
+    "debtsExtracted": 3
+  },
+  "humanNotes": {
+    "freshFullFlow": true,
+    "sameSessionRetry": false,
+    "successfulEnd": {
+      "http": 200,
+      "serverLog": [
+        "{\"event\":\"end_stage\",\"stage\":\"extract_ok\",\"sessionId\":\"session-1787318660278-d49970\",\"candidates\":17}",
+        "{\"event\":\"end_stage\",\"stage\":\"finalize_ok\",\"sessionId\":\"session-1787318660278-d49970\"}"
+      ],
+      "image": "sha256:960160a54de94f812b9f661de005d5c52698bdc4f2d1c221fa28492183b7140f"
+    }
+  },
+  "gates": {
+    "humanValue": "insufficient_data",
+    "engineeringGo": false
+  }
+}
