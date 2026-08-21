@@ -20,8 +20,8 @@ const SYSTEM_PROMPT = [
   "铁律：只抽真实出现的内容，不编造。只输出一个 JSON 对象。"
 ].join("\n");
 
-/** Per-stage /end budget for memory extract. Matches write-gate END_WRITE_PHASE_BUDGET_MS extract slice. */
-export const MEMORY_EXTRACT_TIMEOUT_MS = 60_000;
+/** Per-slice timeout for memory extract. Slices run in parallel so wall-clock stays near this value. */
+export const MEMORY_EXTRACT_TIMEOUT_MS = 120_000;
 export const MEMORY_EXTRACT_CHUNK_CHARS = 5_000;
 export const MEMORY_EXTRACT_CHUNK_OVERLAP = 200;
 

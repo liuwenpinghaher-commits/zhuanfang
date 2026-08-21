@@ -52,7 +52,7 @@ describe("judgeCognitiveRelations", () => {
     expect(complete).not.toHaveBeenCalled();
   });
 
-  it("passes explicit 60s timeout so /end contradiction is not killed by the 60s client default twice", async () => {
+  it("passes explicit contradiction timeout so /end is not killed by the 60s client default", async () => {
     const captured: Array<{ timeoutMs?: number }> = [];
     const chat: BailianChatClient = {
       async complete(input) {

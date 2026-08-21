@@ -149,7 +149,7 @@ describe("extractCandidateMemories", () => {
     ]);
   });
 
-  it("short body: one complete() call with explicit 60s timeout", async () => {
+  it("short body: one complete() call with explicit extract timeout", async () => {
     const captured: BailianChatCompleteRequest[] = [];
     const chat: BailianChatClient = {
       async complete(input) {
