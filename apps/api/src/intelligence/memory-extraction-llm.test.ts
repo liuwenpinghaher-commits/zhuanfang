@@ -178,9 +178,8 @@ describe("extractCandidateMemories", () => {
     };
     const result = await extractCandidateMemories("长资料", longBody, chat);
     expect(captured.length).toBeGreaterThan(1);
-    const perChunk = Math.max(15_000, Math.floor(MEMORY_EXTRACT_TIMEOUT_MS / captured.length));
     for (const call of captured) {
-      expect(call.timeoutMs).toBe(perChunk);
+      expect(call.timeoutMs).toBe(MEMORY_EXTRACT_TIMEOUT_MS);
     }
     expect(captured[0].messages.some((m) => String(m.content).includes("第 1/"))).toBe(true);
     expect(result).toHaveLength(1);

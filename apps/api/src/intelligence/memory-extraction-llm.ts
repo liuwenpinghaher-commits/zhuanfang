@@ -22,7 +22,7 @@ const SYSTEM_PROMPT = [
 
 /** Per-stage /end budget for memory extract. Matches write-gate END_WRITE_PHASE_BUDGET_MS extract slice. */
 export const MEMORY_EXTRACT_TIMEOUT_MS = 60_000;
-export const MEMORY_EXTRACT_CHUNK_CHARS = 4_000;
+export const MEMORY_EXTRACT_CHUNK_CHARS = 5_000;
 export const MEMORY_EXTRACT_CHUNK_OVERLAP = 200;
 
 export function splitTranscriptForMemoryExtract(
@@ -120,19 +120,17 @@ export async function extractCandidateMemories(
   // of that budget.
   const body = sanitizeExternalMaterialBlock(content, "（外部资料片段已清洗）").slice(0, 24000);
   const chunks = splitTranscriptForMemoryExtract(body);
-  const perChunkTimeout = Math.max(15_000, Math.floor(MEMORY_EXTRACT_TIMEOUT_MS / chunks.length));
+  // Each slice keeps the full 60s extract budget. Dividing 60s by chunk count
+  // (20s×3) is what killed the 15-turn /end retry — the model never finished
+  // the first slice. Parallel slices keep wall-clock near 60s.
+  const parts = await Promise.all(
+    chunks.map((chunk, i) =>
+      extractOneChunk(title, chunk, chatClient, corrections, MEMORY_EXTRACT_TIMEOUT_MS, i, chunks.length)
+    )
+  );
   const merged: ImportedMemoryCandidate[] = [];
   const seen = new Set<string>();
-  for (let i = 0; i < chunks.length; i++) {
-    const part = await extractOneChunk(
-      title,
-      chunks[i],
-      chatClient,
-      corrections,
-      perChunkTimeout,
-      i,
-      chunks.length
-    );
+  for (const part of parts) {
     for (const candidate of part) {
       const key = candidate.text.trim();
       if (!key || seen.has(key)) continue;
