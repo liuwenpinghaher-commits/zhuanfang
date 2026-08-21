@@ -1080,8 +1080,8 @@ it("record-turn appends a turn to the server session without generating an assis
     await server.close();
   });
 
-  // IV-P1-01 / criterion 5: client abort → 499, no ghost turn persisted
-  it("/turns: client abort after LLM → 499 and no turn persisted", async () => {
+  // IV-P1-01 / PR-2: abort skips the host follow-up, but the guest sentence stays in the book.
+  it("/turns: client abort after LLM → 499, user kept, assistant not persisted", async () => {
     let capturedRaw: { emit?: (event: string) => void } | null = null;
     const createAssistantTurn = async () => {
       // Emit the real Node 'aborted' event the route listens for (not a stale .aborted flag).
@@ -1117,11 +1117,10 @@ it("record-turn appends a turn to the server session without generating an assis
 
     expect(res.statusCode).toBe(499);
     expect((res.json() as { error: string }).error).toMatch(/取消|未写入/);
-    const turnsAfter = repo.getState().sessions.find((s) => s.id === id)!.turns.length;
-    expect(turnsAfter).toBe(turnsBefore);
-    expect(
-      repo.getState().sessions.find((s) => s.id === id)!.turns.some((t) => t.content.includes("幽灵追问"))
-    ).toBe(false);
+    const after = repo.getState().sessions.find((s) => s.id === id)!;
+    expect(after.turns.some((t) => t.role === "user" && t.content === "用户本轮输入")).toBe(true);
+    expect(after.turns.length).toBe(turnsBefore + 1);
+    expect(after.turns.some((t) => t.content.includes("幽灵追问"))).toBe(false);
 
     await server.close();
   });

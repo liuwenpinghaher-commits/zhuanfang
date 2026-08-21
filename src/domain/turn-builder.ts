@@ -246,6 +246,91 @@ export function receiveUserTurnWithAssistant(
     pendingControl: undefined
   };
 }
+
+/** Persist the guest utterance alone (stream/JSON start). Same last user text is a no-op. */
+export function appendUserTurnOnly(session: InterviewSession, userText: string): InterviewSession {
+  const trimmed = userText.trim();
+  if (!trimmed) {
+    return session;
+  }
+  const sanitized = sanitizeExternalMaterialText(trimmed, trimmed);
+  const last = session.turns.at(-1);
+  if (last?.role === "user" && last.content === sanitized) {
+    return session;
+  }
+  const userTurn: InterviewTurn = {
+    id: makeId("turn-user"),
+    sessionId: session.id,
+    role: "user",
+    content: sanitized,
+    intent: "用户表达",
+    timestamp: nowIso()
+  };
+  return { ...session, turns: [...session.turns, userTurn] };
+}
+
+/** Persist the host follow-up after the guest turn is already in the session. */
+export function appendAssistantTurn(
+  session: InterviewSession,
+  assistant: {
+    content: string;
+    intent: string;
+    referencedMemory?: string;
+    references?: InterviewReference[];
+    strategyDecision?: InterviewStrategyDecision;
+  }
+): InterviewSession {
+  const timestamp = nowIso();
+  return {
+    ...session,
+    turns: [
+      ...session.turns,
+      {
+        id: makeId("turn-assistant"),
+        sessionId: session.id,
+        role: "assistant",
+        content: assistant.content,
+        intent: assistant.intent,
+        timestamp,
+        referencedMemory:
+          assistant.referencedMemory ??
+          assistant.strategyDecision?.referencedMemory ??
+          (assistant.strategyDecision ? undefined : session.card.historyReferences[0]),
+        references: assistant.references ?? assistant.strategyDecision?.references,
+        strategy: assistant.strategyDecision?.strategy,
+        depth: assistant.strategyDecision?.depth
+      }
+    ],
+    strategyTrace: assistant.strategyDecision
+      ? [...(session.strategyTrace ?? []), assistant.strategyDecision]
+      : session.strategyTrace,
+    askedAnchor: normalizeAssistantQuestion(assistant.content),
+    pendingControl: undefined
+  };
+}
+
+export function applyTurnPatch(
+  session: InterviewSession,
+  patch: {
+    userContent?: string;
+    assistant?: {
+      content: string;
+      intent: string;
+      referencedMemory?: string;
+      references?: InterviewReference[];
+      strategyDecision?: InterviewStrategyDecision;
+    };
+  }
+): InterviewSession {
+  let next = session;
+  if (patch.userContent) {
+    next = appendUserTurnOnly(next, patch.userContent);
+  }
+  if (patch.assistant) {
+    next = appendAssistantTurn(next, patch.assistant);
+  }
+  return next;
+}
 export function updateInterviewControl(session: InterviewSession, action: InterviewControlAction): InterviewSession {
   const timestamp = nowIso();
   const feedback = controlFeedback(session, action);

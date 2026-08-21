@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  appendUserTurnOnly,
+  applyTurnPatch,
   createInitialProductState,
   createSessionDraft,
   decideInterviewStrategy,
@@ -106,5 +108,21 @@ describe("structured interview references", () => {
     expect(next.turns.at(-1)?.content).not.toContain("无法核验来源的卡片历史");
     expect(next.turns.at(-1)?.referencedMemory).toBeUndefined();
     expect(next.turns.at(-1)?.references).toBeUndefined();
+  });
+});
+
+describe("appendUserTurnOnly / applyTurnPatch", () => {
+  it("writes the guest sentence once and then the host follow-up", () => {
+    let session = createSessionDraft(createInitialProductState(), "daily");
+    session = appendUserTurnOnly(session, "授权让我最难受的是那次救火");
+    expect(session.turns).toHaveLength(1);
+    expect(session.turns[0]?.role).toBe("user");
+    session = appendUserTurnOnly(session, "授权让我最难受的是那次救火");
+    expect(session.turns).toHaveLength(1);
+    session = applyTurnPatch(session, {
+      assistant: { content: "那次救火具体卡在哪一步？", intent: "追问" }
+    });
+    expect(session.turns.map((turn) => turn.role)).toEqual(["user", "assistant"]);
+    expect(session.turns.at(-1)?.content).toContain("救火");
   });
 });

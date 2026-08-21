@@ -54,6 +54,7 @@ import {
   applySessionCognitiveRelations
 } from "./interview-session-helpers";
 import {
+  handleTurnsCancelRequest,
   runInterviewerBrainTurn,
   type InterviewerBrainDeps
 } from "../interview/interviewer-brain";
@@ -72,7 +73,8 @@ export async function registerInterviewSessionRoutes(
     embeddingClient: options.embeddingClient,
     budget,
     llmBudgetOption: options.llmBudget,
-    interviewTurnTimeoutMs
+    interviewTurnTimeoutMs,
+    writeGate: options.writeGate
   });
 
   // Per-session write serialization. /turns is a read-modify-write on the global state with
@@ -170,8 +172,10 @@ export async function registerInterviewSessionRoutes(
 
   /**
    * Streaming turn for cascade voice TTFA: SSE events
+   *   event: user_persisted  data: { userTurnId }
    *   event: delta  data: {"text":"..."}
    *   event: final  data: { session, state, preSignals?, assistantText }
+   *   event: aborted  data: { assistantTurnId? }
    * Falls back to non-stream LLM when createAssistantTurnStream is unavailable.
    * Delegates to InterviewerBrain (must stay wired — cascade depends on stream).
    */
@@ -179,6 +183,11 @@ export async function registerInterviewSessionRoutes(
     runExclusive(getSessionId(request.params) ?? "", () =>
       runInterviewerBrainTurn("stream", request, reply, brainDeps())
     )
+  );
+
+  // Must not share runExclusive with /turns/stream: cancel has to land while the stream is in flight.
+  server.post("/api/interview-sessions/:id/turns/cancel", (request, reply) =>
+    handleTurnsCancelRequest(request, reply)
   );
 
 

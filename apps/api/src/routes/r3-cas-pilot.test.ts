@@ -184,10 +184,14 @@ describe("R3 试点路由 CAS 换轨(全栈)", () => {
     expect(isWriteGateExempt("POST", "/api/state/reset")).toBe(false);
     expect(isWriteGateExempt("POST", "/api/state/purge")).toBe(false);
     expect(isWriteGateExempt("POST", "/api/state/import")).toBe(false);
-    // Long-holder for write-slot tests is /end (not login). Login exemption is PR-6.
+    // Long-holder remains create-session embed and /end. Login and /turns no longer hold the slot.
     expect(isWriteGateExempt("POST", "/api/interview-sessions/s1/end")).toBe(false);
-    expect(isWriteGateExempt("POST", "/api/auth/login")).toBe(false);
-    expect(isWriteGateExempt("POST", "/api/interview-sessions/s1/turns")).toBe(false);
+    expect(isWriteGateExempt("POST", "/api/auth/login")).toBe(true);
+    expect(isWriteGateExempt("POST", "/api/auth/logout")).toBe(true);
+    expect(isWriteGateExempt("POST", "/api/interview-sessions/s1/turns")).toBe(true);
+    expect(isWriteGateExempt("POST", "/api/interview-sessions/s1/turns/stream")).toBe(true);
+    expect(isWriteGateExempt("POST", "/api/interview-sessions/s1/turns/cancel")).toBe(true);
+    expect(isWriteGateExempt("POST", "/api/interview-sessions/s1/turns/extra")).toBe(false);
     expect(isWriteGateExempt("POST", "/api/memory-candidates/c1/approve")).toBe(false); // embed 在临界区
     expect(isWriteGateExempt("POST", "/api/memory/consolidate")).toBe(false); // LLM 在临界区
     // P3-17:声纹注册/删除、构建语音指令——无 state 终写(纯外呼/嵌入),已豁免免整段持锁。
@@ -199,7 +203,7 @@ describe("R3 试点路由 CAS 换轨(全栈)", () => {
     expect(isWriteGateExempt("POST", "/api/search/briefs/b1/refresh")).toBe(true);
     expect(isWriteGateExempt("POST", "/api/import/documents")).toBe(true);
     expect(isWriteGateExempt("POST", "/api/chat")).toBe(true);
-    // 但 voices 的 GET(非 mutating,天然不过写门)与同前缀 sessions 子动作(/end/turns)仍不豁免。
+    // 同前缀 /end 仍整段持锁（宽事务）。/turns 已豁免，终写走 CAS。
     expect(isWriteGateExempt("POST", "/api/interview-sessions/s1/end")).toBe(false);
   });
 

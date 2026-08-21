@@ -65,7 +65,8 @@ export {
 
 export {
   addTurn, buildInterviewAgentContext, createInterviewSession,
-  receiveUserTurn, receiveUserTurnWithAssistant, updateInterviewControl,
+  receiveUserTurn, receiveUserTurnWithAssistant, appendUserTurnOnly, appendAssistantTurn,
+  applyTurnPatch, updateInterviewControl,
   INTERVIEW_STRATEGY_LABELS, PLAYBOOK_DRIVEN_STRATEGIES,
 } from "./turn-builder";
 

@@ -246,6 +246,33 @@ export const WRITE_GATE_EXEMPTIONS: WriteGateExemption[] = [
     method: "POST",
     matches: (p) => p === "/api/chat",
     reason: "长 embed+LLM;终写=重读 latest append 经写门(D3)"
+  },
+  {
+    // PR-6: login 只发 cookie，不碰 ProductState。挂在全局写槽后面会让别人收工时自己登不进去。
+    method: "POST",
+    matches: (p) => p === "/api/auth/login",
+    reason: "无 state 终写(只发会话 cookie)，持锁无意义"
+  },
+  {
+    method: "POST",
+    matches: (p) => p === "/api/auth/logout",
+    reason: "无 state 终写(清 cookie)，持锁无意义"
+  },
+  {
+    // PR-2: 追问 LLM 可达十几秒。handler 不整段持槽；用户句/主持句终写走 runStateCommand CAS。
+    method: "POST",
+    matches: (p) => /^\/api\/interview-sessions\/[^/]+\/turns$/.test(p),
+    reason: "长 LLM;终写=CAS 追加本场轮次(commit 经写门)"
+  },
+  {
+    method: "POST",
+    matches: (p) => /^\/api\/interview-sessions\/[^/]+\/turns\/stream$/.test(p),
+    reason: "长 SSE LLM;终写=CAS 追加本场轮次(commit 经写门)"
+  },
+  {
+    method: "POST",
+    matches: (p) => /^\/api\/interview-sessions\/[^/]+\/turns\/cancel$/.test(p),
+    reason: "取消在飞 LLM,自身无整态写;主持句由仍活着的 stream CAS 落库"
   }
 ];
 

@@ -12,10 +12,11 @@
  */
 import type { FastifyReply, FastifyRequest } from "fastify";
 import {
+  appendUserTurnOnly,
+  applyTurnPatch,
   buildInterviewEnginePolicy,
   buildInterviewGuide,
-  decideInterviewStrategy,
-  receiveUserTurnWithAssistant
+  decideInterviewStrategy
 } from "../../../../src/domain/engine";
 import {
   applyCraftOutputGuard,
@@ -24,7 +25,9 @@ import {
 } from "../../../../src/domain/craft-output-guard";
 import type {
   InteractionPreSignals,
-  InterviewSession
+  InterviewSession,
+  InterviewStrategyDecision,
+  ProductState
 } from "../../../../src/domain/types";
 import { nowIso } from "../../../../src/domain/utils";
 import {
@@ -34,7 +37,7 @@ import {
   resolveMidSessionRecallTopic
 } from "../../../../src/domain/context-pack";
 import type { ProductStateRepository } from "../product-state-repository";
-import { replaceStateDurable } from "../product-state-repository";
+import { runStateCommand } from "../state-command";
 import type { BailianCharacterInterviewClient, BailianEmbeddingClient } from "../providers/bailian";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import { asNativeRecall } from "../recall/native-recall-capability";
@@ -116,6 +119,104 @@ export interface InterviewerBrainDeps {
   /** Raw option from route registration; stream uses this for its local budget line. */
   llmBudgetOption?: LlmBudget;
   interviewTurnTimeoutMs: number;
+  /** Required once /turns is write-gate exempt: CAS commit re-enters the slot. */
+  writeGate?: { runExclusive<T>(label: string, fn: () => Promise<T> | T): Promise<T> };
+}
+
+type InFlightStreamTurn = {
+  abort: AbortController;
+  cancelled: boolean;
+  accumulated: string;
+};
+
+const inFlightBySession = new Map<string, InFlightStreamTurn>();
+
+type AssistantPersistInput = {
+  content: string;
+  intent: string;
+  referencedMemory?: string;
+  strategyDecision?: InterviewStrategyDecision;
+  preSignals?: InteractionPreSignals;
+  enginePolicy?: InterviewSession["enginePolicy"];
+  guide?: InterviewSession["guide"];
+  card?: InterviewSession["card"];
+  recalledTexts?: Set<string>;
+};
+
+function stampRecency(state: ProductState, recalledTexts: Set<string>): ProductState {
+  if (recalledTexts.size === 0) return state;
+  return {
+    ...state,
+    memoryRecords: state.memoryRecords.map((record) =>
+      record.status === "confirmed" && recalledTexts.has(record.text)
+        ? { ...record, lastAccessedAt: nowIso() }
+        : record
+    )
+  };
+}
+
+async function persistUserTurn(
+  deps: InterviewerBrainDeps,
+  sessionId: string,
+  content: string
+): Promise<{ userTurnId: string; session: InterviewSession } | null> {
+  let captured: { userTurnId: string; session: InterviewSession } | null = null;
+  await runStateCommand(
+    deps.repository,
+    (latest) => {
+      captured = null;
+      const current = findSession(latest, sessionId);
+      if (!current || current.status !== "active") return null;
+      const nextSession = appendUserTurnOnly(current, content);
+      const last = nextSession.turns.at(-1);
+      if (!last || last.role !== "user") return null;
+      captured = { userTurnId: last.id, session: nextSession };
+      if (nextSession === current) return null;
+      return upsertSession(latest, nextSession);
+    },
+    { writeGate: deps.writeGate, label: `command:turns-user:${sessionId}` }
+  );
+  return captured;
+}
+
+async function persistAssistantTurn(
+  deps: InterviewerBrainDeps,
+  sessionId: string,
+  input: AssistantPersistInput
+): Promise<{ session: InterviewSession; state: ProductState } | null> {
+  let captured: InterviewSession | null = null;
+  const state = await runStateCommand(
+    deps.repository,
+    (latest) => {
+      captured = null;
+      const current = findSession(latest, sessionId);
+      if (!current || current.status !== "active") return null;
+      let nextSession = applyTurnPatch(current, {
+        assistant: {
+          content: input.content,
+          intent: input.intent,
+          ...(input.referencedMemory ? { referencedMemory: input.referencedMemory } : {}),
+          ...(input.strategyDecision ? { strategyDecision: input.strategyDecision } : {})
+        }
+      });
+      nextSession = stripAsidesFromLatestAssistantTurn(nextSession);
+      nextSession = {
+        ...nextSession,
+        ...(input.enginePolicy ? { enginePolicy: input.enginePolicy } : {}),
+        ...(input.guide ? { guide: input.guide } : {}),
+        ...(input.card ? { card: input.card } : {}),
+        ...(input.preSignals ? { interactionPreSignals: input.preSignals } : {})
+      };
+      captured = nextSession;
+      const base = upsertSession(latest, nextSession);
+      return input.recalledTexts && input.recalledTexts.size > 0
+        ? stampRecency(base, input.recalledTexts)
+        : base;
+    },
+    { writeGate: deps.writeGate, label: `command:turns-assistant:${sessionId}` }
+  );
+  if (!captured || !state) return null;
+  return { session: captured, state };
 }
 
 /**
@@ -237,7 +338,7 @@ export async function handleTurnsRequest(
   };
 
   // 追问是 LLM 能力：不可用/失败就如实暴露（503/429/502），不再回退确定性策略引擎生成假追问。
-  // 失败时不落任何轮次——请求原子失败，用户可原样重试。
+  // 503/429 在落用户句之前返回。过了这道门后用户句先入书；主持句失败或取消时用户句保留。
   if (!deps.bailianInterviewClient) {
     return reply.code(503).send({ error: "专访追问 LLM 未配置（缺少 DASHSCOPE_API_KEY），无法生成追问。" });
   }
@@ -245,10 +346,14 @@ export async function handleTurnsRequest(
     console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "interview_turn", sessionId: freshSession.id }));
     return reply.code(429).send({ error: "本会话 LLM 预算已用尽，追问暂不可用，请稍后重试。" });
   }
-  // IV-P1-01: cascade barge-in aborts the client fetch; do not persist a ghost full turn.
-  // Listen for the abort *event* during the LLM await — do NOT use request.raw.aborted
-  // after await (Node/undici can report aborted/destroyed on a completed request and
-  // false-positive 499, dropping successful turns in e2e/browser).
+
+  const userPersist = await persistUserTurn(deps, freshSession.id, content);
+  if (!userPersist) {
+    return reply.code(409).send({ error: "会话已结束，无法追加轮次。" });
+  }
+
+  // Barge used to abort the fetch and drop the guest sentence. User is already in the
+  // book; abort still skips the host follow-up (no ghost full turn).
   let clientAborted = false;
   const onClientAbort = () => {
     clientAborted = true;
@@ -272,52 +377,46 @@ export async function handleTurnsRequest(
     request.raw.off("aborted", onClientAbort);
     const message = error instanceof Error ? error.message : String(error);
     console.warn(JSON.stringify({ event: "llm_failed", capability: "interview_turn", sessionId: freshSession.id, error: message }));
-    return reply.code(502).send({ error: `追问生成失败：${message}。本轮未记录，请重试。` });
+    return reply.code(502).send({ error: `追问生成失败：${message}。用户句已记录，主持句未写入，请重试。` });
   }
   request.raw.off("aborted", onClientAbort);
   if (clientAborted) {
     console.info(JSON.stringify({
-      event: "interview_turn_aborted_no_persist",
+      event: "interview_turn_aborted_user_kept",
       sessionId: freshSession.id,
+      userTurnId: userPersist.userTurnId,
       reason: "client_disconnect_or_abort"
     }));
-    return reply.code(499).send({ error: "客户端已取消本轮，未写入轮次。" });
+    return reply.code(499).send({ error: "客户端已取消本轮，主持句未写入。" });
   }
   const { nextSession: rawNextSession, preSignals } = updatedResult;
-  // Optional craft output guard (VOICE_CRAFT_OUTPUT_GUARD, default off): truncate multi-?
-  // assistant turns or log retry-worthy violations before asides strip / persist.
   const guardedSession = applyGuardToLatestAssistantTurn(rawNextSession, freshSession.id, "json");
-  // The character model conveys manner via （…）stage-direction asides (e.g. 「（身体微倾，
-  // 表现出好奇）」). Strip them out of the stored question so the transcript / finalize / memory
-  // read as clean words like a real interview; distill the manner into `prosody` so the voice
-  // path can still deliver it expressively. Only the just-generated assistant turn is touched.
-  const nextSession = stripAsidesFromLatestAssistantTurn(guardedSession);
-  const baseNextState = upsertSession(state, nextSession);
-
-  // M3 recency write-back: the records actually recalled into THIS turn's guide get
-  // lastAccessedAt = now, so the recency factor reflects "recently used" rather than
-  // only "recently confirmed" (which would otherwise decay a frequently-cited memory).
-  // Route layer owns this because it has the clock; the domain scorer stays pure.
+  const lastAssistant = [...guardedSession.turns].reverse().find((turn) => turn.role === "assistant");
+  if (!lastAssistant) {
+    return reply.code(502).send({ error: "追问生成失败：主持句为空。本轮用户句已记录，请重试。" });
+  }
   const recalledTexts = new Set(refreshedGuide.relevantMemories ?? []);
-  const nextState = recalledTexts.size > 0
-    ? {
-        ...baseNextState,
-        memoryRecords: baseNextState.memoryRecords.map((record) =>
-          record.status === "confirmed" && recalledTexts.has(record.text)
-            ? { ...record, lastAccessedAt: nowIso() }
-            : record
-        )
-      }
-    : baseNextState;
-
-  const persisted = /*durable*/await replaceStateDurable(repository, nextState);
-  return { session: nextSession, state: persisted, ...(preSignals ? { preSignals } : {}) };
+  const persisted = await persistAssistantTurn(deps, freshSession.id, {
+    content: lastAssistant.content,
+    intent: lastAssistant.intent,
+    referencedMemory: lastAssistant.referencedMemory,
+    strategyDecision: guardedSession.strategyTrace?.at(-1),
+    preSignals,
+    enginePolicy,
+    guide: refreshedGuide,
+    card: refreshedCard,
+    recalledTexts
+  });
+  if (!persisted) {
+    return reply.code(409).send({ error: "会话已结束，无法追加主持句。" });
+  }
+  return { session: persisted.session, state: persisted.state, ...(preSignals ? { preSignals } : {}) };
 }
 
 /**
- * Streaming turn for cascade voice TTFA (POST /turns/stream body after runExclusive).
- * SSE events: delta → final | error. Falls back to non-stream LLM when
- * createAssistantTurnStream is unavailable (existing behavior).
+ * Streaming turn for cascade voice TTFA (POST /turns/stream).
+ * SSE events: user_persisted → delta* → final | aborted | error.
+ * Guest sentence is CAS-persisted before the host LLM. Cancel does not tear the SSE.
  *
  * Design alias: this is the stream half of runInterviewerBrainTurn.
  */
@@ -350,6 +449,18 @@ export async function handleTurnsStreamRequest(
     return reply.code(429).send({ error: "本会话 LLM 预算已耗尽，请稍后再试。" });
   }
 
+  const userPersist = await persistUserTurn(deps, session.id, content);
+  if (!userPersist) {
+    return reply.code(409).send({ error: "会话已结束，无法追加轮次。" });
+  }
+
+  const flight: InFlightStreamTurn = {
+    abort: new AbortController(),
+    cancelled: false,
+    accumulated: ""
+  };
+  inFlightBySession.set(session.id, flight);
+
   reply.hijack();
   reply.raw.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
@@ -360,12 +471,19 @@ export async function handleTurnsStreamRequest(
   const writeEvent = (event: string, data: unknown) => {
     reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
+  writeEvent("user_persisted", { userTurnId: userPersist.userTurnId });
 
   let clientAborted = false;
   const onAbort = () => {
     clientAborted = true;
+    flight.abort.abort();
   };
   request.raw.once("aborted", onAbort);
+
+  const finishAborted = async (assistantTurnId?: string) => {
+    writeEvent("aborted", assistantTurnId ? { assistantTurnId } : {});
+    reply.raw.end();
+  };
 
   try {
     const strategyDecision = decideInterviewStrategy(session, content);
@@ -374,9 +492,6 @@ export async function handleTurnsStreamRequest(
     let preSignals: InteractionPreSignals | undefined;
 
     if (streamFn) {
-      const ac = new AbortController();
-      const onClientAbort = () => ac.abort();
-      request.raw.once("aborted", onClientAbort);
       try {
         for await (const ev of streamFn.call(deps.bailianInterviewClient, {
           session,
@@ -384,18 +499,21 @@ export async function handleTurnsStreamRequest(
           corrections: state.memoryCorrections,
           boundaries: state.profile.explicitBoundaries,
           strategyDecision,
-          signal: ac.signal
+          signal: flight.abort.signal
         })) {
-          if (clientAborted) break;
+          if (flight.cancelled || clientAborted) break;
           if (ev.type === "delta") {
+            flight.accumulated += ev.text;
             writeEvent("delta", { text: ev.text });
           } else {
             assistantResult = ev.result;
             preSignals = ev.result.preSignals;
           }
         }
-      } finally {
-        request.raw.off("aborted", onClientAbort);
+      } catch (error) {
+        if (!flight.cancelled && !clientAborted && !flight.abort.signal.aborted) {
+          throw error;
+        }
       }
     } else {
       assistantResult = await withInterviewTurnDeadline(
@@ -409,45 +527,60 @@ export async function handleTurnsStreamRequest(
         interviewTurnTimeoutMs
       );
       preSignals = assistantResult.preSignals;
-      // Emit full content as one delta so clients still get progressive-ish path
-      if (assistantResult.content) writeEvent("delta", { text: assistantResult.content });
+      if (assistantResult.content) {
+        flight.accumulated = assistantResult.content;
+        writeEvent("delta", { text: assistantResult.content });
+      }
     }
 
-    if (clientAborted || assistantResult === undefined) {
-      writeEvent("error", { error: "客户端已取消本轮，未写入轮次。" });
+    if (flight.cancelled || clientAborted) {
+      const spoken = flight.accumulated.trim();
+      if (!spoken) {
+        await finishAborted();
+        return;
+      }
+      const { text: guardedContent } = guardAssistantText(spoken, session.id, "stream");
+      const persisted = await persistAssistantTurn(deps, session.id, {
+        content: guardedContent,
+        intent: assistantResult?.intent ?? "百炼角色扮演追问",
+        referencedMemory: strategyDecision.referencedMemory,
+        strategyDecision,
+        preSignals: assistantResult?.preSignals ?? preSignals
+      });
+      const assistantTurnId = persisted
+        ? [...persisted.session.turns].reverse().find((turn) => turn.role === "assistant")?.id
+        : undefined;
+      await finishAborted(assistantTurnId);
+      return;
+    }
+
+    if (assistantResult === undefined) {
+      writeEvent("error", { error: "追问生成失败：主持句为空。用户句已记录。" });
       reply.raw.end();
       return;
     }
 
-    // Stream path: guard applies to final persisted text (deltas may already have gone out).
     const { text: guardedContent } = guardAssistantText(
       assistantResult.content,
       session.id,
       "stream"
     );
-
-    const built = receiveUserTurnWithAssistant(session, content, {
+    const persisted = await persistAssistantTurn(deps, session.id, {
       content: guardedContent,
       intent: assistantResult.intent,
+      referencedMemory: strategyDecision.referencedMemory,
       strategyDecision,
-      ...(strategyDecision.referencedMemory
-        ? { referencedMemory: strategyDecision.referencedMemory }
-        : {})
+      preSignals: assistantResult.preSignals
     });
-    const nextSession = stripAsidesFromLatestAssistantTurn({
-      ...built,
-      interactionPreSignals: assistantResult.preSignals
-    });
-    const lastAssistant = [...nextSession.turns].reverse().find((x) => x.role === "assistant");
-    const baseNextState = {
-      ...state,
-      sessions: state.sessions.map((s) => (s.id === session.id ? nextSession : s)),
-      revision: state.revision
-    };
-    const persisted = await replaceStateDurable(repository, baseNextState);
+    if (!persisted) {
+      writeEvent("error", { error: "会话已结束，无法追加主持句。" });
+      reply.raw.end();
+      return;
+    }
+    const lastAssistant = [...persisted.session.turns].reverse().find((x) => x.role === "assistant");
     writeEvent("final", {
-      session: nextSession,
-      state: persisted,
+      session: persisted.session,
+      state: persisted.state,
       assistantText: lastAssistant?.content ?? guardedContent,
       prosody: lastAssistant?.prosody,
       ...(assistantResult.preSignals ? { preSignals: assistantResult.preSignals } : {})
@@ -464,7 +597,25 @@ export async function handleTurnsStreamRequest(
     reply.raw.end();
   } finally {
     request.raw.off("aborted", onAbort);
+    inFlightBySession.delete(session.id);
   }
+}
+
+export async function handleTurnsCancelRequest(
+  request: FastifyRequest,
+  reply: FastifyReply
+): Promise<unknown> {
+  const sessionId = getSessionId(request.params);
+  if (!sessionId) {
+    return reply.code(400).send({ error: "sessionId is required." });
+  }
+  const flight = inFlightBySession.get(sessionId);
+  if (!flight) {
+    return reply.code(409).send({ error: "没有进行中的追问可取消。" });
+  }
+  flight.cancelled = true;
+  flight.abort.abort();
+  return { ok: true };
 }
 
 /**

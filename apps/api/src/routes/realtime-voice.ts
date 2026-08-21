@@ -27,6 +27,7 @@ import {
 } from "../providers/bailian-streaming-tts";
 import type { ProductStateRepository } from "../product-state-repository";
 import { replaceStateDurable } from "../product-state-repository";
+import { runStateCommand } from "../state-command";
 import { asNativeRecall } from "../recall/native-recall-capability";
 import { resolveBailianApiKey } from "../runtime-secrets";
 import { prefetchRecall } from "../recall/prefetch-recall";
@@ -278,51 +279,54 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     let resolvedAssistantTurnId: string | undefined = assistantTurnId;
 
     if (stateRepo && interviewSessionId) {
-      const state = stateRepo.getState();
-      const session = state.sessions.find((entry) => entry.id === interviewSessionId);
-      if (session) {
-        const truncationResult = truncateAssistantTurn(session, {
-          turnId: assistantTurnId,
-          providerTurnId,
-          spokenTextSoFar,
-          reason
-        });
-        if (truncationResult.changed && truncationResult.truncatedTurn) {
-          truncated = true;
-          spokenChars = truncationResult.truncatedTurn.truncated?.spokenChars ?? spokenChars;
-          originalChars = truncationResult.truncatedTurn.truncated?.originalChars ?? originalChars;
-          resolvedAssistantTurnId = truncationResult.truncatedTurn.id;
-        } else if (truncationResult.truncatedTurn) {
-          resolvedAssistantTurnId = truncationResult.truncatedTurn.id;
-          originalChars = truncationResult.truncatedTurn.content.length;
-        }
-        const sessionWithTrace = appendInterruptionSignal(
-          truncationResult.session,
-          {
+      await runStateCommand(
+        stateRepo,
+        (latest) => {
+          const session = latest.sessions.find((entry) => entry.id === interviewSessionId);
+          if (!session) return null;
+          const truncationResult = truncateAssistantTurn(session, {
+            turnId: assistantTurnId,
+            providerTurnId,
             spokenTextSoFar,
-            interruptedAtMs,
-            assistantTurnId: resolvedAssistantTurnId,
-            originalChars,
-            spokenChars,
-            providerTurnId,
             reason
+          });
+          if (truncationResult.changed && truncationResult.truncatedTurn) {
+            truncated = true;
+            spokenChars = truncationResult.truncatedTurn.truncated?.spokenChars ?? spokenChars;
+            originalChars = truncationResult.truncatedTurn.truncated?.originalChars ?? originalChars;
+            resolvedAssistantTurnId = truncationResult.truncatedTurn.id;
+          } else if (truncationResult.truncatedTurn) {
+            resolvedAssistantTurnId = truncationResult.truncatedTurn.id;
+            originalChars = truncationResult.truncatedTurn.content.length;
           }
-        );
-        const nextState = withRealtimeInterruptAiRunEvent(
-          replaceSession(state, sessionWithTrace),
-          {
-            session: sessionWithTrace,
-            assistantTurnId: resolvedAssistantTurnId,
-            providerTurnId,
-            spokenChars,
-            originalChars,
-            interruptedAtMs,
-            truncated,
-            reason
-          }
-        );
-        await replaceStateDurable(stateRepo, nextState);
-      }
+          const sessionWithTrace = appendInterruptionSignal(
+            truncationResult.session,
+            {
+              spokenTextSoFar,
+              interruptedAtMs,
+              assistantTurnId: resolvedAssistantTurnId,
+              originalChars,
+              spokenChars,
+              providerTurnId,
+              reason
+            }
+          );
+          return withRealtimeInterruptAiRunEvent(
+            replaceSession(latest, sessionWithTrace),
+            {
+              session: sessionWithTrace,
+              assistantTurnId: resolvedAssistantTurnId,
+              providerTurnId,
+              spokenChars,
+              originalChars,
+              interruptedAtMs,
+              truncated,
+              reason
+            }
+          );
+        },
+        { writeGate: options.writeGate, label: `command:interrupt:${sessionId}` }
+      );
     }
 
     // Stage-3: barge-in success = session live + interrupt applied (truncated when we had speech).
