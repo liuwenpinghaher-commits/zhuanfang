@@ -308,6 +308,51 @@ describe("LLM path (mock BailianChatClient)", () => {
     await server.close();
   });
 
+  it("/end: extra turns after a failed archive invalidate extract checkpoint", async () => {
+    const extractJson = JSON.stringify({
+      candidates: [{ text: "判断力稀缺", evidenceQuote: "这是我的第一条回答", sensitivity: "normal" }]
+    });
+    const finalizeJson = JSON.stringify({
+      summary: "这次对话推进了判断力这个题目",
+      keyQuote: "这是我的第一条回答，用于触发 finalize",
+      saidTrack: ["讲了判断力"],
+      learnedTrack: ["需要把问题定义清楚"],
+      nextQuestions: [],
+      points: [],
+      questions: [],
+      decisions: [],
+      debts: [],
+      themes: []
+    });
+    let extractCalls = 0;
+    const mockChatClient: BailianChatClient = {
+      async complete(input) {
+        const sys = input.messages.find((m) => m.role === "system")?.content ?? "";
+        if (sys.includes("长期记住")) {
+          extractCalls += 1;
+          return extractJson;
+        }
+        if (extractCalls === 1) throw new Error("The operation was aborted due to timeout");
+        return finalizeJson;
+      }
+    };
+    const server = buildApiServer({ env: {}, bailianChatClient: mockChatClient });
+    await server.ready();
+    const sessionId = await setupSessionWithTurn(server);
+    const first = await inject(server, "POST", `/api/interview-sessions/${sessionId}/end`);
+    expect(first.statusCode).toBe(502);
+    expect(extractCalls).toBe(1);
+    const extra = await inject(server, "POST", `/api/interview-sessions/${sessionId}/record-turn`, {
+      role: "user",
+      content: "失败之后我又补了一句新的经历。"
+    });
+    expect(extra.statusCode).toBe(200);
+    const second = await inject(server, "POST", `/api/interview-sessions/${sessionId}/end`);
+    expect(second.statusCode).toBe(200);
+    expect(extractCalls).toBe(2);
+    await server.close();
+  });
+
   it("/api/import/documents: LLM returns malformed JSON → 502 且本次不导入（原子失败）", async () => {
     // Mock LLM returns garbage → extractCandidateMemories throws → 路由如实 502，导入不落库
     const server = buildMockLlmServer("totally not json garbage !!!");

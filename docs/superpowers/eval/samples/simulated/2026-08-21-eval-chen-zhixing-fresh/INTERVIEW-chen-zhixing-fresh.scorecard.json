@@ -5,6 +5,7 @@
   "annotation": "see ANNOTATION.md and EVIDENCE.md",
   "referenceOnly": true,
   "driverCookieMode": "full-session",
+  "guestArtifact": "high",
   "user_value_verdict": "insufficient_data",
   "gateHumanValue": "insufficient_data",
   "engineering_pr_claims_go": false,
@@ -29,6 +30,22 @@
   "humanNotes": {
     "freshFullFlow": true,
     "sameSessionRetry": false,
+    "qualityIsTrendOnly": true,
+    "pendingHitlCandidatesNotConfirmedMemory": true,
+    "productAudit": {
+      "who": "Grok session 2026-08-21, against GET /api/state PRODUCTS.json + transcript.md",
+      "memories": 17,
+      "points": 6,
+      "defects": [
+        "两条记忆都在讲古德哈特：把考核指标当目标会让团队压缩数据分布、泛化归零"
+      ],
+      "defectRate": 0.12,
+      "hallucinatedPeopleOrNumbers": 0,
+      "allEvidenceQuotesInTranscript": true,
+      "ellipsisInTwoQuotesNotExactSubstring": 2,
+      "pipelineOnlyNotHumanQuality": true,
+      "passThreshold": "defectRate <= 0.20"
+    },
     "successfulEnd": {
       "http": 200,
       "serverLog": [

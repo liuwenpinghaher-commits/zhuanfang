@@ -715,6 +715,8 @@ export interface InterviewSession {
   endCheckpoint?: {
     extractCandidates: MemoryCandidate[];
     extractAt: string;
+    /** Resume extract only if session.turns.length still matches. Extra turns after a failed /end force a new extract. */
+    turnCount: number;
   };
 }
 

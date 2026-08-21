@@ -108,6 +108,7 @@ describe("finalize memory extraction (M1a)", () => {
     const s = {
       ...cis({ id: "s-ckpt", title: "有 checkpoint 的场" }),
       endCheckpoint: {
+        turnCount: 0,
         extractCandidates: [{
           id: "mc-ckpt",
           text: "抽过的记忆",

@@ -190,6 +190,8 @@ async function intervieweeReply(history, question) {
 
   let ended = null;
   let endError = null;
+  let endAttempts = 0;
+  let endMs = null;
   const result = () => ({
     persona: { name: persona.name, role: persona.role },
     sessionId: id,
@@ -200,20 +202,29 @@ async function intervieweeReply(history, question) {
     degradedReasons,
     transcript,
     ended,
-    endError
+    endError,
+    endAttempts,
+    endMs
   });
   writeFileSync(outFile, JSON.stringify(result(), null, 2));
   log(`  transcript saved (${transcript.length} 轮, ${chars} 字) → ${outFile}`);
 
   log(`  /end finalize…`);
-  try {
-    ended = await api(`/api/interview-sessions/${id}/end`, {}, { retries: 2, timeoutMs: 520000 });
-  } catch (e) {
-    endError = e.message;
-    log(`  /end failed, session still active: ${endError}`);
+  const endStarted = Date.now();
+  for (let i = 0; i < 2; i++) {
+    endAttempts += 1;
+    try {
+      ended = await api(`/api/interview-sessions/${id}/end`, {}, { retries: 1, timeoutMs: 520000 });
+      endError = null;
+      break;
+    } catch (e) {
+      endError = e.message;
+      log(`  /end attempt ${endAttempts} failed: ${endError}`);
+    }
   }
+  endMs = Date.now() - endStarted;
   writeFileSync(outFile, JSON.stringify(result(), null, 2));
-  log(`\n=== 完成：${chars} 字 / ${transcript.length} 轮 / ${result().elapsedMin} 分钟 / 降级 ${degraded} 次${endError ? " / 未归档" : ""} ===`);
+  log(`\n=== 完成：${chars} 字 / ${transcript.length} 轮 / ${result().elapsedMin} 分钟 / 降级 ${degraded} 次 / 收工 ${endMs}ms${endError ? " / 未归档" : ""} ===`);
   log(`输出：${outFile}`);
   if (endError) process.exit(1);
 })().catch((e) => { console.error("DRIVER ERROR:", e.message); process.exit(e.exitCode === 2 ? 2 : 1); });

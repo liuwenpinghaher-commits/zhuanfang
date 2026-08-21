@@ -281,10 +281,18 @@ export async function registerInterviewSessionRoutes(
     let reasonedState: ProductState;
     try {
       let providedCandidates: MemoryCandidate[];
-      if (workingSession.endCheckpoint) {
-        providedCandidates = workingSession.endCheckpoint.extractCandidates ?? [];
-        console.warn(JSON.stringify({ event: "end_stage", stage: "extract_resume", sessionId: session.id, candidates: providedCandidates.length }));
+      const checkpoint = workingSession.endCheckpoint;
+      if (
+        checkpoint &&
+        typeof checkpoint.turnCount === "number" &&
+        checkpoint.turnCount === workingSession.turns.length
+      ) {
+        providedCandidates = checkpoint.extractCandidates ?? [];
+        console.warn(JSON.stringify({ event: "end_stage", stage: "extract_resume", sessionId: session.id, candidates: providedCandidates.length, turnCount: checkpoint.turnCount }));
       } else {
+        if (checkpoint) {
+          console.warn(JSON.stringify({ event: "end_stage", stage: "extract_stale", sessionId: session.id, checkpointTurns: checkpoint.turnCount, currentTurns: workingSession.turns.length }));
+        }
         providedCandidates = await extractSessionMemoryCandidates(
           workingSession,
           options.bailianChatClient,
@@ -295,7 +303,14 @@ export async function registerInterviewSessionRoutes(
           ...workingState,
           sessions: workingState.sessions.map((item) =>
             item.id === session.id
-              ? { ...item, endCheckpoint: { extractCandidates: providedCandidates, extractAt: nowIso() } }
+              ? {
+                  ...item,
+                  endCheckpoint: {
+                    extractCandidates: providedCandidates,
+                    extractAt: nowIso(),
+                    turnCount: workingSession.turns.length
+                  }
+                }
               : item
           )
         };
