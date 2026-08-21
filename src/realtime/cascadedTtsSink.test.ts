@@ -220,6 +220,16 @@ describe("createBrowserTtsSink", () => {
       .toEqual([["第二轮"]]);
   });
 
+  it("tts.done 之后 socket close 视为播放成功，不报中断", async () => {
+    const sink = createBrowserTtsSink("ws://test/tts");
+    const speaking = sink.speak(["播完这一句"]);
+    sockets[0].open();
+    await vi.waitFor(() => expect(sentSpeakSegments(sockets[0])).toEqual([["播完这一句"]]));
+    sockets[0].message(JSON.stringify({ type: "tts.done" }));
+    sockets[0].close(1000, "normal close after done");
+    await expect(speaking).resolves.toBeUndefined();
+  });
+
   it("主动 stop 正常 resolve 当前 speak", async () => {
     const sink = createBrowserTtsSink("ws://test/tts");
     const speaking = sink.speak(["会被主动停止"]);

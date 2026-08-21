@@ -58,6 +58,8 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
   // Decode state for the current utterance.
   let sampleRate = DEFAULT_SAMPLE_RATE;
   let leftoverByte: Uint8Array | null = null; // a half 16-bit sample split across chunks
+  /** True after the proxy sent tts.done for the in-flight utterance. */
+  let synthesisComplete = false;
 
   // Side-channel recording of the host (interviewer) TTS audio. We accumulate a
   // verbatim copy of every PCM chunk as it arrives so the assembled stream can be
@@ -246,6 +248,12 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
       };
       socket.onclose = (event) => {
         if (ws === socket) ws = null;
+        // After tts.done, a close is end-of-utterance, not a playback failure.
+        // Mid-stream close before done still interrupts (even if some PCM arrived).
+        if (synthesisComplete) {
+          resolveActiveSpeak(socket);
+          return;
+        }
         const error = new TtsPlaybackInterruptedError(event.reason || "TTS WebSocket interrupted", event.code);
         interruptSpeakForSocket(socket, error);
         reject(error);
@@ -280,6 +288,7 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
       firstChunkOfUtterance = true;
       leftoverByte = null;
       sampleRate = DEFAULT_SAMPLE_RATE;
+      synthesisComplete = false;
 
       let socket: WebSocket;
       try {
@@ -379,6 +388,7 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
             }
           } else if (msg.type === "tts.done") {
             doneReceived = true;
+            synthesisComplete = true;
             // All audio received; wait for the scheduled playback to drain.
             if (!resolveWhenDrained()) {
               drainPoll = setInterval(resolveWhenDrained, 50);
