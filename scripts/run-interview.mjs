@@ -23,16 +23,18 @@ function loadEnv(url) {
   } catch {}
   return env;
 }
-const env = loadEnv(new URL("../.env.local", import.meta.url));
-const KEY = env.DASHSCOPE_API_KEY;
+const fileEnv = loadEnv(new URL("../.env.local", import.meta.url));
+const env = { ...fileEnv, ...process.env };
+const KEY = env.DASHSCOPE_API_KEY || env.BAILIAN_API_KEY;
 const CHAT_URL = (env.BAILIAN_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1") + "/chat/completions";
-const INTERVIEWEE_MODEL = env.INTERVIEWEE_MODEL || "qwen-plus";
-const API = defaultEvalApiBase({ ...env, ...process.env, EVAL_API_BASE: process.env.EVAL_API_BASE || process.env.PRODUCT_API_BASE || env.PRODUCT_API_BASE });
+const INTERVIEWEE_MODEL = env.INTERVIEWEE_MODEL || env.BAILIAN_GENERAL_MODEL || "qwen-plus";
+const API = defaultEvalApiBase({ ...env, EVAL_API_BASE: process.env.EVAL_API_BASE || process.env.PRODUCT_API_BASE || env.PRODUCT_API_BASE });
 
 const personaFile = process.argv[2];
 const outFile = process.argv[3];
 const TARGET_CHARS = Number(process.argv[4] || 20000);
-const MAX_TURNS = 140;
+const MAX_TURNS = Number(process.env.EVAL_MAX_USER_TURNS || 140);
+let sessionCookie = "";
 const persona = JSON.parse(readFileSync(personaFile, "utf8"));
 
 const log = (...a) => process.stdout.write(a.join(" ") + "\n");
@@ -58,23 +60,55 @@ async function chat(messages, { temperature = 0.85, max_tokens = 900 } = {}) {
   }
 }
 
-async function api(path, body) {
-  for (let attempt = 0; attempt < 4; attempt++) {
+function cookieHeader() {
+  const h = { "content-type": "application/json" };
+  if (sessionCookie) h.cookie = `zf_session=${sessionCookie}`;
+  return h;
+}
+
+function captureCookie(res) {
+  const raw = res.headers.get("set-cookie") ?? "";
+  const m = raw.match(/zf_session=([^;]+)/);
+  if (m) sessionCookie = decodeURIComponent(m[1]);
+}
+
+async function api(path, body, { retries = 4 } = {}) {
+  for (let attempt = 0; attempt < retries; attempt++) {
     try {
       const res = await fetch(`${API}${path}`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: cookieHeader(),
         body: JSON.stringify(body),
         // /end runs the finalize LLM (up to ~3 min for a dense 20K transcript) — allow generous headroom.
         signal: AbortSignal.timeout(300000)
       });
+      captureCookie(res);
       if (!res.ok) throw new Error(`api ${path} ${res.status}: ${(await res.text()).slice(0, 200)}`);
       return await res.json();
     } catch (e) {
-      if (attempt === 3) throw e;
+      if (attempt === retries - 1) throw e;
       await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
     }
   }
+}
+
+async function loginEvalUser() {
+  const user = process.env.EVAL_USERNAME;
+  const pass = process.env.EVAL_PASSWORD;
+  if (!user || !pass) {
+    throw Object.assign(new Error(JSON.stringify({ event: "eval_purge_blocked", reason: "eval_session_login_required" })), { exitCode: 2 });
+  }
+  const login = await fetch(`${API}/api/auth/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: user, password: pass }),
+    signal: AbortSignal.timeout(20000)
+  });
+  captureCookie(login);
+  if (!login.ok || !sessionCookie) {
+    throw Object.assign(new Error(JSON.stringify({ event: "eval_purge_blocked", reason: "eval_session_login_required" })), { exitCode: 2 });
+  }
+  return user;
 }
 
 function intervieweeSystem() {
@@ -103,21 +137,13 @@ async function intervieweeReply(history, question) {
   log(`\n=== 访谈开始：${persona.name}（${persona.role}）目标 ${TARGET_CHARS} 字 ===`);
   // Clean, isolated state per interview: purge seed/demo + any prior interview so this
   // session's guide, memory recall, and finalized assets come PURELY from this conversation.
+  const evalUser = process.env.EVAL_USERNAME;
+  if (evalUser && process.env.EVAL_PASSWORD) {
+    const user = await loginEvalUser();
+    log(`  logged in as ${user}`);
+  }
   if (process.env.EVAL_ALLOW_PURGE === "1") {
-    const user = process.env.EVAL_USERNAME;
-    const pass = process.env.EVAL_PASSWORD;
-    if (!user || !pass) {
-      throw Object.assign(new Error(JSON.stringify({ event: "eval_purge_blocked", reason: "eval_session_login_required" })), { exitCode: 2 });
-    }
-    const login = await fetch(`${API}/api/auth/login`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: user, password: pass }),
-      signal: AbortSignal.timeout(15000)
-    });
-    if (!login.ok) {
-      throw Object.assign(new Error(JSON.stringify({ event: "eval_purge_blocked", reason: "eval_session_login_required" })), { exitCode: 2 });
-    }
+    const user = evalUser || (await loginEvalUser());
     assertPurgeAllowed({
       env: process.env,
       meUsername: user,
@@ -158,28 +184,36 @@ async function intervieweeReply(history, question) {
     transcript.push({ role: "assistant", content: nextQuestion });
     chars += nextQuestion.length;
     if (r.degradedReason) { degraded++; degradedReasons.push(`#${turn}: ${r.degradedReason}`); }
-    if (turn % 5 === 0 || chars >= TARGET_CHARS) {
-      const mins = ((Date.now() - t0) / 60000).toFixed(1);
-      log(`  turn ${turn}: ${chars} 字 / ${mins} 分钟${r.degradedReason ? "  ⚠DEGRADED" : ""}`);
-    }
+    const mins = ((Date.now() - t0) / 60000).toFixed(1);
+    log(`  turn ${turn}: ${chars} 字 / ${mins} 分钟${r.degradedReason ? "  ⚠DEGRADED" : ""}`);
   }
 
-  log(`  /end finalize…`);
-  const ended = await api(`/api/interview-sessions/${id}/end`, {});
-
-  const elapsedMin = (Date.now() - t0) / 60000;
-  const result = {
+  let ended = null;
+  let endError = null;
+  const result = () => ({
     persona: { name: persona.name, role: persona.role },
     sessionId: id,
     chars,
     turns: transcript.length,
-    elapsedMin: Number(elapsedMin.toFixed(1)),
+    elapsedMin: Number(((Date.now() - t0) / 60000).toFixed(1)),
     degraded,
     degradedReasons,
     transcript,
-    ended
-  };
-  writeFileSync(outFile, JSON.stringify(result, null, 2));
-  log(`\n=== 完成：${chars} 字 / ${transcript.length} 轮 / ${elapsedMin.toFixed(1)} 分钟 / 降级 ${degraded} 次 ===`);
+    ended,
+    endError
+  });
+  writeFileSync(outFile, JSON.stringify(result(), null, 2));
+  log(`  transcript saved (${transcript.length} 轮, ${chars} 字) → ${outFile}`);
+
+  log(`  /end finalize…`);
+  try {
+    ended = await api(`/api/interview-sessions/${id}/end`, {}, { retries: 2 });
+  } catch (e) {
+    endError = e.message;
+    log(`  /end failed, session still active: ${endError}`);
+  }
+  writeFileSync(outFile, JSON.stringify(result(), null, 2));
+  log(`\n=== 完成：${chars} 字 / ${transcript.length} 轮 / ${result().elapsedMin} 分钟 / 降级 ${degraded} 次${endError ? " / 未归档" : ""} ===`);
   log(`输出：${outFile}`);
+  if (endError) process.exit(1);
 })().catch((e) => { console.error("DRIVER ERROR:", e.message); process.exit(e.exitCode === 2 ? 2 : 1); });

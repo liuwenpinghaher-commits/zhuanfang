@@ -1,0 +1,51 @@
+{
+  "source": "simulated",
+  "scenarioId": "INTERVIEW-chen-zhixing",
+  "persona": "陈知行",
+  "user_value_verdict": "insufficient_data",
+  "gateHumanValue": "insufficient_data",
+  "engineering_pr_claims_go": false,
+  "gate_status": "insufficient_data",
+  "sessionId": "session-1787297953231-372e89",
+  "hard": {
+    "userTurns": 15,
+    "assistantTurns": 15,
+    "turns": 30,
+    "userChars": 6888,
+    "hostChars": 984,
+    "chars": 7872,
+    "statusAtDump": "active",
+    "ended": false,
+    "endError": "专访归档失败：The operation was aborted due to timeout。会话未结束，可重试。",
+    "endRetry": { "status": 502, "ms": 60168 }
+  },
+  "book": {
+    "throughLine": "从一次万卡刷榜实验，一路追到配比签字、接管轨迹怎么做成偏好、发版谁背锅、留存掉了怎么补、算力烧光后怎么跟老板要卡",
+    "hostPins": [
+      "哪一次实验没被定义清楚",
+      "当时拍板的数据配比",
+      "chosen 到底算哪一段",
+      "对比实验多涨了多少点",
+      "发版是上还是回滚",
+      "会议室里是共识还是压人",
+      "客诉率实际多少",
+      "留存掉了之后撤没撤补丁",
+      "完美轨迹是脚本筛还是人筛",
+      "2000 条喂进去留存涨回来没有",
+      "思考动画加了没有",
+      "预算见底砍灰字还是限长度",
+      "给 CEO 看的预期收益是哪个数字"
+    ],
+    "guestStayedInDomain": true,
+    "hostAnsweredGuestRhetorical": false,
+    "title": "日常复盘：继续追问：在头部实验室训练大模型的真实经历、对 AI 范式与技术预测的判断、组织与个人的关系",
+    "cardTitleWrapsTopicHint": true,
+    "guidePerspectivesStillZero": true,
+    "memoriesExtracted": 0,
+    "pointsExtracted": 0
+  },
+  "gates": {
+    "humanValue": "insufficient_data",
+    "engineeringGo": false
+  }
+}
