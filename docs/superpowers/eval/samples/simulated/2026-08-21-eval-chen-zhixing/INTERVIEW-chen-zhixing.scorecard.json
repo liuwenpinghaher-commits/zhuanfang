@@ -19,9 +19,10 @@
     "hostChars": 984,
     "chars": 7872,
     "statusAtDump": "active",
-    "ended": false,
+    "ended": true,
     "endError": "专访归档失败：The operation was aborted due to timeout。会话未结束，可重试。",
-    "endRetry": { "status": 502, "ms": 60168 }
+    "endRetry": { "status": 502, "ms": 60168 },
+    "endAfterDeploy": { "status": 200, "ms": 251823, "pendingMemory": 13, "points": 7, "questions": 3, "debts": 3 }
   },
   "book": {
     "throughLine": "从一次万卡刷榜实验，一路追到配比签字、接管轨迹怎么做成偏好、发版谁背锅、留存掉了怎么补、算力烧光后怎么跟老板要卡",
