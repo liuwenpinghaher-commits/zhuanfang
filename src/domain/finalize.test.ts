@@ -100,6 +100,48 @@ describe("finalize memory extraction (M1a)", () => {
     expect(nextState.memoryCandidates[0].id).toBe("mc-fake-001");
   });
 
+  it("mergeFinalizedState drops endCheckpoint on the completed session", async () => {
+    const { mergeFinalizedState } = await import("./finalize");
+    const { createInitialProductState: initState, createInterviewSession: cis } = await import("./engine");
+    const { nowIso } = await import("./utils");
+    const state = initState();
+    const s = {
+      ...cis({ id: "s-ckpt", title: "有 checkpoint 的场" }),
+      endCheckpoint: {
+        extractCandidates: [{
+          id: "mc-ckpt",
+          text: "抽过的记忆",
+          status: "pending" as const,
+          sourceType: "interview_session" as const,
+          sourceId: "s-ckpt",
+          evidenceQuote: "原话",
+          reason: "抽取",
+          sensitivity: "normal" as const,
+          reviewScore: 0,
+          reviewSignals: [],
+          createdAt: nowIso()
+        }],
+        extractAt: nowIso()
+      }
+    };
+    const completedAt = nowIso();
+    const note = {
+      id: "note-ckpt",
+      sessionId: "s-ckpt",
+      title: s.title,
+      summary: "摘要",
+      keyQuote: "原话",
+      saidTrack: ["原话"],
+      learnedTrack: [],
+      nextQuestions: [],
+      createdAt: completedAt
+    };
+    const { nextState } = mergeFinalizedState(state, s, { note, points: [], questions: [], decisions: [], debts: [], themes: [] }, completedAt, s.endCheckpoint.extractCandidates);
+    const done = nextState.sessions.find((item) => item.id === "s-ckpt");
+    expect(done?.status).toBe("completed");
+    expect(done?.endCheckpoint).toBeUndefined();
+  });
+
   it("mergeFinalizedState with empty/undefined providedCandidates adds NO memory candidate (诚实的空,不再启发式造候选)", async () => {
     const { mergeFinalizedState } = await import("./finalize");
     const { createInitialProductState: initState, createInterviewSession: cis, addTurn: at } = await import("./engine");

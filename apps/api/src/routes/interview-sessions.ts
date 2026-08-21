@@ -11,6 +11,7 @@ import type {
   FinalizeResult,
   InterviewSession,
   InterviewTurn,
+  MemoryCandidate,
   ProductState
 } from "../../../../src/domain/types";
 import { makeId, nowIso, withAuditEvent } from "../../../../src/domain/utils";
@@ -274,22 +275,38 @@ export async function registerInterviewSessionRoutes(
       return reply.code(503).send({ error: "归档 LLM 未配置（缺少 DASHSCOPE_API_KEY），无法结束并归档专访。" });
     }
 
-    const baseState = {
-      ...state,
-      sessions: state.sessions.filter((item) => item.id !== session.id)
-    };
+    let workingState = state;
+    let workingSession = session;
     let result: FinalizeResult;
     let reasonedState: ProductState;
     try {
-      // M1b: extract real long-term memory candidates from the conversation and hand
-      // them to finalize.
-      const providedCandidates = await extractSessionMemoryCandidates(
-        session,
-        options.bailianChatClient,
-        budget
-      );
-      console.warn(JSON.stringify({ event: "end_stage", stage: "extract_ok", sessionId: session.id, candidates: providedCandidates.length }));
-      result = await finalizeSessionWithLlm(baseState, session, options.bailianChatClient, providedCandidates, options.embeddingClient);
+      let providedCandidates: MemoryCandidate[];
+      if (workingSession.endCheckpoint) {
+        providedCandidates = workingSession.endCheckpoint.extractCandidates ?? [];
+        console.warn(JSON.stringify({ event: "end_stage", stage: "extract_resume", sessionId: session.id, candidates: providedCandidates.length }));
+      } else {
+        providedCandidates = await extractSessionMemoryCandidates(
+          workingSession,
+          options.bailianChatClient,
+          budget
+        );
+        console.warn(JSON.stringify({ event: "end_stage", stage: "extract_ok", sessionId: session.id, candidates: providedCandidates.length }));
+        const withCheckpoint: ProductState = {
+          ...workingState,
+          sessions: workingState.sessions.map((item) =>
+            item.id === session.id
+              ? { ...item, endCheckpoint: { extractCandidates: providedCandidates, extractAt: nowIso() } }
+              : item
+          )
+        };
+        workingState = await replaceStateDurable(repository, withCheckpoint);
+        workingSession = workingState.sessions.find((item) => item.id === session.id) ?? workingSession;
+      }
+      const baseState = {
+        ...workingState,
+        sessions: workingState.sessions.filter((item) => item.id !== session.id)
+      };
+      result = await finalizeSessionWithLlm(baseState, workingSession, options.bailianChatClient, providedCandidates, options.embeddingClient);
       console.warn(JSON.stringify({ event: "end_stage", stage: "finalize_ok", sessionId: session.id }));
       // 轻量推理(欠账②):finalize 之后,对全量观点做矛盾/演化检出。规则粗筛 → LLM 精判 →
       // 应用关系(双向 contradicts + supersedes)。失败与 finalize 一体原子中止(此时尚未持久化)。

@@ -256,6 +256,58 @@ describe("LLM path (mock BailianChatClient)", () => {
     await server.close();
   });
 
+  it("/end: finalize timeout keeps extract checkpoint; retry skips extract", async () => {
+    const extractJson = JSON.stringify({
+      candidates: [{ text: "判断力稀缺", evidenceQuote: "这是我的第一条回答", sensitivity: "normal" }]
+    });
+    const finalizeJson = JSON.stringify({
+      summary: "这次对话推进了判断力这个题目",
+      keyQuote: "这是我的第一条回答，用于触发 finalize",
+      saidTrack: ["讲了判断力"],
+      learnedTrack: ["需要把问题定义清楚"],
+      nextQuestions: ["下一次怎么验证？"],
+      points: [],
+      questions: [],
+      decisions: [],
+      debts: [],
+      themes: []
+    });
+    let extractCalls = 0;
+    let finalizeCalls = 0;
+    const mockChatClient: BailianChatClient = {
+      async complete(input) {
+        const sys = input.messages.find((m) => m.role === "system")?.content ?? "";
+        if (sys.includes("长期记住")) {
+          extractCalls += 1;
+          return extractJson;
+        }
+        finalizeCalls += 1;
+        if (finalizeCalls === 1) throw new Error("The operation was aborted due to timeout");
+        return finalizeJson;
+      }
+    };
+    const server = buildApiServer({ env: {}, bailianChatClient: mockChatClient });
+    await server.ready();
+    const sessionId = await setupSessionWithTurn(server);
+
+    const first = await inject(server, "POST", `/api/interview-sessions/${sessionId}/end`);
+    expect(first.statusCode).toBe(502);
+    expect(extractCalls).toBe(1);
+    expect(finalizeCalls).toBe(1);
+
+    const mid = await inject(server, "GET", `/api/interview-sessions/${sessionId}`);
+    const midSession = JSON.parse(mid.payload).session as { status: string; endCheckpoint?: { extractCandidates: unknown[] } };
+    expect(midSession.status).toBe("active");
+    expect(midSession.endCheckpoint?.extractCandidates?.length).toBe(1);
+
+    const second = await inject(server, "POST", `/api/interview-sessions/${sessionId}/end`);
+    expect(second.statusCode).toBe(200);
+    expect(extractCalls).toBe(1);
+    expect(JSON.parse(second.payload).session.status).toBe("completed");
+    expect(JSON.parse(second.payload).session.endCheckpoint).toBeUndefined();
+    await server.close();
+  });
+
   it("/api/import/documents: LLM returns malformed JSON → 502 且本次不导入（原子失败）", async () => {
     // Mock LLM returns garbage → extractCandidateMemories throws → 路由如实 502，导入不落库
     const server = buildMockLlmServer("totally not json garbage !!!");

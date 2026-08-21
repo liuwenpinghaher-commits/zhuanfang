@@ -708,6 +708,14 @@ export interface InterviewSession {
    * 仅影响本 session 策略，不改写资产状态。
    */
   suppressedRevisitIds?: string[];
+  /**
+   * /end checkpoint: extract finished, later stages did not. Session stays active.
+   * A retry skips extract and resumes from finalize. Cleared on successful archive.
+   */
+  endCheckpoint?: {
+    extractCandidates: MemoryCandidate[];
+    extractAt: string;
+  };
 }
 
 export interface InterviewAgentContext {

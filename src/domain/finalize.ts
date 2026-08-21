@@ -161,8 +161,9 @@ export function mergeFinalizedState(
   providedCandidates?: MemoryCandidate[]
 ): FinalizeResult {
   const { note } = content;
+  const { endCheckpoint: _endCheckpoint, ...sessionWithoutCheckpoint } = session;
   const baseCompletedSession: InterviewSession = {
-    ...session,
+    ...sessionWithoutCheckpoint,
     status: "completed",
     completedAt,
     qualityReport: buildInterviewQualityReport(session)
