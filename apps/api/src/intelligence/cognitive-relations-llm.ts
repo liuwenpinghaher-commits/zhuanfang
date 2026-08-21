@@ -15,6 +15,9 @@ import { asArray, asObject, asString, parseJsonObjectLoose } from "./llm-json";
 
 const EMPTY: CognitiveRelations = { contradicts: [], supersedes: [] };
 
+/** Per-stage /end budget for contradiction judge. Matches write-gate contradiction slice. */
+export const COGNITIVE_RELATIONS_TIMEOUT_MS = 60_000;
+
 const SYSTEM_PROMPT = [
   "你是一位严谨的认知关系审校员。下面给你若干【观点对】(都来自同一长期主题),逐对判断它们的关系,只能选一种:",
   "  · contradict(语义对立):两条观点在【同一问题】上给出互相冲突、不能同时为真的判断(例:「应该集权拍板」vs「应该充分放权」)。",
@@ -58,7 +61,8 @@ export async function judgeCognitiveRelations(
     ],
     responseFormat: "json",
     temperature: 0.2,
-    maxTokens: 2000
+    maxTokens: 2000,
+    timeoutMs: COGNITIVE_RELATIONS_TIMEOUT_MS
   });
   return parseRelations(raw, validPairs);
 }

@@ -20,27 +20,68 @@ const SYSTEM_PROMPT = [
   "铁律：只抽真实出现的内容，不编造。只输出一个 JSON 对象。"
 ].join("\n");
 
-export async function extractCandidateMemories(
-  title: string,
+/** Per-stage /end budget for memory extract. Matches write-gate END_WRITE_PHASE_BUDGET_MS extract slice. */
+export const MEMORY_EXTRACT_TIMEOUT_MS = 60_000;
+export const MEMORY_EXTRACT_CHUNK_CHARS = 4_000;
+export const MEMORY_EXTRACT_CHUNK_OVERLAP = 200;
+
+export function splitTranscriptForMemoryExtract(
   content: string,
+  chunkChars = MEMORY_EXTRACT_CHUNK_CHARS,
+  overlap = MEMORY_EXTRACT_CHUNK_OVERLAP
+): string[] {
+  if (content.length <= chunkChars) return [content];
+  const chunks: string[] = [];
+  let start = 0;
+  while (start < content.length) {
+    const end = Math.min(start + chunkChars, content.length);
+    chunks.push(content.slice(start, end));
+    if (end >= content.length) break;
+    start = end - overlap;
+  }
+  return chunks;
+}
+
+function parseExtractedCandidates(raw: string): ImportedMemoryCandidate[] {
+  const parsed = parseJsonObjectLoose(raw);
+  if (!parsed) {
+    throw new Error("memory extraction LLM returned unparseable JSON");
+  }
+  return asArray(parsed.candidates)
+    .map((item) => {
+      const obj = asObject(item);
+      const sensitivity = asString(obj.sensitivity) === "sensitive" ? "sensitive" : "normal";
+      return {
+        text: asString(obj.text),
+        evidenceQuote: asString(obj.evidenceQuote),
+        sensitivity: sensitivity as "normal" | "sensitive"
+      };
+    })
+    .filter((candidate) => candidate.text.length > 0);
+}
+
+async function extractOneChunk(
+  title: string,
+  chunk: string,
   chatClient: BailianChatClient,
-  options: { corrections?: string[] } = {}
+  corrections: string[],
+  timeoutMs: number,
+  chunkIndex: number,
+  chunkCount: number
 ): Promise<ImportedMemoryCandidate[]> {
-  const corrections = (options.corrections ?? []).map((item) => item.trim()).filter(Boolean).slice(-20);
   const raw = await chatClient.complete({
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       {
         role: "user",
         content: [
-          // 审计修复(F3):标题同为外部不可信文本,与正文同口径清洗(此前只清正文)。
           `资料标题：${sanitizeExternalMaterialText(title, "（标题已清洗）")}`,
+          ...(chunkCount > 1
+            ? [`这是长资料的第 ${chunkIndex + 1}/${chunkCount} 段，只抽本段真实出现的内容。`]
+            : []),
           "",
           "=== 资料内容 ===",
-          // Cover a full long interview (~20K chars). At 8000 the back ~60% of a 20K-char
-          // session was never mined for memories, so durable knowledge from the second half
-          // (often the deepest part) was silently dropped.
-          sanitizeExternalMaterialBlock(content, "（外部资料片段已清洗）").slice(0, 24000),
+          chunk,
           "=== 内容结束 ===",
           ...(corrections.length > 0
             ? [
@@ -59,24 +100,47 @@ export async function extractCandidateMemories(
     ],
     responseFormat: "json",
     temperature: 0.3,
-    maxTokens: 3000
+    maxTokens: 3000,
+    timeoutMs
   });
+  return parseExtractedCandidates(raw);
+}
 
-  const parsed = parseJsonObjectLoose(raw);
-  if (!parsed) {
-    throw new Error("memory extraction LLM returned unparseable JSON");
+export async function extractCandidateMemories(
+  title: string,
+  content: string,
+  chatClient: BailianChatClient,
+  options: { corrections?: string[] } = {}
+): Promise<ImportedMemoryCandidate[]> {
+  const corrections = (options.corrections ?? []).map((item) => item.trim()).filter(Boolean).slice(-20);
+  // Cover a full long interview (~20K chars). At 8000 the back ~60% of a 20K-char
+  // session was never mined for memories, so durable knowledge from the second half
+  // (often the deepest part) was silently dropped. A single 24k prompt still blows
+  // the 60s extract budget, so long bodies are chunked and each call gets a slice
+  // of that budget.
+  const body = sanitizeExternalMaterialBlock(content, "（外部资料片段已清洗）").slice(0, 24000);
+  const chunks = splitTranscriptForMemoryExtract(body);
+  const perChunkTimeout = Math.max(15_000, Math.floor(MEMORY_EXTRACT_TIMEOUT_MS / chunks.length));
+  const merged: ImportedMemoryCandidate[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < chunks.length; i++) {
+    const part = await extractOneChunk(
+      title,
+      chunks[i],
+      chatClient,
+      corrections,
+      perChunkTimeout,
+      i,
+      chunks.length
+    );
+    for (const candidate of part) {
+      const key = candidate.text.trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      merged.push(candidate);
+    }
   }
-  return asArray(parsed.candidates)
-    .map((item) => {
-      const obj = asObject(item);
-      const sensitivity = asString(obj.sensitivity) === "sensitive" ? "sensitive" : "normal";
-      return {
-        text: asString(obj.text),
-        evidenceQuote: asString(obj.evidenceQuote),
-        sensitivity: sensitivity as "normal" | "sensitive"
-      };
-    })
-    .filter((candidate) => candidate.text.length > 0)
+  return merged
     .filter((candidate) => !conflictsWithExplicitCorrection(candidate, corrections))
     .slice(0, 20);
 }

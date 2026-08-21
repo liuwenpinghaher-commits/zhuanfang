@@ -12,7 +12,12 @@
 import { describe, expect, it } from "vitest";
 import type { ImportedMemoryCandidate } from "../../../../src/domain/import";
 import type { BailianChatClient } from "../providers/bailian";
-import { extractCandidateMemories } from "./memory-extraction-llm";
+import {
+  extractCandidateMemories,
+  MEMORY_EXTRACT_TIMEOUT_MS,
+  splitTranscriptForMemoryExtract
+} from "./memory-extraction-llm";
+import type { BailianChatCompleteRequest } from "../providers/bailian";
 
 const mockChat = (json: string): BailianChatClient => ({
   async complete() {
@@ -142,5 +147,43 @@ describe("extractCandidateMemories", () => {
     expect(result.map((candidate) => candidate.text)).toEqual([
       "个人工具普及率不是组织提效的充分条件。"
     ]);
+  });
+
+  it("short body: one complete() call with explicit 60s timeout", async () => {
+    const captured: BailianChatCompleteRequest[] = [];
+    const chat: BailianChatClient = {
+      async complete(input) {
+        captured.push(input);
+        return JSON.stringify({
+          candidates: [{ text: "一条记忆", evidenceQuote: "原文", sensitivity: "normal" }]
+        });
+      }
+    };
+    await extractCandidateMemories("短资料", "很短的一段话", chat);
+    expect(captured).toHaveLength(1);
+    expect(captured[0].timeoutMs).toBe(MEMORY_EXTRACT_TIMEOUT_MS);
+  });
+
+  it("long body is chunked; each call gets a slice of the 60s budget; duplicate texts merge", async () => {
+    const longBody = "甲".repeat(4500) + "乙".repeat(4500);
+    expect(splitTranscriptForMemoryExtract(longBody).length).toBeGreaterThan(1);
+    const captured: BailianChatCompleteRequest[] = [];
+    const chat: BailianChatClient = {
+      async complete(input) {
+        captured.push(input);
+        return JSON.stringify({
+          candidates: [{ text: "同一条", evidenceQuote: "原文", sensitivity: "normal" }]
+        });
+      }
+    };
+    const result = await extractCandidateMemories("长资料", longBody, chat);
+    expect(captured.length).toBeGreaterThan(1);
+    const perChunk = Math.max(15_000, Math.floor(MEMORY_EXTRACT_TIMEOUT_MS / captured.length));
+    for (const call of captured) {
+      expect(call.timeoutMs).toBe(perChunk);
+    }
+    expect(captured[0].messages.some((m) => String(m.content).includes("第 1/"))).toBe(true);
+    expect(result).toHaveLength(1);
+    expect(result[0].text).toBe("同一条");
   });
 });

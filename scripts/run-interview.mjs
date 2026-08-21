@@ -72,15 +72,16 @@ function captureCookie(res) {
   if (m) sessionCookie = decodeURIComponent(m[1]);
 }
 
-async function api(path, body, { retries = 4 } = {}) {
+async function api(path, body, { retries = 4, timeoutMs = 300000 } = {}) {
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
       const res = await fetch(`${API}${path}`, {
         method: "POST",
         headers: cookieHeader(),
         body: JSON.stringify(body),
-        // /end runs the finalize LLM (up to ~3 min for a dense 20K transcript) — allow generous headroom.
-        signal: AbortSignal.timeout(300000)
+        // /end budget is extract 60s + finalize 180s + contradiction 60s + embed ~30s ≈ 330s.
+        // Client timeout must cover the product write-slot ceiling (360s).
+        signal: AbortSignal.timeout(timeoutMs)
       });
       captureCookie(res);
       if (!res.ok) throw new Error(`api ${path} ${res.status}: ${(await res.text()).slice(0, 200)}`);
@@ -207,7 +208,7 @@ async function intervieweeReply(history, question) {
 
   log(`  /end finalize…`);
   try {
-    ended = await api(`/api/interview-sessions/${id}/end`, {}, { retries: 2 });
+    ended = await api(`/api/interview-sessions/${id}/end`, {}, { retries: 2, timeoutMs: 360000 });
   } catch (e) {
     endError = e.message;
     log(`  /end failed, session still active: ${endError}`);

@@ -10,7 +10,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { BailianChatClient } from "../providers/bailian";
 import type { LlmBudget } from "../llm-budget";
 import type { PointAsset } from "../../../../src/domain/types";
-import { judgeCognitiveRelations } from "./cognitive-relations-llm";
+import { COGNITIVE_RELATIONS_TIMEOUT_MS, judgeCognitiveRelations } from "./cognitive-relations-llm";
 
 const point = (id: string, overrides: Partial<PointAsset> = {}): PointAsset => ({
   id,
@@ -50,6 +50,18 @@ describe("judgeCognitiveRelations", () => {
       judgeCognitiveRelations([pairOf("pt_1", "pt_2")], { complete }, neverBudget, "s1")
     ).rejects.toThrow("预算已用尽");
     expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("passes explicit 60s timeout so /end contradiction is not killed by the 60s client default twice", async () => {
+    const captured: Array<{ timeoutMs?: number }> = [];
+    const chat: BailianChatClient = {
+      async complete(input) {
+        captured.push(input);
+        return JSON.stringify({ relations: [{ a: "pt_1", b: "pt_2", verdict: "none" }] });
+      }
+    };
+    await judgeCognitiveRelations([pairOf("pt_1", "pt_2")], chat, alwaysBudget, "s1");
+    expect(captured[0]?.timeoutMs).toBe(COGNITIVE_RELATIONS_TIMEOUT_MS);
   });
 
   it("happy path: parses contradict + supersede verdicts", async () => {

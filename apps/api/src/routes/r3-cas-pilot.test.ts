@@ -179,7 +179,9 @@ describe("R3 试点路由 CAS 换轨(全栈)", () => {
     expect(isWriteGateExempt("POST", "/api/state/reset")).toBe(false);
     expect(isWriteGateExempt("POST", "/api/state/purge")).toBe(false);
     expect(isWriteGateExempt("POST", "/api/state/import")).toBe(false);
+    // Long-holder for write-slot tests is /end (not login). Login exemption is PR-6.
     expect(isWriteGateExempt("POST", "/api/interview-sessions/s1/end")).toBe(false);
+    expect(isWriteGateExempt("POST", "/api/auth/login")).toBe(false);
     expect(isWriteGateExempt("POST", "/api/interview-sessions/s1/turns")).toBe(false);
     expect(isWriteGateExempt("POST", "/api/memory-candidates/c1/approve")).toBe(false); // embed 在临界区
     expect(isWriteGateExempt("POST", "/api/memory/consolidate")).toBe(false); // LLM 在临界区
