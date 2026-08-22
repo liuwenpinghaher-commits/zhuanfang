@@ -260,7 +260,14 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
             const baseWsUrl = deriveRealtimeWsBaseUrl(getProductApiBaseUrl());
             const asrWsUrl = `${baseWsUrl}/api/realtime-voice/ws/${voiceSession.sessionId}`;
             const ttsWsUrl = `${baseWsUrl}/api/realtime-voice/ws/tts/${voiceSession.sessionId}`;
-            const interviewId = session?.id ?? "";
+            const interviewId = session?.id
+              ?? productState.sessions.find((entry) => entry.status === "active")?.id
+              ?? "";
+            if (!interviewId) {
+              setNotice(buildNotice("warning", "还没有这场专访", "先开始一场专访，再点录音。说的话才能写进书里。"));
+              setVoiceStatus("idle");
+              return;
+            }
 
             const asr = createBrowserAsrSource({
               asrWsUrl,

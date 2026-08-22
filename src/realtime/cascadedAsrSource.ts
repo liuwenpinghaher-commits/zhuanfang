@@ -401,8 +401,10 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
     }
 
     stream = await getStream();
-    const settings = stream.getAudioTracks()[0]?.getSettings?.();
-    echoCancellationEnabled = settings?.echoCancellation === true;
+    const micTrack = stream.getAudioTracks()[0];
+    const settings = micTrack?.getSettings?.();
+    // Fake/eval MediaStreamDestination tracks often claim echoCancellation without a device.
+    echoCancellationEnabled = settings?.echoCancellation === true && Boolean(settings.deviceId);
     const wEcho = debugWindow();
     if (wEcho) wEcho.__asrEchoCancellation = echoCancellationEnabled;
     // Tee the live mic stream to the caller (e.g. whole-session recorder) before

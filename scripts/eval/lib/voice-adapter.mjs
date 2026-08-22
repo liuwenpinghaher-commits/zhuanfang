@@ -196,6 +196,8 @@ export async function deliverVoiceScenario({
       await start.first().click({ timeout: 25000 });
     }
     const rec = page.getByLabel("开始录音");
+    await rec.waitFor({ state: "visible", timeout: 45000 });
+    await page.waitForTimeout(1200);
     await rec.click({ timeout: 45000 });
     const speakingAppeared = page.getByText("AI 正在回应").waitFor({ state: "visible", timeout: 25000 }).then(() => true).catch(() => false);
 
