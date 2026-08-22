@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { createTurnAssembler } from "./turnAssembler";
 
@@ -81,6 +82,13 @@ describe("turnAssembler", () => {
     });
     expect(result.action).toBe("wait");
     expect(assembler.decide({ atMs: 1400, allowCommit: true }).action).toBe("commit");
+  });
+
+  it("beginLiveTts 在 speak 开始时就能判相似，不必等 endedAt", () => {
+    const assembler = createTurnAssembler({ similarityThreshold: 0.8 });
+    assembler.beginLiveTts("你好，今天我们聊聊你的工作。", 0);
+    expect(assembler.isSimilarToLiveTts("你好，今天我们聊聊你的工作。")).toBe(true);
+    expect(assembler.isSimilarToLiveTts("等一下你听我说那次救火")).toBe(false);
   });
 
   it("有用户能量和问答语境时保留极短但完整的回答", () => {

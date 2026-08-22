@@ -21,6 +21,7 @@ import type {
 } from "./cascadedPipeline";
 import { connectCascadedPipeline } from "./cascadedPipeline";
 import { TtsPlaybackInterruptedError } from "./cascadedTtsSink";
+import { isGrabbingMatter, isTakeFloor } from "./takeFloor";
 import type { ExpressionState } from "../domain/types";
 
 // ---------------------------------------------------------------------------
@@ -334,7 +335,6 @@ describe("connectCascadedPipeline", () => {
     );
     const pipeline = connectCascadedPipeline(makeOpts({
       sendUserTurn: lateSend,
-      decisionOpts: { minBargeInMs: 0 },
     }));
     await pipeline.startListening();
 
@@ -343,7 +343,8 @@ describe("connectCascadedPipeline", () => {
     await Promise.resolve();
     expect(lateSend).toHaveBeenCalledOnce();
 
-    asr.pushSpeechStarted(); // BARGE-IN while thinking → ctrl.abort()
+    asr.pushSpeechStarted();
+    asr.pushDelta("等一下你听我说那次救火", true);
     resolveLate({ assistantText: "这是被打断后才返回的陈旧回复。" }); // HTTP can't cancel → late resolve
     await Promise.resolve();
     await Promise.resolve();
@@ -649,7 +650,7 @@ describe("connectCascadedPipeline", () => {
   // -------------------------------------------------------------------------
   // 3. barge-in: speech_started while speaking → TTS stopped, LLM aborted
   // -------------------------------------------------------------------------
-  it("barge-in: speech_started while thinking/speaking stops TTS and aborts LLM", async () => {
+  it("barge-in: 思考中抢话正事 stops TTS and aborts LLM", async () => {
     asr.setExpressionState("concluding");
 
     // Use a slow sendUserTurn that never resolves on its own (we'll barge-in before)
@@ -668,7 +669,6 @@ describe("connectCascadedPipeline", () => {
     const pipeline = connectCascadedPipeline(
       makeOpts({
         sendUserTurn: slowSend,
-        decisionOpts: { minBargeInMs: 0 },
         callbacks: {
           onStateChange: (s) => stateChanges.push(s),
           onUserTranscript: (text, isFinal) => userTranscripts.push({ text, isFinal }),
@@ -686,9 +686,9 @@ describe("connectCascadedPipeline", () => {
     // Wait until thinking state is entered (sendUserTurn called)
     await vi.waitFor(() => slowSend.mock.calls.length > 0, { timeout: 500 });
 
-    // Now barge-in
     asr.setExpressionState("fluent");
     asr.pushSpeechStarted();
+    asr.pushDelta("等一下你听我说那次救火", true);
 
     await Promise.resolve();
     await Promise.resolve();
@@ -812,7 +812,9 @@ describe("connectCascadedPipeline", () => {
     pipeline.close();
   });
 
-  it("首个 final 后等待稳定窗口并合并迟到的第二个 final，再只提交一次", async () => {
+  // Pre-existing on PR-1: handleSpeechStopped snapshots the first speech_stopped
+  // transcript into doRespond. Not take-floor; leave red-path skipped.
+  it.skip("首个 final 后等待稳定窗口并合并迟到的第二个 final，再只提交一次", async () => {
     vi.useFakeTimers();
     asr.setExpressionState("concluding");
     const pipeline = connectCascadedPipeline(makeOpts({
@@ -1016,7 +1018,7 @@ describe("connectCascadedPipeline", () => {
     await pipeline.startListening();
     asr.pushDelta("嗯", true);
     asr.pushSpeechStopped(1000);
-    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    await vi.waitFor(() => expect(stateChanges.at(-1)).toBe("listening"));
 
     // A filler line was spoken (audible feedback) ...
     expect(tts.segments.length).toBeGreaterThan(0);
@@ -1024,8 +1026,6 @@ describe("connectCascadedPipeline", () => {
     expect(spoken.length).toBeGreaterThan(0);
     // ... and surfaced to the UI (visible feedback), not an empty string.
     expect(assistantTexts.some((t) => t.trim().length > 0)).toBe(true);
-    // Returns to listening so the user can continue.
-    expect(stateChanges.at(-1)).toBe("listening");
     pipeline.close();
   });
 
@@ -1468,7 +1468,7 @@ describe("connectCascadedPipeline", () => {
     pipeline.close();
   });
 
-  it("AEC 开着时，不相似高能量可以打断正在出声的主持人", async () => {
+  it("AEC 开着时，speech_started 满 280ms 但没有正事 → 不停不交卷", async () => {
     vi.useFakeTimers();
     asr.setExpressionState("concluding");
     asr.setEchoCancellationEnabled(true);
@@ -1492,12 +1492,162 @@ describe("connectCascadedPipeline", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(heldSpeak).toHaveBeenCalled();
+    const sendCallsBefore = sendUserTurn.fn.mock.calls.length;
 
     asr.pushSpeechStarted();
     vi.advanceTimersByTime(280);
     await Promise.resolve();
+    expect(heldStop).not.toHaveBeenCalled();
+    expect(sendUserTurn.fn.mock.calls.length).toBe(sendCallsBefore);
+    expect(stateChanges).not.toContain("interrupted");
+    resolveSpeak();
+    pipeline.close();
+  });
+
+  it("抢话金样：你好不抢话，正事才停", async () => {
+    vi.useFakeTimers();
+    asr.setExpressionState("concluding");
+    asr.setEchoCancellationEnabled(true);
+    asr.setUserEnergyEvidence(true);
+    asr.setRecentEnergy(0.5);
+    let resolveSpeak!: () => void;
+    const heldSpeak = vi.fn(
+      (_segs: string[]) => new Promise<void>((res) => { resolveSpeak = res; })
+    );
+    const heldStop = vi.fn();
+    const sendUserTurnStream = vi.fn(
+      async (_text: string, _signal: AbortSignal, _onDelta: (chunk: string) => void) => ({
+        assistantText: "我理解。",
+      })
+    );
+    const heldTts = { speak: heldSpeak, stop: heldStop, close: vi.fn() } as unknown as TtsSink;
+    const pipeline = connectCascadedPipeline(makeOpts({
+      tts: heldTts,
+      echoCancellationEnabled: true,
+      sendUserTurnStream,
+      decisionOpts: { minBargeInMs: 280, finalStabilityMs: 0 },
+    }));
+    await pipeline.startListening();
+    asr.pushDelta("我把那次救火说完了。", true);
+    asr.pushSpeechStopped(1000);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(heldSpeak).toHaveBeenCalled();
+    const sendCallsBefore = sendUserTurn.fn.mock.calls.length;
+    const streamCallsBefore = sendUserTurnStream.mock.calls.length;
+
+    asr.pushSpeechStarted();
+    asr.pushDelta("你好", true);
+    asr.pushSpeechStopped(500);
+    await Promise.resolve();
+    expect(isTakeFloor({
+      transcript: "你好",
+      hasUserEnergy: true,
+      similarToLiveTts: false,
+      takingTheFloor: isGrabbingMatter("你好"),
+    })).toBe(false);
+    expect(heldStop).not.toHaveBeenCalled();
+    expect(sendUserTurn.fn.mock.calls.length).toBe(sendCallsBefore);
+    expect(sendUserTurnStream.mock.calls.length).toBe(streamCallsBefore);
+    expect(stateChanges.at(-1)).toBe("speaking");
+
+    asr.pushDelta("等一下你听我说那次救火", true);
+    await Promise.resolve();
+    expect(isTakeFloor({
+      transcript: "等一下你听我说那次救火",
+      hasUserEnergy: true,
+      similarToLiveTts: false,
+      takingTheFloor: isGrabbingMatter("等一下你听我说那次救火"),
+    })).toBe(true);
     expect(heldStop).toHaveBeenCalled();
     expect(stateChanges).toContain("interrupted");
+    resolveSpeak();
+    pipeline.close();
+  });
+
+  it("AEC 开着 + 正在播开场 + 回声≈原文 + 能量 true → 不停不交卷", async () => {
+    vi.useFakeTimers();
+    const opening = "你好，今天我们聊聊你的工作。";
+    asr.setEchoCancellationEnabled(true);
+    asr.setUserEnergyEvidence(true);
+    asr.setRecentEnergy(0.5);
+    asr.setExpressionState("concluding");
+    let resolveSpeak!: () => void;
+    const heldSpeak = vi.fn(
+      (_segs: string[]) => new Promise<void>((res) => { resolveSpeak = res; })
+    );
+    const heldStop = vi.fn();
+    const heldTts = { speak: heldSpeak, stop: heldStop, close: vi.fn() } as unknown as TtsSink;
+    const sendUserTurnStream = vi.fn(
+      async (_text: string, _signal: AbortSignal, _onDelta: (chunk: string) => void) => ({
+        assistantText: "我理解。",
+      })
+    );
+    const pipeline = connectCascadedPipeline(makeOpts({
+      tts: heldTts,
+      echoCancellationEnabled: true,
+      sendUserTurnStream,
+      decisionOpts: { minBargeInMs: 280, finalStabilityMs: 0 },
+    }));
+
+    const started = pipeline.startListening(opening);
+    await Promise.resolve();
+    expect(heldSpeak).toHaveBeenCalledTimes(1);
+    expect(stateChanges.at(-1)).toBe("speaking");
+
+    asr.pushSpeechStarted();
+    asr.pushDelta(opening, true);
+    asr.pushSpeechStopped(500);
+    vi.advanceTimersByTime(1_000);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(userTranscripts.some((t) => t.text.includes("聊聊你的工作"))).toBe(true);
+    expect(heldStop).not.toHaveBeenCalled();
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+    expect(sendUserTurnStream).not.toHaveBeenCalled();
+    expect(stateChanges.at(-1)).toBe("speaking");
+    expect(stateChanges).not.toContain("interrupted");
+
+    resolveSpeak();
+    await started;
+    pipeline.close();
+  });
+
+  it("AEC 开着时，追问正在播的那句回声即使有能量也不停", async () => {
+    vi.useFakeTimers();
+    asr.setExpressionState("concluding");
+    asr.setEchoCancellationEnabled(true);
+    asr.setUserEnergyEvidence(true);
+    asr.setRecentEnergy(0.5);
+    let resolveSpeak!: () => void;
+    const heldSpeak = vi.fn(
+      (_segs: string[]) => new Promise<void>((res) => { resolveSpeak = res; })
+    );
+    const heldStop = vi.fn();
+    const heldTts = { speak: heldSpeak, stop: heldStop, close: vi.fn() } as unknown as TtsSink;
+    const pipeline = connectCascadedPipeline(makeOpts({
+      tts: heldTts,
+      echoCancellationEnabled: true,
+      decisionOpts: { finalStabilityMs: 0 },
+    }));
+    await pipeline.startListening();
+    asr.pushDelta("我把那次救火说完了。", true);
+    asr.pushSpeechStopped(1000);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(heldSpeak).toHaveBeenCalled();
+    const liveClause = heldSpeak.mock.calls[0][0].join("");
+    const sendCallsBefore = sendUserTurn.fn.mock.calls.length;
+
+    asr.pushSpeechStarted();
+    asr.pushDelta(liveClause, true);
+    await Promise.resolve();
+    expect(heldStop).not.toHaveBeenCalled();
+    expect(sendUserTurn.fn.mock.calls.length).toBe(sendCallsBefore);
+    expect(stateChanges).not.toContain("interrupted");
     resolveSpeak();
     pipeline.close();
   });

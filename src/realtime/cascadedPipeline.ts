@@ -13,12 +13,13 @@
 
 import type { ExpressionState, InteractionPreSignals } from "../domain/types";
 import { stripSpokenAsides, deriveSpeechProsody, type SpeechProsody } from "../domain/speech-text";
-import { decideCascadeTurn, shouldAcceptBargeIn } from "./cascadeTurnDecision";
+import { decideCascadeTurn } from "./cascadeTurnDecision";
 import type { EndpointingMode } from "./pvadEndpointing";
 import { decideTurn } from "./turnEngine";
 import { assessTurnCompleteness, type Completeness } from "./turnCompleteness";
 import { createBackchannelPicker } from "./backchannel";
 import { createTurnAssembler } from "./turnAssembler";
+import { isGrabbingMatter, isTakeFloor } from "./takeFloor";
 import {
   createRecoveryTranscriptBuffer,
   type BufferedRecoveryTranscript,
@@ -179,9 +180,8 @@ export interface ConnectCascadedPipelineOptions {
     /** Hard max wait before forced respond (ms). Default 8000. */
     maxWaitMs?: number;
     /**
-     * Minimum user speech sustain while agent is speaking before barge-in (ms). Default 280.
-     * Lower → easier interrupt (more false barge risk); higher → harder to cut in.
-     * Wired from `systemConfig.voice.minBargeInMs` when set.
+     * Kept for config compatibility. Product barge is take-floor on the side track,
+     * not a 0ms+280ms always-stop timer.
      */
     minBargeInMs?: number;
     finalStabilityMs?: number;
@@ -202,8 +202,8 @@ export interface ConnectCascadedPipelineOptions {
    */
   classifyEndpoint?: (transcript: string, signal: AbortSignal) => Promise<{ done: boolean; reason?: string }>;
   /**
-   * When true, TTS does not mute the mic. Barge uses turnAssembler + minBargeInMs.
-   * When false/undefined, half-duplex suppressMic (today's behavior).
+   * When true (real mic + AEC), listen stays hot during TTS. Half-duplex mute
+   * is fallback only: fake mic / AEC off / Worklet failed.
    * After asr.start(), pipeline also reads asr.getEchoCancellationEnabled?.().
    */
   echoCancellationEnabled?: boolean;
@@ -246,7 +246,6 @@ export function connectCascadedPipeline(
   const {
     minPauseMs = 600,
     maxWaitMs = 8000,
-    minBargeInMs = 280,
     finalStabilityMs = 0,
     echoWindowMs = 1_200,
     echoSimilarityThreshold = 0.8,
@@ -321,6 +320,7 @@ export function connectCascadedPipeline(
   function resetTurn() {
     committedTranscript = "";
     partialTranscript = "";
+    clearSideTrack();
     turnAssembler.reset();
     surfacedQuarantineKey = "";
     activeReview = null;
@@ -401,19 +401,18 @@ export function connectCascadedPipeline(
     }, maxWaitMs);
   }
 
-  // ── Echo guard (half-duplex during AI speech) ─────────────────────────────
-  // While the AI is speaking (and ~ECHO_GUARD_MS after it stops), the mic hears
-  // the AI's own TTS output. Suppress ASR-driven turns/barge-in during that
-  // window so the AI does NOT barge in on / respond to its own voice — that
-  // feedback loop is what causes "two voices talking over each other".
+  // ── Echo guard ────────────────────────────────────────────────────────────
+  // Half-duplex mute is fallback only (fake mic / AEC off). Real mic keeps ASR
+  // hot; take-floor on the side track decides whether to stop the host.
   let micSuppressed = false;
   let echoGuardTimer: ReturnType<typeof setTimeout> | null = null;
   const ECHO_GUARD_MS = 600;
   let halfDuplexMute = echoCancellationEnabledOpt !== true;
-  let bargeArmTimer: ReturnType<typeof setTimeout> | null = null;
-  let bargeSpeechStartedAt = 0;
   // Opening speak is still draining: keep speaking, no second-turn submit / auto-barge.
   let openingHold = false;
+  let sideCommitted = "";
+  let sidePartial = "";
+  let lastTakeFloorSide = "";
 
   function usesHalfDuplexMute(): boolean {
     return halfDuplexMute;
@@ -421,12 +420,70 @@ export function connectCascadedPipeline(
   function muteForTts() {
     if (usesHalfDuplexMute()) suppressMic();
   }
-  function clearBargeArm() {
-    if (bargeArmTimer !== null) {
-      clearTimeout(bargeArmTimer);
-      bargeArmTimer = null;
+  function currentSideTrack(): string {
+    return `${sideCommitted}${sidePartial}`.trim();
+  }
+  function clearSideTrack() {
+    sideCommitted = "";
+    sidePartial = "";
+    lastTakeFloorSide = "";
+  }
+  function updateSideTrack(text: string, isFinal: boolean) {
+    if (isFinal) {
+      sideCommitted += text;
+      sidePartial = "";
+    } else {
+      sidePartial = text;
     }
-    bargeSpeechStartedAt = 0;
+  }
+  function hostOccupyingFloor(): boolean {
+    return openingHold || state === "thinking" || state === "speaking";
+  }
+  function promoteSideTrack(side: string) {
+    committedTranscript = side;
+    partialTranscript = "";
+    turnAssembler.reset();
+    if (side) noteAuthoritativeTranscript(side);
+  }
+  function settleAfterHostSpeech() {
+    const side = currentSideTrack();
+    const merge = Boolean(side)
+      && isGrabbingMatter(side)
+      && !turnAssembler.isSimilarToLiveTts(side);
+    resetTurn();
+    if (merge) {
+      committedTranscript = side;
+      noteAuthoritativeTranscript(side);
+      callbacks.onUserTranscript(side, false);
+    }
+  }
+  async function speakSegments(
+    segments: string[],
+    voice?: string,
+    prosody?: SpeechProsody
+  ): Promise<void> {
+    const text = segments.join("");
+    const startedAtMs = Date.now();
+    turnAssembler.beginLiveTts(text, startedAtMs);
+    try {
+      await tts.speak(segments, voice, prosody);
+    } finally {
+      turnAssembler.noteTtsPlayback({ text, startedAtMs, endedAtMs: Date.now() });
+    }
+  }
+  function maybeTakeFloor(side: string) {
+    if (!side || side === lastTakeFloorSide) return;
+    lastTakeFloorSide = side;
+    // Opening hold sits above take-floor; auto-barge waits until the opening drain.
+    if (openingHold) return;
+    if (state !== "thinking" && state !== "speaking") return;
+    if (!isTakeFloor({
+      transcript: side,
+      hasUserEnergy: asr.hasRecentUserEnergyEvidence?.() ?? true,
+      similarToLiveTts: turnAssembler.isSimilarToLiveTts(side),
+      takingTheFloor: isGrabbingMatter(side),
+    })) return;
+    if (performBarge()) setState("listening");
   }
   function performBarge(): boolean {
     if (closed) return false;
@@ -440,11 +497,16 @@ export function connectCascadedPipeline(
     classifyAbort?.abort();
     classifyAbort = null;
     clearMaxWaitTimer();
-    clearBargeArm();
     setState("interrupted");
-    committedTranscript = "";
-    partialTranscript = "";
-    turnAssembler.reset();
+    const side = currentSideTrack();
+    clearSideTrack();
+    if (side && isGrabbingMatter(side)) {
+      promoteSideTrack(side);
+    } else {
+      committedTranscript = "";
+      partialTranscript = "";
+      turnAssembler.reset();
+    }
     callbacks.onLatency?.({ interrupted: true, bargeInSuccess: true });
     return true;
   }
@@ -478,41 +540,11 @@ export function connectCascadedPipeline(
     if (asrStarted && !closed) setState("listening");
   }
 
-  // ── Barge-in ──────────────────────────────────────────────────────────────
-  /**
-   * Called when ASR fires speech_started.
-   * Returns true if a barge-in was performed (was thinking/speaking).
-   */
-  function handleSpeechStarted(): boolean {
-    if (closed) return false;
-    if (openingHold) return false;
-    if (micSuppressed) return false;
-    const wasActive = state === "thinking" || state === "speaking";
-    if (!wasActive) return false;
-    if (shouldAcceptBargeIn(0, minBargeInMs)) {
-      return performBarge();
-    }
-    bargeSpeechStartedAt = Date.now();
-    if (bargeArmTimer !== null) clearTimeout(bargeArmTimer);
-    bargeArmTimer = setTimeout(() => {
-      bargeArmTimer = null;
-      if (closed || micSuppressed) return;
-      if (state !== "thinking" && state !== "speaking") return;
-      performBarge();
-      if (!closed) setState("listening");
-    }, minBargeInMs);
-    return false;
-  }
-
   // ── Speech stopped: analysis gate ─────────────────────────────────────────
   async function handleSpeechStopped(silenceMs: number) {
     speechStoppedAt = Date.now();
     if (closed) return;
     if (openingHold) return;
-    if (bargeArmTimer !== null && bargeSpeechStartedAt > 0
-      && Date.now() - bargeSpeechStartedAt < minBargeInMs) {
-      clearBargeArm();
-    }
     if (micSuppressed) return;
     if (state === "thinking" || state === "speaking") return;
 
@@ -583,10 +615,8 @@ export function connectCascadedPipeline(
     if (decision.action === "backchannel") {
       clearMaxWaitTimer();
       const text = pickBackchannel(expressionState, currentPreSignals?.depthDirection?.guidance);
-      const startedAtMs = Date.now();
       muteForTts();
-      try { await tts.speak([text]); } catch (error) { reportTtsPlaybackInterrupted(error); }
-      turnAssembler.noteTtsPlayback({ text, startedAtMs, endedAtMs: Date.now() });
+      try { await speakSegments([text]); } catch (error) { reportTtsPlaybackInterrupted(error); }
       releaseMicAfterGuard();
       return;
     }
@@ -704,7 +734,7 @@ export function connectCascadedPipeline(
         spokenSentences.push(sentence);
         lastPlannedSpokenText = spokenSentences.join("");
         try {
-          await tts.speak([sentence], undefined, providedProsody);
+          await speakSegments([sentence], undefined, providedProsody);
           if (!closed && !ctrl.signal.aborted) {
             spokenText = lastPlannedSpokenText;
           }
@@ -756,7 +786,7 @@ export function connectCascadedPipeline(
 
     if (ttsPlaybackInterrupted) {
       if (assistantText) callbacks.onAssistantText(assistantText);
-      resetTurn();
+      settleAfterHostSpeech();
       return;
     }
 
@@ -769,17 +799,15 @@ export function connectCascadedPipeline(
         callbacks.onAssistantText(filler);
         setState("speaking");
         muteForTts();
-        const startedAtMs = Date.now();
         try {
-          await tts.speak([filler]);
+          await speakSegments([filler]);
         } catch (error) {
           handleTtsFailure(error);
         } finally {
-          turnAssembler.noteTtsPlayback({ text: filler, startedAtMs, endedAtMs: Date.now() });
           releaseMicAfterGuard();
         }
         if (!closed && (state as string) === "speaking") setState("listening");
-        resetTurn();
+        settleAfterHostSpeech();
         return;
       }
       callbacks.onAssistantText(assistantText);
@@ -798,7 +826,7 @@ export function connectCascadedPipeline(
       spokenText = "";
       lastPlannedSpokenText = spokenSource;
       try {
-        await tts.speak(sentences, undefined, prosody);
+        await speakSegments(sentences, undefined, prosody);
         if (!closed && !ctrl.signal.aborted) spokenText = spokenSource;
       } catch (error) {
         handleTtsFailure(error);
@@ -821,13 +849,16 @@ export function connectCascadedPipeline(
     if (!closed && (state as string) === "speaking") {
       setState("listening");
     }
-    resetTurn();
+    settleAfterHostSpeech();
   }
 
   function processTranscriptDelta(text: string, isFinal: boolean) {
-    if (closed || micSuppressed) return; // ignore the AI's own echoed transcription
-    if (openingHold) {
-      callbacks.onUserTranscript(text, false);
+    if (closed || micSuppressed) return; // half-duplex fallback: drop ASR while muted
+    if (hostOccupyingFloor()) {
+      updateSideTrack(text, isFinal);
+      const side = currentSideTrack();
+      callbacks.onUserTranscript(side || text, false);
+      maybeTakeFloor(side);
       return;
     }
     const speaking = state === "thinking" || state === "speaking";
@@ -851,20 +882,14 @@ export function connectCascadedPipeline(
       // since each delta already carries the full text-so-far for this segment).
       partialTranscript = text;
     }
-    if (!openingHold) setState("transcribing");
+    setState("transcribing");
     callbacks.onUserTranscript(committedTranscript + partialTranscript, false);
   }
 
   function processSpeechStarted() {
-    if (closed || micSuppressed) return; // echo: AI is speaking, ignore its own voice
-    if (openingHold) return;
-    // 说话中途不要翻 listening，否则 280ms 抢话定时器到点时已经不是 speaking。
-    const didBargeIn = handleSpeechStarted();
-    if (didBargeIn) {
-      setState("listening");
-      return;
-    }
-    if (state === "thinking" || state === "speaking") return;
+    if (closed || micSuppressed) return; // half-duplex fallback: drop ASR while muted
+    // Keep speaking/thinking/openingHold: captions live on the side track, no listening flip.
+    if (hostOccupyingFloor()) return;
     if (activeReview?.source === "echo") {
       resetTurn();
       activeReview = null;
@@ -953,16 +978,14 @@ export function connectCascadedPipeline(
       if (opening) {
         openingHold = true;
         setState("speaking");
-        const startedAtMs = Date.now();
         try {
-          await tts.speak([opening]);
+          await speakSegments([opening]);
         } catch (error) {
           reportTtsPlaybackInterrupted(error);
         } finally {
           openingHold = false;
         }
-        resetTurn();
-        turnAssembler.noteTtsPlayback({ text: opening, startedAtMs, endedAtMs: Date.now() });
+        settleAfterHostSpeech();
         releaseMicAfterGuard();
       }
       if (!closed) {
@@ -984,8 +1007,10 @@ export function connectCascadedPipeline(
       classifyAbort?.abort(); classifyAbort = null;
       tts.stop();
       clearMaxWaitTimer();
-      clearBargeArm();
       setState("interrupted");
+      const side = currentSideTrack();
+      clearSideTrack();
+      if (side && isGrabbingMatter(side)) promoteSideTrack(side);
       return { spokenTextSoFar: spokenText || lastPlannedSpokenText };
     },
 
@@ -1052,7 +1077,6 @@ export function connectCascadedPipeline(
       queuedRecoveryReviews.length = 0;
       recoveryTranscriptBuffer.clear();
       clearMaxWaitTimer();
-      clearBargeArm();
       if (stableCommitTimer !== null) { clearTimeout(stableCommitTimer); stableCommitTimer = null; }
       if (echoGuardTimer !== null) { clearTimeout(echoGuardTimer); echoGuardTimer = null; }
       micSuppressed = false;

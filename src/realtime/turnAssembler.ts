@@ -28,6 +28,8 @@ export function createTurnAssembler(_options: TurnAssemblerOptions = {}) {
   let hasUserEnergyEvidence = false;
   let quarantined: AssemblyDecision | null = null;
   let recentTts: { text: string; startedAtMs: number; endedAtMs: number } | null = null;
+  // Written at speak START so echo isolation works while tts.speak is still awaiting.
+  let liveTtsText = "";
 
   const transcript = () => `${committedFinals}${partial}`.trim();
   const wait = (reason: string, waitMs?: number): AssemblyDecision => ({
@@ -95,8 +97,21 @@ export function createTurnAssembler(_options: TurnAssemblerOptions = {}) {
       }
       return { action: "commit", transcript: text, reason: "stable authoritative final transcript" };
     },
+    beginLiveTts(text: string, startedAtMs: number): void {
+      const trimmed = text.trim();
+      liveTtsText = trimmed;
+      if (trimmed) {
+        recentTts = { text: trimmed, startedAtMs, endedAtMs: startedAtMs };
+      }
+    },
+    isSimilarToLiveTts(transcript: string): boolean {
+      if (!liveTtsText) return false;
+      return textSimilarity(transcript, liveTtsText) >= similarityThreshold;
+    },
     noteTtsPlayback(input: { text: string; startedAtMs: number; endedAtMs: number }): void {
-      recentTts = { ...input, text: input.text.trim() };
+      const trimmed = input.text.trim();
+      recentTts = { ...input, text: trimmed };
+      if (trimmed) liveTtsText = trimmed;
     },
     confirmQuarantined(text: string, atMs: number): void {
       reset();
