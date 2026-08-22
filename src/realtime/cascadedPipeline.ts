@@ -13,7 +13,7 @@
 
 import type { ExpressionState, InteractionPreSignals } from "../domain/types";
 import { stripSpokenAsides, deriveSpeechProsody, type SpeechProsody } from "../domain/speech-text";
-import { TTS_AUTOPLAY_BLOCKED_MESSAGE } from "./cascadedTtsSink";
+import { TTS_AUTOPLAY_BLOCKED_MESSAGE, TtsPlaybackInterruptedError } from "./cascadedTtsSink";
 import type { EndpointingMode } from "./pvadEndpointing";
 import { decideTurn } from "./turnEngine";
 import { assessTurnCompleteness, type Completeness } from "./turnCompleteness";
@@ -86,15 +86,15 @@ export type CascadeLatencySample = {
   vadEndToSttMs?: number;
   sttToLlmMs?: number;
   llmTtftMs?: number;
-  /** Call-time of speak(); do not redefine as first PCM. */
+  /** speak() call time, same origin as ttsPcmTtfbMs (LLM first token / thinking start). */
   ttsTtfbMs?: number;
-  /** First PCM buffer scheduled into AudioContext, same origin as ttsTtfbMs. */
+  /** First PCM buffer scheduled into AudioContext. */
   ttsPcmTtfbMs?: number;
   openingAudible?: boolean;
   playbackContextState?: PlaybackContextState;
   interrupted?: boolean;
   bargeInSuccess?: boolean;
-  /** Successful barge that took the floor — not a second-turn abort of opening. */
+  /** True when barge-in stopped the current utterance so the guest could speak. */
   takeFloor?: boolean;
   interruptRecovery?: boolean;
   falseTriggerKind?: CascadeFalseTriggerKind;
@@ -280,7 +280,7 @@ export function connectCascadedPipeline(
   });
   const recoveryTranscriptBuffer = createRecoveryTranscriptBuffer();
 
-  // PCM TTFB origin is armed at speak() call; callback fires on first scheduled buffer.
+  // Origin matches ttsTtfbMs; the sink callback is first PCM scheduled, not speak().
   let pcmTtfbOriginMs = 0;
   let pcmTtfbEmitted = false;
   function armPcmTtfb(originMs: number) {
@@ -1033,13 +1033,14 @@ export function connectCascadedPipeline(
         const startedAtMs = Date.now();
         armPcmTtfb(startedAtMs);
         let openingInterrupted = false;
-        let openingAutoplayBlocked = false;
+        let openingSecondTurnAbort = false;
         try {
           await speakSegments([opening]);
         } catch (error) {
           openingInterrupted = true;
-          openingAutoplayBlocked =
+          const autoplayBlocked =
             error instanceof Error && error.message === TTS_AUTOPLAY_BLOCKED_MESSAGE;
+          openingSecondTurnAbort = error instanceof TtsPlaybackInterruptedError && !autoplayBlocked;
           reportTtsPlaybackInterrupted(error);
         } finally {
           openingHold = false;
@@ -1048,7 +1049,7 @@ export function connectCascadedPipeline(
         callbacks.onLatency?.({
           openingAudible: !openingInterrupted && pcmOk,
           playbackContextState: playbackContextState(),
-          ...(openingInterrupted && !openingAutoplayBlocked
+          ...(openingSecondTurnAbort
             ? { falseTriggerKind: "opening_second_turn_abort" as const }
             : {})
         });

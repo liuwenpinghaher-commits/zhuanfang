@@ -142,7 +142,8 @@ describe("runtime-metrics", () => {
     recordVoiceLatency({ path: "cascade", ttsTtfbMs: 60, ttsPcmTtfbMs: 180 });
     recordVoiceLatency({ path: "cascade", ttsTtfbMs: 80, ttsPcmTtfbMs: 220 });
     const s = summarizeVoiceLatency();
-    expect(s.ttsTtfbDefinition).toBe("pcm_scheduled");
+    expect(s.segments.ttsTtfb.definition).toBe("speak_call");
+    expect(s.segments.ttsPcmTtfb.definition).toBe("pcm_scheduled");
     expect(s.segments.ttsTtfb.count).toBe(2);
     expect(s.segments.ttsTtfb.p50Ms).toBe(60);
     expect(s.segments.ttsPcmTtfb.count).toBe(2);

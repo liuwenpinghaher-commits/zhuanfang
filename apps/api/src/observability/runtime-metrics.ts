@@ -30,9 +30,8 @@ export const FALSE_TRIGGER_KINDS: readonly FalseTriggerKind[] = [
 ] as const;
 
 export type PlaybackContextState = "running" | "suspended";
-/** Snapshot tag for the PCM ring — never silently rewrite ttsTtfbMs. */
-export const TTS_TTFB_DEFINITION = "pcm_scheduled" as const;
-export type TtsTtfbDefinition = typeof TTS_TTFB_DEFINITION;
+export const TTS_TTFB_SPEAK_CALL = "speak_call" as const;
+export const TTS_PCM_TTFB_DEFINITION = "pcm_scheduled" as const;
 
 export function isFalseTriggerKind(value: unknown): value is FalseTriggerKind {
   return (FALSE_TRIGGER_KINDS as readonly string[]).includes(value as string);
@@ -46,7 +45,7 @@ export interface VoiceLatencySample {
   vadEndToSttMs?: number;
   sttToLlmMs?: number;
   llmTtftMs?: number;
-  /** Call-time of speak(); legacy diagnostic — do not swap to first PCM. */
+  /** speak() call time (not first audible PCM). */
   ttsTtfbMs?: number;
   /** First PCM buffer scheduled into AudioContext. */
   ttsPcmTtfbMs?: number;
@@ -55,7 +54,7 @@ export interface VoiceLatencySample {
   interrupted?: boolean;
   /** Stage-3: interrupt stopped playback / cancelled turn successfully. */
   bargeInSuccess?: boolean;
-  /** Successful barge that took the floor; opening second-turn abort is not this. */
+  /** True when barge-in stopped the current utterance so the guest could speak. */
   takeFloor?: boolean;
   /** Stage-3: post-interrupt next turn retained interrupted context (stash). */
   interruptRecovery?: boolean;
@@ -267,8 +266,6 @@ export function summarizeVoiceLatency(
     openingAudibleCount,
     openingInaudibleCount,
     playbackContextState,
-    /** New ring is first PCM scheduled; ttsTtfbMs stays call-time. */
-    ttsTtfbDefinition: TTS_TTFB_DEFINITION,
     /** Phase-0: countable false-trigger / echo-guard events. */
     falseTriggerCount,
     falseTriggerByKind,
@@ -276,8 +273,8 @@ export function summarizeVoiceLatency(
       vadEndToStt: segmentPercentiles(samples, "vadEndToSttMs"),
       sttToLlm: segmentPercentiles(samples, "sttToLlmMs"),
       llmTtft: segmentPercentiles(samples, "llmTtftMs"),
-      ttsTtfb: segmentPercentiles(samples, "ttsTtfbMs"),
-      ttsPcmTtfb: segmentPercentiles(samples, "ttsPcmTtfbMs")
+      ttsTtfb: { ...segmentPercentiles(samples, "ttsTtfbMs"), definition: TTS_TTFB_SPEAK_CALL },
+      ttsPcmTtfb: { ...segmentPercentiles(samples, "ttsPcmTtfbMs"), definition: TTS_PCM_TTFB_DEFINITION }
     },
     /**
      * Local cascade budget reference (not a hard SLA).

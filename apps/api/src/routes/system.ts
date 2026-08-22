@@ -623,7 +623,6 @@ export async function registerSystemRoutes(
           openingAudibleCount: metrics.voice.openingAudibleCount,
           openingInaudibleCount: metrics.voice.openingInaudibleCount,
           playbackContextState: metrics.voice.playbackContextState,
-          ttsTtfbDefinition: metrics.voice.ttsTtfbDefinition,
           segments: metrics.voice.segments,
           budgetHint: metrics.voice.budgetHint
         },

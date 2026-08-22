@@ -417,8 +417,26 @@ describe("createBrowserTtsSink", () => {
     const speaking = sink.speak(["开场"]);
     sockets[0].open();
     await vi.waitFor(() => expect(sentSpeakSegments(sockets[0])).toEqual([["开场"]]));
+    expect(pcmAt).toHaveLength(0);
     expect(sink.didSchedulePcm?.()).toBe(false);
     expect(sink.getPlaybackContextState?.()).toBe("running");
+
+    const ctx = audioContexts[0] as unknown as {
+      createBufferSource: () => MockAudioSourceControl & { start(): void };
+    };
+    const origCreate = ctx.createBufferSource.bind(ctx);
+    let firstSourceGuarded = false;
+    ctx.createBufferSource = () => {
+      const source = origCreate();
+      if (firstSourceGuarded) return source;
+      firstSourceGuarded = true;
+      const origStart = source.start.bind(source);
+      source.start = () => {
+        expect(pcmAt).toHaveLength(0);
+        origStart();
+      };
+      return source;
+    };
 
     sockets[0].message(new Uint8Array([0, 0]).buffer);
     expect(audioSources).toHaveLength(1);

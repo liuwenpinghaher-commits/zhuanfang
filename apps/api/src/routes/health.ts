@@ -60,7 +60,8 @@ server.get("/api/health", async () => {
             openingAudibleCount: metrics.voice.openingAudibleCount,
             openingInaudibleCount: metrics.voice.openingInaudibleCount,
             playbackContextState: metrics.voice.playbackContextState,
-            ttsTtfbDefinition: metrics.voice.ttsTtfbDefinition,
+            falseTriggerCount: metrics.voice.falseTriggerCount,
+            falseTriggerByKind: metrics.voice.falseTriggerByKind,
             segments: metrics.voice.segments,
             budgetHint: metrics.voice.budgetHint
           },

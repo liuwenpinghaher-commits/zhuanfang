@@ -53,27 +53,35 @@ it("无探针(sqlite/测试)→ ok:true ready:true,无 persist 字段", async ()
       }
     });
     expect(posted.statusCode).toBe(200);
+    const abortPosted = await app.inject({
+      method: "POST",
+      url: "/api/system/runtime-metrics/voice",
+      payload: { path: "cascade", falseTriggerKind: "opening_second_turn_abort" }
+    });
+    expect(abortPosted.statusCode).toBe(200);
     const res = await app.inject({ method: "GET", url: "/api/health" });
     const voice = (res.json() as {
       metrics: {
         voice: {
-          ttsTtfbDefinition?: string;
           openingAudibleCount?: number;
           playbackContextState?: string;
           takeFloorCount?: number;
+          falseTriggerByKind?: { opening_second_turn_abort?: number };
           segments?: {
-            ttsTtfb?: { p50Ms?: number };
-            ttsPcmTtfb?: { p50Ms?: number };
+            ttsTtfb?: { p50Ms?: number; definition?: string };
+            ttsPcmTtfb?: { p50Ms?: number; definition?: string };
           };
         };
       };
     }).metrics.voice;
-    expect(voice.ttsTtfbDefinition).toBe("pcm_scheduled");
     expect(voice.openingAudibleCount).toBe(1);
     expect(voice.playbackContextState).toBe("running");
     expect(voice.takeFloorCount).toBe(0);
+    expect(voice.falseTriggerByKind?.opening_second_turn_abort).toBe(1);
     expect(voice.segments?.ttsTtfb?.p50Ms).toBe(50);
+    expect(voice.segments?.ttsTtfb?.definition).toBe("speak_call");
     expect(voice.segments?.ttsPcmTtfb?.p50Ms).toBe(180);
+    expect(voice.segments?.ttsPcmTtfb?.definition).toBe("pcm_scheduled");
     await app.close();
   });
 });
