@@ -144,7 +144,7 @@ export const interviewControlGroups: InterviewControlGroup[] = [
 ];
 
 export const podcastProductionSections: PodcastProductionSection[] = [
-  { id: "setup", label: "制作设置", description: "选择来源笔记、节目形态和声音配置。" },
+  { id: "setup", label: "制作设置", description: "选择来源笔记、节目形态和主持人/来宾声音。" },
   { id: "review", label: "收听复核", description: "确认生成状态、音频位置和节目时长。" },
   { id: "chapters", label: "章节导航", description: "检查章节切点和每段摘要。" },
   { id: "shownotes", label: "Shownotes", description: "生成可发布的节目说明和追问入口。" },

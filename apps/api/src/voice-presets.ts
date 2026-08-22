@@ -2,6 +2,17 @@
  * Cascade / podcast TTS voices — qwen-audio-3.0-tts-plus system voices first.
  * CosyVoice ids stay accepted so old stored prefs still synthesize.
  */
+import { pairPodcastGuestVoice as pairGuest } from "../../../src/domain/podcast-voices";
+
+export {
+  QWEN_AUDIO_SPEAKING_VOICES,
+  isQwenAudioSpeakingVoice,
+  podcastSpeakingIdentity,
+  pairPodcastGuestVoice,
+  clampPodcastGuestVoice,
+  podcastVoiceSelectOptions
+} from "../../../src/domain/podcast-voices";
+
 export const COSYVOICE_PRESET_VOICES = [
   { voice: "longanlingxin", name: "龙安聆心·温暖共情" },
   { voice: "longanqian", name: "龙安谦" },
@@ -50,5 +61,5 @@ export function resolveQwenAudioTtsVoice(raw: string | undefined | null): string
 }
 
 export function pairQwenAudioTtsVoice(host: string): string {
-  return resolveQwenAudioTtsVoice(host) === "longanqian" ? "longanlingxin" : "longanqian";
+  return pairGuest(host);
 }

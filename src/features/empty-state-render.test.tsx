@@ -103,18 +103,25 @@ describe("empty-state render guards", () => {
           state={s}
           noteId=""
           voice=""
+          guestVoice=""
           sourceType="note"
           sourceId=""
           format="solo"
           editingScript=""
+          episodeVoice=""
+          episodeGuestVoice=""
           activeEpisodeId={null}
           onNoteId={() => {}}
           onVoice={() => {}}
+          onGuestVoice={() => {}}
           onSourceType={() => {}}
           onSourceId={() => {}}
           onFormat={() => {}}
-          onActiveEpisodeId={() => {}}
           onEditingScript={() => {}}
+          onEpisodeVoice={() => {}}
+          onEpisodeGuestVoice={() => {}}
+          onBeginEditEpisode={() => {}}
+          onActiveEpisodeId={() => {}}
           onGenerateScript={() => {}}
           onConfirmScript={() => {}}
           onConfirmAndSynthesize={() => {}}

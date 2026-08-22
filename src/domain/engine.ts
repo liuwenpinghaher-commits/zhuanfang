@@ -140,7 +140,16 @@ export {
   confirmPodcastScript,
   parsePodcastDialogue,
   scalePodcastChapters,
+  resolveEpisodeVoices,
 } from "./podcast";
+export {
+  QWEN_AUDIO_SPEAKING_VOICES,
+  isQwenAudioSpeakingVoice,
+  podcastSpeakingIdentity,
+  pairPodcastGuestVoice,
+  clampPodcastGuestVoice,
+  podcastVoiceSelectOptions,
+} from "./podcast-voices";
 
 // ============================================================================
 // Inline code — functions still resident in engine.ts.

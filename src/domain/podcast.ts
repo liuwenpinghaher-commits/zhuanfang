@@ -5,10 +5,39 @@ import type {
 
 import { cloneState, makeId, nowIso, withAuditEvent, withAiRunEvent } from "./utils";
 import { withGeneratedArtifactWorkflowRun } from "./engine";
+import { clampPodcastGuestVoice, pairPodcastGuestVoice } from "./podcast-voices";
 
 
 
 type PodcastFormat = PodcastEpisode["format"];
+export type GeneratePodcastOptions = {
+  format: PodcastEpisode["format"];
+  voice: string;
+  guestVoice?: string;
+};
+
+function withOptionalGuestVoice(episode: PodcastEpisode, guestVoice?: string): PodcastEpisode {
+  const guest = clampPodcastGuestVoice(guestVoice);
+  if (episode.format !== "host-guest" || !guest) {
+    if (episode.guestVoice === undefined) return episode;
+    const { guestVoice: _omit, ...rest } = episode;
+    return rest;
+  }
+  return { ...episode, guestVoice: guest };
+}
+
+export function resolveEpisodeVoices(episode: PodcastEpisode): {
+  host: string;
+  guest: string;
+  guestFromFallback: boolean;
+} {
+  const host = episode.voice;
+  const storedGuest = clampPodcastGuestVoice(episode.guestVoice);
+  if (storedGuest) {
+    return { host, guest: storedGuest, guestFromFallback: false };
+  }
+  return { host, guest: pairPodcastGuestVoice(host), guestFromFallback: true };
+}
 function buildPodcastRelatedAssets(state: ProductState) {
   return [
     state.points[0]?.title,
@@ -33,7 +62,7 @@ function formatPodcastFormatLabel(format: PodcastFormat) {
 export function generatePodcastEpisode(
   state: ProductState,
   noteId: string,
-  options: { format: PodcastEpisode["format"]; voice: string }
+  options: GeneratePodcastOptions
 ): { episode: PodcastEpisode; nextState: ProductState } {
   const note = state.notes.find((item) => item.id === noteId) ?? state.notes[0];
   const createdAt = nowIso();
@@ -54,7 +83,7 @@ export function generatePodcastEpisode(
     "主持人：那下一次专访最该继续追问哪一个问题？",
     `来宾：${note.nextQuestions[0] ?? "下一次从这个问题继续。"}`
   ]);
-  const episode: PodcastEpisode = {
+  const episode: PodcastEpisode = withOptionalGuestVoice({
     id: makeId("podcast"),
     noteId: note.id,
     sourceType: "note",
@@ -94,7 +123,7 @@ export function generatePodcastEpisode(
       ...note.nextQuestions.slice(0, 2).map((question) => `下次追问：${question}`)
     ]),
     createdAt
-  };
+  }, options.guestVoice);
   const generatedState = {
     ...cloneState(state),
     podcastEpisodes: [episode, ...state.podcastEpisodes]
@@ -136,7 +165,7 @@ export function generatePodcastEpisode(
 export function generatePodcastEpisodeFromKnowledgeDebt(
   state: ProductState,
   debtId: string,
-  options: { format: PodcastEpisode["format"]; voice: string }
+  options: GeneratePodcastOptions
 ): { episode: PodcastEpisode; nextState: ProductState } {
   const debt = state.debts.find((item) => item.id === debtId) ?? state.debts[0];
   if (!debt) {
@@ -163,7 +192,7 @@ export function generatePodcastEpisodeFromKnowledgeDebt(
     "主持人：最后留给下一次验证的问题是什么？",
     `来宾：${debt.nextQuestion}`
   ]);
-  const episode: PodcastEpisode = {
+  const episode: PodcastEpisode = withOptionalGuestVoice({
     id: makeId("podcast"),
     // 非 note 来源不写入 noteId（避免异类 id 污染外键语义）；来源由 sourceType/sourceId 表达。
     noteId: "",
@@ -206,7 +235,7 @@ export function generatePodcastEpisodeFromKnowledgeDebt(
       ...relatedAssets.map((asset) => `相关资产：${asset}`)
     ]),
     createdAt
-  };
+  }, options.guestVoice);
   const generatedState = {
     ...cloneState(state),
     podcastEpisodes: [episode, ...state.podcastEpisodes]
@@ -248,7 +277,7 @@ export function generatePodcastEpisodeFromKnowledgeDebt(
 export function generatePodcastEpisodeFromSearchBrief(
   state: ProductState,
   briefId: string,
-  options: { format: PodcastEpisode["format"]; voice: string }
+  options: GeneratePodcastOptions
 ): { episode: PodcastEpisode; nextState: ProductState } {
   const brief = state.searchBriefs.find((item) => item.id === briefId) ?? state.searchBriefs[0];
   if (!brief) {
@@ -282,7 +311,7 @@ export function generatePodcastEpisodeFromSearchBrief(
     `主持人：最后留一个收束问题。`,
     `来宾：${brief.discussionTopics[0] ?? "这份素材和你当前最真实的判断有什么关系？"}`
   ]);
-  const episode: PodcastEpisode = {
+  const episode: PodcastEpisode = withOptionalGuestVoice({
     id: makeId("podcast"),
     // 非 note 来源不写入 noteId（避免异类 id 污染外键语义）；来源由 sourceType/sourceId 表达。
     noteId: "",
@@ -325,7 +354,7 @@ export function generatePodcastEpisodeFromSearchBrief(
       ...brief.discussionTopics.slice(0, 2).map((topic) => `可讨论主题：${topic}`)
     ]),
     createdAt
-  };
+  }, options.guestVoice);
   const generatedState = {
     ...cloneState(state),
     podcastEpisodes: [episode, ...state.podcastEpisodes]
@@ -367,7 +396,7 @@ export function generatePodcastEpisodeFromSearchBrief(
 export function generatePodcastEpisodeFromTheme(
   state: ProductState,
   themeId: string,
-  options: { format: PodcastEpisode["format"]; voice: string }
+  options: GeneratePodcastOptions
 ): { episode: PodcastEpisode; nextState: ProductState } {
   const theme = state.themes.find((item) => item.id === themeId) ?? state.themes[0];
   if (!theme) {
@@ -394,7 +423,7 @@ export function generatePodcastEpisodeFromTheme(
     "主持人：下一次继续追问什么？",
     `来宾：${theme.nextQuestion}`
   ]);
-  const episode: PodcastEpisode = {
+  const episode: PodcastEpisode = withOptionalGuestVoice({
     id: makeId("podcast"),
     // 非 note 来源不写入 noteId（避免异类 id 污染外键语义）；来源由 sourceType/sourceId 表达。
     noteId: "",
@@ -437,7 +466,7 @@ export function generatePodcastEpisodeFromTheme(
       ...relatedAssets.map((asset) => `相关资产：${asset}`)
     ]),
     createdAt
-  };
+  }, options.guestVoice);
   const generatedState = {
     ...cloneState(state),
     podcastEpisodes: [episode, ...state.podcastEpisodes]

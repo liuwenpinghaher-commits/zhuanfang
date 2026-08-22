@@ -257,8 +257,8 @@ test.describe("primary navigation", () => {
     await page.getByRole("button", { name: "我的资产" }).click();
     await expect(page.getByText("专访档案与认知资产库")).toBeVisible();
     await page.getByRole("button", { name: "生成播客" }).first().click();
-    // The free-text 声音配置 input in PodcastStudioView is seeded from systemConfig.voice.podcastVoice
-    await expect(page.getByLabel("声音配置")).toHaveValue(voice);
+    // 工作台「声音」下拉由系统配置的播客默认声音灌入。
+    await expect(page.locator("#podcast-voice")).toHaveValue(voice);
 
     // 联网素材已重命名为"外部调研"
     await page.getByRole("button", { name: "外部调研" }).click();

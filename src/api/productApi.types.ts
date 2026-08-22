@@ -182,7 +182,10 @@ export interface ProductApiClient {
   ): Promise<InterruptRealtimeVoiceSessionResponse>;
   generatePodcastEpisode(input: GeneratePodcastEpisodeRequest): Promise<GeneratePodcastEpisodeResponse>;
   confirmPodcastScript(episodeId: string, script?: string): Promise<GeneratePodcastEpisodeResponse>;
-  synthesizePodcastEpisode(episodeId: string, script?: string): Promise<GeneratePodcastEpisodeResponse>;
+  synthesizePodcastEpisode(
+    episodeId: string,
+    options?: { script?: string; voice?: string; guestVoice?: string }
+  ): Promise<GeneratePodcastEpisodeResponse>;
   /** Delete one podcast episode; returns authoritative product state. */
   deletePodcastEpisode(episodeId: string): Promise<ProductState>;
   transcribeCorpusAudio(input: AudioTranscriptionInput): Promise<TranscribeCorpusAudioResponse>;
@@ -493,6 +496,7 @@ export interface GeneratePodcastEpisodeRequest {
   sourceId?: string;
   format: PodcastEpisode["format"];
   voice: string;
+  guestVoice?: string;
 }
 
 export interface GeneratePodcastEpisodeResponse {

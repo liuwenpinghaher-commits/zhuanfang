@@ -1,30 +1,36 @@
 import { useMemo, useRef } from "react";
 import { Check, ClipboardList, Headphones, Mic, Pencil, Trash2, Volume2 } from "lucide-react";
 import { HeaderBlock } from "../../components/HeaderBlock";
-import type { VoiceInfo } from "../../api/productApi";
 import type { PodcastEpisode, PodcastSourceType, ProductState } from "../../domain/types";
+import { pairPodcastGuestVoice, podcastVoiceSelectOptions } from "../../domain/podcast-voices";
 import { formatPodcastTimestamp } from "../../ui";
 
 interface PodcastStudioViewProps {
   state: ProductState;
   noteId: string;
   voice: string;
+  guestVoice: string;
   sourceType: PodcastSourceType;
   sourceId: string;
   format: PodcastEpisode["format"];
   editingScript: string;
+  episodeVoice: string;
+  episodeGuestVoice: string;
   activeEpisodeId: string | null;
   generating?: boolean;
   synthesizing?: boolean;
   confirming?: boolean;
   deletingEpisodeId?: string | null;
-  voices?: VoiceInfo[];
   onNoteId: (value: string) => void;
   onVoice: (value: string) => void;
+  onGuestVoice: (value: string) => void;
   onSourceType: (value: PodcastSourceType) => void;
   onSourceId: (value: string) => void;
   onFormat: (value: PodcastEpisode["format"]) => void;
   onEditingScript: (value: string) => void;
+  onEpisodeVoice: (value: string) => void;
+  onEpisodeGuestVoice: (value: string) => void;
+  onBeginEditEpisode: (episode: PodcastEpisode) => void;
   onActiveEpisodeId: (value: string | null) => void;
   onGenerateScript: () => void;
   onConfirmScript: (episodeId: string) => void;
@@ -50,22 +56,28 @@ export function PodcastStudioView({
   state,
   noteId,
   voice,
+  guestVoice,
   sourceType,
   sourceId,
   format,
   editingScript,
+  episodeVoice,
+  episodeGuestVoice,
   activeEpisodeId,
   generating = false,
   synthesizing = false,
   confirming = false,
   deletingEpisodeId = null,
-  voices = [],
   onNoteId,
   onVoice,
+  onGuestVoice,
   onSourceType,
   onSourceId,
   onFormat,
   onEditingScript,
+  onEpisodeVoice,
+  onEpisodeGuestVoice,
+  onBeginEditEpisode,
   onActiveEpisodeId,
   onGenerateScript,
   onConfirmScript,
@@ -104,17 +116,8 @@ export function PodcastStudioView({
       ? 2
       : 3;
 
-  const voiceOptions = useMemo(() => {
-    const preset = voices.map((v) => v.voice);
-    if (voice && !preset.includes(voice)) {
-      return [voice, ...preset];
-    }
-    return preset;
-  }, [voices, voice]);
-
   function beginEditEpisode(episode: PodcastEpisode) {
-    onActiveEpisodeId(episode.id);
-    onEditingScript(episode.script);
+    onBeginEditEpisode(episode);
   }
 
   return (
@@ -186,36 +189,55 @@ export function PodcastStudioView({
               id="podcast-format"
               value={format}
               disabled={busy}
-              onChange={(event) => onFormat(event.target.value as PodcastEpisode["format"])}
+              onChange={(event) => {
+                const next = event.target.value as PodcastEpisode["format"];
+                onFormat(next);
+                if (next === "host-guest" && (!guestVoice || guestVoice === voice)) {
+                  onGuestVoice(pairPodcastGuestVoice(voice));
+                }
+              }}
             >
               <option value="solo">单人旁白</option>
               <option value="host-guest">主持对谈（两个声音）</option>
             </select>
           </label>
 
-          <label className="field-stack" htmlFor="podcast-voice">
-            <span className="field-label">声音配置</span>
-            <input
+          {format === "host-guest" ? (
+            <>
+              <PodcastVoiceSelect
+                id="podcast-host-voice"
+                label="主持人声音"
+                value={voice}
+                disabled={busy}
+                onChange={(next) => {
+                  onVoice(next);
+                  if (!guestVoice || guestVoice === voice) onGuestVoice(pairPodcastGuestVoice(next));
+                }}
+              />
+              <PodcastVoiceSelect
+                id="podcast-guest-voice"
+                label="来宾声音"
+                value={guestVoice}
+                disabled={busy}
+                onChange={onGuestVoice}
+              />
+            </>
+          ) : (
+            <PodcastVoiceSelect
               id="podcast-voice"
-              list="podcast-voice-options"
+              label="声音"
               value={voice}
               disabled={busy}
-              onChange={(event) => onVoice(event.target.value)}
-              placeholder="CosyVoice voice id"
+              onChange={onVoice}
             />
-            <datalist id="podcast-voice-options">
-              {voiceOptions.map((v) => (
-                <option value={v} key={v}>
-                  {voices.find((x) => x.voice === v)?.name ?? v}
-                </option>
-              ))}
-            </datalist>
-            <span className="field-help">
-              {format === "host-guest"
-                ? "主持对谈会用龙安聆心和龙安谦两个人声轮流说。你选的是主持人；另一个当来宾。"
-                : "推荐龙安聆心（longanlingxin）或龙安谦（longanqian）。单人旁白只用这一个声音。"}
-            </span>
-          </label>
+          )}
+          <p className="field-help" style={{ gridColumn: "1 / -1" }}>
+            {format === "host-guest"
+              ? guestVoice && guestVoice === voice
+                ? "两个人用同一个声音，听起来会像一个人在对答。你仍可以这样选。合成按稿里每一句单独出一次声。"
+                : "两个人各用各的声音。合成按稿里每一句单独出一次声，一句算一次。"
+              : "只出这一个声音。"}
+          </p>
         </div>
 
         <div className="form-actions">
@@ -271,8 +293,46 @@ export function PodcastStudioView({
             </span>
           </div>
           <p className="field-help mb-3">
-            正在编辑：{activeEpisode.title} · {formatLabel[activeEpisode.format]} · {activeEpisode.voice}
+            正在编辑：{activeEpisode.title} · {formatEpisodeVoices(activeEpisode)}
           </p>
+          <div className="podcast-setup-grid mb-3">
+            {activeEpisode.format === "host-guest" ? (
+              <>
+                <PodcastVoiceSelect
+                  id="episode-host-voice"
+                  label="这一期主持人声音"
+                  value={episodeVoice}
+                  disabled={synthesizing || confirming}
+                  onChange={(next) => {
+                    onEpisodeVoice(next);
+                    if (!episodeGuestVoice || episodeGuestVoice === episodeVoice) {
+                      onEpisodeGuestVoice(pairPodcastGuestVoice(next));
+                    }
+                  }}
+                />
+                <PodcastVoiceSelect
+                  id="episode-guest-voice"
+                  label="这一期来宾声音"
+                  value={episodeGuestVoice}
+                  disabled={synthesizing || confirming}
+                  onChange={onEpisodeGuestVoice}
+                />
+              </>
+            ) : (
+              <PodcastVoiceSelect
+                id="episode-voice"
+                label="这一期声音"
+                value={episodeVoice}
+                disabled={synthesizing || confirming}
+                onChange={onEpisodeVoice}
+              />
+            )}
+            <p className="field-help" style={{ gridColumn: "1 / -1" }}>
+              {activeEpisode.format === "host-guest" && episodeGuestVoice && episodeGuestVoice === episodeVoice
+                ? "两个人用同一个声音，听起来会像一个人在对答。你仍可以这样选。改了声音要再点合成才换声。"
+                : "改了声音要再点合成才换声。列表和播放器还是书里这一版。"}
+            </p>
+          </div>
           <textarea
             className="script-textarea"
             value={editingScript}
@@ -346,7 +406,7 @@ export function PodcastStudioView({
                           {formatEpisodeStatus(episode)}
                         </button>
                         <span className="status-pill">
-                          {formatLabel[episode.format]} · {episode.voice}
+                          {formatEpisodeVoices(episode)}
                         </span>
                         <span className="status-pill tabular-nums">
                           {formatPodcastTimestamp(episode.durationSec)}
@@ -466,6 +526,41 @@ export function PodcastStudioView({
       </section>
     </section>
   );
+}
+
+function PodcastVoiceSelect({
+  id,
+  label,
+  value,
+  disabled,
+  onChange
+}: {
+  id: string;
+  label: string;
+  value: string;
+  disabled?: boolean;
+  onChange: (value: string) => void;
+}) {
+  const options = podcastVoiceSelectOptions(value);
+  return (
+    <label className="field-stack" htmlFor={id}>
+      <span className="field-label">{label}</span>
+      <select id={id} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)}>
+        {options.map((item) => (
+          <option value={item.voice} key={item.voice}>
+            {item.name}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function formatEpisodeVoices(episode: PodcastEpisode): string {
+  const kind = formatLabel[episode.format];
+  if (episode.format !== "host-guest") return `${kind} · ${episode.voice}`;
+  const guest = episode.guestVoice?.trim();
+  return guest ? `${kind} · ${episode.voice} / ${guest}` : `${kind} · ${episode.voice}（配对）`;
 }
 
 function DraftActionButtons({

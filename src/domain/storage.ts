@@ -1,4 +1,5 @@
 import { createInitialProductState, createEmptyProductState } from "./engine";
+import { clampPodcastGuestVoice } from "./podcast-voices";
 import { withMemoryCandidateReview } from "./memoryReview";
 import type { ImportSource, ProductState, ProviderConfig, SearchBrief, SearchProviderId, SystemConfig } from "./types";
 
@@ -512,20 +513,26 @@ function clampPersistableEnums(state: ProductState): ProductState {
     // N-01-datetime:chat_session.createdAt/updatedAt 均 datetime typed 列。
     chatSessions: state.chatSessions.map((c) => ({ ...c, title: str(c.title), createdAt: isoDate((c as { createdAt?: unknown }).createdAt), updatedAt: isoDate((c as { updatedAt?: unknown }).updatedAt) })),
     memoryCorrections: state.memoryCorrections.map((c) => ({ ...c, text: str(c.text), createdAt: isoDate((c as { createdAt?: unknown }).createdAt) })), // N-01-datetime:memory_correction.createdAt
-    podcastEpisodes: state.podcastEpisodes.map((p) => ({
-      ...p,
-      noteId: str(p.noteId),
-      title: str(p.title),
-      voice: str(p.voice),
-      format: clampEnum(p.format, PODCAST_FORMATS, "solo"),
-      // status 坏值 fail-closed 到 draft(绝不冒充 ready 展示不存在的音频);
-      // scriptReviewStatus 坏值绝不冒充「用户确认」(镜像 decision confirmationStatus 口径)。
-      status: clampEnum(p.status, PODCAST_STATUSES, "draft"),
-      scriptReviewStatus: clampEnum(p.scriptReviewStatus, SCRIPT_REVIEW_STATUSES, "待确认"),
-      sourceType: optStr(p.sourceType) as typeof p.sourceType,
-      sourceId: optStr(p.sourceId),
-      createdAt: isoDate((p as { createdAt?: unknown }).createdAt) // N-01-datetime:podcast_episode.createdAt
-    })),
+    podcastEpisodes: state.podcastEpisodes.map((p) => {
+      const guestVoice = clampPodcastGuestVoice((p as { guestVoice?: unknown }).guestVoice);
+      const next = {
+        ...p,
+        noteId: str(p.noteId),
+        title: str(p.title),
+        voice: str(p.voice),
+        format: clampEnum(p.format, PODCAST_FORMATS, "solo"),
+        // status 坏值 fail-closed 到 draft(绝不冒充 ready 展示不存在的音频);
+        // scriptReviewStatus 坏值绝不冒充「用户确认」(镜像 decision confirmationStatus 口径)。
+        status: clampEnum(p.status, PODCAST_STATUSES, "draft"),
+        scriptReviewStatus: clampEnum(p.scriptReviewStatus, SCRIPT_REVIEW_STATUSES, "待确认"),
+        sourceType: optStr(p.sourceType) as typeof p.sourceType,
+        sourceId: optStr(p.sourceId),
+        createdAt: isoDate((p as { createdAt?: unknown }).createdAt) // N-01-datetime:podcast_episode.createdAt
+      };
+      if (guestVoice) return { ...next, guestVoice };
+      const { guestVoice: _omit, ...rest } = next as typeof next & { guestVoice?: string };
+      return rest;
+    }),
     corpusImports: state.corpusImports.map((c) => ({
       ...c,
       title: str(c.title),
@@ -931,12 +938,15 @@ function normalizeVoiceConfig(systemConfig: Partial<SystemConfig>, fallbackConfi
   // ponytail: 只纠正已知非法 legacy 占位值;custom 克隆声音原样保留
   const defaultVoice = isInvalidVoiceId(voiceConfig.defaultVoice) ? "longanlingxin" : voiceConfig.defaultVoice;
   const podcastVoice = isInvalidVoiceId(voiceConfig.podcastVoice) ? "longanlingxin" : voiceConfig.podcastVoice;
+  const podcastGuestVoice = clampPodcastGuestVoice(voiceConfig.podcastGuestVoice);
+  const { podcastGuestVoice: _incomingGuest, ...voiceWithoutGuest } = voiceConfig;
 
   return {
-    ...voiceConfig,
+    ...voiceWithoutGuest,
     realtimeMode,
     defaultVoice,
     podcastVoice,
+    ...(podcastGuestVoice ? { podcastGuestVoice } : {}),
     podcastFormat: voiceConfig.podcastFormat || fallbackConfig.voice.podcastFormat,
     ttsProvider: voiceConfig.ttsProvider === "local-demo" ? fallbackConfig.voice.ttsProvider : voiceConfig.ttsProvider
   };

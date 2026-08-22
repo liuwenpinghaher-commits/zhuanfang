@@ -6,6 +6,7 @@ import { HeaderBlock } from "../../components/HeaderBlock";
 import { Metric } from "../../components/Metric";
 import type { buildSystemStatus } from "../../domain/engine";
 import type { ProductState, SearchProviderId, SystemConfig } from "../../domain/types";
+import { podcastVoiceSelectOptions } from "../../domain/podcast-voices";
 import { configSectionOptions, type ConfigSection } from "../../ui";
 
 interface ConfigViewProps {
@@ -545,11 +546,34 @@ export function ConfigView({
                         }));
                       }}
 >
-                      {voices.map((v) => (
+                      {podcastVoiceSelectOptions(productDraft.voice.podcastVoice).map((v) => (
                         <option key={v.voice} value={v.voice}>{v.name} ({v.voice})</option>
                       ))}
                     </select>
-                    <span className="field-help">影响播客工作台新建节目时的默认 voice。</span>
+                    <span className="field-help">影响播客工作台新建节目时的默认声音。主持对谈时这是主持人。</span>
+                  </label>
+                  <label className="field-stack runtime-setting-field" htmlFor="product-podcast-guest-voice">
+                    <span className="field-label">播客默认来宾</span>
+                    <select
+                      id="product-podcast-guest-voice"
+                      name="voice.podcastGuestVoice"
+                      value={productDraft.voice.podcastGuestVoice ?? ""}
+                      onChange={(event) => {
+                        const nextValue = event.target.value.trim();
+                        updateProductConfig((config) => {
+                          const nextVoice = { ...config.voice };
+                          if (nextValue) nextVoice.podcastGuestVoice = nextValue;
+                          else delete nextVoice.podcastGuestVoice;
+                          return { ...config, voice: nextVoice };
+                        });
+                      }}
+                    >
+                      <option value="">生成主持对谈时自动配对</option>
+                      {podcastVoiceSelectOptions(productDraft.voice.podcastGuestVoice ?? "").map((v) => (
+                        <option key={v.voice} value={v.voice}>{v.name} ({v.voice})</option>
+                      ))}
+                    </select>
+                    <span className="field-help">只影响下一期主持对谈。单人旁白不用这一栏。</span>
                   </label>
                   <label className="field-stack runtime-setting-field" htmlFor="product-tts-provider">
                     <span className="field-label">TTS Provider</span>

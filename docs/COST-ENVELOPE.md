@@ -112,9 +112,9 @@
 | 步骤 | 桶 | 模型 |
 | --- | --- | --- |
 | 笔记路径脚本 LLM | `system`（capability `podcast_script`） | 通常 **1** 次成功脚本；失败 502 不落假稿 |
-| TTS `synthesize` | 一般不走 LLM 预算 | **按字符/请求**计 CosyVoice；默认创建不自动渲染（`PODCAST_AUTO_RENDER_ON_CREATE` 默认关） |
-| 确认口播稿 | 否 | **零 TTS**：只改复核状态，不调用 CosyVoice |
-| 长文一次合成 | — | 无服务端自动分片时，超时风险在供应商侧（D1.b 增强项） |
+| TTS `synthesize` 单人旁白 | 一般不走 LLM 预算 | **一次**供应商请求（内部可按字切段）；默认创建不自动渲染（`PODCAST_AUTO_RENDER_ON_CREATE` 默认关） |
+| TTS `synthesize` 主持对谈 | 一般不走 LLM 预算 | **稿里每一句单独出一次声，串行请求**。八轮对答大约八次账单。某一句失败则整次失败，已拼的声音丢掉。没有整单总超时封顶 |
+| 确认口播稿 | 否 | **零 TTS**：只改复核状态，不调用语音合成 |
 
 ### 3.6 联网搜索 / 后台 research
 

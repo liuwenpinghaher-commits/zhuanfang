@@ -392,6 +392,44 @@ describe("product api client", () => {
     expect(result.state.profile.name).toBe("Mia");
   });
 
+  it("sends voice and guestVoice on synthesize without a script", async () => {
+    const state = createInitialProductState();
+    const episode = {
+      id: "podcast-api",
+      noteId: state.notes[0].id,
+      title: "播客：测试",
+      format: "host-guest" as const,
+      voice: "longanlingxin",
+      guestVoice: "longanqian",
+      status: "ready" as const,
+      durationSec: 180,
+      script: "主持人：开场。\n来宾：回应。",
+      chapters: [],
+      audioUrl: "local-audio://test.mp3",
+      shownotes: [],
+      createdAt: "2026-06-10T00:00:00.000Z"
+    };
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ episode, state }), { status: 200 }));
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+
+    await client.synthesizePodcastEpisode("podcast-api", {
+      voice: "longanlingxin",
+      guestVoice: "longanqian"
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://127.0.0.1:8787/api/podcast/episodes/podcast-api/synthesize",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          voice: "longanlingxin",
+          guestVoice: "longanqian"
+        })
+      }
+    );
+  });
+
   it("confirms a podcast script through the API", async () => {
     const state = createInitialProductState();
     const episode = {

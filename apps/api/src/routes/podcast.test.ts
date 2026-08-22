@@ -9,6 +9,13 @@ import { createInitialProductState } from "../../../../src/domain/engine";
 import { createLlmBudget } from "../llm-budget";
 import { registerPodcastRoutes } from "./podcast";
 import { createFakeChatClient, createFailingChatClient } from "../test-helpers/fake-llm-clients";
+import { pcmToWav, QWEN_AUDIO_TTS_SAMPLE_RATE } from "../providers/bailian-tts-inference";
+
+const DUAL_SCRIPT = "主持人：开场一句话。\n来宾：回应一句话。\n主持人：再问一句。\n来宾：收束一句。";
+
+function tinyWav() {
+  return pcmToWav(Buffer.alloc(Math.round(QWEN_AUDIO_TTS_SAMPLE_RATE * 0.04 * 2)), QWEN_AUDIO_TTS_SAMPLE_RATE);
+}
 
 describe("POST /api/podcast/episodes", () => {
   it("create defaults to pending script (no auto-TTS); with AUTO_RENDER, TTS failure → failed + script kept", async () => {
@@ -410,6 +417,225 @@ describe("POST /api/podcast/episodes/:id/synthesize", () => {
     const persisted = after.podcastEpisodes.find((e: any) => e.id === episodeId);
     expect(persisted?.audioRenderStatus).toBe("failed");
     expect(persisted?.script.length).toBeGreaterThan(0);
+    await server.close();
+  });
+
+  it("host-guest labeled script uses per-turn voices and stored guestVoice", async () => {
+    const calls: Array<{ text: string; voice?: string }> = [];
+    const wav = tinyWav();
+    const fakeTts = {
+      synthesize: async (input: { text: string; voice?: string }) => {
+        calls.push(input);
+        return { audioBytes: wav, durationSec: 1, voice: input.voice };
+      }
+    };
+    const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
+      bailianChatClient: createFakeChatClient({ podcastScript: DUAL_SCRIPT }),
+      bailianPodcastAudioClient: fakeTts as never
+    });
+    const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
+    const created = await server.inject({
+      method: "POST",
+      url: "/api/podcast/episodes",
+      payload: {
+        noteId: state.notes[0]?.id,
+        format: "host-guest",
+        voice: "longanlingxin",
+        guestVoice: "longanqian"
+      }
+    });
+    expect(created.statusCode).toBe(200);
+    expect(created.json().episode.guestVoice).toBe("longanqian");
+    const episodeId = created.json().episode.id;
+    const confirm = await server.inject({
+      method: "POST",
+      url: `/api/podcast/episodes/${episodeId}/confirm`,
+      payload: { script: DUAL_SCRIPT }
+    });
+    expect(confirm.statusCode).toBe(200);
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/podcast/episodes/${episodeId}/synthesize`
+    });
+    expect(res.statusCode).toBe(200);
+    expect(calls).toHaveLength(4);
+    expect(calls.map((item) => item.voice)).toEqual([
+      "longanlingxin",
+      "longanqian",
+      "longanlingxin",
+      "longanqian"
+    ]);
+    expect(res.json().episode.voice).toBe("longanlingxin");
+    expect(res.json().episode.guestVoice).toBe("longanqian");
+    await server.close();
+  });
+
+  it("host-guest without guestVoice pairs 洋 to 聆心 and does not rewrite stored host", async () => {
+    const calls: Array<{ text: string; voice?: string }> = [];
+    const wav = tinyWav();
+    const fakeTts = {
+      synthesize: async (input: { text: string; voice?: string }) => {
+        calls.push(input);
+        return { audioBytes: wav, durationSec: 1, voice: input.voice };
+      }
+    };
+    const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
+      bailianChatClient: createFakeChatClient({ podcastScript: DUAL_SCRIPT }),
+      bailianPodcastAudioClient: fakeTts as never
+    });
+    const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
+    const created = await server.inject({
+      method: "POST",
+      url: "/api/podcast/episodes",
+      payload: { noteId: state.notes[0]?.id, format: "host-guest", voice: "longanyang" }
+    });
+    expect(created.statusCode).toBe(200);
+    expect(created.json().episode.voice).toBe("longanyang");
+    expect(created.json().episode.guestVoice).toBeUndefined();
+    const episodeId = created.json().episode.id;
+    await server.inject({
+      method: "POST",
+      url: `/api/podcast/episodes/${episodeId}/confirm`,
+      payload: { script: DUAL_SCRIPT }
+    });
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/podcast/episodes/${episodeId}/synthesize`
+    });
+    expect(res.statusCode).toBe(200);
+    expect(calls).toHaveLength(4);
+    expect(calls.map((item) => item.voice)).toEqual([
+      "longanqian",
+      "longanlingxin",
+      "longanqian",
+      "longanlingxin"
+    ]);
+    expect(res.json().episode.voice).toBe("longanyang");
+    expect(res.json().episode.guestVoice).toBeUndefined();
+    await server.close();
+  });
+
+  it("host-guest unlabeled script returns 409 without calling TTS or writing voices", async () => {
+    let ttsCalls = 0;
+    const fakeTts = {
+      synthesize: async () => {
+        ttsCalls += 1;
+        return { audioUrl: "https://example.com/should-not-run.mp3", durationSec: 1, voice: "longanlingxin" };
+      }
+    };
+    const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
+      bailianChatClient: createFakeChatClient(),
+      bailianPodcastAudioClient: fakeTts as never
+    });
+    const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
+    const created = await server.inject({
+      method: "POST",
+      url: "/api/podcast/episodes",
+      payload: {
+        noteId: state.notes[0]?.id,
+        format: "host-guest",
+        voice: "longanlingxin",
+        guestVoice: "longanqian"
+      }
+    });
+    const episodeId = created.json().episode.id;
+    await server.inject({
+      method: "POST",
+      url: `/api/podcast/episodes/${episodeId}/confirm`
+    });
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/podcast/episodes/${episodeId}/synthesize`,
+      payload: { voice: "longanhuan", guestVoice: "longanyang" }
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toContain("没有把主持人和来宾分开写");
+    expect(ttsCalls).toBe(0);
+    const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
+    const persisted = after.podcastEpisodes.find((item: { id: string }) => item.id === episodeId);
+    expect(persisted?.voice).toBe("longanlingxin");
+    expect(persisted?.guestVoice).toBe("longanqian");
+    await server.close();
+  });
+
+  it("solo with host/guest labels still synthesizes the whole script as one host voice", async () => {
+    const calls: Array<{ text: string; voice?: string }> = [];
+    const fakeTts = {
+      synthesize: async (input: { text: string; voice?: string }) => {
+        calls.push(input);
+        return { audioUrl: "https://example.com/solo.mp3", durationSec: 12, voice: input.voice };
+      }
+    };
+    const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
+      bailianChatClient: createFakeChatClient({ podcastScript: DUAL_SCRIPT }),
+      bailianPodcastAudioClient: fakeTts as never
+    });
+    const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
+    const created = await server.inject({
+      method: "POST",
+      url: "/api/podcast/episodes",
+      payload: { noteId: state.notes[0]?.id, format: "solo", voice: "longanlingxin" }
+    });
+    const episodeId = created.json().episode.id;
+    await server.inject({
+      method: "POST",
+      url: `/api/podcast/episodes/${episodeId}/confirm`,
+      payload: { script: DUAL_SCRIPT }
+    });
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/podcast/episodes/${episodeId}/synthesize`
+    });
+    expect(res.statusCode).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.voice).toBe("longanlingxin");
+    expect(calls[0]?.text).toBe(DUAL_SCRIPT);
+    await server.close();
+  });
+
+  it("keeps stored 欢 after synthesize and allows the same two voices", async () => {
+    const calls: Array<{ text: string; voice?: string }> = [];
+    const wav = tinyWav();
+    const fakeTts = {
+      synthesize: async (input: { text: string; voice?: string }) => {
+        calls.push(input);
+        return { audioBytes: wav, durationSec: 1, voice: input.voice };
+      }
+    };
+    const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
+      bailianChatClient: createFakeChatClient({ podcastScript: DUAL_SCRIPT }),
+      bailianPodcastAudioClient: fakeTts as never
+    });
+    const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
+    const created = await server.inject({
+      method: "POST",
+      url: "/api/podcast/episodes",
+      payload: {
+        noteId: state.notes[0]?.id,
+        format: "host-guest",
+        voice: "longanhuan",
+        guestVoice: "longanhuan"
+      }
+    });
+    const episodeId = created.json().episode.id;
+    await server.inject({
+      method: "POST",
+      url: `/api/podcast/episodes/${episodeId}/confirm`,
+      payload: { script: DUAL_SCRIPT }
+    });
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/podcast/episodes/${episodeId}/synthesize`
+    });
+    expect(res.statusCode).toBe(200);
+    expect(calls.every((item) => item.voice === "longanlingxin")).toBe(true);
+    expect(res.json().episode.voice).toBe("longanhuan");
+    expect(res.json().episode.guestVoice).toBe("longanhuan");
     await server.close();
   });
 });

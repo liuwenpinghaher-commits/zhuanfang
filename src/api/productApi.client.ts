@@ -817,11 +817,16 @@ export function createProductApiClient(
         state: normalizeProductState(response.state)
       };
     },
-    async synthesizePodcastEpisode(episodeId, script) {
+    async synthesizePodcastEpisode(episodeId, options) {
+      const payload: { script?: string; voice?: string; guestVoice?: string } = {};
+      if (options?.script !== undefined) payload.script = options.script;
+      if (options?.voice !== undefined) payload.voice = options.voice;
+      if (options?.guestVoice !== undefined) payload.guestVoice = options.guestVoice;
+      const hasBody = Object.keys(payload).length > 0;
       const response = (await requestJson(`/api/podcast/episodes/${encodeURIComponent(episodeId)}/synthesize`, {
         method: "POST",
-        ...(script !== undefined
-          ? { headers: { "content-type": "application/json" }, body: JSON.stringify({ script }) }
+        ...(hasBody
+          ? { headers: { "content-type": "application/json" }, body: JSON.stringify(payload) }
           : {})
       })) as GeneratePodcastEpisodeResponse;
 

@@ -157,7 +157,12 @@ describe("ConfigView", () => {
     const recencyInput = container?.querySelector<HTMLInputElement>('input[name="search.recencyDays"]');
     const maxSourcesInput = container?.querySelector<HTMLInputElement>('input[name="search.maxSources"]');
     const webInInterviewSelect = container?.querySelector<HTMLSelectElement>('select[name="search.allowWebInInterview"]');
+    const defaultVoiceSelect = container?.querySelector<HTMLSelectElement>('select[name="voice.defaultVoice"]');
     const podcastVoiceSelect = container?.querySelector<HTMLSelectElement>('select[name="voice.podcastVoice"]');
+    const interviewVoiceValues = Array.from(defaultVoiceSelect?.options ?? []).map((o) => o.value);
+    const podcastVoiceValues = Array.from(podcastVoiceSelect?.options ?? []).map((o) => o.value);
+    expect(interviewVoiceValues).toEqual(expect.arrayContaining(["longanyang", "longanhuan"]));
+    expect(podcastVoiceValues).toEqual(expect.arrayContaining(["longanlingxin", "longanqian"]));
     const silenceInput = container?.querySelector<HTMLInputElement>('input[name="interview.silenceHoldMs"]');
     const followUpInput = container?.querySelector<HTMLInputElement>('input[name="interview.maxFollowUpDepth"]');
 
@@ -174,7 +179,7 @@ describe("ConfigView", () => {
       maxSourcesInput!.dispatchEvent(new Event("input", { bubbles: true }));
       webInInterviewSelect!.value = "false";
       webInInterviewSelect!.dispatchEvent(new Event("change", { bubbles: true }));
-      podcastVoiceSelect!.value = "longanhuan";
+      podcastVoiceSelect!.value = "longanqian";
       podcastVoiceSelect!.dispatchEvent(new Event("change", { bubbles: true }));
       silenceInput!.value = "1600";
       silenceInput!.dispatchEvent(new Event("input", { bubbles: true }));
@@ -194,7 +199,7 @@ describe("ConfigView", () => {
           allowWebInInterview: false
         }),
         voice: expect.objectContaining({
-          podcastVoice: "longanhuan"
+          podcastVoice: "longanqian"
         }),
         interview: expect.objectContaining({
           silenceHoldMs: 1600,

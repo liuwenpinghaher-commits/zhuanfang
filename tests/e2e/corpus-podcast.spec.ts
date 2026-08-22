@@ -82,14 +82,14 @@ test("transcribes an audio source before corpus analysis", async ({ page }) => {
 
 test("generates and deletes a podcast episode from the first note", async ({ page }) => {
   // Must use a CosyVoice-v3 verified preset; unknown ids are normalized server-side.
-  const voice = "longanhuan";
+  const voice = "longanlingxin";
   await resetDemoState(page);
   // R2: 播客工作台已移出顶层导航，通过"我的资产"档案卡"生成播客"按钮进入。
   await openView(page, "我的资产", "专访档案与认知资产库");
   await page.getByRole("button", { name: "生成播客" }).first().click();
   await expect(page.getByText("把一次专访生成可收听的语音节目")).toBeVisible();
 
-  await page.getByLabel("声音配置").fill(voice);
+  await page.locator("#podcast-voice").selectOption(voice);
   await page.getByRole("button", { name: "生成脚本" }).click();
   await expect(page.getByText("播客脚本已生成")).toBeVisible({ timeout: 20000 });
   await expect(page.getByRole("button", { name: "去确认" })).toBeVisible();
@@ -116,9 +116,7 @@ test("generates and deletes a podcast episode from the first note", async ({ pag
 });
 
 test("saves the current podcast voice as the default product voice", async ({ page }) => {
-  // 声音配置 is a free-text input in PodcastStudioView. 播客默认声音 in ConfigView is a <select>
-  // sourced from /api/realtime-voice/voices. We must use a value that actually exists in the
-  // select — read the first available option value from the voices API before testing.
+  // 工作台与配置页的播客声音都是能说名单下拉（聆心/谦）。
   await resetDemoState(page);
   // R2: 播客工作台已移出顶层导航，通过"我的资产"档案卡"生成播客"按钮进入。
   await openView(page, "我的资产", "专访档案与认知资产库");
@@ -141,7 +139,7 @@ test("saves the current podcast voice as the default product voice", async ({ pa
   await page.getByRole("button", { name: "生成播客" }).first().click();
   await expect(page.getByText("把一次专访生成可收听的语音节目")).toBeVisible();
 
-  await page.getByLabel("声音配置").fill(voice);
+  await page.locator("#podcast-voice").selectOption(voice);
   await page.getByRole("button", { name: "保存为默认声音" }).click();
 
   await expect(page.getByText("播客默认声音已更新")).toBeVisible({ timeout: 10000 });

@@ -39,6 +39,7 @@ export interface SystemConfig {
     ttsProvider: "local-demo" | "bailian" | "openai" | "elevenlabs";
     defaultVoice: string;
     podcastVoice: string;
+    podcastGuestVoice?: string;
     podcastFormat: "solo" | "host-guest";
     realtimeMode: "bailian" | "livekit" | "cascade";
     /**
@@ -1215,6 +1216,8 @@ export interface PodcastEpisode {
   title: string;
   format: "solo" | "host-guest";
   voice: string;
+  /** 主持对谈的来宾声。缺省时合成按能说身份自动配对。 */
+  guestVoice?: string;
   // 审计说明:`generating` 是【异步合成预留值】。当前 TTS 合成是同步的(创建写 draft、合成完写
   // ready),不经过 generating 态。保留以便将来若 TTS 改为长任务异步渲染(轮询进度)复用;
   // 现阶段无写入路径是有意预留,非遗漏。

@@ -395,6 +395,63 @@ describe("product state storage", () => {
       expect(normalized.systemConfig.voice.podcastVoice).toBe("longanhuan");
     });
 
+    it("omits empty or invalid podcast guest voices instead of rewriting them to longanhuan", () => {
+      const state = createInitialProductState();
+      const episode = {
+        id: "podcast-guest-omit",
+        noteId: state.notes[0]?.id ?? "note-1",
+        title: "播客：来宾省略",
+        format: "host-guest" as const,
+        voice: "longanyang",
+        guestVoice: "   ",
+        status: "draft" as const,
+        durationSec: 60,
+        script: "主持人：开场。\n来宾：回应。",
+        chapters: [],
+        audioUrl: "local-audio://x.wav",
+        shownotes: [],
+        createdAt: "2026-08-22T00:00:00.000Z"
+      };
+      const normalized = normalizeProductState({
+        ...state,
+        podcastEpisodes: [episode],
+        systemConfig: {
+          ...state.systemConfig,
+          voice: {
+            ...state.systemConfig.voice,
+            podcastGuestVoice: "calm-host"
+          }
+        }
+      });
+      expect(normalized.podcastEpisodes[0]?.guestVoice).toBeUndefined();
+      expect("guestVoice" in (normalized.podcastEpisodes[0] ?? {})).toBe(false);
+      expect(normalized.systemConfig.voice.podcastGuestVoice).toBeUndefined();
+    });
+
+    it("keeps a stored speaking guest voice", () => {
+      const state = createInitialProductState();
+      const episode = {
+        id: "podcast-guest-keep",
+        noteId: state.notes[0]?.id ?? "note-1",
+        title: "播客：来宾保留",
+        format: "host-guest" as const,
+        voice: "longanlingxin",
+        guestVoice: "longanqian",
+        status: "draft" as const,
+        durationSec: 60,
+        script: "主持人：开场。\n来宾：回应。",
+        chapters: [],
+        audioUrl: "local-audio://x.wav",
+        shownotes: [],
+        createdAt: "2026-08-22T00:00:00.000Z"
+      };
+      const normalized = normalizeProductState({
+        ...state,
+        podcastEpisodes: [episode]
+      });
+      expect(normalized.podcastEpisodes[0]?.guestVoice).toBe("longanqian");
+    });
+
     it("normalizeProductState: podcastVoice custom clone is preserved", () => {
       const state = createInitialProductState();
       const normalized = normalizeProductState({

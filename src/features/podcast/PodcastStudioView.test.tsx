@@ -109,9 +109,50 @@ describe("PodcastStudioView", () => {
     expect(container?.textContent).toContain("去确认");
   });
 
+  it("shows host and guest voice selects for host-guest format", () => {
+    const state = createInitialProductState();
+    renderView(state, { format: "host-guest", guestVoice: "longanqian" });
+    expect(container?.querySelector("#podcast-host-voice")).toBeTruthy();
+    expect(container?.querySelector("#podcast-guest-voice")).toBeTruthy();
+    expect(container?.textContent).toContain("主持人声音");
+    expect(container?.textContent).toContain("来宾声音");
+    expect(container?.querySelector("#podcast-voice")).toBeNull();
+  });
+
+  it("keeps stored guest voice in the library pill and episode draft selects", () => {
+    const state = createInitialProductState();
+    const episode = createEpisode("local-audio://pending.mp3", {
+      format: "host-guest",
+      voice: "longanlingxin",
+      guestVoice: "longanqian",
+      audioRenderStatus: "pending",
+      scriptReviewStatus: "用户确认"
+    });
+    renderView(
+      { ...state, podcastEpisodes: [episode] },
+      {
+        format: "host-guest",
+        editingScript: episode.script,
+        activeEpisodeId: episode.id,
+        episodeVoice: episode.voice,
+        episodeGuestVoice: episode.guestVoice
+      }
+    );
+    expect(container?.textContent).toContain("主持对谈 · longanlingxin / longanqian");
+    expect(container?.querySelector<HTMLSelectElement>("#episode-host-voice")?.value).toBe("longanlingxin");
+    expect(container?.querySelector<HTMLSelectElement>("#episode-guest-voice")?.value).toBe("longanqian");
+  });
+
   function renderView(
     state: ReturnType<typeof createInitialProductState>,
-    extras?: { editingScript?: string; activeEpisodeId?: string | null }
+    extras?: {
+      editingScript?: string;
+      activeEpisodeId?: string | null;
+      format?: PodcastEpisode["format"];
+      guestVoice?: string;
+      episodeVoice?: string;
+      episodeGuestVoice?: string;
+    }
   ) {
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -121,18 +162,25 @@ describe("PodcastStudioView", () => {
         <PodcastStudioView
           state={state}
           noteId={state.notes[0]?.id ?? ""}
-          voice="calm-host"
+          voice="longanlingxin"
+          guestVoice="longanqian"
           sourceType="note"
           sourceId=""
-          format="solo"
+          format={extras?.format ?? "solo"}
           editingScript={extras?.editingScript ?? ""}
+          episodeVoice={extras?.episodeVoice ?? (extras?.activeEpisodeId ? "longanlingxin" : "")}
+          episodeGuestVoice={extras?.episodeGuestVoice ?? ""}
           activeEpisodeId={extras?.activeEpisodeId ?? null}
           onNoteId={vi.fn()}
           onVoice={vi.fn()}
+          onGuestVoice={vi.fn()}
           onSourceType={vi.fn()}
           onSourceId={vi.fn()}
           onFormat={vi.fn()}
           onEditingScript={vi.fn()}
+          onEpisodeVoice={vi.fn()}
+          onEpisodeGuestVoice={vi.fn()}
+          onBeginEditEpisode={vi.fn()}
           onActiveEpisodeId={vi.fn()}
           onGenerateScript={vi.fn()}
           onConfirmScript={vi.fn()}

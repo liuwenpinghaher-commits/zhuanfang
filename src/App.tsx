@@ -42,6 +42,7 @@ import {
   updateKnowledgeDebtStatus,
   updatePointStatus,
   updateQuestionStatus,
+  pairPodcastGuestVoice,
 } from "./domain/engine";
 import { addAnnotation, removeAnnotation } from "./domain/raw-material";
 import { deleteImportSource } from "./domain/material";
@@ -283,10 +284,17 @@ export default function App() {
   const [trackingBriefId, setTrackingBriefId] = useState<string | null>(null);
   const [podcastNoteId, setPodcastNoteId] = useState(() => productState.notes[0]?.id ?? "");
   const [podcastVoice, setPodcastVoice] = useState(productState.systemConfig.voice.podcastVoice);
+  const [podcastGuestVoice, setPodcastGuestVoice] = useState(
+    () =>
+      productState.systemConfig.voice.podcastGuestVoice ??
+      pairPodcastGuestVoice(productState.systemConfig.voice.podcastVoice)
+  );
   const [podcastSourceType, setPodcastSourceType] = useState<PodcastSourceType>("note");
   const [podcastSourceId, setPodcastSourceId] = useState("");
   const [podcastFormat, setPodcastFormat] = useState<PodcastEpisode["format"]>("solo");
   const [podcastEditingScript, setPodcastEditingScript] = useState("");
+  const [episodeVoice, setEpisodeVoice] = useState("");
+  const [episodeGuestVoice, setEpisodeGuestVoice] = useState("");
   const [podcastActiveEpisodeId, setPodcastActiveEpisodeId] = useState<string | null>(null);
   const [podcastGenerating, setPodcastGenerating] = useState(false);
   const [podcastSynthesizing, setPodcastSynthesizing] = useState(false);
@@ -310,6 +318,20 @@ export default function App() {
   // 引用跳源:逐字稿引用点击后,要在双轨笔记里展开的会话 + 高亮的轮次。
   // nonce 每次点击自增,使 NotesView 的 effect 即便 sessionId/turnId 未变(连点同一引用)也重新触发滚动高亮。
   const [notesFocus, setNotesFocus] = useState<{ sessionId: string; turnId?: string; nonce: number } | null>(null);
+
+  function episodeGuestDraft(episode: PodcastEpisode): string {
+    const stored = episode.guestVoice?.trim();
+    if (stored) return stored;
+    if (episode.format === "host-guest") return pairPodcastGuestVoice(episode.voice);
+    return "";
+  }
+
+  function openEpisodeDraft(episode: PodcastEpisode) {
+    setPodcastActiveEpisodeId(episode.id);
+    setPodcastEditingScript(episode.script);
+    setEpisodeVoice(episode.voice);
+    setEpisodeGuestVoice(episodeGuestDraft(episode));
+  }
 
   useEffect(() => {
     applyDocumentTheme(resolvedTheme);
@@ -434,8 +456,7 @@ export default function App() {
     if (podcastActiveEpisodeId) return;
     const pending = productState.podcastEpisodes.find((item) => item.scriptReviewStatus === "待确认");
     if (!pending) return;
-    setPodcastActiveEpisodeId(pending.id);
-    setPodcastEditingScript(pending.script);
+    openEpisodeDraft(pending);
   }, [view, podcastActiveEpisodeId, productState.podcastEpisodes]);
 
   const productStateRef = useRef(productState);
@@ -1202,7 +1223,10 @@ export default function App() {
         sourceType: podcastSourceType,
         sourceId: effectiveSourceId,
         format: podcastFormat,
-        voice: podcastVoice
+        voice: podcastVoice,
+        ...(podcastFormat === "host-guest" && podcastGuestVoice.trim()
+          ? { guestVoice: podcastGuestVoice.trim() }
+          : {})
       });
       adoptServerState(apiRun.state);
       setApiPersistenceEnabled(true);
@@ -1211,9 +1235,12 @@ export default function App() {
       } else {
         setPodcastSourceId(effectiveSourceId);
       }
-      setPodcastActiveEpisodeId(apiRun.episode.id);
-      setPodcastEditingScript(apiRun.episode.script);
-      setNotice(buildNotice("success", "播客脚本已生成", `使用声音配置：${apiRun.episode.voice}`));
+      openEpisodeDraft(apiRun.episode);
+      const voiceSummary =
+        apiRun.episode.format === "host-guest"
+          ? `主持人 ${apiRun.episode.voice}，来宾 ${apiRun.episode.guestVoice ?? pairPodcastGuestVoice(apiRun.episode.voice)}`
+          : `声音：${apiRun.episode.voice}`;
+      setNotice(buildNotice("success", "播客脚本已生成", voiceSummary));
       setView("podcast");
     } catch (err) {
       const message = err instanceof Error && err.message ? err.message : "请检查服务与配置后重试。";
@@ -1287,7 +1314,17 @@ export default function App() {
 
     setPodcastSynthesizing(true);
     try {
-      const { state: synthState } = await productApiClient.synthesizePodcastEpisode(targetId);
+      const usingDraft = targetId === podcastActiveEpisodeId;
+      const host = usingDraft && episodeVoice.trim() ? episodeVoice.trim() : episode.voice;
+      const guest =
+        usingDraft && episodeGuestVoice.trim()
+          ? episodeGuestVoice.trim()
+          : episode.guestVoice?.trim() ||
+            (episode.format === "host-guest" ? pairPodcastGuestVoice(episode.voice) : "");
+      const { state: synthState } = await productApiClient.synthesizePodcastEpisode(targetId, {
+        voice: host,
+        ...(guest ? { guestVoice: guest } : {})
+      });
       adoptServerState(synthState);
       setApiPersistenceEnabled(true);
       setPodcastActiveEpisodeId(targetId);
@@ -1318,6 +1355,8 @@ export default function App() {
       if (podcastActiveEpisodeId === episodeId) {
         setPodcastActiveEpisodeId(null);
         setPodcastEditingScript("");
+        setEpisodeVoice("");
+        setEpisodeGuestVoice("");
       }
       setNotice(buildNotice("warning", "播客生成结果已删除", "来源笔记和认知资产保持不变。"));
     } catch (err) {
@@ -1442,20 +1481,34 @@ export default function App() {
     };
     setProductState(nextState);
     setPodcastVoice(nextConfig.voice.podcastVoice);
+    setPodcastGuestVoice(
+      nextConfig.voice.podcastGuestVoice ?? pairPodcastGuestVoice(nextConfig.voice.podcastVoice)
+    );
     setNotice(buildNotice("success", "产品策略已保存", "搜索、语音和访谈策略会影响后续生成流程。"));
   }
 
   function saveDefaultPodcastVoice() {
+    const nextVoice = {
+      ...productState.systemConfig.voice,
+      podcastVoice,
+      ...(podcastFormat === "host-guest" && podcastGuestVoice.trim()
+        ? { podcastGuestVoice: podcastGuestVoice.trim() }
+        : {})
+    };
     const nextConfig = {
       ...productState.systemConfig,
-      voice: { ...productState.systemConfig.voice, podcastVoice }
+      voice: nextVoice
     };
     const nextState = {
       ...productState,
       systemConfig: nextConfig
     };
     setProductState(nextState);
-    setNotice(buildNotice("success", "播客默认声音已更新", `默认声音已设为：${podcastVoice}`));
+    const summary =
+      podcastFormat === "host-guest"
+        ? `主持人 ${podcastVoice}，来宾 ${podcastGuestVoice}`
+        : `默认声音已设为：${podcastVoice}`;
+    setNotice(buildNotice("success", "播客默认声音已更新", summary));
   }
 
   function saveNoteQuestion(noteId: string, index: number) {
@@ -1707,6 +1760,8 @@ export default function App() {
     setPodcastSourceId("");
     setPodcastFormat("solo");
     setPodcastEditingScript("");
+    setEpisodeVoice("");
+    setEpisodeGuestVoice("");
     setPodcastActiveEpisodeId(null);
     setPodcastGenerating(false);
     setPodcastSynthesizing(false);
@@ -2055,22 +2110,28 @@ export default function App() {
             state={productState}
             noteId={podcastNoteId}
             voice={podcastVoice}
+            guestVoice={podcastGuestVoice}
             sourceType={podcastSourceType}
             sourceId={podcastSourceId}
             format={podcastFormat}
             editingScript={podcastEditingScript}
+            episodeVoice={episodeVoice}
+            episodeGuestVoice={episodeGuestVoice}
             activeEpisodeId={podcastActiveEpisodeId}
             generating={podcastGenerating}
             synthesizing={podcastSynthesizing}
             confirming={podcastConfirming}
             deletingEpisodeId={podcastDeletingId}
-            voices={voices}
             onNoteId={setPodcastNoteId}
             onVoice={setPodcastVoice}
+            onGuestVoice={setPodcastGuestVoice}
             onSourceType={setPodcastSourceType}
             onSourceId={setPodcastSourceId}
             onFormat={setPodcastFormat}
             onEditingScript={setPodcastEditingScript}
+            onEpisodeVoice={setEpisodeVoice}
+            onEpisodeGuestVoice={setEpisodeGuestVoice}
+            onBeginEditEpisode={openEpisodeDraft}
             onActiveEpisodeId={setPodcastActiveEpisodeId}
             onGenerateScript={generatePodcastScript}
             onConfirmScript={(id) => void confirmPodcastScript(id)}

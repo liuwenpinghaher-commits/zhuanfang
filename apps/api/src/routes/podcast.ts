@@ -8,9 +8,11 @@ import {
   parsePodcastDialogue,
   prependPodcastEpisode,
   replacePodcastEpisode,
+  resolveEpisodeVoices,
   scalePodcastChapters,
   withGeneratedArtifactWorkflowRun
 } from "../../../../src/domain/engine";
+import { clampPodcastGuestVoice } from "../../../../src/domain/podcast-voices";
 import { deletePodcastEpisode } from "../../../../src/domain/lifecycle";
 import type { PodcastEpisode, ProductState } from "../../../../src/domain/types";
 import { makeId, withAiRunEvent, withAuditEvent } from "../../../../src/domain/utils";
@@ -18,7 +20,7 @@ import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import type { BailianChatClient, BailianPodcastAudioClient } from "../providers/bailian";
 import type { ProductStateRepository } from "../product-state-repository";
 import { generatePodcastScriptFromSource } from "../intelligence/podcast-script-llm";
-import { normalizeCosyVoiceId, pairQwenAudioTtsVoice, resolveQwenAudioTtsVoice } from "../voice-presets";
+import { normalizeCosyVoiceId, resolveQwenAudioTtsVoice } from "../voice-presets";
 import { pcmToWav, QWEN_AUDIO_TTS_SAMPLE_RATE, wavToPcm } from "../providers/bailian-tts-inference";
 import { runStateCommand } from "../state-command";
 import type { WriteGate } from "../server";
@@ -32,7 +34,10 @@ interface PodcastEpisodeRequestPayload {
   sourceId?: unknown;
   format?: unknown;
   voice?: unknown;
+  guestVoice?: unknown;
 }
+
+const UNDUAL_MESSAGE = "这篇对谈稿没有把主持人和来宾分开写。先改稿再合成。";
 
 interface PodcastRouteOptions {
   bailianPodcastAudioClient?: BailianPodcastAudioClient;
@@ -58,12 +63,22 @@ export async function renderEpisodeAudio(
   audioClient: BailianPodcastAudioClient
 ): Promise<Partial<PodcastEpisode>> {
   try {
-    const hostVoice = resolveQwenAudioTtsVoice(normalizeProviderVoice(episode.voice));
-    const guestVoice = pairQwenAudioTtsVoice(hostVoice);
+    const wantDual = episode.format === "host-guest";
     const dialogue = parsePodcastDialogue(episode.script);
-    const dual =
+    const parsedDual =
       dialogue.some((item) => item.role === "host") &&
       dialogue.some((item) => item.role === "guest");
+    if (wantDual && !parsedDual && !shouldFallbackUnlabeledHostGuest(process.env.PODCAST_HOST_GUEST_UNLABELED_FALLBACK)) {
+      console.warn(JSON.stringify({ event: "podcast_tts_rejected_undual", episodeId: episode.id }));
+      return {
+        audioRenderStatus: "failed",
+        audioRenderMessage: UNDUAL_MESSAGE
+      };
+    }
+    const dual = wantDual && parsedDual;
+    const resolved = resolveEpisodeVoices(episode);
+    const hostVoice = resolveQwenAudioTtsVoice(resolved.host);
+    const guestVoice = resolveQwenAudioTtsVoice(resolved.guest);
     const turns = dual ? dialogue : [{ role: "host" as const, text: episode.script }];
 
     const sampleRate = QWEN_AUDIO_TTS_SAMPLE_RATE;
@@ -99,10 +114,22 @@ export async function renderEpisodeAudio(
       throw new Error("TTS returned no audio.");
     }
 
+    if (dual) {
+      console.warn(
+        JSON.stringify({
+          event: "podcast_tts_dual",
+          episodeId: episode.id,
+          turns: turns.length,
+          host: resolved.host,
+          guest: resolved.guest,
+          guestFromFallback: resolved.guestFromFallback
+        })
+      );
+    }
+
     return {
       audioUrl,
       durationSec,
-      voice: hostVoice,
       audioRenderStatus: "rendered",
       audioRenderMessage: dual ? "音频已渲染（主持 / 来宾双声）。" : "音频已渲染。",
       chapters: scalePodcastChapters(episode.chapters, episode.durationSec, durationSec),
@@ -146,6 +173,7 @@ export async function registerPodcastRoutes(
         ? payload.voice.trim()
         : state.systemConfig.voice.podcastVoice
     );
+    const guestVoice = clampPodcastGuestVoice(payload.guestVoice);
 
     if (!options.bailianChatClient) {
       return reply.code(503).send({ error: "播客脚本 LLM 未配置（缺少 DASHSCOPE_API_KEY），无法生成播客。" });
@@ -173,7 +201,7 @@ export async function registerPodcastRoutes(
       return reply.code(502).send({ error: `播客脚本生成失败：${message}` });
     }
 
-    const skeleton = buildEpisodeSkeleton(repository.getState(), scriptSource, voice);
+    const skeleton = buildEpisodeSkeleton(repository.getState(), scriptSource, voice, guestVoice);
     const episode: PodcastEpisode = {
       ...skeleton,
       id: episodeId,
@@ -324,16 +352,31 @@ export async function registerPodcastRoutes(
       if (incomingScript && incomingScript !== current.script) {
         return reply.code(409).send({ error: "稿已改动，请先确认后再合成。" });
       }
+      const wantDual = current.format === "host-guest";
+      const dialogue = parsePodcastDialogue(current.script);
+      const parsedDual =
+        dialogue.some((item) => item.role === "host") &&
+        dialogue.some((item) => item.role === "guest");
+      if (
+        wantDual &&
+        !parsedDual &&
+        !shouldFallbackUnlabeledHostGuest(process.env.PODCAST_HOST_GUEST_UNLABELED_FALLBACK)
+      ) {
+        console.warn(JSON.stringify({ event: "podcast_tts_rejected_undual", episodeId: id }));
+        return reply.code(409).send({ error: UNDUAL_MESSAGE });
+      }
+      const voicePatch = voicePatchFromBody(body);
+      const episodeToRender: PodcastEpisode = applyVoicePatch(current, voicePatch);
       if (!options.bailianPodcastAudioClient) {
         return reply.code(503).send({ error: "未配置 TTS 服务（缺少 DASHSCOPE_API_KEY），无法合成音频。脚本已保留。" });
       }
 
-      const episodeToRender = current;
       const audioPatch = await renderEpisodeAudio(episodeToRender, options.bailianPodcastAudioClient);
       return commitSynthesizePatch(repository, reply, writeOpts, {
         id,
         expectedScript: episodeToRender.script,
-        audioPatch
+        audioPatch,
+        voicePatch
       });
     }
 
@@ -367,11 +410,13 @@ export async function registerPodcastRoutes(
       return reply.code(503).send({ error: "未配置 TTS 服务（缺少 DASHSCOPE_API_KEY），无法合成音频。脚本已保留。" });
     }
 
-    const audioPatch = await renderEpisodeAudio(episodeToRender, options.bailianPodcastAudioClient);
+    const voicePatch = voicePatchFromBody(body);
+    const audioPatch = await renderEpisodeAudio(applyVoicePatch(episodeToRender, voicePatch), options.bailianPodcastAudioClient);
     return commitSynthesizePatch(repository, reply, writeOpts, {
       id,
       expectedScript: undefined,
       audioPatch,
+      voicePatch,
       scriptPatch: incomingScript
         ? { script: incomingScript, scriptReviewStatus: "用户确认" as const }
         : { scriptReviewStatus: "用户确认" as const }
@@ -409,6 +454,7 @@ async function commitSynthesizePatch(
     id: string;
     expectedScript?: string;
     audioPatch: Partial<PodcastEpisode>;
+    voicePatch?: Partial<Pick<PodcastEpisode, "voice" | "guestVoice">> & { clearGuestVoice?: boolean };
     scriptPatch?: Partial<Pick<PodcastEpisode, "script" | "scriptReviewStatus">>;
   }
 ) {
@@ -428,12 +474,18 @@ async function commitSynthesizePatch(
         failure = { code: 409, error: "稿已改动，请先确认后再合成。" };
         return null;
       }
-      const nextEpisode: PodcastEpisode = {
+      const merged: PodcastEpisode = {
         ...current,
         ...args.scriptPatch,
+        ...(args.voicePatch?.voice ? { voice: args.voicePatch.voice } : {}),
         ...args.audioPatch,
         status: "ready"
       };
+      const nextEpisode: PodcastEpisode = args.voicePatch?.clearGuestVoice
+        ? omitGuestVoice(merged)
+        : args.voicePatch?.guestVoice
+          ? { ...merged, guestVoice: args.voicePatch.guestVoice }
+          : merged;
       updated = nextEpisode;
       return replacePodcastEpisode(latest, nextEpisode);
     },
@@ -494,19 +546,60 @@ function resolveScriptSource(
 function buildEpisodeSkeleton(
   state: ProductState,
   scriptSource: PodcastScriptSource,
-  voice: string
+  voice: string,
+  guestVoice?: string
 ): PodcastEpisode {
   const format = scriptSource.format;
+  const options = { format, voice, guestVoice };
   if (scriptSource.kind === "search-brief") {
-    return generatePodcastEpisodeFromSearchBrief(state, scriptSource.brief.id, { format, voice }).episode;
+    return generatePodcastEpisodeFromSearchBrief(state, scriptSource.brief.id, options).episode;
   }
   if (scriptSource.kind === "theme") {
-    return generatePodcastEpisodeFromTheme(state, scriptSource.theme.id, { format, voice }).episode;
+    return generatePodcastEpisodeFromTheme(state, scriptSource.theme.id, options).episode;
   }
   if (scriptSource.kind === "knowledge-debt") {
-    return generatePodcastEpisodeFromKnowledgeDebt(state, scriptSource.debt.id, { format, voice }).episode;
+    return generatePodcastEpisodeFromKnowledgeDebt(state, scriptSource.debt.id, options).episode;
   }
-  return generatePodcastEpisode(state, scriptSource.note.id, { format, voice }).episode;
+  return generatePodcastEpisode(state, scriptSource.note.id, options).episode;
+}
+
+function voicePatchFromBody(body: Record<string, unknown>): {
+  voice?: string;
+  guestVoice?: string;
+  clearGuestVoice?: boolean;
+} {
+  const patch: { voice?: string; guestVoice?: string; clearGuestVoice?: boolean } = {};
+  if (typeof body.voice === "string" && body.voice.trim()) {
+    patch.voice = body.voice.trim();
+  }
+  if ("guestVoice" in body) {
+    const guest = clampPodcastGuestVoice(body.guestVoice);
+    if (guest) patch.guestVoice = guest;
+    else patch.clearGuestVoice = true;
+  }
+  return patch;
+}
+
+function applyVoicePatch(
+  episode: PodcastEpisode,
+  patch: { voice?: string; guestVoice?: string; clearGuestVoice?: boolean }
+): PodcastEpisode {
+  const next: PodcastEpisode = {
+    ...episode,
+    ...(patch.voice ? { voice: patch.voice } : {}),
+    ...(patch.guestVoice ? { guestVoice: patch.guestVoice } : {})
+  };
+  return patch.clearGuestVoice ? omitGuestVoice(next) : next;
+}
+
+function omitGuestVoice(episode: PodcastEpisode): PodcastEpisode {
+  const { guestVoice: _omit, ...rest } = episode;
+  return rest;
+}
+
+export function shouldFallbackUnlabeledHostGuest(raw: string | undefined): boolean {
+  const v = (raw ?? "").trim().toLowerCase();
+  return v === "true" || v === "1" || v === "yes" || v === "on";
 }
 
 function withPodcastCreatedEvents(state: ProductState, episode: PodcastEpisode): ProductState {

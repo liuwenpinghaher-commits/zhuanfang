@@ -41,5 +41,6 @@ describe("pairQwenAudioTtsVoice", () => {
     expect(pairQwenAudioTtsVoice("longanlingxin")).toBe("longanqian");
     expect(pairQwenAudioTtsVoice("longanqian")).toBe("longanlingxin");
     expect(pairQwenAudioTtsVoice("longanhuan")).toBe("longanqian");
+    expect(pairQwenAudioTtsVoice("longanyang")).toBe("longanlingxin");
   });
 });
