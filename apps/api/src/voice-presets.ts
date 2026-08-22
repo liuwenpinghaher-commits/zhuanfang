@@ -37,3 +37,14 @@ export function normalizeCosyVoiceId(raw: string | undefined | null, fallback = 
   if (aliased && PRESET_IDS.has(aliased)) return aliased;
   return PRESET_IDS.has(fallback) ? fallback : "longanlingxin";
 }
+
+/** token-plan qwen-audio-3.0-tts-plus currently speaks these; others 411. */
+const QWEN_AUDIO_TTS_VOICE_FALLBACKS: Record<string, string> = {
+  longanhuan: "longanlingxin",
+  longanyang: "longanqian"
+};
+
+export function resolveQwenAudioTtsVoice(raw: string | undefined | null): string {
+  const normalized = normalizeCosyVoiceId(raw);
+  return QWEN_AUDIO_TTS_VOICE_FALLBACKS[normalized] ?? normalized;
+}

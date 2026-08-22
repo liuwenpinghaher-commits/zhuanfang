@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { COSYVOICE_PRESET_VOICES, normalizeCosyVoiceId } from "./voice-presets";
+import { COSYVOICE_PRESET_VOICES, normalizeCosyVoiceId, resolveQwenAudioTtsVoice } from "./voice-presets";
 
 describe("normalizeCosyVoiceId", () => {
   it("keeps verified presets", () => {
@@ -21,5 +21,12 @@ describe("normalizeCosyVoiceId", () => {
     expect(normalizeCosyVoiceId("")).toBe("longanlingxin");
     expect(normalizeCosyVoiceId("not-a-real-voice")).toBe("longanlingxin");
     expect(normalizeCosyVoiceId(undefined, "longanyang")).toBe("longanyang");
+  });
+
+  it("maps qwen-audio TTS voices that 411 on token-plan to speaking voices", () => {
+    expect(resolveQwenAudioTtsVoice("longanhuan")).toBe("longanlingxin");
+    expect(resolveQwenAudioTtsVoice("longanyang")).toBe("longanqian");
+    expect(resolveQwenAudioTtsVoice("longanlingxin")).toBe("longanlingxin");
+    expect(resolveQwenAudioTtsVoice("longanqian")).toBe("longanqian");
   });
 });

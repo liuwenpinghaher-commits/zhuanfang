@@ -5,7 +5,7 @@ import { INTERVIEWER_CRAFT_RULES } from "../../../../../src/domain/interviewer-c
 import { buildAppliedPlaybookRulesBlock, buildBoundariesBlock, buildCorrectionsBlock } from "../../../../../src/domain/voice-instructions";
 import { sanitizeExternalMaterialList } from "../../../../../src/domain/utils";
 import { resolveRequestTimeoutMs } from "../../request-timeout";
-import { normalizeCosyVoiceId } from "../../voice-presets";
+import { normalizeCosyVoiceId, resolveQwenAudioTtsVoice } from "../../voice-presets";
 import { resolveBailianApiKey } from "../../runtime-secrets";
 import {
   synthesizeQwenAudioTts,
@@ -798,10 +798,11 @@ export function createBailianPodcastAudioClient(options: BailianPodcastAudioClie
       const timeoutMs = Math.min(180_000, Math.max(60_000, 45_000 + Math.ceil(text.length / 4) * 1000));
       const qwenAudio = isQwenAudioTtsModel(model);
       if (qwenAudio) {
+        const ttsVoice = resolveQwenAudioTtsVoice(voice);
         const rendered = await synthesizeQwenAudioTts({
           apiKey: options.apiKey,
           text,
-          voice,
+          voice: ttsVoice,
           model,
           wsUrl: options.wsUrl ?? BAILIAN_DEFAULT_TTS_WS_URL,
           sampleRate,

@@ -208,7 +208,7 @@ export function PodcastStudioView({
                 </option>
               ))}
             </datalist>
-            <span className="field-help">推荐使用已验证音色 longanhuan / longanyang；其它 id 会在服务端归一或可能合成失败。</span>
+            <span className="field-help">推荐龙安聆心（longanlingxin）或龙安谦（longanqian）。其它名字会在合成时换成能出声的音色。</span>
           </label>
         </div>
 
