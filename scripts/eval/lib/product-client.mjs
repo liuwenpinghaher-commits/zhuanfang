@@ -18,9 +18,9 @@ export function createProductClient({ apiBase, journal }) {
     log.calls.push({ method, path, status, kind, at: Date.now() });
   }
 
-  async function request(method, path, body, { write } = {}) {
+  async function request(method, path, body, { write, timeoutMs } = {}) {
     const url = `${apiBase}${path}`;
-    const init = { method, headers: headers(body !== undefined ? { "content-type": "application/json" } : {}), signal: AbortSignal.timeout(300000) };
+    const init = { method, headers: headers(body !== undefined ? { "content-type": "application/json" } : {}), signal: AbortSignal.timeout(timeoutMs ?? 300000) };
     if (body !== undefined) init.body = JSON.stringify(body);
     let res;
     try {
@@ -122,7 +122,7 @@ export function createProductClient({ apiBase, journal }) {
       let lastErr;
       for (let attempt = 1; attempt <= 4; attempt++) {
         try {
-          return await request("POST", `/api/interview-sessions/${sessionId}/end`, extra, { write: true });
+          return await request("POST", `/api/interview-sessions/${sessionId}/end`, extra, { write: true, timeoutMs: 520000 });
         } catch (err) {
           lastErr = err;
           const empty = /empty content|专访归档失败/i.test(String(err?.message ?? ""));

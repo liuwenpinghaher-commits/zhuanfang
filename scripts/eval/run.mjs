@@ -445,6 +445,19 @@ async function main() {
       } catch (err) {
         log(JSON.stringify({ event: "eval_voice_book_read_failed", id, error: String(err.message ?? err).slice(0, 160) }));
       }
+      if (scenario.endAfter) {
+        try {
+          const st = await client.getState();
+          const sid = (st.sessions ?? [])[0]?.id;
+          if (sid) {
+            log(JSON.stringify({ event: "eval_voice_end_start", id, sid }));
+            await client.endSession(sid);
+            log(JSON.stringify({ event: "eval_voice_end_ok", id, sid }));
+          }
+        } catch (err) {
+          log(JSON.stringify({ event: "eval_voice_end_failed", id, error: String(err.message ?? err).slice(0, 200) }));
+        }
+      }
       const quality = assessVoiceBook({ scenario, session, turns, voice: voiceResult });
       voiceResult.ok = Boolean(voiceResult.ok) && quality.pass;
       if (!voiceResult.ok) voiceFailed = true;

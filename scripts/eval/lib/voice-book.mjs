@@ -65,7 +65,17 @@ export function assessVoiceBook({ scenario, session, turns, voice }) {
     if (!/救火|授权/.test(joined)) notes.push("打断场里没有救火那句");
   }
 
-  const pass = !doubled && assistant.length >= 1 && !titleLooksLikeTestId(title) && echoOk && endpointOk && bargeOk && !thinHost;
+  let speechOk = true;
+  if (id === "VOICE-speech20") {
+    const need = Number(scenario?.maxUserTurns ?? 20);
+    const got = user.length;
+    speechOk = got >= Math.ceil(need * 0.7) && assistant.length >= 1 && !thinHost && !doubled;
+    if (got < need) notes.push(`讲稿 ${need} 轮，书里人的话只有 ${got} 轮`);
+    const thinLong = user.filter((t) => t.replace(/\s+/g, "").length < 80).length;
+    if (thinLong) notes.push(`有 ${thinLong} 轮识别后太短，长讲稿被切碎或听丢了`);
+  }
+
+  const pass = !doubled && assistant.length >= 1 && !titleLooksLikeTestId(title) && echoOk && endpointOk && bargeOk && speechOk && !thinHost;
   return {
     pass,
     doubled,

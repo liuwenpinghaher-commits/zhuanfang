@@ -11,6 +11,9 @@ EVAL_TIER=full EVAL_MODALITY=text EVAL_MAX_HOST_CALLS=180 node scripts/eval/run.
 
 # 语音：只在 demo 宿主机，显式打开
 EVAL_TIER=full EVAL_MODALITY=voice node scripts/eval/run.mjs
+
+# 二十轮长讲稿（每轮 ≥500 字，约一小时，只在 demo 宿主机）
+EVAL_VOICE_IDS=VOICE-speech20 bash /opt/zhuanfang/app/scripts/eval/run-voice-on-demo.sh
 ```
 
 ## 开通评测用户（一次性，demo 机）
