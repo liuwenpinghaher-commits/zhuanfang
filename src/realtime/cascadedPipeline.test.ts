@@ -1308,6 +1308,36 @@ describe("connectCascadedPipeline", () => {
     pipeline.close();
   });
 
+  it("回声待确认时再次开口，丢掉回声候选，听这一句", async () => {
+    vi.useFakeTimers();
+    asr.setExpressionState("concluding");
+    asr.setUserEnergyEvidence(false);
+    const quarantined: Array<{ text: string; source: string }> = [];
+    const opts = makeOpts({
+      decisionOpts: { finalStabilityMs: 0, echoWindowMs: 1_500, echoSimilarityThreshold: 0.8, minPauseMs: 200 },
+    });
+    opts.callbacks.onTranscriptQuarantined = (item) =>
+      quarantined.push({ text: item.text, source: item.source });
+    const pipeline = connectCascadedPipeline(opts);
+    await pipeline.startListening("你能讲一个具体的协作例子吗？");
+    vi.advanceTimersByTime(700);
+    asr.pushDelta("你能讲一个具体的协作例子吗？", true);
+    asr.pushSpeechStopped(1_000);
+    await Promise.resolve();
+    expect(quarantined).toHaveLength(1);
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+
+    asr.setUserEnergyEvidence(true);
+    asr.setRecentEnergy(0.01);
+    asr.setExpressionState("fluent");
+    asr.pushSpeechStarted();
+    asr.pushDelta("授权让我最难受的是那次救火", true);
+    asr.pushSpeechStopped(900);
+    await vi.waitFor(() => expect(sendUserTurn.fn).toHaveBeenCalledOnce());
+    expect(sendUserTurn.fn.mock.calls[0][0]).toContain("那次救火");
+    pipeline.close();
+  });
+
   it("Layer-1: 只有未定稿的转写、识别已判交卷时也要进书", async () => {
     asr.setExpressionState("fluent");
     asr.setRecentEnergy(0.01);

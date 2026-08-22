@@ -851,7 +851,12 @@ export function connectCascadedPipeline(
     // the barge-in check (state === "thinking" | "speaking") still fires.
     const didBargeIn = handleSpeechStarted();
     if (!didBargeIn) {
-      // Wasn't in thinking/speaking — just transition to listening normally.
+      if (activeReview?.source === "echo") {
+        resetTurn();
+        activeReview = null;
+        surfacedQuarantineKey = "";
+        callbacks.onUserTranscript("", false);
+      }
       setState("listening");
     } else {
       // Barge-in set state to "interrupted"; now move to listening
