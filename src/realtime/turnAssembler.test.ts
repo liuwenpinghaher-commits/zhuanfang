@@ -63,7 +63,7 @@ describe("turnAssembler", () => {
     expect(assembler.decide({ atMs: 1000 + 500 + 200, allowCommit: true }).action).toBe("commit");
   });
 
-  it("echo-guard golden: 窗内高相似但有用户能量证据时不 quarantine", () => {
+  it("echo-guard golden: 窗内像漏音的转写即使有能量也 quarantine", () => {
     const assembler = createTurnAssembler({
       stabilityWindowMs: 100,
       echoWindowMs: 800,
@@ -80,8 +80,8 @@ describe("turnAssembler", () => {
       atMs: 1200,
       hasUserEnergyEvidence: true
     });
-    expect(result.action).toBe("wait");
-    expect(assembler.decide({ atMs: 1400, allowCommit: true }).action).toBe("commit");
+    expect(result.action).toBe("quarantine");
+    expect(assembler.decide({ atMs: 1400, allowCommit: true }).action).toBe("quarantine");
   });
 
   it("beginLiveTts 在 speak 开始时就能判相似，不必等 endedAt", () => {
@@ -89,6 +89,21 @@ describe("turnAssembler", () => {
     assembler.beginLiveTts("你好，今天我们聊聊你的工作。", 0);
     expect(assembler.isSimilarToLiveTts("你好，今天我们聊聊你的工作。")).toBe(true);
     expect(assembler.isSimilarToLiveTts("等一下你听我说那次救火")).toBe(false);
+  });
+
+  it("半句漏音是当前句的前缀，也算相似", () => {
+    const assembler = createTurnAssembler({ similarityThreshold: 0.8, echoWindowMs: 1200 });
+    assembler.beginLiveTts("你能讲一个最近发生的具体例子吗？", 0);
+    expect(assembler.isSimilarToLiveTts("你能讲一个最近发生的具体例子", 100)).toBe(true);
+  });
+
+  it("上一句还在回声窗里时，下一句播放中的上一句漏音仍算相似", () => {
+    const assembler = createTurnAssembler({ similarityThreshold: 0.8, echoWindowMs: 1200 });
+    assembler.beginLiveTts("我理解。", 0);
+    assembler.noteTtsPlayback({ text: "我理解。", startedAtMs: 0, endedAtMs: 400 });
+    assembler.beginLiveTts("你继续说。", 400);
+    expect(assembler.isSimilarToLiveTts("我理解。", 500)).toBe(true);
+    expect(assembler.isSimilarToLiveTts("你继续说", 500)).toBe(true);
   });
 
   it("有用户能量和问答语境时保留极短但完整的回答", () => {

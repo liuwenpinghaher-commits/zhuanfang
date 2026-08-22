@@ -1,5 +1,4 @@
 /**
- * Take-floor: guest is grabbing a matter onto the floor, not greeting/echo/tone.
  * Completeness is a different question — do not call assessTurnCompleteness here.
  */
 
@@ -17,14 +16,31 @@ export function isTakeFloor(input: TakeFloorInput): boolean {
 }
 
 /**
- * Veto tokens that don't look like a submit (same ≤2 stripped-char bar as
- * turnAssembler). Not a min-length product rule and not a greeting wordlist.
+ * Ask whether the side track is putting a matter on the floor (or telling
+ * the host to stop and listen), vs greeting / backchannel / tone.
+ * Peeling decorations is not a greeting wordlist; leftover still has to be a matter.
  */
 export function isGrabbingMatter(transcript: string): boolean {
-  const stripped = transcript.replace(
+  let s = transcript.replace(
     /[\s，。！？、,.!?；;：:"“”'‘’（）()\u3000]/g,
     ""
   );
-  if (stripped.length <= 2) return false;
+  if (s.length <= 2) return false;
+  s = s.replace(/[啊呀呢吧吗嘛哈咯啦哦噢呃]+$/u, "");
+  s = collapseRepeatedStem(s);
+  if (s.length <= 2) return false;
+  if (/[你您]$/u.test(s) && s.slice(0, -1).length <= 2) s = s.slice(0, -1);
+  if (s.length <= 2) return false;
+  // Isolated short token is not yet a matter or a listen bid.
+  if (s.length <= 3) return false;
   return true;
+}
+
+function collapseRepeatedStem(s: string): string {
+  for (let n = 1; n <= Math.floor(s.length / 2); n += 1) {
+    if (s.length % n !== 0) continue;
+    const unit = s.slice(0, n);
+    if (unit.repeat(s.length / n) === s) return unit;
+  }
+  return s;
 }

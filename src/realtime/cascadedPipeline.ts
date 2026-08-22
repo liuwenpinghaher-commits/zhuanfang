@@ -13,7 +13,6 @@
 
 import type { ExpressionState, InteractionPreSignals } from "../domain/types";
 import { stripSpokenAsides, deriveSpeechProsody, type SpeechProsody } from "../domain/speech-text";
-import { decideCascadeTurn } from "./cascadeTurnDecision";
 import type { EndpointingMode } from "./pvadEndpointing";
 import { decideTurn } from "./turnEngine";
 import { assessTurnCompleteness, type Completeness } from "./turnCompleteness";
@@ -179,10 +178,7 @@ export interface ConnectCascadedPipelineOptions {
     minPauseMs?: number;
     /** Hard max wait before forced respond (ms). Default 8000. */
     maxWaitMs?: number;
-    /**
-     * Kept for config compatibility. Product barge is take-floor on the side track,
-     * not a 0ms+280ms always-stop timer.
-     */
+    /** Unused; callers may still pass systemConfig.voice.minBargeInMs. */
     minBargeInMs?: number;
     finalStabilityMs?: number;
     echoWindowMs?: number;
@@ -202,8 +198,7 @@ export interface ConnectCascadedPipelineOptions {
    */
   classifyEndpoint?: (transcript: string, signal: AbortSignal) => Promise<{ done: boolean; reason?: string }>;
   /**
-   * When true (real mic + AEC), listen stays hot during TTS. Half-duplex mute
-   * is fallback only: fake mic / AEC off / Worklet failed.
+   * When true, do not mute the mic during TTS.
    * After asr.start(), pipeline also reads asr.getEchoCancellationEnabled?.().
    */
   echoCancellationEnabled?: boolean;
@@ -401,18 +396,16 @@ export function connectCascadedPipeline(
     }, maxWaitMs);
   }
 
-  // ── Echo guard ────────────────────────────────────────────────────────────
-  // Half-duplex mute is fallback only (fake mic / AEC off). Real mic keeps ASR
-  // hot; take-floor on the side track decides whether to stop the host.
+  // Mute only when AEC is off (fake mic).
   let micSuppressed = false;
   let echoGuardTimer: ReturnType<typeof setTimeout> | null = null;
   const ECHO_GUARD_MS = 600;
   let halfDuplexMute = echoCancellationEnabledOpt !== true;
-  // Opening speak is still draining: keep speaking, no second-turn submit / auto-barge.
+  // Opening speak is still draining.
   let openingHold = false;
   let sideCommitted = "";
   let sidePartial = "";
-  let lastTakeFloorSide = "";
+  let lastTakeFloorKey = "";
 
   function usesHalfDuplexMute(): boolean {
     return halfDuplexMute;
@@ -426,7 +419,7 @@ export function connectCascadedPipeline(
   function clearSideTrack() {
     sideCommitted = "";
     sidePartial = "";
-    lastTakeFloorSide = "";
+    lastTakeFloorKey = "";
   }
   function updateSideTrack(text: string, isFinal: boolean) {
     if (isFinal) {
@@ -472,17 +465,22 @@ export function connectCascadedPipeline(
     }
   }
   function maybeTakeFloor(side: string) {
-    if (!side || side === lastTakeFloorSide) return;
-    lastTakeFloorSide = side;
-    // Opening hold sits above take-floor; auto-barge waits until the opening drain.
+    if (!side) return;
     if (openingHold) return;
     if (state !== "thinking" && state !== "speaking") return;
-    if (!isTakeFloor({
+    const hasUserEnergy = asr.hasRecentUserEnergyEvidence?.() ?? true;
+    const similarToLiveTts = turnAssembler.isSimilarToLiveTts(side);
+    const takingTheFloor = isGrabbingMatter(side);
+    const key = `${side}\0${hasUserEnergy}\0${similarToLiveTts}\0${takingTheFloor}`;
+    if (key === lastTakeFloorKey) return;
+    const take = isTakeFloor({
       transcript: side,
-      hasUserEnergy: asr.hasRecentUserEnergyEvidence?.() ?? true,
-      similarToLiveTts: turnAssembler.isSimilarToLiveTts(side),
-      takingTheFloor: isGrabbingMatter(side),
-    })) return;
+      hasUserEnergy,
+      similarToLiveTts,
+      takingTheFloor,
+    });
+    lastTakeFloorKey = key;
+    if (!take) return;
     if (performBarge()) setState("listening");
   }
   function performBarge(): boolean {
@@ -549,6 +547,15 @@ export function connectCascadedPipeline(
     if (state === "thinking" || state === "speaking") return;
 
     const transcript = (committedTranscript + partialTranscript).trim();
+    if (transcript && turnAssembler.isSimilarToLiveTts(transcript)) {
+      callbacks.onUserTranscript(transcript, false);
+      surfaceQuarantine({
+        text: transcript,
+        reason: "transcript matches live or recent TTS",
+        source: "echo",
+      });
+      return;
+    }
     const expressionState = asr.getExpressionState();
     // "concluding" is a strong prosodic/semantic cue that the utterance is
     // wrapping up — treat it as complete regardless of surface grammar analysis.
@@ -869,6 +876,7 @@ export function connectCascadedPipeline(
       hasUserEnergyEvidence: asr.hasRecentUserEnergyEvidence?.() ?? !speaking
     });
     if (assembled.action === "quarantine") {
+      callbacks.onUserTranscript(text, false);
       surfaceQuarantine({ text: assembled.transcript, reason: assembled.reason, source: "echo" });
       return;
     }
@@ -888,7 +896,6 @@ export function connectCascadedPipeline(
 
   function processSpeechStarted() {
     if (closed || micSuppressed) return; // half-duplex fallback: drop ASR while muted
-    // Keep speaking/thinking/openingHold: captions live on the side track, no listening flip.
     if (hostOccupyingFloor()) return;
     if (activeReview?.source === "echo") {
       resetTurn();

@@ -28,8 +28,8 @@ export function createTurnAssembler(_options: TurnAssemblerOptions = {}) {
   let hasUserEnergyEvidence = false;
   let quarantined: AssemblyDecision | null = null;
   let recentTts: { text: string; startedAtMs: number; endedAtMs: number } | null = null;
-  // Written at speak START so echo isolation works while tts.speak is still awaiting.
-  let liveTtsText = "";
+  // Speak-start text plus recently ended clauses; leak is often a half-sentence of an earlier clause.
+  let spokenClauses: Array<{ text: string; startedAtMs: number; endedAtMs: number | null }> = [];
 
   const transcript = () => `${committedFinals}${partial}`.trim();
   const wait = (reason: string, waitMs?: number): AssemblyDecision => ({
@@ -47,23 +47,34 @@ export function createTurnAssembler(_options: TurnAssemblerOptions = {}) {
     quarantined = null;
   }
 
+  function pruneSpokenClauses(atMs: number) {
+    spokenClauses = spokenClauses.filter((clause) =>
+      clause.endedAtMs === null || atMs <= clause.endedAtMs + echoWindowMs
+    );
+  }
+
+  function isSimilarToLiveTts(heard: string, atMs = Date.now()): boolean {
+    const text = heard.trim();
+    if (!text) return false;
+    pruneSpokenClauses(atMs);
+    for (const clause of spokenClauses) {
+      if (atMs < clause.startedAtMs) continue;
+      if (isEchoLikeness(text, clause.text, similarityThreshold)) return true;
+    }
+    return false;
+  }
+
   return {
     ingest(input: TranscriptInput): AssemblyDecision {
       const text = input.text.trim();
       if (!text) return wait("empty transcript");
       hasUserEnergyEvidence ||= input.hasUserEnergyEvidence;
-      if (
-        input.isFinal
-        && recentTts
-        && input.atMs >= recentTts.startedAtMs
-        && input.atMs <= recentTts.endedAtMs + echoWindowMs
-        && !input.hasUserEnergyEvidence
-        && textSimilarity(text, recentTts.text) >= similarityThreshold
-      ) {
+      // Speaker leak often has energy; likeness to live/recent TTS is enough to hold it back.
+      if (isSimilarToLiveTts(text, input.atMs)) {
         quarantined = {
           action: "quarantine",
           transcript: text,
-          reason: "transcript is highly similar to recent TTS without independent user energy"
+          reason: "transcript matches live or recent TTS"
         };
         return quarantined;
       }
@@ -99,19 +110,31 @@ export function createTurnAssembler(_options: TurnAssemblerOptions = {}) {
     },
     beginLiveTts(text: string, startedAtMs: number): void {
       const trimmed = text.trim();
-      liveTtsText = trimmed;
-      if (trimmed) {
-        recentTts = { text: trimmed, startedAtMs, endedAtMs: startedAtMs };
+      pruneSpokenClauses(startedAtMs);
+      for (const clause of spokenClauses) {
+        if (clause.endedAtMs === null) clause.endedAtMs = startedAtMs;
       }
+      if (!trimmed) return;
+      spokenClauses.push({ text: trimmed, startedAtMs, endedAtMs: null });
+      recentTts = { text: trimmed, startedAtMs, endedAtMs: startedAtMs };
     },
-    isSimilarToLiveTts(transcript: string): boolean {
-      if (!liveTtsText) return false;
-      return textSimilarity(transcript, liveTtsText) >= similarityThreshold;
-    },
+    isSimilarToLiveTts,
     noteTtsPlayback(input: { text: string; startedAtMs: number; endedAtMs: number }): void {
       const trimmed = input.text.trim();
       recentTts = { ...input, text: trimmed };
-      if (trimmed) liveTtsText = trimmed;
+      pruneSpokenClauses(input.endedAtMs);
+      const open = [...spokenClauses].reverse().find((clause) => clause.endedAtMs === null);
+      if (open) {
+        open.endedAtMs = input.endedAtMs;
+        return;
+      }
+      if (trimmed) {
+        spokenClauses.push({
+          text: trimmed,
+          startedAtMs: input.startedAtMs,
+          endedAtMs: input.endedAtMs
+        });
+      }
     },
     confirmQuarantined(text: string, atMs: number): void {
       reset();
@@ -122,6 +145,16 @@ export function createTurnAssembler(_options: TurnAssemblerOptions = {}) {
     markCommitted(): void { reset(); },
     reset
   };
+}
+
+function isEchoLikeness(heard: string, spoken: string, similarityThreshold: number) {
+  const a = normalize(heard);
+  const b = normalize(spoken);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (textSimilarity(heard, spoken) >= similarityThreshold) return true;
+  // Half-sentence leak is a prefix/infix of the spoken clause, not the other way around.
+  return a.length >= 2 && b.includes(a);
 }
 
 function textSimilarity(left: string, right: string) {
