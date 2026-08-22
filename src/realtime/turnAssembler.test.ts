@@ -62,7 +62,7 @@ describe("turnAssembler", () => {
     expect(assembler.decide({ atMs: 1000 + 500 + 200, allowCommit: true }).action).toBe("commit");
   });
 
-  it("echo-guard golden: 窗内高相似即使有能量也 quarantine", () => {
+  it("echo-guard golden: 窗内高相似但有用户能量证据时不 quarantine", () => {
     const assembler = createTurnAssembler({
       stabilityWindowMs: 100,
       echoWindowMs: 800,
@@ -79,7 +79,8 @@ describe("turnAssembler", () => {
       atMs: 1200,
       hasUserEnergyEvidence: true
     });
-    expect(result.action).toBe("quarantine");
+    expect(result.action).toBe("wait");
+    expect(assembler.decide({ atMs: 1400, allowCommit: true }).action).toBe("commit");
   });
 
   it("有用户能量和问答语境时保留极短但完整的回答", () => {

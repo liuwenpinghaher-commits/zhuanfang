@@ -393,7 +393,7 @@ export function connectCascadedPipeline(
       // feedback loop the echo guard exists to prevent.
       if (!closed && !micSuppressed && state !== "thinking" && state !== "speaking") {
         onDecision?.({ layer: 0, action: "respond", reason: "max-wait timer fired", transcript, silenceMs: maxWaitMs, expressionState });
-        requestStableCommit(true);
+        void doRespond(transcript);
       } else if (!closed && (micSuppressed || state === "thinking" || state === "speaking")) {
         // Phase-0: maxWait attempted but suppressed by half-duplex / active turn.
         callbacks.onLatency?.({ falseTriggerKind: "max_wait_suppressed" });
@@ -551,7 +551,7 @@ export function connectCascadedPipeline(
       } finally {
         if (classifyAbort?.signal === sig) classifyAbort = null;
       }
-      if (done) { requestStableCommit(true); }
+      if (done) { void doRespond(transcript); }
       else { armMaxWait(transcript, expressionState); }
       return;
     }
@@ -608,14 +608,14 @@ export function connectCascadedPipeline(
       } finally {
         if (classifyAbort?.signal === sig) classifyAbort = null;
       }
-      if (done) { requestStableCommit(true); }
+      if (done) { void doRespond(transcript); }
       else { armMaxWait(transcript, expressionState); }
       return;
     }
 
     // action === "respond"
     clearMaxWaitTimer();
-    requestStableCommit(true);
+    void doRespond(transcript);
   }
 
   // ── Core respond flow ──────────────────────────────────────────────────────
