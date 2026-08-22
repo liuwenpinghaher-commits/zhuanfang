@@ -193,6 +193,7 @@ describe("InterviewView", () => {
   });
 
   for (const [status, copy] of [
+    ["thinking", "正在想下一问"],
     ["reconnecting", "语音连接恢复中，请稍候"],
     ["degraded", "语音兼容模式"],
     ["exhausted", "语音连接未恢复，已保留本场文字专访"],

@@ -1,6 +1,7 @@
 export type VoiceUiStatus =
   | "idle"
   | "connecting"
+  | "thinking"
   | "listening"
   | "speaking"
   | "interrupted"

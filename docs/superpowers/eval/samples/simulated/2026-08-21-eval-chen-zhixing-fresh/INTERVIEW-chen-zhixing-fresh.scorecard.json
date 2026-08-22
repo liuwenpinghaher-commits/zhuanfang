@@ -39,18 +39,25 @@
       "memories": 17,
       "points": 6,
       "totalReviewed": 23,
+      "nearDupScope": "any two book assets with the same proposition, in-class or cross-class",
+      "pointsEvidenceAudit": "manual-only; audit-products.mjs does not inspect points.evidence",
       "defects": [
-        { "id": "M-goodhart-pair", "severity": "normal", "criterion": "near-dup", "note": "两条记忆都在讲：指标一当目标，团队就压缩数据分布、泛化归零" },
+        { "id": "M-goodhart-pair", "severity": "normal", "criterion": "near-dup", "note": "两条记忆都在讲：指标一当目标，团队就压缩数据分布、泛化归零（类内，新口径仍计）" },
         { "id": "P2-near-memory", "severity": "normal", "criterion": "cross-class-near-dup", "note": "观点与记忆互含「预训练本质是压缩」" },
         { "id": "M15-placeholder", "severity": "normal", "criterion": "placeholder", "note": "表述写「低于X%」，引文里是 80%" },
         { "id": "P2.2-missing-de", "severity": "mild", "criterion": "quote-drift", "note": "引文比原话少一个「的」，非捏造" }
       ],
       "defectRate": 0.174,
-      "defectRateNote": "4/23 strict ledger; quality is trend-only",
+      "defectRateNote": "4/23 after in-class+cross-class near-dup scope; Goodhart pair already counted; quality is trend-only",
       "hallucinatedPeopleOrNumbers": 0,
       "allEvidenceQuotesInTranscriptAfterNormalize": true,
       "unnormalizedExactSubstringMisses": 9,
       "ellipsisInQuotes": 5,
+      "ellipsisCountHistory": [
+        { "value": 2, "why": "first human pass undercounted ellipsis in quotes" },
+        { "value": 6, "why": "audit regex treated a lone period (e.g. 0.15) as ellipsis" },
+        { "value": 5, "why": "regex now counts …/⋯ or three-or-more dots only" }
+      ],
       "pipelineOnlyNotHumanQuality": true,
       "passThreshold": "defectRate <= 0.20"
     },

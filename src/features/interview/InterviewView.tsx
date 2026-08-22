@@ -284,6 +284,7 @@ export function InterviewView({
                 </div>
                 <div className="voice-status-label">
                   {voiceStatus === "connecting" && <><span className="status-dot connecting" />正在连接…</>}
+                  {voiceStatus === "thinking" && <><span className="status-dot connecting" />正在想下一问</>}
                   {voiceStatus === "listening" && <><span className="status-dot listening" />聆听中 · 说完稍等片刻</>}
                   {voiceStatus === "speaking" && <><span className="status-dot speaking" />AI 正在回应</>}
                   {voiceStatus === "interrupted" && <><span className="status-dot interrupted" />已打断</>}

@@ -303,6 +303,15 @@ describe("turns CAS persist", () => {
       expect(Date.now() - started).toBeLessThan(2000);
       const stored = repo.getState().sessions.find((item) => item.id === session.id)!;
       expect(stored.turns.find((turn) => turn.id === assistantTurnId)?.content).toBe("你最近这件事");
+
+      const writeStarted = Date.now();
+      const nextWrite = await Promise.race([
+        server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "daily" } }),
+        tick(2000).then(() => "timeout" as const)
+      ]);
+      expect(nextWrite).not.toBe("timeout");
+      expect((nextWrite as { statusCode: number }).statusCode).toBe(200);
+      expect(Date.now() - writeStarted).toBeLessThan(2000);
     } finally {
       await server.close();
     }

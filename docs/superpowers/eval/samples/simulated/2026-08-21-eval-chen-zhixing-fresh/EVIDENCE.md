@@ -33,3 +33,9 @@
 3. 用规范化后前 **48** 字做包含匹配
 
 线上回指（`memory-extraction-llm.ts`）和复算脚本（`scripts/eval/lib/audit-products.mjs`）必须跟这三条。`ellipsisInQuotes` 只计省略号，不计 `0.15` 这种小数点。
+
+本约定自 chen-fresh 批生效，覆盖后续全部批次（含林越）。前缀长度与归一化规则的任何变更，须双角色复审后才生效。
+
+book / hard / productAudit 字段由当次人工对照产物与逐字稿填写，不是评分脚本生成。`points.evidence` 尚未纳入复算工具，观点引文只人工抽查。
+
+近重：同一语义命题在任意两条书里资产中复现即计，不分跨类或类内。

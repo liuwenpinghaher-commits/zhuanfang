@@ -551,10 +551,24 @@ export function createProductApiClient(
       input: SendInterviewTurnRequest,
       handlers: {
         onDelta?: (text: string) => void;
+        onUserPersisted?: (session: InterviewSession) => void;
         signal?: AbortSignal;
       } = {}
-    ): Promise<InterviewSessionResponse & { assistantText?: string; prosody?: unknown }> {
-      const deadline = createDeadlineSignal(handlers.signal, interviewTurnTimeoutMs);
+    ): Promise<InterviewSessionResponse & { assistantText?: string; prosody?: unknown; aborted?: boolean; assistantTurnId?: string }> {
+      // Barge must not tear the SSE: timeout still bounds the socket; guest interrupt POSTs cancel.
+      const deadline = createDeadlineSignal(undefined, interviewTurnTimeoutMs);
+      let cancelPosted = false;
+      const postCancel = () => {
+        if (cancelPosted) return;
+        cancelPosted = true;
+        void requestJson(`/api/interview-sessions/${encodeURIComponent(sessionId)}/turns/cancel`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}"
+        }).catch(() => undefined);
+      };
+      if (handlers.signal?.aborted) postCancel();
+      else handlers.signal?.addEventListener("abort", postCancel, { once: true });
       try {
         const res = await authedFetch(`/api/interview-sessions/${encodeURIComponent(sessionId)}/turns/stream`, {
           method: "POST",
@@ -562,6 +576,9 @@ export function createProductApiClient(
           body: JSON.stringify(input),
           signal: deadline.signal
         });
+        if (res.status === 404 || res.status === 405) {
+          throw new ApiError(res.status, "voice_stream_unavailable");
+        }
         if (!res.ok) {
           const text = await res.text().catch(() => "");
           throw new ApiError(res.status, text || res.statusText);
@@ -570,8 +587,9 @@ export function createProductApiClient(
         const reader = res.body.getReader();
         const decoder = new TextDecoder("utf-8");
         let buffer = "";
-        let finalPayload: (InterviewSessionResponse & { assistantText?: string; prosody?: unknown }) | null = null;
+        let finalPayload: (InterviewSessionResponse & { assistantText?: string; prosody?: unknown; aborted?: boolean; assistantTurnId?: string }) | null = null;
         let streamError: string | null = null;
+        let accumulated = "";
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -589,7 +607,10 @@ export function createProductApiClient(
             if (!data) continue;
             let parsed: any;
             try { parsed = JSON.parse(data); } catch { continue; }
-            if (event === "delta" && typeof parsed.text === "string") {
+            if (event === "user_persisted" && parsed.session) {
+              handlers.onUserPersisted?.(parsed.session);
+            } else if (event === "delta" && typeof parsed.text === "string") {
+              accumulated += parsed.text;
               handlers.onDelta?.(parsed.text);
             } else if (event === "final") {
               finalPayload = {
@@ -599,12 +620,29 @@ export function createProductApiClient(
                 assistantText: parsed.assistantText,
                 prosody: parsed.prosody
               };
+            } else if (event === "aborted") {
+              finalPayload = {
+                session: parsed.session,
+                state: parsed.state,
+                assistantText: accumulated,
+                aborted: true,
+                assistantTurnId: parsed.assistantTurnId
+              };
             } else if (event === "error") {
               streamError = typeof parsed.error === "string" ? parsed.error : "stream error";
             }
           }
         }
         if (streamError) throw new Error(streamError);
+        if (finalPayload?.aborted) {
+          return {
+            ...finalPayload,
+            session: finalPayload.session,
+            state: finalPayload.state ? normalizeProductState(finalPayload.state) : finalPayload.state,
+            assistantText: finalPayload.assistantText ?? accumulated,
+            aborted: true
+          };
+        }
         if (!finalPayload?.session || !finalPayload.state) {
           throw new Error("Interview turn stream ended without final payload.");
         }
@@ -619,8 +657,18 @@ export function createProductApiClient(
         }
         throw error;
       } finally {
+        handlers.signal?.removeEventListener("abort", postCancel);
         deadline.dispose();
       }
+    },
+
+    async cancelInterviewTurn(sessionId: string): Promise<{ ok: boolean }> {
+      const response = (await requestJson(`/api/interview-sessions/${encodeURIComponent(sessionId)}/turns/cancel`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}"
+      })) as { ok: boolean };
+      return { ok: response.ok === true };
     },
 
 

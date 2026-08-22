@@ -127,9 +127,11 @@ export interface ProductApiClient {
     input: SendInterviewTurnRequest,
     handlers?: {
       onDelta?: (text: string) => void;
+      onUserPersisted?: (session: InterviewSession) => void;
       signal?: AbortSignal;
     }
-  ): Promise<InterviewSessionResponse & { assistantText?: string; prosody?: unknown }>;
+  ): Promise<InterviewSessionResponse & { assistantText?: string; prosody?: unknown; aborted?: boolean; assistantTurnId?: string }>;
+  cancelInterviewTurn(sessionId: string): Promise<{ ok: boolean }>;
   recordInterviewTurn(
     sessionId: string,
     input: {

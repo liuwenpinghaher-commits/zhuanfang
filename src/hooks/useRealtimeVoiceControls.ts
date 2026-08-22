@@ -9,6 +9,7 @@ import {
   productApiClient,
   type RealtimeVoiceSessionResponse
 } from "../api/productApi";
+import { ApiError } from "../api/productApi.types";
 import {
   appendAssistantTranscriptFinal,
   buildRealtimeVoiceInstructions,
@@ -337,14 +338,11 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
             // Hold the sink so finishInterview() can drain its host-audio PCM tap.
             ttsSinkRef.current = tts;
 
-            // sendUserTurn: POST to /api/interview-sessions/:id/turns, return assistantText
+            // sendUserTurn: JSON fallback if stream is missing (404/405 only).
             const sendUserTurn = async (text: string, signal: AbortSignal) => {
               if (!interviewId || !voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) {
                 return { assistantText: "" };
               }
-              // P0-D: forward the pipeline's barge-in signal so an interrupted turn
-              // aborts the server LLM call rather than running to completion (which
-              // would overwrite the user's newly-started turn and waste budget).
               const r = await productApiClient.sendInterviewTurn(interviewId, { content: text }, signal);
               if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) {
                 return { assistantText: "" };
@@ -354,9 +352,48 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
               setApiPersistenceEnabled(true);
               if (r.preSignals) cascadePipelineRef.current?.updatePreSignals(r.preSignals);
               const lastTurn = r.session.turns.at(-1);
-              // The server already stripped （…）asides from content and distilled the manner into
-              // turn.prosody — forward it so the voice keeps its emotion.
               return { assistantText: lastTurn?.content ?? "", prosody: lastTurn?.prosody };
+            };
+
+            const sendUserTurnStream = async (
+              text: string,
+              signal: AbortSignal,
+              onDelta: (chunk: string) => void
+            ) => {
+              if (!interviewId || !voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) {
+                return { assistantText: "" };
+              }
+              try {
+                const r = await productApiClient.sendInterviewTurnStream(interviewId, { content: text }, {
+                  signal,
+                  onDelta,
+                  onUserPersisted: (next) => {
+                    if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
+                    setSession(next);
+                    setApiPersistenceEnabled(true);
+                  }
+                });
+                if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) {
+                  return { assistantText: r.assistantText ?? "" };
+                }
+                if (r.session) setSession(r.session);
+                if (r.state) {
+                  adoptServerState(r.state);
+                  setApiPersistenceEnabled(true);
+                }
+                if (r.preSignals) cascadePipelineRef.current?.updatePreSignals(r.preSignals);
+                const lastTurn = r.session?.turns.at(-1);
+                return {
+                  assistantText: r.assistantText ?? lastTurn?.content ?? "",
+                  ...(lastTurn?.prosody ? { prosody: lastTurn.prosody } : {})
+                };
+              } catch (error) {
+                if (error instanceof ApiError && (error.status === 404 || error.status === 405)) {
+                  console.warn(JSON.stringify({ event: "voice_stream_fallback", status: error.status }));
+                  return sendUserTurn(text, signal);
+                }
+                throw error;
+              }
             };
 
             const preSignals = session?.interactionPreSignals ?? null;
@@ -365,6 +402,7 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
               asr,
               tts,
               sendUserTurn,
+              sendUserTurnStream,
               preSignals,
               callbacks: {
                 onStateChange: (s) => {
@@ -372,7 +410,7 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
                   if (s === "listening" || s === "transcribing") {
                     setVoiceStatus(vadCapability.supported ? "listening" : "degraded");
                   }
-                  else if (s === "thinking") setVoiceStatus("connecting");
+                  else if (s === "thinking") setVoiceStatus("thinking");
                   else if (s === "speaking") setVoiceStatus("speaking");
                   else if (s === "interrupted") setVoiceStatus("interrupted");
                   else if (s === "idle") setVoiceStatus("idle");

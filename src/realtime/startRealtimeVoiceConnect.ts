@@ -38,7 +38,7 @@ export interface StartRealtimeVoiceConnectDeps {
   ) => void;
   setLivekitVoiceSession: (s: LivekitVoiceSession | null) => void;
   setRecording: (v: boolean) => void;
-  setVoiceStatus: (s: "idle" | "connecting" | "listening" | "speaking" | "interrupted") => void;
+  setVoiceStatus: (s: "idle" | "connecting" | "thinking" | "listening" | "speaking" | "interrupted") => void;
   setLiveUserTranscript: (t: string) => void;
   setAudioLevel: (n: number) => void;
   setSession: (updater: InterviewSession | null | ((prev: InterviewSession | null) => InterviewSession | null)) => void;
@@ -179,14 +179,16 @@ export async function startRealtimeVoiceConnect(deps: StartRealtimeVoiceConnectD
               { content: text },
               { signal, onDelta }
             );
-            deps.setSession(r.session);
-            deps.adoptServerState(r.state);
-            deps.setApiPersistenceEnabled(true);
+            if (r.session) deps.setSession(r.session);
+            if (r.state) {
+              deps.adoptServerState(r.state);
+              deps.setApiPersistenceEnabled(true);
+            }
             if (r.preSignals) deps.cascadePipelineRef.current?.updatePreSignals(r.preSignals);
-            const lastTurn = r.session.turns.at(-1);
+            const lastTurn = r.session?.turns.at(-1);
             return {
-              assistantText: (r as { assistantText?: string }).assistantText ?? lastTurn?.content ?? "",
-              prosody: ((r as { prosody?: unknown }).prosody ?? lastTurn?.prosody) as any
+              assistantText: r.assistantText ?? lastTurn?.content ?? "",
+              ...(lastTurn?.prosody ? { prosody: lastTurn.prosody } : {})
             };
           }
         : undefined;
@@ -204,7 +206,7 @@ export async function startRealtimeVoiceConnect(deps: StartRealtimeVoiceConnectD
         callbacks: {
           onStateChange: (s) => {
             if (s === "listening" || s === "transcribing") deps.setVoiceStatus("listening");
-            else if (s === "thinking") deps.setVoiceStatus("connecting");
+            else if (s === "thinking") deps.setVoiceStatus("thinking");
             else if (s === "speaking") deps.setVoiceStatus("speaking");
             else if (s === "interrupted") deps.setVoiceStatus("interrupted");
             else if (s === "idle") deps.setVoiceStatus("idle");

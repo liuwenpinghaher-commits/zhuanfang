@@ -471,7 +471,7 @@ export async function handleTurnsStreamRequest(
   const writeEvent = (event: string, data: unknown) => {
     reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
-  writeEvent("user_persisted", { userTurnId: userPersist.userTurnId });
+  writeEvent("user_persisted", { userTurnId: userPersist.userTurnId, session: userPersist.session });
 
   let clientAborted = false;
   const onAbort = () => {
@@ -480,8 +480,16 @@ export async function handleTurnsStreamRequest(
   };
   request.raw.once("aborted", onAbort);
 
-  const finishAborted = async (assistantTurnId?: string) => {
-    writeEvent("aborted", assistantTurnId ? { assistantTurnId } : {});
+  const finishAborted = async (opts?: {
+    assistantTurnId?: string;
+    session?: InterviewSession;
+    state?: ProductState;
+  }) => {
+    writeEvent("aborted", {
+      ...(opts?.assistantTurnId ? { assistantTurnId: opts.assistantTurnId } : {}),
+      ...(opts?.session ? { session: opts.session } : {}),
+      ...(opts?.state ? { state: opts.state } : {})
+    });
     reply.raw.end();
   };
 
@@ -550,7 +558,10 @@ export async function handleTurnsStreamRequest(
       const assistantTurnId = persisted
         ? [...persisted.session.turns].reverse().find((turn) => turn.role === "assistant")?.id
         : undefined;
-      await finishAborted(assistantTurnId);
+      await finishAborted({
+        assistantTurnId,
+        ...(persisted ? { session: persisted.session, state: persisted.state } : {})
+      });
       return;
     }
 

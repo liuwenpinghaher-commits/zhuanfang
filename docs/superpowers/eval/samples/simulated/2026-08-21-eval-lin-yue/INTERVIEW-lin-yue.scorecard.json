@@ -42,14 +42,17 @@
       "memories": 14,
       "points": 6,
       "totalReviewed": 20,
+      "nearDupScope": "any two book assets with the same proposition, in-class or cross-class",
+      "pointsEvidenceAudit": "manual-only; audit-products.mjs does not inspect points.evidence",
       "defects": [
         { "id": "M09-quote-splice", "severity": "normal", "criterion": "quote-not-contiguous", "note": "引文把「兜住试错」和「防弹衣」两句拼在一起，中间那句创业赌注被掐掉，规范化后前 48 字跨过拼缝，对不上原文连续片段" },
         { "id": "P3-near-M04", "severity": "normal", "criterion": "cross-class-near-dup", "note": "观点「CEO 下场救火是遮羞布」与记忆 M04 同义" },
         { "id": "P5-near-M09", "severity": "normal", "criterion": "cross-class-near-dup", "note": "观点「底层兜住试错」与记忆 M09 同义" },
-        { "id": "P1-near-M01", "severity": "mild", "criterion": "cross-class-near-dup", "note": "观点「赌趋势、守逻辑」与记忆 M01 同义" }
+        { "id": "P1-near-M01", "severity": "mild", "criterion": "cross-class-near-dup", "note": "观点「赌趋势、守逻辑」与记忆 M01 同义" },
+        { "id": "M03-near-M13", "severity": "normal", "criterion": "near-dup", "note": "两条记忆都在讲：60 人坎要用机制替代人肉救火（类内同质，新口径计入）" }
       ],
-      "defectRate": 0.2,
-      "defectRateNote": "4/20 strict ledger; quality is trend-only",
+      "defectRate": 0.25,
+      "defectRateNote": "5/20 after in-class+cross-class near-dup scope; quality gate fail, pipeline evidence unchanged",
       "hallucinatedPeopleOrNumbers": 0,
       "allEvidenceQuotesInTranscriptAfterNormalize": false,
       "normalizedMisses": 1,
