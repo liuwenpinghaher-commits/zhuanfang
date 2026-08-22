@@ -361,6 +361,12 @@ export function connectCascadedPipeline(
         clearTimeout(stableCommitTimer);
         stableCommitTimer = null;
       }
+      console.warn(JSON.stringify({
+        event: "cascade_commit",
+        n: decision.transcript.length,
+        halfDuplex: halfDuplexMute,
+        state
+      }));
       void doRespond(decision.transcript);
       return;
     }

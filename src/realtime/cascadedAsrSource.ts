@@ -514,6 +514,9 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
       pcmTap,
       contextState: audioCtx.state,
       sampleRate: audioCtx.sampleRate,
+      echoCancellationEnabled,
+      echoCancellation: settings?.echoCancellation ?? null,
+      hasDeviceId: Boolean(settings?.deviceId),
     }));
   }
 

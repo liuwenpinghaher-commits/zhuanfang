@@ -368,8 +368,14 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
               onDelta: (chunk: string) => void
             ) => {
               if (!interviewId || !voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) {
+                console.warn(JSON.stringify({
+                  event: "voice_turn_skipped",
+                  hasInterview: Boolean(interviewId),
+                  epochCurrent: voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)
+                }));
                 return { assistantText: "" };
               }
+              console.warn(JSON.stringify({ event: "voice_turn_send", n: text.length }));
               try {
                 const r = await productApiClient.sendInterviewTurnStream(interviewId, { content: text }, {
                   signal,
