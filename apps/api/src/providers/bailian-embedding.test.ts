@@ -91,7 +91,7 @@ describe("createBailianEmbeddingClient", () => {
     );
     const client = createBailianEmbeddingClient({ apiKey: "k", fetchImpl });
     await client!.embed(["授权"]);
-    const url = String(fetchImpl.mock.calls[0][0]);
+    const url = String((fetchImpl.mock.calls[0] as unknown as [string])[0]);
     expect(url).toBe("https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings");
     expect(url).not.toMatch(/token-plan/);
   });
