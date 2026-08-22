@@ -439,6 +439,7 @@ export interface AuditEvent {
     | "search_brief_created"
     | "search_brief_asset_created"
     | "podcast_episode_created"
+    | "podcast_script_confirmed"
     | "reference_material_imported"
     | "corpus_import_analyzed"
     | "interview_feedback_submitted"

@@ -290,6 +290,7 @@ export default function App() {
   const [podcastActiveEpisodeId, setPodcastActiveEpisodeId] = useState<string | null>(null);
   const [podcastGenerating, setPodcastGenerating] = useState(false);
   const [podcastSynthesizing, setPodcastSynthesizing] = useState(false);
+  const [podcastConfirming, setPodcastConfirming] = useState(false);
   const [podcastDeletingId, setPodcastDeletingId] = useState<string | null>(null);
   const [corpusMediaType, setCorpusMediaType] = useState<CorpusImportInput["mediaType"]>("text");
   const [corpusTitle, setCorpusTitle] = useState("优秀专访样本");
@@ -421,6 +422,21 @@ export default function App() {
   useEffect(() => {
     saveProductState(productState);
   }, [productState]);
+
+  const podcastViewEnteredRef = useRef(false);
+  useEffect(() => {
+    if (view !== "podcast") {
+      podcastViewEnteredRef.current = false;
+      return;
+    }
+    if (podcastViewEnteredRef.current) return;
+    podcastViewEnteredRef.current = true;
+    if (podcastActiveEpisodeId) return;
+    const pending = productState.podcastEpisodes.find((item) => item.scriptReviewStatus === "待确认");
+    if (!pending) return;
+    setPodcastActiveEpisodeId(pending.id);
+    setPodcastEditingScript(pending.script);
+  }, [view, podcastActiveEpisodeId, productState.podcastEpisodes]);
 
   const productStateRef = useRef(productState);
   productStateRef.current = productState;
@@ -1210,28 +1226,79 @@ export default function App() {
     }
   }
 
-  async function synthesizePodcastSpeech(episodeId: string) {
+  async function confirmPodcastScript(episodeId: string): Promise<boolean> {
+    const targetId = episodeId || podcastActiveEpisodeId || "";
+    const episode = productState.podcastEpisodes.find((ep) => ep.id === targetId);
+    if (!episode || podcastConfirming) {
+      return false;
+    }
+    const scriptToConfirm =
+      targetId === podcastActiveEpisodeId ? podcastEditingScript : episode.script;
+    if (!scriptToConfirm.trim()) {
+      setNotice(buildNotice("warning", "口播稿不能为空", "先写几句再确认。"));
+      return false;
+    }
+
+    setPodcastConfirming(true);
+    try {
+      const res = await productApiClient.confirmPodcastScript(targetId, scriptToConfirm);
+      adoptServerState(res.state);
+      setApiPersistenceEnabled(true);
+      setPodcastEditingScript(res.episode.script);
+      setPodcastActiveEpisodeId(targetId);
+      setNotice(buildNotice("success", "口播稿已确认", `「${res.episode.title}」已定稿，可以稍后合成。`));
+      return true;
+    } catch (err) {
+      const conflict = err instanceof ApiError && (err.status === 409 || err.status === 422 || err.status === 404);
+      if (isNetworkError(err)) {
+        setApiPersistenceEnabled(false);
+      }
+      setNotice(
+        buildNotice(
+          "warning",
+          conflict ? "操作未生效" : "确认口播稿失败",
+          conflict ? "这篇稿的状态已变化，请刷新后再试。" : "确认口播稿需要后端在线。"
+        )
+      );
+      return false;
+    } finally {
+      setPodcastConfirming(false);
+    }
+  }
+
+  async function confirmAndSynthesizePodcast(episodeId: string) {
+    const confirmed = await confirmPodcastScript(episodeId);
+    if (!confirmed) return;
+    await synthesizePodcastSpeech(episodeId, { alreadyConfirmed: true });
+  }
+
+  async function synthesizePodcastSpeech(episodeId: string, opts?: { alreadyConfirmed?: boolean }) {
     const targetId = episodeId || podcastActiveEpisodeId || "";
     const episode = productState.podcastEpisodes.find((ep) => ep.id === targetId);
     if (!episode || podcastSynthesizing) {
       return;
     }
 
-    // Always synthesize the active draft episode — never assume list[0].
-    const scriptToSynthesize =
-      targetId === podcastActiveEpisodeId && podcastEditingScript.trim()
-        ? podcastEditingScript
-        : episode.script;
+    const dirty = targetId === podcastActiveEpisodeId && podcastEditingScript !== episode.script;
+    if (!opts?.alreadyConfirmed && (episode.scriptReviewStatus !== "用户确认" || dirty)) {
+      setNotice(buildNotice("warning", "请先确认口播稿", "确认之后才会合成语音。"));
+      return;
+    }
 
     setPodcastSynthesizing(true);
     try {
-      const { state: synthState } = await productApiClient.synthesizePodcastEpisode(targetId, scriptToSynthesize);
+      const { state: synthState } = await productApiClient.synthesizePodcastEpisode(targetId);
       adoptServerState(synthState);
       setApiPersistenceEnabled(true);
-      setPodcastEditingScript("");
       setPodcastActiveEpisodeId(targetId);
       setNotice(buildNotice("success", "语音合成完成", `播客「${episode.title}」音频已渲染。`));
     } catch (err) {
+      if (err instanceof ApiError && err.body && typeof err.body === "object" && "state" in err.body) {
+        const bodyState = (err.body as { state?: unknown }).state;
+        if (bodyState) {
+          adoptServerState(normalizeProductState(bodyState));
+        }
+      }
       const message = err instanceof Error && err.message ? err.message : "TTS 请求失败。";
       setNotice(buildNotice("danger", "语音合成失败", `${message}（脚本已保留，可重试。）`));
     } finally {
@@ -1995,6 +2062,7 @@ export default function App() {
             activeEpisodeId={podcastActiveEpisodeId}
             generating={podcastGenerating}
             synthesizing={podcastSynthesizing}
+            confirming={podcastConfirming}
             deletingEpisodeId={podcastDeletingId}
             voices={voices}
             onNoteId={setPodcastNoteId}
@@ -2005,6 +2073,8 @@ export default function App() {
             onEditingScript={setPodcastEditingScript}
             onActiveEpisodeId={setPodcastActiveEpisodeId}
             onGenerateScript={generatePodcastScript}
+            onConfirmScript={(id) => void confirmPodcastScript(id)}
+            onConfirmAndSynthesize={(id) => void confirmAndSynthesizePodcast(id)}
             onSynthesizeSpeech={synthesizePodcastSpeech}
             onDeleteEpisode={removePodcastEpisode}
             onSaveDefaultVoice={saveDefaultPodcastVoice}

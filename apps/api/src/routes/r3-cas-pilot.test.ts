@@ -237,6 +237,12 @@ describe("R3 试点路由 CAS 换轨(全栈)", () => {
     expect(isWriteGateExempt("POST", "/api/chat")).toBe(true);
     // 同前缀 /end 仍整段持锁（宽事务）。/turns 已豁免，终写走 CAS。
     expect(isWriteGateExempt("POST", "/api/interview-sessions/s1/end")).toBe(false);
+    expect(isWriteGateExempt("POST", "/api/podcast/episodes/x/confirm")).toBe(true);
+    expect(isWriteGateExempt("POST", "/api/podcast/episodes/x/synthesize")).toBe(true);
+    expect(isWriteGateExempt("POST", "/api/podcast/episodes")).toBe(true);
+    expect(isWriteGateExempt("DELETE", "/api/podcast/episodes/x")).toBe(true);
+    expect(isWriteGateExempt("POST", "/api/podcast/episodes/x/confirm/extra")).toBe(false);
+    expect(isWriteGateExempt("POST", "/api/memory-candidates/x/approve")).toBe(false);
   });
 
   it("D3 场景:长持锁写在途——试点 handler 不排队(422 立即返回),有效写经写门排后、两笔都不丢", async () => {

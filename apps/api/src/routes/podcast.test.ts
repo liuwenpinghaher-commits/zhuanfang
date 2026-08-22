@@ -163,6 +163,71 @@ describe("POST /api/podcast/episodes", () => {
   });
 });
 
+describe("POST /api/podcast/episodes/:id/confirm", () => {
+  it("confirms without calling TTS and does not rewrite audio when script is unchanged", async () => {
+    let ttsCalls = 0;
+    const fakeTts = {
+      synthesize: async () => {
+        ttsCalls += 1;
+        return { audioUrl: "https://example.com/should-not-run.mp3", durationSec: 120, voice: "longyuan_v3" };
+      }
+    };
+    const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
+      bailianChatClient: createFakeChatClient(),
+      bailianPodcastAudioClient: fakeTts as never
+    });
+    const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
+    const createRes = await server.inject({
+      method: "POST",
+      url: "/api/podcast/episodes",
+      payload: { noteId: state.notes[0]?.id, format: "solo", voice: "longyuan_v3" }
+    });
+    expect(createRes.statusCode).toBe(200);
+    const created = createRes.json().episode;
+    const decisionsBefore = createRes.json().state.decisions;
+    const res = await server.inject({
+      method: "POST",
+      url: `/api/podcast/episodes/${created.id}/confirm`,
+      payload: { script: created.script }
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().episode.scriptReviewStatus).toBe("用户确认");
+    expect(res.json().episode.audioRenderStatus).toBe("pending");
+    expect(ttsCalls).toBe(0);
+    expect(res.json().state.decisions).toEqual(decisionsBefore);
+    await server.close();
+  });
+
+  it("returns 404 for a missing episode and 422 for an empty script without bumping revision", async () => {
+    const server = buildApiServer({ bailianChatClient: createFakeChatClient() });
+    const missing = await server.inject({
+      method: "POST",
+      url: "/api/podcast/episodes/does-not-exist/confirm"
+    });
+    expect(missing.statusCode).toBe(404);
+
+    const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
+    const createRes = await server.inject({
+      method: "POST",
+      url: "/api/podcast/episodes",
+      payload: { noteId: state.notes[0]?.id, format: "solo", voice: "longyuan_v3" }
+    });
+    const episodeId = createRes.json().episode.id;
+    const revision = createRes.json().state.revision;
+    const empty = await server.inject({
+      method: "POST",
+      url: `/api/podcast/episodes/${episodeId}/confirm`,
+      payload: { script: "   " }
+    });
+    expect(empty.statusCode).toBe(422);
+    const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
+    expect(after.revision).toBe(revision);
+    expect(after.podcastEpisodes.find((e: { id: string }) => e.id === episodeId)?.scriptReviewStatus).toBe("待确认");
+    await server.close();
+  });
+});
+
 describe("POST /api/podcast/episodes/:id/synthesize", () => {
   it("returns 404 when episode does not exist", async () => {
     const server = buildApiServer({
@@ -176,34 +241,83 @@ describe("POST /api/podcast/episodes/:id/synthesize", () => {
     await server.close();
   });
 
-  it("no TTS client → 503; caller-supplied script is persisted before failing", async () => {
-    const server = buildApiServer({
-      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" }, bailianChatClient: createFakeChatClient() }); // no TTS
-    // First create an episode (creation succeeds with audioRenderStatus=pending)
-    const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
-    const noteId = state.notes[0]?.id;
-    const createRes = await server.inject({
-      method: "POST",
-      url: "/api/podcast/episodes",
-      payload: { noteId, format: "solo", voice: "longyuan_v3" }
-    });
-    expect(createRes.statusCode).toBe(200);
-    const episodeId = createRes.json().episode.id;
+  it("flag true/unset: pending + body.script → 409, script unchanged, TTS not called", async () => {
+    let ttsCalls = 0;
+    const fakeTts = {
+      synthesize: async () => {
+        ttsCalls += 1;
+        return { audioUrl: "https://example.com/synth.mp3", durationSec: 180, voice: "longyuan_v3" };
+      }
+    };
+    const prev = process.env.PODCAST_SYNTHESIZE_REQUIRES_CONFIRM;
+    delete process.env.PODCAST_SYNTHESIZE_REQUIRES_CONFIRM;
+    try {
+      const server = buildApiServer({
+        env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
+        bailianChatClient: createFakeChatClient(),
+        bailianPodcastAudioClient: fakeTts as never
+      });
+      const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      const createRes = await server.inject({
+        method: "POST",
+        url: "/api/podcast/episodes",
+        payload: { noteId: state.notes[0]?.id, format: "solo", voice: "longyuan_v3" }
+      });
+      expect(createRes.statusCode).toBe(200);
+      const created = createRes.json().episode;
+      const editedScript = "用户编辑后的脚本，正文足够长可用于合成。";
+      const res = await server.inject({
+        method: "POST",
+        url: `/api/podcast/episodes/${created.id}/synthesize`,
+        payload: { script: editedScript }
+      });
+      expect(res.statusCode).toBe(409);
+      expect(res.json().error).toContain("尚未确认");
+      expect(ttsCalls).toBe(0);
+      const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      const persisted = after.podcastEpisodes.find((e: { id: string }) => e.id === created.id);
+      expect(persisted?.script).toBe(created.script);
+      expect(persisted?.scriptReviewStatus).toBe("待确认");
+      await server.close();
+    } finally {
+      if (prev === undefined) delete process.env.PODCAST_SYNTHESIZE_REQUIRES_CONFIRM;
+      else process.env.PODCAST_SYNTHESIZE_REQUIRES_CONFIRM = prev;
+    }
+  });
 
-    // Now synthesize without a TTS client, carrying an edited script
-    const editedScript = "用户编辑后的脚本，正文足够长可用于合成。";
-    const res = await server.inject({
-      method: "POST",
-      url: `/api/podcast/episodes/${episodeId}/synthesize`,
-      payload: { script: editedScript }
-    });
-    expect(res.statusCode).toBe(503);
-    expect(res.json().error).toContain("未配置 TTS");
-    // 带来的脚本编辑先于失败被持久化（不丢内容）
-    const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
-    const persisted = after.podcastEpisodes.find((e: any) => e.id === episodeId);
-    expect(persisted?.script).toBe(editedScript);
-    await server.close();
+  it("flag false: pending + body.script writes confirmed script; no TTS → 503 and script kept", async () => {
+    const prev = process.env.PODCAST_SYNTHESIZE_REQUIRES_CONFIRM;
+    process.env.PODCAST_SYNTHESIZE_REQUIRES_CONFIRM = "false";
+    try {
+      const server = buildApiServer({
+        env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
+        bailianChatClient: createFakeChatClient()
+      });
+      const state = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      const createRes = await server.inject({
+        method: "POST",
+        url: "/api/podcast/episodes",
+        payload: { noteId: state.notes[0]?.id, format: "solo", voice: "longyuan_v3" }
+      });
+      expect(createRes.statusCode).toBe(200);
+      const episodeId = createRes.json().episode.id;
+      const editedScript = "用户编辑后的脚本，正文足够长可用于合成。";
+      const res = await server.inject({
+        method: "POST",
+        url: `/api/podcast/episodes/${episodeId}/synthesize`,
+        payload: { script: editedScript }
+      });
+      expect(res.statusCode).toBe(503);
+      expect(res.json().error).toContain("未配置 TTS");
+      const after = (await server.inject({ method: "GET", url: "/api/state" })).json();
+      const persisted = after.podcastEpisodes.find((e: { id: string }) => e.id === episodeId);
+      expect(persisted?.script).toBe(editedScript);
+      expect(persisted?.scriptReviewStatus).toBe("用户确认");
+      await server.close();
+    } finally {
+      if (prev === undefined) delete process.env.PODCAST_SYNTHESIZE_REQUIRES_CONFIRM;
+      else process.env.PODCAST_SYNTHESIZE_REQUIRES_CONFIRM = prev;
+    }
   });
 
   it("uses episode.script for TTS rendering (fake client validates script is passed)", async () => {
@@ -229,6 +343,12 @@ describe("POST /api/podcast/episodes/:id/synthesize", () => {
     });
     const created = createRes.json().episode;
     const episodeId = created.id;
+    const confirmRes = await server.inject({
+      method: "POST",
+      url: `/api/podcast/episodes/${episodeId}/confirm`,
+      payload: { script: created.script }
+    });
+    expect(confirmRes.statusCode).toBe(200);
 
     // Reset capture (create path no longer auto-TTS by default)
     capturedText = undefined;
@@ -270,6 +390,11 @@ describe("POST /api/podcast/episodes/:id/synthesize", () => {
     expect(createRes.statusCode).toBe(200);
     expect(createRes.json().episode.audioRenderStatus).toBe("pending");
     const episodeId = createRes.json().episode.id;
+    const confirmRes = await server.inject({
+      method: "POST",
+      url: `/api/podcast/episodes/${episodeId}/confirm`
+    });
+    expect(confirmRes.statusCode).toBe(200);
 
     const res = await server.inject({
       method: "POST",

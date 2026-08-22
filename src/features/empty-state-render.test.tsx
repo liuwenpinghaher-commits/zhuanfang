@@ -116,6 +116,8 @@ describe("empty-state render guards", () => {
           onActiveEpisodeId={() => {}}
           onEditingScript={() => {}}
           onGenerateScript={() => {}}
+          onConfirmScript={() => {}}
+          onConfirmAndSynthesize={() => {}}
           onSynthesizeSpeech={() => {}}
           onDeleteEpisode={() => {}}
           onSaveDefaultVoice={() => {}} />

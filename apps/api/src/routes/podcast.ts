@@ -1,18 +1,26 @@
 import type { FastifyInstance } from "fastify";
 import {
+  confirmPodcastScript,
   generatePodcastEpisode,
   generatePodcastEpisodeFromKnowledgeDebt,
   generatePodcastEpisodeFromSearchBrief,
-  generatePodcastEpisodeFromTheme
+  generatePodcastEpisodeFromTheme,
+  prependPodcastEpisode,
+  replacePodcastEpisode,
+  withGeneratedArtifactWorkflowRun
 } from "../../../../src/domain/engine";
 import { deletePodcastEpisode } from "../../../../src/domain/lifecycle";
-import type { PodcastEpisode } from "../../../../src/domain/types";
+import type { PodcastEpisode, ProductState } from "../../../../src/domain/types";
+import { makeId, withAiRunEvent, withAuditEvent } from "../../../../src/domain/utils";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import type { BailianChatClient, BailianPodcastAudioClient } from "../providers/bailian";
-import type { ProductStateRepository } from "../product-state-repository"
-import { replaceStateDurable } from "../product-state-repository";
+import type { ProductStateRepository } from "../product-state-repository";
 import { generatePodcastScriptFromSource } from "../intelligence/podcast-script-llm";
 import { normalizeCosyVoiceId } from "../voice-presets";
+import { runStateCommand } from "../state-command";
+import type { WriteGate } from "../server";
+
+const PODCAST_SCRIPT_MAX_CHARS = 32_000;
 
 interface PodcastEpisodeRequestPayload {
   noteId?: unknown;
@@ -26,7 +34,14 @@ interface PodcastRouteOptions {
   bailianPodcastAudioClient?: BailianPodcastAudioClient;
   bailianChatClient?: BailianChatClient;
   llmBudget?: LlmBudget;
+  writeGate?: WriteGate;
 }
+
+type PodcastScriptSource =
+  | { kind: "note"; note: ProductState["notes"][number]; format: PodcastEpisode["format"] }
+  | { kind: "search-brief"; brief: ProductState["searchBriefs"][number]; format: PodcastEpisode["format"] }
+  | { kind: "theme"; theme: ProductState["themes"][number]; format: PodcastEpisode["format"] }
+  | { kind: "knowledge-debt"; debt: ProductState["debts"][number]; format: PodcastEpisode["format"] };
 
 /**
  * Renders TTS audio for a given episode using its current script.
@@ -77,6 +92,7 @@ export async function registerPodcastRoutes(
   options: PodcastRouteOptions = {}
 ) {
   const budget = options.llmBudget ?? createLlmBudget();
+  const writeOpts = { writeGate: options.writeGate };
 
   server.post("/api/podcast/episodes", async (request, reply) => {
     const state = repository.getState();
@@ -91,60 +107,22 @@ export async function registerPodcastRoutes(
         : state.systemConfig.voice.podcastVoice
     );
 
-    let episode: PodcastEpisode;
-    let nextState: ReturnType<typeof repository.getState>;
-
-    // All source paths use LLM for the spoken script. Domain helpers still build
-    // chapters/shownotes skeleton; script body is replaced after a successful LLM call.
-    // Missing LLM / budget / LLM failure → fail-loud (no silent template masquerade).
-    // Validate source first so 422 never burns LLM budget.
     if (!options.bailianChatClient) {
       return reply.code(503).send({ error: "播客脚本 LLM 未配置（缺少 DASHSCOPE_API_KEY），无法生成播客。" });
     }
 
-    let scriptSource:
-      | { kind: "note"; note: (typeof state.notes)[number]; format: typeof format }
-      | { kind: "search-brief"; brief: (typeof state.searchBriefs)[number]; format: typeof format }
-      | { kind: "theme"; theme: (typeof state.themes)[number]; format: typeof format }
-      | { kind: "knowledge-debt"; debt: (typeof state.debts)[number]; format: typeof format };
-
-    if (sourceType === "search-brief" && sourceId) {
-      const brief = state.searchBriefs.find((b) => b.id === sourceId);
-      if (!brief) {
-        return reply.code(422).send({ error: "Search brief not found." });
-      }
-      ({ episode, nextState } = generatePodcastEpisodeFromSearchBrief(state, sourceId, { format, voice }));
-      scriptSource = { kind: "search-brief", brief, format };
-    } else if (sourceType === "theme" && sourceId) {
-      const theme = state.themes.find((t) => t.id === sourceId);
-      if (!theme) {
-        return reply.code(422).send({ error: "Theme not found." });
-      }
-      ({ episode, nextState } = generatePodcastEpisodeFromTheme(state, sourceId, { format, voice }));
-      scriptSource = { kind: "theme", theme, format };
-    } else if (sourceType === "knowledge-debt" && sourceId) {
-      const debt = state.debts.find((d) => d.id === sourceId);
-      if (!debt) {
-        return reply.code(422).send({ error: "Knowledge debt not found." });
-      }
-      ({ episode, nextState } = generatePodcastEpisodeFromKnowledgeDebt(state, sourceId, { format, voice }));
-      scriptSource = { kind: "knowledge-debt", debt, format };
-    } else {
-      if (!noteId) {
-        return reply.code(422).send({ error: "No notes are available for podcast generation." });
-      }
-      const note = state.notes.find((n) => n.id === noteId);
-      if (!note) {
-        return reply.code(422).send({ error: "Note not found." });
-      }
-      ({ episode, nextState } = generatePodcastEpisode(state, noteId, { format, voice }));
-      scriptSource = { kind: "note", note, format };
+    const resolved = resolveScriptSource(state, sourceType, sourceId, noteId, format);
+    if (!resolved.ok) {
+      return reply.code(resolved.code).send({ error: resolved.error });
     }
+    const scriptSource = resolved.scriptSource;
 
     if (!budget.tryConsume("system")) {
       console.warn(JSON.stringify({ event: "llm_budget_exceeded", capability: "podcast_script" }));
       return reply.code(429).send({ error: "本时段 LLM 预算已用尽，播客脚本生成暂不可用，请稍后重试。" });
     }
+
+    const episodeId = makeId("podcast");
 
     let llmScript: string;
     try {
@@ -154,124 +132,380 @@ export async function registerPodcastRoutes(
       console.warn(JSON.stringify({ event: "llm_failed", capability: "podcast_script", error: message, sourceType }));
       return reply.code(502).send({ error: `播客脚本生成失败：${message}` });
     }
-    episode = {
-      ...episode,
+
+    const skeleton = buildEpisodeSkeleton(repository.getState(), scriptSource, voice);
+    const episode: PodcastEpisode = {
+      ...skeleton,
+      id: episodeId,
       script: llmScript,
       durationSec: Math.max(180, Math.round(llmScript.length * 0.8))
     };
-    nextState = {
-      ...nextState,
-      podcastEpisodes: nextState.podcastEpisodes.map((item) => (item.id === episode.id ? episode : item))
-    };
 
-    // --- Step 1: Persist the episode FIRST (script is now saved, TTS failure won't lose it) ---
-    // state 必须是 replaceState 返回的权威态(revision 已 bump),否则客户端下一次乐观 PUT 必 409。
-    const persistedDraft = /*durable*/await replaceStateDurable(repository, nextState);
+    let failure: { code: number; error: string } | null = null;
+    let created: PodcastEpisode | undefined;
+    const persistedDraft = await runStateCommand(
+      repository,
+      (latest) => {
+        failure = null;
+        created = undefined;
+        const still = resolveScriptSource(latest, sourceType, sourceId, noteId, format);
+        if (!still.ok) {
+          failure = { code: still.code, error: still.error };
+          return null;
+        }
+        const existing = latest.podcastEpisodes.find((item) => item.id === episodeId);
+        if (existing) {
+          created = existing;
+          return latest;
+        }
+        const next = withPodcastCreatedEvents(prependPodcastEpisode(latest, episode), episode);
+        created = episode;
+        return next;
+      },
+      { ...writeOpts, label: `command:podcast-create:${episodeId}` }
+    );
+    if (!persistedDraft || !created) {
+      const f = failure ?? { code: 500, error: "播客脚本未能保存。" };
+      return reply.code(f.code).send({ error: f.error });
+    }
 
-    // --- Step 2: If no TTS client, return the persisted episode as-is (audioRenderStatus
-    // stays "pending" — 尚未渲染是诚实状态；配置 TTS 后可显式 synthesize) ---
     if (!options.bailianPodcastAudioClient) {
-      return { episode, state: persistedDraft };
+      return { episode: created, state: persistedDraft };
     }
 
-    // PO-P1-01: default is confirm-then-render. Only auto-TTS when explicitly enabled
-    // (PODCAST_AUTO_RENDER_ON_CREATE=true|1|yes|on). "auto" and unset = script only.
     if (!shouldAutoRenderPodcastOnCreate(process.env.PODCAST_AUTO_RENDER_ON_CREATE)) {
-      return { episode, state: persistedDraft };
+      return { episode: created, state: persistedDraft };
     }
 
-    // --- Step 3: Attempt TTS; failure is persisted as "failed" with the real error,
-    // never dressed up as a recoverable in-between state ---
-    const audioPatch = await renderEpisodeAudio(episode, options.bailianPodcastAudioClient);
-    const finalEpisode: PodcastEpisode = { ...episode, ...audioPatch };
-
-    const finalState = {
-      ...nextState,
-      podcastEpisodes: nextState.podcastEpisodes.map((item) =>
-        item.id === episode.id ? finalEpisode : item
-      )
-    };
-    const persistedFinal = /*durable*/await replaceStateDurable(repository, finalState);
-    return { episode: finalEpisode, state: persistedFinal };
+    const audioPatch = await renderEpisodeAudio(created, options.bailianPodcastAudioClient);
+    let autoFailure: { code: number; error: string } | null = null;
+    let autoEpisode: PodcastEpisode | undefined;
+    const persistedFinal = await runStateCommand(
+      repository,
+      (latest) => {
+        autoFailure = null;
+        autoEpisode = undefined;
+        const current = latest.podcastEpisodes.find((item) => item.id === episodeId);
+        if (!current) {
+          autoFailure = { code: 404, error: "Episode not found." };
+          return null;
+        }
+        const finalEpisode: PodcastEpisode = { ...current, ...audioPatch };
+        autoEpisode = finalEpisode;
+        return replacePodcastEpisode(latest, finalEpisode);
+      },
+      { ...writeOpts, label: `command:podcast-auto-render:${episodeId}` }
+    );
+    if (!persistedFinal || !autoEpisode) {
+      const f = autoFailure ?? { code: 500, error: "播客音频未能保存。" };
+      return reply.code(f.code).send({ error: f.error });
+    }
+    return { episode: autoEpisode, state: persistedFinal };
   });
 
-  // POST /api/podcast/episodes/:id/synthesize
-  // Re-renders TTS for an already-persisted episode.
-  // Optional body: { script?: string } — when provided, the episode.script is updated to
-  // the caller-supplied value BEFORE rendering, eliminating the frontend save-then-synthesize
-  // race condition (the client can pass the current editing script directly).
-  // When omitted, falls back to the stored episode.script.
-  // TTS 不可用/失败如实返回 503/502（用户提供的脚本仍会持久化，不丢内容）。
+  server.post("/api/podcast/episodes/:id/confirm", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = request.body && typeof request.body === "object" ? (request.body as Record<string, unknown>) : {};
+    const incomingScript = typeof body.script === "string" ? body.script : undefined;
+    if (incomingScript !== undefined && incomingScript.trim().length > PODCAST_SCRIPT_MAX_CHARS) {
+      return reply.code(422).send({ error: "口播稿超过 32000 字上限。" });
+    }
+
+    let failure: { code: number; error: string } | null = null;
+    let confirmed: PodcastEpisode | undefined;
+    const persisted = await runStateCommand(
+      repository,
+      (state) => {
+        failure = null;
+        confirmed = undefined;
+        const existing = state.podcastEpisodes.find((ep) => ep.id === id);
+        if (!existing) {
+          failure = { code: 404, error: "Episode not found." };
+          return null;
+        }
+        const nextScript = (incomingScript ?? existing.script).trim();
+        if (!nextScript) {
+          failure = { code: 422, error: "口播稿不能为空。" };
+          return null;
+        }
+        if (nextScript.length > PODCAST_SCRIPT_MAX_CHARS) {
+          failure = { code: 422, error: "口播稿超过 32000 字上限。" };
+          return null;
+        }
+        const next = confirmPodcastScript(state, id, nextScript);
+        if (!next) {
+          failure = { code: 422, error: "口播稿不能为空。" };
+          return null;
+        }
+        confirmed = next.podcastEpisodes.find((ep) => ep.id === id);
+        return next;
+      },
+      { ...writeOpts, label: `command:podcast-script-confirm:${id}` }
+    );
+    if (!persisted || !confirmed) {
+      const f = failure ?? { code: 500, error: "口播稿未能确认。" };
+      return reply.code(f.code).send({ error: f.error });
+    }
+    return { episode: confirmed, state: persisted };
+  });
+
   server.post("/api/podcast/episodes/:id/synthesize", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const state = repository.getState();
-    const existing = state.podcastEpisodes.find((ep) => ep.id === id);
+    const requireConfirm = shouldRequirePodcastConfirmOnSynthesize(process.env.PODCAST_SYNTHESIZE_REQUIRES_CONFIRM);
+    const body = request.body && typeof request.body === "object" ? (request.body as Record<string, unknown>) : {};
+    const incomingScript = typeof body.script === "string" && body.script.trim() ? body.script : undefined;
+
+    if (requireConfirm) {
+      const current = repository.getState().podcastEpisodes.find((ep) => ep.id === id);
+      if (!current) {
+        return reply.code(404).send({ error: "Episode not found." });
+      }
+      if (current.scriptReviewStatus !== "用户确认") {
+        return reply.code(409).send({ error: "脚本尚未确认，确认后再合成。" });
+      }
+      if (incomingScript && incomingScript !== current.script) {
+        return reply.code(409).send({ error: "稿已改动，请先确认后再合成。" });
+      }
+      if (!options.bailianPodcastAudioClient) {
+        return reply.code(503).send({ error: "未配置 TTS 服务（缺少 DASHSCOPE_API_KEY），无法合成音频。脚本已保留。" });
+      }
+
+      const episodeToRender = current;
+      const audioPatch = await renderEpisodeAudio(episodeToRender, options.bailianPodcastAudioClient);
+      return commitSynthesizePatch(repository, reply, writeOpts, {
+        id,
+        expectedScript: episodeToRender.script,
+        audioPatch
+      });
+    }
+
+    const existing = repository.getState().podcastEpisodes.find((ep) => ep.id === id);
     if (!existing) {
       return reply.code(404).send({ error: "Episode not found." });
     }
-
-    // If the caller supplies a script, use it (and persist it) instead of the stored one.
-    const body = request.body && typeof request.body === "object" ? (request.body as Record<string, unknown>) : {};
-    const incomingScript = typeof body.script === "string" && body.script.trim() ? body.script : undefined;
     const episodeToRender: PodcastEpisode = incomingScript
       ? { ...existing, script: incomingScript, scriptReviewStatus: "用户确认" }
       : existing;
 
     if (!options.bailianPodcastAudioClient) {
-      // 用户显式要求合成——没有 TTS 就是不能用，如实 503。先保住用户带来的脚本编辑。
       if (incomingScript) {
-        /*durable*/await replaceStateDurable(repository, {
-          ...state,
-          podcastEpisodes: state.podcastEpisodes.map((ep) => (ep.id === id ? episodeToRender : ep))
-        });
+        const persistedScript = await runStateCommand(
+          repository,
+          (latest) => {
+            const current = latest.podcastEpisodes.find((ep) => ep.id === id);
+            if (!current) return null;
+            return replacePodcastEpisode(latest, {
+              ...current,
+              script: incomingScript,
+              scriptReviewStatus: "用户确认"
+            });
+          },
+          { ...writeOpts, label: `command:podcast-synthesize-script:${id}` }
+        );
+        if (!persistedScript) {
+          return reply.code(404).send({ error: "Episode not found." });
+        }
       }
       return reply.code(503).send({ error: "未配置 TTS 服务（缺少 DASHSCOPE_API_KEY），无法合成音频。脚本已保留。" });
     }
 
     const audioPatch = await renderEpisodeAudio(episodeToRender, options.bailianPodcastAudioClient);
-    const updatedEpisode: PodcastEpisode = {
-      ...episodeToRender,
-      ...audioPatch,
-      scriptReviewStatus: "用户确认",
-      status: "ready"
-    };
-
-    const updatedState = {
-      ...state,
-      podcastEpisodes: state.podcastEpisodes.map((ep) =>
-        ep.id === id ? updatedEpisode : ep
-      )
-    };
-    const persisted = /*durable*/await replaceStateDurable(repository, updatedState);
-    if (updatedEpisode.audioRenderStatus === "failed") {
-      // 渲染失败：脚本与失败状态已持久化（不丢内容），HTTP 层如实 502 并附上权威 state
-      // 供客户端同步 revision。
-      return reply.code(502).send({
-        error: updatedEpisode.audioRenderMessage ?? "音频渲染失败。",
-        episode: updatedEpisode,
-        state: persisted
-      });
-    }
-    return { episode: updatedEpisode, state: persisted };
+    return commitSynthesizePatch(repository, reply, writeOpts, {
+      id,
+      expectedScript: undefined,
+      audioPatch,
+      scriptPatch: incomingScript
+        ? { script: incomingScript, scriptReviewStatus: "用户确认" as const }
+        : { scriptReviewStatus: "用户确认" as const }
+    });
   });
 
   server.delete("/api/podcast/episodes/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const state = repository.getState();
-    if (!state.podcastEpisodes.some((ep) => ep.id === id)) {
-      return reply.code(404).send({ error: "Episode not found." });
+    let failure: { code: number; error: string } | null = null;
+    const persisted = await runStateCommand(
+      repository,
+      (latest) => {
+        failure = null;
+        if (!latest.podcastEpisodes.some((ep) => ep.id === id)) {
+          failure = { code: 404, error: "Episode not found." };
+          return null;
+        }
+        return deletePodcastEpisode(latest, id);
+      },
+      { ...writeOpts, label: `command:podcast-delete:${id}` }
+    );
+    if (!persisted) {
+      const f = failure ?? { code: 500, error: "播客未能删除。" };
+      return reply.code(f.code).send({ error: f.error });
     }
-    const nextState = deletePodcastEpisode(state, id);
-    const persisted = /*durable*/await replaceStateDurable(repository, nextState);
     return { state: persisted };
   });
 }
 
-function normalizePayload(value: unknown): PodcastEpisodeRequestPayload {
-  if (!value || typeof value !== "object") {
-    return {};
+async function commitSynthesizePatch(
+  repository: ProductStateRepository,
+  reply: { code: (statusCode: number) => { send: (payload: unknown) => unknown } },
+  writeOpts: { writeGate?: WriteGate },
+  args: {
+    id: string;
+    expectedScript?: string;
+    audioPatch: Partial<PodcastEpisode>;
+    scriptPatch?: Partial<Pick<PodcastEpisode, "script" | "scriptReviewStatus">>;
   }
-  return value as PodcastEpisodeRequestPayload;
+) {
+  let failure: { code: number; error: string } | null = null;
+  let updated: PodcastEpisode | undefined;
+  const persisted = await runStateCommand(
+    repository,
+    (latest) => {
+      failure = null;
+      updated = undefined;
+      const current = latest.podcastEpisodes.find((ep) => ep.id === args.id);
+      if (!current) {
+        failure = { code: 404, error: "Episode not found." };
+        return null;
+      }
+      if (args.expectedScript !== undefined && current.script !== args.expectedScript) {
+        failure = { code: 409, error: "稿已改动，请先确认后再合成。" };
+        return null;
+      }
+      const nextEpisode: PodcastEpisode = {
+        ...current,
+        ...args.scriptPatch,
+        ...args.audioPatch,
+        status: "ready"
+      };
+      updated = nextEpisode;
+      return replacePodcastEpisode(latest, nextEpisode);
+    },
+    { ...writeOpts, label: `command:podcast-synthesize:${args.id}` }
+  );
+  if (!persisted || !updated) {
+    const f = failure ?? { code: 500, error: "播客音频未能保存。" };
+    return reply.code(f.code).send({ error: f.error });
+  }
+  if (updated.audioRenderStatus === "failed") {
+    return reply.code(502).send({
+      error: updated.audioRenderMessage ?? "音频渲染失败。",
+      episode: updated,
+      state: persisted
+    });
+  }
+  return { episode: updated, state: persisted };
+}
+
+function resolveScriptSource(
+  state: ProductState,
+  sourceType: PodcastEpisode["sourceType"],
+  sourceId: string | undefined,
+  noteId: string | undefined,
+  format: PodcastEpisode["format"]
+): { ok: true; scriptSource: PodcastScriptSource } | { ok: false; code: number; error: string } {
+  if (sourceType === "search-brief" && sourceId) {
+    const brief = state.searchBriefs.find((item) => item.id === sourceId);
+    if (!brief) {
+      return { ok: false, code: 422, error: "Search brief not found." };
+    }
+    return { ok: true, scriptSource: { kind: "search-brief", brief, format } };
+  }
+  if (sourceType === "theme" && sourceId) {
+    const theme = state.themes.find((item) => item.id === sourceId);
+    if (!theme) {
+      return { ok: false, code: 422, error: "Theme not found." };
+    }
+    return { ok: true, scriptSource: { kind: "theme", theme, format } };
+  }
+  if (sourceType === "knowledge-debt" && sourceId) {
+    const debt = state.debts.find((item) => item.id === sourceId);
+    if (!debt) {
+      return { ok: false, code: 422, error: "Knowledge debt not found." };
+    }
+    return { ok: true, scriptSource: { kind: "knowledge-debt", debt, format } };
+  }
+  if (!noteId) {
+    return { ok: false, code: 422, error: "No notes are available for podcast generation." };
+  }
+  const note = state.notes.find((item) => item.id === noteId);
+  if (!note) {
+    return { ok: false, code: 422, error: "Note not found." };
+  }
+  return { ok: true, scriptSource: { kind: "note", note, format } };
+}
+
+function buildEpisodeSkeleton(
+  state: ProductState,
+  scriptSource: PodcastScriptSource,
+  voice: string
+): PodcastEpisode {
+  const format = scriptSource.format;
+  if (scriptSource.kind === "search-brief") {
+    return generatePodcastEpisodeFromSearchBrief(state, scriptSource.brief.id, { format, voice }).episode;
+  }
+  if (scriptSource.kind === "theme") {
+    return generatePodcastEpisodeFromTheme(state, scriptSource.theme.id, { format, voice }).episode;
+  }
+  if (scriptSource.kind === "knowledge-debt") {
+    return generatePodcastEpisodeFromKnowledgeDebt(state, scriptSource.debt.id, { format, voice }).episode;
+  }
+  return generatePodcastEpisode(state, scriptSource.note.id, { format, voice }).episode;
+}
+
+function withPodcastCreatedEvents(state: ProductState, episode: PodcastEpisode): ProductState {
+  const createdAt = episode.createdAt;
+  const label =
+    episode.sourceType === "knowledge-debt"
+      ? "知识债播客脚本已生成"
+      : episode.sourceType === "search-brief"
+        ? "热点播客脚本已生成"
+        : episode.sourceType === "theme"
+          ? "主题播客脚本已生成"
+          : "播客脚本已生成";
+  const sourcePhrase =
+    episode.sourceType === "knowledge-debt"
+      ? `从知识债《${episode.sourceLabel}》`
+      : episode.sourceType === "search-brief"
+        ? `从搜索简报《${episode.sourceLabel}》`
+        : episode.sourceType === "theme"
+          ? `从长期主题《${episode.sourceLabel}》`
+          : `从笔记《${episode.sourceLabel}》`;
+  return withGeneratedArtifactWorkflowRun(
+    withAiRunEvent(
+      withAuditEvent(state, {
+        type: "podcast_episode_created",
+        label,
+        detail: `${sourcePhrase}生成待确认脚本《${episode.title}》。`,
+        severity: "info",
+        entityType: "podcast_episode",
+        entityId: episode.id,
+        createdAt
+      }),
+      {
+        workflow: "podcast_generation",
+        providerId: state.systemConfig.models.synthesisModel,
+        status: "succeeded",
+        entityType: "podcast_episode",
+        entityId: episode.id,
+        inputSummary: sourcePhrase,
+        outputSummary: `生成待确认播客脚本，预计 ${episode.durationSec} 秒。`,
+        estimatedTokens: episode.script.length,
+        createdAt
+      }
+    ),
+    {
+      workflow: "podcast_generation",
+      entityType: "podcast_episode",
+      entityId: episode.id,
+      inputSummary: sourcePhrase
+    }
+  );
+}
+
+function normalizePayload(value: unknown): PodcastEpisodeRequestPayload {
+  if (!value || typeof value === "object") {
+    return (value ?? {}) as PodcastEpisodeRequestPayload;
+  }
+  return {};
 }
 
 function normalizeSourceType(value: unknown): PodcastEpisode["sourceType"] {
@@ -285,6 +519,12 @@ function normalizeSourceType(value: unknown): PodcastEpisode["sourceType"] {
 export function shouldAutoRenderPodcastOnCreate(raw: string | undefined): boolean {
   const v = (raw ?? "").trim().toLowerCase();
   return v === "true" || v === "1" || v === "yes" || v === "on";
+}
+
+/** Default true. Only explicit false|0|no|off restores the old synthesize-confirms path. */
+export function shouldRequirePodcastConfirmOnSynthesize(raw: string | undefined): boolean {
+  const v = (raw ?? "").trim().toLowerCase();
+  return !(v === "false" || v === "0" || v === "no" || v === "off");
 }
 
 function normalizeFormat(value: unknown): PodcastEpisode["format"] {

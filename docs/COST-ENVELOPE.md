@@ -113,6 +113,7 @@
 | --- | --- | --- |
 | 笔记路径脚本 LLM | `system`（capability `podcast_script`） | 通常 **1** 次成功脚本；失败 502 不落假稿 |
 | TTS `synthesize` | 一般不走 LLM 预算 | **按字符/请求**计 CosyVoice；默认创建不自动渲染（`PODCAST_AUTO_RENDER_ON_CREATE` 默认关） |
+| 确认口播稿 | 否 | **零 TTS**：只改复核状态，不调用 CosyVoice |
 | 长文一次合成 | — | 无服务端自动分片时，超时风险在供应商侧（D1.b 增强项） |
 
 ### 3.6 联网搜索 / 后台 research

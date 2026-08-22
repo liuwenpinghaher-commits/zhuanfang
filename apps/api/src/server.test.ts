@@ -1122,6 +1122,13 @@ it("renders podcast audio through Bailian CosyVoice when the audio client is con
       // Default: no auto TTS on create
       expect(created.episode.audioUrl).not.toBe("https://dashscope-result.example.com/podcast.mp3");
 
+      const confirmResponse = await server.inject({
+        method: "POST",
+        url: `/api/podcast/episodes/${created.episode.id}/confirm`,
+        payload: { script: created.episode.script }
+      });
+      expect(confirmResponse.statusCode).toBe(200);
+
       const synthResponse = await server.inject({
         method: "POST",
         url: `/api/podcast/episodes/${created.episode.id}/synthesize`

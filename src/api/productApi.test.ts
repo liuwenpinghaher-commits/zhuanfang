@@ -392,6 +392,36 @@ describe("product api client", () => {
     expect(result.state.profile.name).toBe("Mia");
   });
 
+  it("confirms a podcast script through the API", async () => {
+    const state = createInitialProductState();
+    const episode = {
+      id: "podcast-api",
+      noteId: state.notes[0].id,
+      title: "播客：测试",
+      format: "solo" as const,
+      voice: "calm-host",
+      status: "draft" as const,
+      scriptReviewStatus: "用户确认" as const,
+      durationSec: 180,
+      script: "确认后的稿",
+      chapters: [],
+      audioUrl: "local-audio://test.mp3",
+      shownotes: [],
+      createdAt: "2026-06-10T00:00:00.000Z"
+    };
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ episode, state }), { status: 200 }));
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+
+    const result = await client.confirmPodcastScript("podcast-api", "确认后的稿");
+
+    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:8787/api/podcast/episodes/podcast-api/confirm", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ script: "确认后的稿" })
+    });
+    expect(result.episode.scriptReviewStatus).toBe("用户确认");
+  });
+
   it("analyzes corpus imports through the API", async () => {
     const state = createInitialProductState();
     const insight = {

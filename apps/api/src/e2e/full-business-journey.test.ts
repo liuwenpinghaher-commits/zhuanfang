@@ -394,7 +394,14 @@ describe("Full cross-feature business journey: 团队授权与控制感", () => 
     expect(persistedEpisode).toBeDefined();
     expect(persistedEpisode!.noteId).toBe(noteId);
 
-    // 9b. 重新合成（synthesize）— 真实性重构:无 TTS client → 如实 503（不再假装 fallback 成功）
+    // 9b. 先确认口播稿（零 TTS），再合成 — 无 TTS client → 如实 503，稿仍是已确认
+    const confirmRes = await server.inject({
+      method: "POST",
+      url: `/api/podcast/episodes/${episodeId}/confirm`
+    });
+    expect(confirmRes.statusCode).toBe(200);
+    expect(confirmRes.json().episode.scriptReviewStatus).toBe("用户确认");
+
     const synthesizeRes = await server.inject({
       method: "POST",
       url: `/api/podcast/episodes/${episodeId}/synthesize`
@@ -408,6 +415,7 @@ describe("Full cross-feature business journey: 团队授权与控制感", () => 
     expect(episodeAfterSynthesize).toBeDefined();
     expect(episodeAfterSynthesize.script.length).toBeGreaterThan(0);
     expect(episodeAfterSynthesize.audioRenderStatus).toBe("pending");
+    expect(episodeAfterSynthesize.scriptReviewStatus).toBe("用户确认");
 
     // =========================================================================
     // Step 10: 全程非 5xx — 最终状态一致性校验

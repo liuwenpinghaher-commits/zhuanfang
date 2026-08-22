@@ -37,7 +37,9 @@ describe("durable write surfaces (structural)", () => {
   for (const rel of MUST_USE_DURABLE) {
     it(`${rel} uses replaceStateDurable on production success paths`, () => {
       const src = load(rel);
-      expect(src, `${rel} must import replaceStateDurable`).toMatch(/replaceStateDurable/);
+      expect(src, `${rel} must import replaceStateDurable or runStateCommand`).toMatch(
+        /replaceStateDurable|runStateCommand/
+      );
       // Disallow naked product/stateRepo.replaceState( on success paths, allowing:
       // - replaceStateDurable(repo, ...) which contains the call inside the helper
       // - comments

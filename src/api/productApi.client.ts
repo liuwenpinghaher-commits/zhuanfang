@@ -804,6 +804,19 @@ export function createProductApiClient(
         state: normalizeProductState(response.state)
       };
     },
+    async confirmPodcastScript(episodeId, script) {
+      const response = (await requestJson(`/api/podcast/episodes/${encodeURIComponent(episodeId)}/confirm`, {
+        method: "POST",
+        ...(script !== undefined
+          ? { headers: { "content-type": "application/json" }, body: JSON.stringify({ script }) }
+          : {})
+      })) as GeneratePodcastEpisodeResponse;
+
+      return {
+        ...response,
+        state: normalizeProductState(response.state)
+      };
+    },
     async synthesizePodcastEpisode(episodeId, script) {
       const response = (await requestJson(`/api/podcast/episodes/${encodeURIComponent(episodeId)}/synthesize`, {
         method: "POST",

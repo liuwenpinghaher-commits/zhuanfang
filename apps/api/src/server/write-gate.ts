@@ -181,6 +181,26 @@ export const WRITE_GATE_EXEMPTIONS: WriteGateExemption[] = [
     reason: "R3 试点:纯同步小 RMW,走 CAS(commit 经写门)"
   },
   {
+    method: "POST",
+    matches: (p) => p.startsWith("/api/podcast/episodes/") && p.endsWith("/confirm"),
+    reason: "R3 试点:纯同步小 RMW,走 CAS(commit 经写门)"
+  },
+  {
+    method: "POST",
+    matches: (p) => p.startsWith("/api/podcast/episodes/") && p.endsWith("/synthesize"),
+    reason: "TTS 锁外;终写=CAS 合并本条音频字段(commit 经写门)"
+  },
+  {
+    method: "POST",
+    matches: (p) => p === "/api/podcast/episodes",
+    reason: "长 LLM;终写=CAS 追加本条(commit 经写门)。/:id/confirm 与 /synthesize 不命中本条"
+  },
+  {
+    method: "DELETE",
+    matches: idUnder("/api/podcast/episodes/"),
+    reason: "R3 试点:纯同步小 RMW,走 CAS(commit 经写门)"
+  },
+  {
     // R3 试点:playbook 补丁状态流转(apply/revert)——纯同步小 RMW(proposed→applied→reverted
     // 状态机在域层纯函数内),CAS 前置校验拦非法流转。
     method: "POST",

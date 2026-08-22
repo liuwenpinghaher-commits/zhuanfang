@@ -135,6 +135,9 @@ export {
   generatePodcastEpisode,
   generatePodcastEpisodeFromKnowledgeDebt, generatePodcastEpisodeFromSearchBrief,
   generatePodcastEpisodeFromTheme,
+  prependPodcastEpisode,
+  replacePodcastEpisode,
+  confirmPodcastScript,
 } from "./podcast";
 
 // ============================================================================

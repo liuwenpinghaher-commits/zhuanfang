@@ -1,5 +1,5 @@
 import { useMemo, useRef } from "react";
-import { ClipboardList, Headphones, Mic, Pencil, Trash2, Volume2 } from "lucide-react";
+import { Check, ClipboardList, Headphones, Mic, Pencil, Trash2, Volume2 } from "lucide-react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import type { VoiceInfo } from "../../api/productApi";
 import type { PodcastEpisode, PodcastSourceType, ProductState } from "../../domain/types";
@@ -16,6 +16,7 @@ interface PodcastStudioViewProps {
   activeEpisodeId: string | null;
   generating?: boolean;
   synthesizing?: boolean;
+  confirming?: boolean;
   deletingEpisodeId?: string | null;
   voices?: VoiceInfo[];
   onNoteId: (value: string) => void;
@@ -26,6 +27,8 @@ interface PodcastStudioViewProps {
   onEditingScript: (value: string) => void;
   onActiveEpisodeId: (value: string | null) => void;
   onGenerateScript: () => void;
+  onConfirmScript: (episodeId: string) => void;
+  onConfirmAndSynthesize: (episodeId: string) => void;
   onSynthesizeSpeech: (episodeId: string) => void;
   onDeleteEpisode: (episodeId: string) => void;
   onSaveDefaultVoice: () => void;
@@ -54,6 +57,7 @@ export function PodcastStudioView({
   activeEpisodeId,
   generating = false,
   synthesizing = false,
+  confirming = false,
   deletingEpisodeId = null,
   voices = [],
   onNoteId,
@@ -64,6 +68,8 @@ export function PodcastStudioView({
   onEditingScript,
   onActiveEpisodeId,
   onGenerateScript,
+  onConfirmScript,
+  onConfirmAndSynthesize,
   onSynthesizeSpeech,
   onDeleteEpisode,
   onSaveDefaultVoice
@@ -88,8 +94,11 @@ export function PodcastStudioView({
   const activeEpisode =
     state.podcastEpisodes.find((ep) => ep.id === activeEpisodeId) ??
     null;
-  const showDraftEditor = Boolean(activeEpisode && editingScript.trim());
-  const busy = generating || synthesizing;
+  const showDraftEditor = Boolean(activeEpisode);
+  const busy = generating || synthesizing || confirming;
+  const editorDirty = Boolean(activeEpisode && editingScript !== activeEpisode.script);
+  const editorEmpty = !editingScript.trim();
+  const pendingExists = state.podcastEpisodes.some((item) => item.scriptReviewStatus === "待确认");
 
   const voiceOptions = useMemo(() => {
     const preset = voices.map((v) => v.voice);
@@ -114,7 +123,7 @@ export function PodcastStudioView({
 
       <div className="config-hint podcast-pipeline" aria-label="制作进度">
         <span className={!activeEpisode && state.podcastEpisodes.length === 0 ? "is-emphasis" : undefined}>① 选来源</span>
-        <span className={showDraftEditor ? "is-emphasis" : undefined}>② 确认脚本</span>
+        <span className={showDraftEditor || pendingExists ? "is-emphasis" : undefined}>② 确认脚本</span>
         <span className={state.podcastEpisodes.some((e) => e.audioRenderStatus === "rendered") ? "is-emphasis" : undefined}>
           ③ 合成收听
         </span>
@@ -263,22 +272,22 @@ export function PodcastStudioView({
             value={editingScript}
             onChange={(event) => onEditingScript(event.target.value)}
             rows={12}
-            disabled={synthesizing}
+            disabled={synthesizing || confirming}
             aria-label="编辑播客脚本"
             placeholder="编辑或确认播客脚本..."
           />
           <div className="form-actions">
-            <button
-              className={`primary-action${synthesizing ? " btn-loading" : ""}`}
-              type="button"
-              onClick={() => onSynthesizeSpeech(activeEpisode.id)}
-              disabled={!editingScript.trim() || busy}
-              aria-busy={synthesizing}
-            >
-              {synthesizing && <span className="spinner" aria-hidden="true" />}
-              <Volume2 size={18} />
-              {synthesizing ? "合成中…" : "合成语音"}
-            </button>
+            <DraftActionButtons
+              episode={activeEpisode}
+              dirty={editorDirty}
+              empty={editorEmpty}
+              busy={busy}
+              confirming={confirming}
+              synthesizing={synthesizing}
+              onConfirmScript={onConfirmScript}
+              onConfirmAndSynthesize={onConfirmAndSynthesize}
+              onSynthesizeSpeech={onSynthesizeSpeech}
+            />
             <button
               className="secondary-action"
               type="button"
@@ -323,9 +332,13 @@ export function PodcastStudioView({
                   <div className="episode-hero">
                     <div>
                       <div className="row-wrap mb-2">
-                        <span className={`status-pill ${statusPillClass(episode)}`}>
+                        <button
+                          type="button"
+                          className={`status-pill ${statusPillClass(episode)}`}
+                          onClick={() => beginEditEpisode(episode)}
+                        >
                           {formatEpisodeStatus(episode)}
-                        </span>
+                        </button>
                         <span className="status-pill">
                           {formatLabel[episode.format]} · {episode.voice}
                         </span>
@@ -333,7 +346,15 @@ export function PodcastStudioView({
                           {formatPodcastTimestamp(episode.durationSec)}
                         </span>
                       </div>
-                      <h2>{episode.title}</h2>
+                      <h2>
+                        <button
+                          type="button"
+                          className="episode-title-button"
+                          onClick={() => beginEditEpisode(episode)}
+                        >
+                          {episode.title}
+                        </button>
+                      </h2>
                       <p className="field-help">
                         {new Date(episode.createdAt).toLocaleString("zh-CN")}
                         {episode.sourceLabel ? ` · 来源 ${episode.sourceLabel}` : ""}
@@ -348,18 +369,30 @@ export function PodcastStudioView({
                           <Pencil size={16} />
                           {episode.audioRenderStatus === "failed" ? "改稿并重试" : "编辑脚本"}
                         </button>
-                        <button
-                          className={`secondary-action${synthesizing && isActive ? " btn-loading" : ""}`}
-                          type="button"
-                          disabled={busy || deleting}
-                          onClick={() => {
-                            onActiveEpisodeId(episode.id);
-                            onSynthesizeSpeech(episode.id);
-                          }}
-                        >
-                          <Volume2 size={16} />
-                          重新合成
-                        </button>
+                        {episode.scriptReviewStatus === "待确认" ? (
+                          <button
+                            className="secondary-action"
+                            type="button"
+                            disabled={busy || deleting}
+                            onClick={() => beginEditEpisode(episode)}
+                          >
+                            <Pencil size={16} />
+                            去确认
+                          </button>
+                        ) : (
+                          <button
+                            className={`secondary-action${synthesizing && isActive ? " btn-loading" : ""}`}
+                            type="button"
+                            disabled={busy || deleting || (isActive && editorDirty)}
+                            onClick={() => {
+                              onActiveEpisodeId(episode.id);
+                              onSynthesizeSpeech(episode.id);
+                            }}
+                          >
+                            <Volume2 size={16} />
+                            重新合成
+                          </button>
+                        )}
                         <button
                           className={`danger-button${deleting ? " btn-loading" : ""}`}
                           type="button"
@@ -429,9 +462,78 @@ export function PodcastStudioView({
   );
 }
 
+function DraftActionButtons({
+  episode,
+  dirty,
+  empty,
+  busy,
+  confirming,
+  synthesizing,
+  onConfirmScript,
+  onConfirmAndSynthesize,
+  onSynthesizeSpeech
+}: {
+  episode: PodcastEpisode;
+  dirty: boolean;
+  empty: boolean;
+  busy: boolean;
+  confirming: boolean;
+  synthesizing: boolean;
+  onConfirmScript: (episodeId: string) => void;
+  onConfirmAndSynthesize: (episodeId: string) => void;
+  onSynthesizeSpeech: (episodeId: string) => void;
+}) {
+  const confirmed = episode.scriptReviewStatus === "用户确认";
+  const showConfirm = !confirmed || dirty;
+  const showSynthesize = confirmed && !dirty;
+  return (
+    <>
+      {showConfirm ? (
+        <>
+          <button
+            className={`primary-action${confirming ? " btn-loading" : ""}`}
+            type="button"
+            onClick={() => onConfirmScript(episode.id)}
+            disabled={empty || busy}
+            aria-busy={confirming}
+          >
+            {confirming && <span className="spinner" aria-hidden="true" />}
+            <Check size={18} />
+            {confirming ? "确认中…" : "确认这篇稿"}
+          </button>
+          <button
+            className={`secondary-action${synthesizing ? " btn-loading" : ""}`}
+            type="button"
+            onClick={() => onConfirmAndSynthesize(episode.id)}
+            disabled={empty || busy}
+            aria-busy={synthesizing}
+          >
+            {synthesizing && <span className="spinner" aria-hidden="true" />}
+            <Volume2 size={18} />
+            {synthesizing ? "合成中…" : "确认并合成"}
+          </button>
+        </>
+      ) : null}
+      {showSynthesize ? (
+        <button
+          className={`primary-action${synthesizing ? " btn-loading" : ""}`}
+          type="button"
+          onClick={() => onSynthesizeSpeech(episode.id)}
+          disabled={empty || busy}
+          aria-busy={synthesizing}
+        >
+          {synthesizing && <span className="spinner" aria-hidden="true" />}
+          <Volume2 size={18} />
+          {synthesizing ? "合成中…" : "合成语音"}
+        </button>
+      ) : null}
+    </>
+  );
+}
+
 function PodcastAudioPreview({ episode }: { episode: PodcastEpisode }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const playable = isPlayableAudioUrl(episode.audioUrl);
+  const playable = episode.audioRenderStatus === "rendered" && isPlayableAudioUrl(episode.audioUrl);
   const expired = isAudioExpired(episode);
 
   return (
@@ -488,8 +590,8 @@ function formatEpisodeStatus(episode: PodcastEpisode): string {
   if (episode.audioRenderStatus === "failed") {
     return "渲染失败";
   }
-  if (episode.audioRenderStatus === "pending" || episode.scriptReviewStatus === "待确认") {
-    return "待确认脚本";
+  if (episode.audioRenderStatus === "pending" || !episode.audioRenderStatus) {
+    return episode.scriptReviewStatus === "用户确认" ? "已确认，待合成" : "待确认脚本";
   }
   if (episode.status === "ready") {
     return "已就绪";

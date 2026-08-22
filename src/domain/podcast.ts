@@ -478,3 +478,66 @@ export function generatePodcastEpisodeFromTheme(
 }
 const podcastAiDisclosure = "AI 合成语音：本节目由系统根据用户确认内容生成，请以原始笔记和来源为准。";
 
+/** 仅创建：新节目插到节目库最前。 */
+export function prependPodcastEpisode(
+  state: ProductState,
+  episode: PodcastEpisode
+): ProductState {
+  return {
+    ...state,
+    podcastEpisodes: [episode, ...state.podcastEpisodes.filter((item) => item.id !== episode.id)]
+  };
+}
+
+/** 确认 / 音频补丁：原地替换，保持节目库顺序。 */
+export function replacePodcastEpisode(
+  state: ProductState,
+  episode: PodcastEpisode
+): ProductState {
+  return {
+    ...state,
+    podcastEpisodes: state.podcastEpisodes.map((item) =>
+      item.id === episode.id ? episode : item
+    )
+  };
+}
+
+export function confirmPodcastScript(
+  state: ProductState,
+  episodeId: string,
+  script?: string
+): ProductState | null {
+  const existing = state.podcastEpisodes.find((item) => item.id === episodeId);
+  if (!existing) return null;
+
+  const nextScript = (typeof script === "string" ? script : existing.script).trim();
+  if (!nextScript) return null;
+
+  const scriptChanged = nextScript !== existing.script;
+  const confirmedAt = nowIso();
+  const nextEpisode: PodcastEpisode = scriptChanged
+    ? {
+        ...existing,
+        script: nextScript,
+        scriptReviewStatus: "用户确认",
+        durationSec: Math.max(180, Math.round(nextScript.length * 0.8)),
+        audioRenderStatus: "pending",
+        audioRenderMessage: "脚本已更新，请重新合成音频。",
+        audioUrl: `local-audio://${existing.id}-stale.mp3`
+      }
+    : {
+        ...existing,
+        scriptReviewStatus: "用户确认"
+      };
+
+  return withAuditEvent(replacePodcastEpisode(state, nextEpisode), {
+    type: "podcast_script_confirmed",
+    label: "播客口播稿已确认",
+    detail: existing.title,
+    severity: "info",
+    entityType: "podcast_episode",
+    entityId: existing.id,
+    createdAt: confirmedAt
+  });
+}
+

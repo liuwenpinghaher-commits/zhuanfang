@@ -92,7 +92,8 @@ test("generates and deletes a podcast episode from the first note", async ({ pag
   await page.getByLabel("声音配置").fill(voice);
   await page.getByRole("button", { name: "生成脚本" }).click();
   await expect(page.getByText("播客脚本已生成")).toBeVisible({ timeout: 20000 });
-  await page.getByRole("button", { name: "合成语音" }).click();
+  await expect(page.getByRole("button", { name: "去确认" })).toBeVisible();
+  await page.getByRole("button", { name: "确认并合成" }).click();
 
   await expect(page.getByText("语音合成")).toBeVisible({ timeout: 15000 });
   const podcastEpisode = page.locator("article.podcast-episode").filter({ hasText: voice });

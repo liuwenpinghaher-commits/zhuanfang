@@ -465,7 +465,8 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   });
   void server.register(async (registeredServer) => {
     await registerPodcastRoutes(registeredServer, productStateRepository, withLiveProviderClients({
-      llmBudget: sharedBudget
+      llmBudget: sharedBudget,
+      writeGate
     }));
   });
   void server.register(async (registeredServer) => {

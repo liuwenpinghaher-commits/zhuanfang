@@ -181,6 +181,7 @@ export interface ProductApiClient {
     input: InterruptRealtimeVoiceSessionRequest
   ): Promise<InterruptRealtimeVoiceSessionResponse>;
   generatePodcastEpisode(input: GeneratePodcastEpisodeRequest): Promise<GeneratePodcastEpisodeResponse>;
+  confirmPodcastScript(episodeId: string, script?: string): Promise<GeneratePodcastEpisodeResponse>;
   synthesizePodcastEpisode(episodeId: string, script?: string): Promise<GeneratePodcastEpisodeResponse>;
   /** Delete one podcast episode; returns authoritative product state. */
   deletePodcastEpisode(episodeId: string): Promise<ProductState>;

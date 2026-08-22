@@ -2931,6 +2931,17 @@ html[data-theme="light"] .sidebar {
   line-height: 1.25;
 }
 
+.episode-hero h2 .episode-title-button {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
 .audio-preview {
   display: flex;
   align-items: center;
