@@ -22,8 +22,8 @@ const BAILIAN_WS_TTS_URL = BAILIAN_DEFAULT_TTS_WS_URL;
 // would otherwise hang the turn forever. Two independent guards:
 //   • connect/first-progress: must see task-started (or any audio) within this window
 //   • overall: the whole synthesis must finish within this window regardless
-export const STREAMING_TTS_CONNECT_TIMEOUT_MS = 10_000;
-export const STREAMING_TTS_OVERALL_TIMEOUT_MS = 60_000;
+export const STREAMING_TTS_CONNECT_TIMEOUT_MS = 30_000;
+export const STREAMING_TTS_OVERALL_TIMEOUT_MS = 180_000;
 
 /**
  * Sample rate (Hz) of the raw PCM the cascade TTS streams. The browser sink

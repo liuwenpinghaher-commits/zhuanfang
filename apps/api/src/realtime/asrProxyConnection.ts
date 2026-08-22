@@ -299,6 +299,9 @@ export function connectRealtimeAsrProxy(options: RealtimeAsrProxyOptions): void 
         if (cleaned || binding !== current) return;
         const reason = "upstream heartbeat timeout";
         writeProxyLog("realtime_proxy_heartbeat_timeout", "upstream");
+        // Token-plan omni often ignores ping/pong. Killing the browser socket
+        // made captions freeze then jump. Recycle the upstream only.
+        if (recycleUpstream(reason)) return;
         cleanup({ closeBrowser: { code: 1011, reason } });
       },
     });

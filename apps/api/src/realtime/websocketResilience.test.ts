@@ -46,6 +46,24 @@ describe("attachWebSocketHeartbeat", () => {
     dispose();
   });
 
+  it("inbound message counts as liveness even without pong", () => {
+    vi.useFakeTimers();
+    const socket = new FakeHeartbeatSocket();
+    const onTimeout = vi.fn();
+    const dispose = attachWebSocketHeartbeat(socket, {
+      intervalMs: 15_000,
+      maxMissedPongs: 2,
+      onTimeout
+    });
+
+    vi.advanceTimersByTime(15_000);
+    socket.emit("message");
+    vi.advanceTimersByTime(15_000);
+    expect(onTimeout).not.toHaveBeenCalled();
+    expect(socket.terminate).not.toHaveBeenCalled();
+    dispose();
+  });
+
   it("dispose 幂等移除 timer 与 pong listener", () => {
     vi.useFakeTimers();
     const socket = new FakeHeartbeatSocket();
@@ -56,9 +74,11 @@ describe("attachWebSocketHeartbeat", () => {
     });
 
     expect(socket.listenerCount("pong")).toBe(1);
+    expect(socket.listenerCount("message")).toBe(1);
     dispose();
     dispose();
     expect(socket.listenerCount("pong")).toBe(0);
+    expect(socket.listenerCount("message")).toBe(0);
 
     vi.advanceTimersByTime(60_000);
     expect(socket.ping).not.toHaveBeenCalled();

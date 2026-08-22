@@ -1466,14 +1466,14 @@ describe("realtime-voice ASR WebSocket proxy resilience", () => {
     }
   });
 
-  it("ASR upstream 连续两个周期无 pong 后 terminate 并关闭 browser", async () => {
+  it("ASR upstream 有转写帧时即使无 pong 也不关闭 browser", async () => {
     const testApp = Fastify();
     const upstream = new FakeRealtimeUpstream(false);
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
     await registerRealtimeVoiceRoutes(testApp, {
       env: { DASHSCOPE_API_KEY: "test-secret" },
       createRealtimeUpstream: () => upstream,
-      heartbeatIntervalMs: 100,
+      heartbeatIntervalMs: 40,
       heartbeatMaxMissedPongs: 2
     } as never);
     await testApp.ready();
@@ -1485,35 +1485,25 @@ describe("realtime-voice ASR WebSocket proxy resilience", () => {
     const ws = new WsClient(`ws://127.0.0.1:${port}/api/realtime-voice/ws/${sessionId}`);
 
     try {
-      const closePromise = waitForWsClose(ws);
       const firstUpstreamPing = waitForFirstUpstreamPing(upstream);
       await once(ws, "open");
       upstream.open();
       await firstUpstreamPing;
+      upstream.message({ type: "session.created" });
+
+      await new Promise((r) => setTimeout(r, 30));
+      upstream.message({ type: "conversation.item.input_audio_transcription.delta", delta: "啊" });
+      await new Promise((r) => setTimeout(r, 80));
+      upstream.message({ type: "conversation.item.input_audio_transcription.completed", transcript: "啊" });
+      await new Promise((r) => setTimeout(r, 80));
 
       expect(ws.readyState).toBe(WsClient.OPEN);
-      expect(upstream.readyState).toBe(1);
       expect(upstream.terminateCalls).toBe(0);
-      expect(upstream.closeCalls).toHaveLength(0);
-      expect(upstream.listenerCount("pong")).toBe(1);
-      await expectRealtimeSessionActivePastTtl(testApp, sessionId);
-
-      const close = await closePromise;
-
-      expect(close).toEqual({ code: 1011, reason: "upstream heartbeat timeout" });
-      expect(upstream.pingCalls).toBe(1);
-      expect(upstream.terminateCalls).toBe(1);
-      expect(upstream.closeCalls).toHaveLength(0);
-      for (const event of ["open", "message", "error", "close", "pong"]) {
-        expect(upstream.listenerCount(event)).toBe(0);
-      }
       const logs = infoSpy.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
-      expect(logs).toContainEqual(expect.objectContaining({
+      expect(logs).not.toContainEqual(expect.objectContaining({
         event: "realtime_proxy_heartbeat_timeout",
-        sessionId,
         direction: "upstream"
       }));
-      await expectRealtimeSessionExpired(testApp, sessionId);
     } finally {
       if (ws.readyState !== WsClient.CLOSED) ws.terminate();
       await testApp.close();

@@ -2,8 +2,8 @@ export interface HeartbeatSocket {
   readyState: number;
   ping(): void;
   terminate(): void;
-  on(event: "pong", listener: () => void): unknown;
-  off(event: "pong", listener: () => void): unknown;
+  on(event: "pong" | "message", listener: () => void): unknown;
+  off(event: "pong" | "message", listener: () => void): unknown;
 }
 
 export interface HeartbeatOptions {
@@ -45,7 +45,7 @@ export function attachWebSocketHeartbeat(
   let missedPongs = 0;
   let disposed = false;
 
-  const onPong = () => {
+  const onAlive = () => {
     missedPongs = 0;
   };
 
@@ -53,10 +53,14 @@ export function attachWebSocketHeartbeat(
     if (disposed) return;
     disposed = true;
     clearInterval(timer);
-    socket.off("pong", onPong);
+    socket.off("pong", onAlive);
+    socket.off("message", onAlive);
   };
 
-  socket.on("pong", onPong);
+  // DashScope / token-plan sockets often never pong RFC6455 ping. Any inbound
+  // frame still means the connection is alive — treat it like a pong.
+  socket.on("pong", onAlive);
+  socket.on("message", onAlive);
   const timer = setInterval(() => {
     if (disposed || socket.readyState !== WEB_SOCKET_OPEN) return;
 
