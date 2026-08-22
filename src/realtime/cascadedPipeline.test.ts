@@ -1196,7 +1196,11 @@ describe("connectCascadedPipeline", () => {
       close: vi.fn(),
     } as unknown as TtsSink;
     const onTtsPlaybackInterrupted = vi.fn();
-    const sendUserTurnStream = vi.fn();
+    const sendUserTurnStream = vi.fn(
+      async (_text: string, _signal: AbortSignal, _onDelta: (chunk: string) => void) => ({
+        assistantText: "我理解。",
+      })
+    );
     const pipeline = connectCascadedPipeline(
       makeOpts({
         tts: heldTts,
@@ -1238,6 +1242,15 @@ describe("connectCascadedPipeline", () => {
 
     resolveSpeak();
     await started;
+    vi.advanceTimersByTime(700);
+    asr.pushDelta("那次救火", true);
+    asr.pushSpeechStopped(900);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sendUserTurnStream).toHaveBeenCalledOnce();
+    expect(sendUserTurnStream.mock.calls[0][0]).toBe("那次救火");
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
     pipeline.close();
   });
 

@@ -60,6 +60,11 @@ export function resolveQwenAudioTtsVoice(raw: string | undefined | null): string
   return QWEN_AUDIO_TTS_VOICE_FALLBACKS[normalized] ?? normalized;
 }
 
+/** 411-mute presets only. Custom clone ids must pass through unchanged. */
+export function mapQwenAudio411Voice(voice: string): string {
+  return QWEN_AUDIO_TTS_VOICE_FALLBACKS[voice] ?? voice;
+}
+
 export function pairQwenAudioTtsVoice(host: string): string {
   return pairGuest(host);
 }

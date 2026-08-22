@@ -826,6 +826,10 @@ export function connectCascadedPipeline(
 
   function processTranscriptDelta(text: string, isFinal: boolean) {
     if (closed || micSuppressed) return; // ignore the AI's own echoed transcription
+    if (openingHold) {
+      callbacks.onUserTranscript(text, false);
+      return;
+    }
     const speaking = state === "thinking" || state === "speaking";
     const assembled = turnAssembler.ingest({
       text,
@@ -854,9 +858,7 @@ export function connectCascadedPipeline(
   function processSpeechStarted() {
     if (closed || micSuppressed) return; // echo: AI is speaking, ignore its own voice
     if (openingHold) return;
-    // Call handleSpeechStarted before changing state so the barge check still
-    // sees thinking/speaking. Do not flip to listening while the host is talking:
-    // that would drop the 280ms barge timer and open a second turn.
+    // 说话中途不要翻 listening，否则 280ms 抢话定时器到点时已经不是 speaking。
     const didBargeIn = handleSpeechStarted();
     if (didBargeIn) {
       setState("listening");
@@ -959,6 +961,7 @@ export function connectCascadedPipeline(
         } finally {
           openingHold = false;
         }
+        resetTurn();
         turnAssembler.noteTtsPlayback({ text: opening, startedAtMs, endedAtMs: Date.now() });
         releaseMicAfterGuard();
       }

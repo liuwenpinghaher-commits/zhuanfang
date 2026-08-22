@@ -19,7 +19,7 @@ import {
   type BailianVoiceEnrollmentClient,
   type BailianEmbeddingClient
 } from "../providers/bailian";
-import { COSYVOICE_PRESET_VOICES, resolveQwenAudioTtsVoice } from "../voice-presets";
+import { COSYVOICE_PRESET_VOICES, mapQwenAudio411Voice } from "../voice-presets";
 import {
   createBailianStreamingTtsClient,
   STREAMING_TTS_SAMPLE_RATE,
@@ -729,7 +729,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
               .map((segment) => stripSpokenAsides(segment))
               .filter((segment) => segment.length > 0);
             const voice = normalizeCosyVoice(msg.voice);
-            const resolvedVoice = voice !== undefined ? resolveQwenAudioTtsVoice(voice) : undefined;
+            const resolvedVoice = voice !== undefined ? mapQwenAudio411Voice(voice) : undefined;
             const prosody = normalizeProsody(msg.prosody);
 
             // Abort any prior in-flight synthesis before starting a new one

@@ -1659,6 +1659,56 @@ describe("realtime-voice TTS WebSocket proxy (/api/realtime-voice/ws/tts/:sessio
     });
   });
 
+  it("自定义克隆 voice 原样交给 synthesizeStream", async () => {
+    const calls: Array<{ segments: string[]; voice?: string }> = [];
+    const mockTtsClient: BailianStreamingTtsClient = {
+      async synthesizeStream(input, handlers) {
+        calls.push({ segments: input.segments, voice: input.voice });
+        handlers.onComplete();
+      }
+    };
+
+    const testApp = Fastify();
+    await registerRealtimeVoiceRoutes(testApp, { streamingTtsClient: mockTtsClient });
+    await testApp.ready();
+    const sessionRes = await testApp.inject({
+      method: "POST",
+      url: "/api/realtime-voice/sessions",
+      payload: {}
+    });
+    const { sessionId } = sessionRes.json() as { sessionId: string };
+
+    await new Promise<void>((resolve, reject) => {
+      const httpServer = testApp.server;
+      httpServer.listen(0, "127.0.0.1", () => {
+        const port = (httpServer.address() as { port: number }).port;
+        const { WebSocket: WsClient } = require("ws") as typeof import("ws");
+        const ws = new WsClient(`ws://127.0.0.1:${port}/api/realtime-voice/ws/tts/${sessionId}`);
+
+        ws.on("open", () => {
+          ws.send(JSON.stringify({
+            type: "speak",
+            segments: ["克隆声线"],
+            voice: "custom-voice-abc123"
+          }));
+        });
+        ws.on("close", () => {
+          try {
+            expect(calls).toHaveLength(1);
+            expect(calls[0].voice).toBe("custom-voice-abc123");
+            httpServer.close(() => testApp.close().then(() => resolve()));
+          } catch (err) {
+            httpServer.close(() => testApp.close().then(() => reject(err as Error)));
+          }
+        });
+        ws.on("error", (err: Error) => {
+          httpServer.close(() => testApp.close().then(() => reject(err)));
+        });
+        setTimeout(() => ws.close(), 1000);
+      });
+    });
+  });
+
   it("cancel 后旧合成迟到回调不能污染已经开始的下一轮", async () => {
     type StreamHandlers = Parameters<BailianStreamingTtsClient["synthesizeStream"]>[1];
     const streams: Array<{ handlers: StreamHandlers; signal?: AbortSignal }> = [];

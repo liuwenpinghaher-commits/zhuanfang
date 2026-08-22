@@ -410,16 +410,15 @@ describe("createBrowserTtsSink", () => {
     expect(sentSpeakSegments(sockets[0])).toEqual([]);
   });
 
-  it("tts.done 但播放上下文仍挂起，不得当成播完", async () => {
+  it("已排上 PCM 后上下文挂起，drain 不得改口成自动播放拦截", async () => {
     const sink = createBrowserTtsSink("ws://test/tts");
-    const speaking = sink.speak(["挂起时钟"]);
+    const speaking = sink.speak(["已经在响"]);
     sockets[0].open();
-    await vi.waitFor(() => expect(sentSpeakSegments(sockets[0])).toEqual([["挂起时钟"]]));
+    await vi.waitFor(() => expect(sentSpeakSegments(sockets[0])).toEqual([["已经在响"]]));
+    sockets[0].message(new Uint8Array([0, 0]).buffer);
+    expect(audioSources).toHaveLength(1);
     audioContexts[0].state = "suspended";
     sockets[0].message(JSON.stringify({ type: "tts.done" }));
-    await expect(speaking).rejects.toMatchObject({
-      name: "TtsPlaybackInterruptedError",
-      message: TTS_AUTOPLAY_BLOCKED_MESSAGE,
-    });
+    await expect(speaking).resolves.toBeUndefined();
   });
 });

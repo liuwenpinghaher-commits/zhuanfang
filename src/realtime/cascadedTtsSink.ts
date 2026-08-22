@@ -67,6 +67,7 @@ export function createBrowserTtsSink(
   let leftoverByte: Uint8Array | null = null; // a half 16-bit sample split across chunks
   /** True after the proxy sent tts.done for the in-flight utterance. */
   let synthesisComplete = false;
+  let scheduledPlayback = false;
 
   // Side-channel recording of the host (interviewer) TTS audio. We accumulate a
   // verbatim copy of every PCM chunk as it arrives so the assembled stream can be
@@ -157,12 +158,6 @@ export function createBrowserTtsSink(
     return Boolean(audioCtx && audioCtx.state === "running");
   }
 
-  function rejectIfPlaybackBlocked(socket: WebSocket): boolean {
-    if (playbackContextIsRunning()) return false;
-    rejectActiveSpeak(socket, TTS_AUTOPLAY_BLOCKED_MESSAGE);
-    return true;
-  }
-
   /** Decode one raw PCM (s16le, mono) chunk into an AudioBuffer, carrying any odd
    *  trailing byte over to the next chunk. Returns null if there's nothing playable yet. */
   function decodePcmChunk(data: ArrayBuffer): AudioBuffer | null {
@@ -217,6 +212,7 @@ export function createBrowserTtsSink(
     } catch {
       return;
     }
+    scheduledPlayback = true;
     nextStartTime = startAt + buffer.duration;
     scheduledSources.add(source);
     source.onended = () => { scheduledSources.delete(source); };
@@ -268,8 +264,6 @@ export function createBrowserTtsSink(
         // After tts.done, a close is end-of-utterance, not a playback failure.
         // Mid-stream close before done still interrupts (even if some PCM arrived).
         if (synthesisComplete) {
-          // Suspended clock + tts.done is mute success, not playback.
-          if (rejectIfPlaybackBlocked(socket)) return;
           resolveActiveSpeak(socket);
           return;
         }
@@ -308,6 +302,7 @@ export function createBrowserTtsSink(
       leftoverByte = null;
       sampleRate = DEFAULT_SAMPLE_RATE;
       synthesisComplete = false;
+      scheduledPlayback = false;
 
       let socket: WebSocket;
       try {
@@ -364,11 +359,12 @@ export function createBrowserTtsSink(
 
         // Resolve once every scheduled buffer has finished playing.
         const resolveWhenDrained = () => {
-          if (!playbackContextIsRunning()) {
-            rejectIfPlaybackBlocked(socket);
+          if (stopped || ctx.currentTime >= nextStartTime - 0.02) {
+            resolveActiveSpeak(socket);
             return true;
           }
-          if (stopped || ctx.currentTime >= nextStartTime - 0.02) {
+          // Background suspend after PCM was already audible is not autoplay block.
+          if (scheduledPlayback && !playbackContextIsRunning()) {
             resolveActiveSpeak(socket);
             return true;
           }

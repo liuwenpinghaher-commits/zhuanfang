@@ -1,7 +1,9 @@
+// @vitest-environment node
 import { describe, expect, it } from "vitest";
 import {
   COSYVOICE_PRESET_VOICES,
   normalizeCosyVoiceId,
+  mapQwenAudio411Voice,
   pairQwenAudioTtsVoice,
   resolveQwenAudioTtsVoice
 } from "./voice-presets";
@@ -33,6 +35,13 @@ describe("normalizeCosyVoiceId", () => {
     expect(resolveQwenAudioTtsVoice("longanyang")).toBe("longanqian");
     expect(resolveQwenAudioTtsVoice("longanlingxin")).toBe("longanlingxin");
     expect(resolveQwenAudioTtsVoice("longanqian")).toBe("longanqian");
+  });
+
+  it("mapQwenAudio411Voice 只改 411 预设，自定义克隆 id 原样过", () => {
+    expect(mapQwenAudio411Voice("longanhuan")).toBe("longanlingxin");
+    expect(mapQwenAudio411Voice("longanyang")).toBe("longanqian");
+    expect(mapQwenAudio411Voice("custom-voice-abc123")).toBe("custom-voice-abc123");
+    expect(mapQwenAudio411Voice("cosyvoice-clone-xxx")).toBe("cosyvoice-clone-xxx");
   });
 });
 
