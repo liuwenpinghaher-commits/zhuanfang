@@ -106,6 +106,28 @@ describe("turnAssembler", () => {
     expect(assembler.isSimilarToLiveTts("你继续说", 500)).toBe(true);
   });
 
+  it("口播含「不是」时，短答「不是」不是回声", () => {
+    const assembler = createTurnAssembler({
+      stabilityWindowMs: 100,
+      echoWindowMs: 800,
+      similarityThreshold: 0.8
+    });
+    assembler.noteTtsPlayback({
+      text: "你是不是还想讲那次救火？",
+      startedAtMs: 0,
+      endedAtMs: 1000
+    });
+    expect(assembler.isSimilarToLiveTts("不是", 1200)).toBe(false);
+    const result = assembler.ingest({
+      text: "不是",
+      isFinal: true,
+      atMs: 1200,
+      hasUserEnergyEvidence: true
+    });
+    expect(result.action).not.toBe("quarantine");
+    expect(assembler.decide({ atMs: 1400, allowCommit: true, questionContext: true }).action).toBe("commit");
+  });
+
   it("有用户能量和问答语境时保留极短但完整的回答", () => {
     const assembler = createTurnAssembler({ stabilityWindowMs: 100 });
     assembler.ingest({ text: "不是", isFinal: true, atMs: 0, hasUserEnergyEvidence: true });

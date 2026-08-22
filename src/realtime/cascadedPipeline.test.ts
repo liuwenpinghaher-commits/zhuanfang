@@ -1770,4 +1770,26 @@ describe("connectCascadedPipeline", () => {
     expect(send.mock.calls.length).toBe(sendCallsAfterHostTurn);
     pipeline.close();
   });
+
+  it("口播含「不是」时，有能量的「不是」要交卷，不进回声待确认", async () => {
+    asr.setExpressionState("concluding");
+    asr.setEchoCancellationEnabled(true);
+    asr.setUserEnergyEvidence(true);
+    asr.setRecentEnergy(0.01);
+    const quarantined: string[] = [];
+    const opts = makeOpts({
+      echoCancellationEnabled: true,
+      decisionOpts: { finalStabilityMs: 0, echoWindowMs: 1_500, minPauseMs: 200 },
+    });
+    opts.callbacks.onTranscriptQuarantined = (item) => quarantined.push(item.text);
+    const pipeline = connectCascadedPipeline(opts);
+    await pipeline.startListening("你是不是还想讲那次救火？");
+
+    asr.pushDelta("不是", true);
+    asr.pushSpeechStopped(900);
+    await vi.waitFor(() => expect(sendUserTurn.fn).toHaveBeenCalledOnce());
+    expect(sendUserTurn.fn.mock.calls[0][0]).toBe("不是");
+    expect(quarantined).toHaveLength(0);
+    pipeline.close();
+  });
 });

@@ -153,8 +153,11 @@ function isEchoLikeness(heard: string, spoken: string, similarityThreshold: numb
   if (!a || !b) return false;
   if (a === b) return true;
   if (textSimilarity(heard, spoken) >= similarityThreshold) return true;
-  // Half-sentence leak is a prefix/infix of the spoken clause, not the other way around.
-  return a.length >= 2 && b.includes(a);
+  // Short answers that happen to appear in the host line (「不是」「例子」) are not leak.
+  if (a.length <= 3) return false;
+  if (b.startsWith(a)) return true;
+  // Long contiguous fragment of the clause, not a 2-char infix.
+  return b.includes(a) && a.length >= 8;
 }
 
 function textSimilarity(left: string, right: string) {
