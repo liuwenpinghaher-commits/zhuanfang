@@ -1,6 +1,6 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createBrowserTtsSink } from "./cascadedTtsSink";
+import { createBrowserTtsSink, TTS_AUTOPLAY_BLOCKED_MESSAGE } from "./cascadedTtsSink";
 
 interface MockTtsSocket {
   sent: string[];
@@ -14,6 +14,7 @@ interface MockTtsSocket {
 interface MockAudioContextControl {
   state: AudioContextState;
   blockResume: boolean;
+  resumeRejects: boolean;
   resumeCalls: number;
   releaseBlockedResumes(): void;
 }
@@ -28,6 +29,7 @@ let audioContexts: MockAudioContextControl[] = [];
 let audioSources: MockAudioSourceControl[] = [];
 let nextAudioContextSuspended = false;
 let nextAudioContextResumeBlocked = false;
+let nextAudioContextResumeRejects = false;
 let restoreWebSocket: (() => void) | null = null;
 let restoreAudioContext: (() => void) | null = null;
 
@@ -37,6 +39,7 @@ beforeEach(() => {
   audioSources = [];
   nextAudioContextSuspended = false;
   nextAudioContextResumeBlocked = false;
+  nextAudioContextResumeRejects = false;
   const originalWebSocket = globalThis.WebSocket;
   const originalAudioContext = globalThis.AudioContext;
 
@@ -108,11 +111,15 @@ beforeEach(() => {
       } = {
         state: nextAudioContextSuspended ? "suspended" : "running",
         blockResume: nextAudioContextResumeBlocked,
+        resumeRejects: nextAudioContextResumeRejects,
         resumeCalls: 0,
         currentTime: 0,
         destination: {},
         resume() {
           this.resumeCalls += 1;
+          if (this.resumeRejects) {
+            return Promise.reject(new Error("autoplay blocked"));
+          }
           if (!this.blockResume) {
             this.state = "running";
             return Promise.resolve();
@@ -149,6 +156,7 @@ beforeEach(() => {
       audioContexts.push(control);
       nextAudioContextSuspended = false;
       nextAudioContextResumeBlocked = false;
+      nextAudioContextResumeRejects = false;
       return control;
     }
   } as unknown as typeof AudioContext;
@@ -375,5 +383,43 @@ describe("createBrowserTtsSink", () => {
     await vi.waitFor(() => expect(sentSpeakSegments(sockets[1])).toEqual([["故障后的新轮"]]));
     sockets[1].message(JSON.stringify({ type: "tts.done" }));
     await third;
+  });
+
+  it("复用传入的播放 AudioContext，不再 new", async () => {
+    const playbackCtx = new AudioContext();
+    expect(audioContexts).toHaveLength(1);
+    const sink = createBrowserTtsSink("ws://test/tts", "voice", playbackCtx);
+    const speaking = sink.speak(["复用上下文"]);
+    sockets[0].open();
+    await vi.waitFor(() => expect(sentSpeakSegments(sockets[0])).toEqual([["复用上下文"]]));
+    expect(audioContexts).toHaveLength(1);
+    sockets[0].message(JSON.stringify({ type: "tts.done" }));
+    await speaking;
+  });
+
+  it("speak 时上下文仍非 running 则失败并提示再点一次", async () => {
+    nextAudioContextSuspended = true;
+    nextAudioContextResumeRejects = true;
+    const sink = createBrowserTtsSink("ws://test/tts");
+    const speaking = sink.speak(["听不到"]);
+    sockets[0].open();
+    await expect(speaking).rejects.toMatchObject({
+      name: "TtsPlaybackInterruptedError",
+      message: TTS_AUTOPLAY_BLOCKED_MESSAGE,
+    });
+    expect(sentSpeakSegments(sockets[0])).toEqual([]);
+  });
+
+  it("tts.done 但播放上下文仍挂起，不得当成播完", async () => {
+    const sink = createBrowserTtsSink("ws://test/tts");
+    const speaking = sink.speak(["挂起时钟"]);
+    sockets[0].open();
+    await vi.waitFor(() => expect(sentSpeakSegments(sockets[0])).toEqual([["挂起时钟"]]));
+    audioContexts[0].state = "suspended";
+    sockets[0].message(JSON.stringify({ type: "tts.done" }));
+    await expect(speaking).rejects.toMatchObject({
+      name: "TtsPlaybackInterruptedError",
+      message: TTS_AUTOPLAY_BLOCKED_MESSAGE,
+    });
   });
 });

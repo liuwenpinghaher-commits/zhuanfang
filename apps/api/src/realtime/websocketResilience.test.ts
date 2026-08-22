@@ -100,6 +100,55 @@ describe("attachWebSocketHeartbeat", () => {
     expect(socket.terminate).toHaveBeenCalledOnce();
     expect(socket.listenerCount("pong")).toBe(0);
   });
+
+  it("飞行中超时不 dispose/terminate，missedPongs 归零后定时器继续；落地后再杀空闲", () => {
+    vi.useFakeTimers();
+    const socket = new FakeHeartbeatSocket();
+    let inFlight = true;
+    const onTimeout = vi.fn();
+    const dispose = attachWebSocketHeartbeat(socket, {
+      intervalMs: 15_000,
+      maxMissedPongs: 2,
+      onTimeout,
+      isInFlight: () => inFlight
+    });
+
+    vi.advanceTimersByTime(15_000);
+    expect(socket.ping).toHaveBeenCalledTimes(1);
+    expect(socket.terminate).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(15_000);
+    expect(onTimeout).toHaveBeenCalledOnce();
+    expect(socket.terminate).not.toHaveBeenCalled();
+    expect(socket.listenerCount("pong")).toBe(1);
+
+    vi.advanceTimersByTime(15_000);
+    expect(socket.ping).toHaveBeenCalledTimes(2);
+    expect(socket.terminate).not.toHaveBeenCalled();
+
+    inFlight = false;
+    vi.advanceTimersByTime(15_000);
+    expect(onTimeout).toHaveBeenCalledTimes(2);
+    expect(socket.terminate).toHaveBeenCalledOnce();
+    dispose();
+  });
+
+  it("飞行中 onTimeout 抛错也不得 terminate", () => {
+    vi.useFakeTimers();
+    const socket = new FakeHeartbeatSocket();
+    attachWebSocketHeartbeat(socket, {
+      intervalMs: 10,
+      maxMissedPongs: 1,
+      isInFlight: () => true,
+      onTimeout: () => {
+        throw new Error("telemetry failed");
+      }
+    });
+
+    expect(() => vi.advanceTimersByTime(10)).not.toThrow();
+    expect(socket.terminate).not.toHaveBeenCalled();
+    expect(socket.listenerCount("pong")).toBe(1);
+  });
 });
 
 describe("buildRealtimeProxyLog", () => {
@@ -128,6 +177,25 @@ describe("buildRealtimeProxyLog", () => {
     expect(serialized).not.toMatch(/secret-value|用户原话|must-not-escape|\r|\n/);
     expect(Buffer.byteLength(payload.reason ?? "", "utf8")).toBeLessThanOrEqual(160);
     expect(payload).toMatchObject({ code: 1011, phase: "ready", durationMs: 1234 });
+  });
+
+  it("可选 inFlight 写入 payload，缺省时不出现该字段", () => {
+    const withFlag = buildRealtimeProxyLog({
+      event: "realtime_proxy_heartbeat_timeout",
+      sessionId: "rtv-1",
+      direction: "browser",
+      phase: "ready",
+      inFlight: true
+    });
+    expect(withFlag.inFlight).toBe(true);
+
+    const withoutFlag = buildRealtimeProxyLog({
+      event: "realtime_proxy_heartbeat_timeout",
+      sessionId: "rtv-1",
+      direction: "browser",
+      phase: "ready"
+    });
+    expect(Object.keys(withoutFlag)).not.toContain("inFlight");
   });
 
   it.each([

@@ -19,7 +19,7 @@ import {
   type BailianVoiceEnrollmentClient,
   type BailianEmbeddingClient
 } from "../providers/bailian";
-import { COSYVOICE_PRESET_VOICES } from "../voice-presets";
+import { COSYVOICE_PRESET_VOICES, resolveQwenAudioTtsVoice } from "../voice-presets";
 import {
   createBailianStreamingTtsClient,
   STREAMING_TTS_SAMPLE_RATE,
@@ -636,9 +636,10 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
         let cleaned = false;
         let abortController = new AbortController();
         let synthesisGeneration = 0;
+        let ttsInFlight = false;
         let disposeHeartbeat: () => void = () => undefined;
 
-        const writeProxyLog = (event: string, code?: number, reason?: string) => {
+        const writeProxyLog = (event: string, code?: number, reason?: string, extras?: { inFlight?: boolean }) => {
           console.info(JSON.stringify(buildRealtimeProxyLog({
             event,
             sessionId,
@@ -646,7 +647,8 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
             code,
             reason,
             phase,
-            durationMs: Math.max(0, now() - startedAt)
+            durationMs: Math.max(0, now() - startedAt),
+            ...(extras?.inFlight !== undefined ? { inFlight: extras.inFlight } : {})
           })));
         };
 
@@ -654,6 +656,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
           if (cleaned) return;
           cleaned = true;
           phase = "closing";
+          ttsInFlight = false;
           disposeHeartbeat();
           abortController.abort();
           synthesisGeneration += 1;
@@ -681,9 +684,11 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
         disposeHeartbeat = attachWebSocketHeartbeat(ws, {
           intervalMs: heartbeatIntervalMs,
           maxMissedPongs: heartbeatMaxMissedPongs,
+          isInFlight: () => ttsInFlight,
           onTimeout: () => {
             if (cleaned) return;
-            writeProxyLog("realtime_proxy_heartbeat_timeout");
+            writeProxyLog("realtime_proxy_heartbeat_timeout", undefined, undefined, { inFlight: ttsInFlight });
+            if (ttsInFlight) return;
             cleanup();
           }
         });
@@ -710,6 +715,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
             abortController.abort();
             synthesisGeneration += 1;
             abortController = new AbortController();
+            ttsInFlight = false;
             return;
           }
 
@@ -723,6 +729,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
               .map((segment) => stripSpokenAsides(segment))
               .filter((segment) => segment.length > 0);
             const voice = normalizeCosyVoice(msg.voice);
+            const resolvedVoice = voice !== undefined ? resolveQwenAudioTtsVoice(voice) : undefined;
             const prosody = normalizeProsody(msg.prosody);
 
             // Abort any prior in-flight synthesis before starting a new one
@@ -730,6 +737,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
             abortController = new AbortController();
             const signal = abortController.signal;
             const generation = ++synthesisGeneration;
+            ttsInFlight = true;
             const isCurrentSynthesis = () => !cleaned
               && generation === synthesisGeneration
               && !signal.aborted;
@@ -743,7 +751,7 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
 
             activeTtsClient
               .synthesizeStream(
-                { segments, voice, prosody },
+                { segments, voice: resolvedVoice, prosody },
                 {
                   onAudio: (chunk) => {
                     if (isCurrentSynthesis() && ws.readyState === WebSocket.OPEN) {
@@ -766,6 +774,9 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
               .catch(() => {
                 // synthesizeStream rejects on error; onError already sent the
                 // message — nothing more to do here.
+              })
+              .finally(() => {
+                if (generation === synthesisGeneration) ttsInFlight = false;
               });
           }
         }

@@ -1632,7 +1632,7 @@ describe("realtime-voice TTS WebSocket proxy (/api/realtime-voice/ws/tts/:sessio
 
         const received: string[] = [];
         ws.on("open", () => {
-          ws.send(JSON.stringify({ type: "speak", segments: ["你好", "世界"] }));
+          ws.send(JSON.stringify({ type: "speak", segments: ["你好", "世界"], voice: "longanhuan" }));
         });
         ws.on("message", (data: Buffer) => {
           received.push(data.toString());
@@ -1642,6 +1642,7 @@ describe("realtime-voice TTS WebSocket proxy (/api/realtime-voice/ws/tts/:sessio
             // Verify the proxy called synthesizeStream with our segments
             expect(calls).toHaveLength(1);
             expect(calls[0].segments).toEqual(["你好", "世界"]);
+            expect(calls[0].voice).toBe("longanlingxin");
             // Verify the proxy sent tts.done after completion
             expect(received.some((m) => m.includes("tts.done"))).toBe(true);
             httpServer.close(() => testApp.close().then(() => resolve()));
@@ -1815,13 +1816,15 @@ describe("realtime-voice TTS WebSocket proxy (/api/realtime-voice/ws/tts/:sessio
     }
   });
 
-  it("TTS browser 连续两个周期无 pong 后终止并中止合成与活跃会话", async () => {
+  it("autoPong: false 合成中心跳超时保持 OPEN，结束后空闲仍可关", async () => {
     const testApp = Fastify();
     let synthesisSignal: AbortSignal | undefined;
     let abortCount = 0;
+    let finishSynthesis!: () => void;
     const synthesizeStream = vi.fn(async (_input, _handlers, signal?: AbortSignal) => {
       synthesisSignal = signal;
       await new Promise<void>((resolve) => {
+        finishSynthesis = resolve;
         if (signal?.aborted) {
           abortCount += 1;
           resolve();
@@ -1854,10 +1857,10 @@ describe("realtime-voice TTS WebSocket proxy (/api/realtime-voice/ws/tts/:sessio
     ws.on("ping", onBrowserPing);
 
     try {
-      const closePromise = waitForWsClose(ws);
+      const closePromise = waitForWsClose(ws, 3_000);
       const firstPing = waitForFirstBrowserPing(ws);
       await once(ws, "open");
-      ws.send(JSON.stringify({ type: "speak", segments: ["需要被中止的合成"] }));
+      ws.send(JSON.stringify({ type: "speak", segments: ["合成还在飞"] }));
       await vi.waitFor(() => expect(synthesizeStream).toHaveBeenCalledOnce(), { timeout: 500, interval: 5 });
       await firstPing;
 
@@ -1865,19 +1868,33 @@ describe("realtime-voice TTS WebSocket proxy (/api/realtime-voice/ws/tts/:sessio
       expect(ws.readyState).toBe(WsClient.OPEN);
       expect(synthesisSignal?.aborted).toBe(false);
       expect(abortCount).toBe(0);
-      await expectRealtimeSessionActivePastTtl(testApp, sessionId);
 
+      await vi.waitFor(() => {
+        expect(ws.readyState).toBe(WsClient.OPEN);
+        expect(synthesisSignal?.aborted).toBe(false);
+        expect(abortCount).toBe(0);
+        expect(browserPingCount).toBeGreaterThanOrEqual(2);
+      }, { timeout: 800, interval: 20 });
+      await expectRealtimeSessionActivePastTtl(testApp, sessionId);
+      const logsDuring = infoSpy.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
+      expect(logsDuring).toContainEqual(expect.objectContaining({
+        event: "realtime_proxy_heartbeat_timeout",
+        sessionId,
+        direction: "browser",
+        inFlight: true
+      }));
+
+      finishSynthesis();
       const close = await closePromise;
 
       expect(close.code).toBe(1006);
-      expect(browserPingCount).toBe(1);
-      expect(synthesisSignal?.aborted).toBe(true);
-      expect(abortCount).toBe(1);
+      expect(ws.readyState).toBe(WsClient.CLOSED);
       const logs = infoSpy.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
       expect(logs).toContainEqual(expect.objectContaining({
         event: "realtime_proxy_heartbeat_timeout",
         sessionId,
-        direction: "browser"
+        direction: "browser",
+        inFlight: false
       }));
       await expectRealtimeSessionExpired(testApp, sessionId);
     } finally {

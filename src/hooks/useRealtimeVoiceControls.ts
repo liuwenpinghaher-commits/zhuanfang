@@ -29,7 +29,7 @@ import {
   type TtsSink
 } from "../realtime/cascadedPipeline";
 import { createBrowserAsrSource } from "../realtime/cascadedAsrSource";
-import { createBrowserTtsSink } from "../realtime/cascadedTtsSink";
+import { createBrowserTtsSink, TTS_AUTOPLAY_BLOCKED_MESSAGE } from "../realtime/cascadedTtsSink";
 import { createSessionAudioRecorder, type SessionAudioRecorder } from "../realtime/sessionAudioRecorder";
 import { probeVadWorkletCapability } from "../realtime/vadWorkletCapability";
 import {
@@ -229,11 +229,18 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
     togglingRef.current = true;
 
     try {
+      let playbackCtx: AudioContext | undefined;
       try {
         const AC = window.AudioContext;
         if (AC) {
+          // Both contexts must be constructed and resume() called before any await,
+          // otherwise the playback graph is created outside the click gesture and stays silent.
           const unlock = new AC({ sampleRate: 16000 });
-          await unlock.resume();
+          playbackCtx = new AC();
+          const unlockResume = unlock.resume();
+          const playbackResume = playbackCtx.resume();
+          await unlockResume;
+          await playbackResume;
           (window as unknown as { __zhuanfangAudioUnlock?: AudioContext }).__zhuanfangAudioUnlock = unlock;
         }
       } catch {
@@ -341,7 +348,11 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
                 }
               }
             });
-            const tts = createBrowserTtsSink(ttsWsUrl, productState.systemConfig.voice.defaultVoice);
+            const tts = createBrowserTtsSink(
+              ttsWsUrl,
+              productState.systemConfig.voice.defaultVoice,
+              playbackCtx
+            );
             // Hold the sink so finishInterview() can drain its host-audio PCM tap.
             ttsSinkRef.current = tts;
 
@@ -445,8 +456,12 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
                   if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
                   setNotice(buildNotice("warning", "级联语音错误", err.message));
                 },
-                onTtsPlaybackInterrupted: () => {
+                onTtsPlaybackInterrupted: (err) => {
                   if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
+                  if (err.message === TTS_AUTOPLAY_BLOCKED_MESSAGE) {
+                    setNotice(buildNotice("warning", "浏览器拦住了声音", "请再点一次语音"));
+                    return;
+                  }
                   setNotice(buildNotice("warning", "语音播放中断", "本轮语音播放中断，文字内容已保留"));
                 },
                 onLatency: (sample) => {

@@ -45,9 +45,16 @@ export class TtsPlaybackInterruptedError extends Error {
   }
 }
 
-export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink {
+/** Autoplay policy left the playback context suspended — user must click again. */
+export const TTS_AUTOPLAY_BLOCKED_MESSAGE = "浏览器拦住了声音，请再点一次语音";
+
+export function createBrowserTtsSink(
+  ttsWsUrl: string,
+  voice?: string,
+  playbackCtx?: AudioContext
+): TtsSink {
   let ws: WebSocket | null = null;
-  let audioCtx: AudioContext | null = null;
+  let audioCtx: AudioContext | null = playbackCtx ?? null;
   let stopped = false;
 
   // Sample-accurate playback scheduling.
@@ -144,6 +151,16 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
       audioCtx = new AudioContext();
     }
     return audioCtx;
+  }
+
+  function playbackContextIsRunning(): boolean {
+    return Boolean(audioCtx && audioCtx.state === "running");
+  }
+
+  function rejectIfPlaybackBlocked(socket: WebSocket): boolean {
+    if (playbackContextIsRunning()) return false;
+    rejectActiveSpeak(socket, TTS_AUTOPLAY_BLOCKED_MESSAGE);
+    return true;
   }
 
   /** Decode one raw PCM (s16le, mono) chunk into an AudioBuffer, carrying any odd
@@ -251,6 +268,8 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
         // After tts.done, a close is end-of-utterance, not a playback failure.
         // Mid-stream close before done still interrupts (even if some PCM arrived).
         if (synthesisComplete) {
+          // Suspended clock + tts.done is mute success, not playback.
+          if (rejectIfPlaybackBlocked(socket)) return;
           resolveActiveSpeak(socket);
           return;
         }
@@ -327,6 +346,10 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
       }
       if (!isCurrentSpeak(attempt.generation)) return;
       if (attempt.interruptionError) throw attempt.interruptionError;
+      if (ctx.state !== "running") {
+        clearPendingSpeak(attempt.generation);
+        throw new TtsPlaybackInterruptedError(TTS_AUTOPLAY_BLOCKED_MESSAGE);
+      }
 
       return new Promise<void>((resolve, reject) => {
         let doneReceived = false;
@@ -341,6 +364,10 @@ export function createBrowserTtsSink(ttsWsUrl: string, voice?: string): TtsSink 
 
         // Resolve once every scheduled buffer has finished playing.
         const resolveWhenDrained = () => {
+          if (!playbackContextIsRunning()) {
+            rejectIfPlaybackBlocked(socket);
+            return true;
+          }
           if (stopped || ctx.currentTime >= nextStartTime - 0.02) {
             resolveActiveSpeak(socket);
             return true;

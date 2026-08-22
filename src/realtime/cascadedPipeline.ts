@@ -412,6 +412,8 @@ export function connectCascadedPipeline(
   let halfDuplexMute = echoCancellationEnabledOpt !== true;
   let bargeArmTimer: ReturnType<typeof setTimeout> | null = null;
   let bargeSpeechStartedAt = 0;
+  // Opening speak is still draining: keep speaking, no second-turn submit / auto-barge.
+  let openingHold = false;
 
   function usesHalfDuplexMute(): boolean {
     return halfDuplexMute;
@@ -428,6 +430,7 @@ export function connectCascadedPipeline(
   }
   function performBarge(): boolean {
     if (closed) return false;
+    if (openingHold) return false;
     if (state !== "thinking" && state !== "speaking") return false;
     if (activeAbort) {
       activeAbort.abort();
@@ -482,6 +485,7 @@ export function connectCascadedPipeline(
    */
   function handleSpeechStarted(): boolean {
     if (closed) return false;
+    if (openingHold) return false;
     if (micSuppressed) return false;
     const wasActive = state === "thinking" || state === "speaking";
     if (!wasActive) return false;
@@ -504,6 +508,7 @@ export function connectCascadedPipeline(
   async function handleSpeechStopped(silenceMs: number) {
     speechStoppedAt = Date.now();
     if (closed) return;
+    if (openingHold) return;
     if (bargeArmTimer !== null && bargeSpeechStartedAt > 0
       && Date.now() - bargeSpeechStartedAt < minBargeInMs) {
       clearBargeArm();
@@ -621,6 +626,7 @@ export function connectCascadedPipeline(
   // ── Core respond flow ──────────────────────────────────────────────────────
   async function doRespond(authoritativeTranscript?: string) {
     if (closed) return;
+    if (openingHold) return;
     if (state === "thinking" || state === "speaking") return;
 
     const fullTranscript = authoritativeTranscript?.trim() || (committedTranscript + partialTranscript).trim();
@@ -841,28 +847,29 @@ export function connectCascadedPipeline(
       // since each delta already carries the full text-so-far for this segment).
       partialTranscript = text;
     }
-    setState("transcribing");
+    if (!openingHold) setState("transcribing");
     callbacks.onUserTranscript(committedTranscript + partialTranscript, false);
   }
 
   function processSpeechStarted() {
     if (closed || micSuppressed) return; // echo: AI is speaking, ignore its own voice
-    // NB: call handleSpeechStarted BEFORE setState("listening") so that
-    // the barge-in check (state === "thinking" | "speaking") still fires.
+    if (openingHold) return;
+    // Call handleSpeechStarted before changing state so the barge check still
+    // sees thinking/speaking. Do not flip to listening while the host is talking:
+    // that would drop the 280ms barge timer and open a second turn.
     const didBargeIn = handleSpeechStarted();
-    if (!didBargeIn) {
-      if (activeReview?.source === "echo") {
-        resetTurn();
-        activeReview = null;
-        surfacedQuarantineKey = "";
-        callbacks.onUserTranscript("", false);
-      }
+    if (didBargeIn) {
       setState("listening");
-    } else {
-      // Barge-in set state to "interrupted"; now move to listening
-      // so new speech accumulates cleanly.
-      setState("listening");
+      return;
     }
+    if (state === "thinking" || state === "speaking") return;
+    if (activeReview?.source === "echo") {
+      resetTurn();
+      activeReview = null;
+      surfacedQuarantineKey = "";
+      callbacks.onUserTranscript("", false);
+    }
+    setState("listening");
   }
 
   function processSpeechStopped(silenceMs: number) {
@@ -942,13 +949,26 @@ export function connectCascadedPipeline(
       halfDuplexMute = !(echoCancellationEnabledOpt ?? asr.getEchoCancellationEnabled?.() ?? false);
       if (opening && usesHalfDuplexMute()) suppressMic();
       if (opening) {
+        openingHold = true;
         setState("speaking");
         const startedAtMs = Date.now();
-        try { await tts.speak([opening]); } catch (error) { reportTtsPlaybackInterrupted(error); }
+        try {
+          await tts.speak([opening]);
+        } catch (error) {
+          reportTtsPlaybackInterrupted(error);
+        } finally {
+          openingHold = false;
+        }
         turnAssembler.noteTtsPlayback({ text: opening, startedAtMs, endedAtMs: Date.now() });
         releaseMicAfterGuard();
       }
-      if (!closed) setState("listening");
+      if (!closed) {
+        if (opening) {
+          if (state === "speaking") setState("listening");
+        } else {
+          setState("listening");
+        }
+      }
     },
 
     updatePreSignals(next: InteractionPreSignals | null) {
@@ -956,6 +976,7 @@ export function connectCascadedPipeline(
     },
 
     interrupt() {
+      openingHold = false;
       if (activeAbort) { activeAbort.abort(); activeAbort = null; }
       classifyAbort?.abort(); classifyAbort = null;
       tts.stop();
@@ -1024,6 +1045,7 @@ export function connectCascadedPipeline(
 
     close() {
       closed = true;
+      openingHold = false;
       queuedRecoveryReviews.length = 0;
       recoveryTranscriptBuffer.clear();
       clearMaxWaitTimer();

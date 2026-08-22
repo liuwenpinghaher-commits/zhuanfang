@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * cascadedPipeline.test.ts
  *
@@ -1170,6 +1171,70 @@ describe("connectCascadedPipeline", () => {
 
     expect(sendUserTurn.fn).not.toHaveBeenCalled();
     expect(heldStop).not.toHaveBeenCalled();
+
+    resolveSpeak();
+    await started;
+    pipeline.close();
+  });
+
+  it("真机开场 hold：AEC 开着时 opening speak 期间「你好」不得交卷/打断", async () => {
+    // Must NOT rely on half-duplex suppressMic: AEC-on is the live-mic path.
+    // Captions may write; barge timer / second-turn submit / 语音播放中断 must not.
+    vi.useFakeTimers();
+    asr.setEchoCancellationEnabled(true);
+    asr.setUserEnergyEvidence(true);
+    asr.setRecentEnergy(0.5);
+    asr.setExpressionState("concluding");
+    let resolveSpeak!: () => void;
+    const heldSpeak = vi.fn(
+      (_segs: string[]) => new Promise<void>((res) => { resolveSpeak = res; })
+    );
+    const heldStop = vi.fn();
+    const heldTts = {
+      speak: heldSpeak,
+      stop: heldStop,
+      close: vi.fn(),
+    } as unknown as TtsSink;
+    const onTtsPlaybackInterrupted = vi.fn();
+    const sendUserTurnStream = vi.fn();
+    const pipeline = connectCascadedPipeline(
+      makeOpts({
+        tts: heldTts,
+        echoCancellationEnabled: true,
+        sendUserTurnStream,
+        decisionOpts: { minBargeInMs: 280, finalStabilityMs: 0, minPauseMs: 200 },
+        callbacks: {
+          onStateChange: (s) => stateChanges.push(s),
+          onUserTranscript: (text, isFinal) => userTranscripts.push({ text, isFinal }),
+          onAssistantText: (text) => assistantTexts.push(text),
+          onError: (e) => errors.push(e),
+          onTtsPlaybackInterrupted,
+        },
+      })
+    );
+
+    const started = pipeline.startListening("你好，今天我们聊聊你的工作。");
+    await Promise.resolve();
+    expect(heldSpeak).toHaveBeenCalledTimes(1);
+    expect(stateChanges.at(-1)).toBe("speaking");
+
+    asr.pushSpeechStarted();
+    asr.pushDelta("你好", true);
+    asr.pushSpeechStopped(500);
+    vi.advanceTimersByTime(1_000);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Events reached the pipeline (not half-duplex dropped) — captions may flash.
+    expect(userTranscripts.some((t) => t.text.includes("你好"))).toBe(true);
+    expect(heldStop).not.toHaveBeenCalled();
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+    expect(sendUserTurnStream).not.toHaveBeenCalled();
+    expect(onTtsPlaybackInterrupted).not.toHaveBeenCalled();
+    expect(stateChanges.at(-1)).toBe("speaking");
+    expect(stateChanges).not.toContain("listening");
+    expect(stateChanges).not.toContain("transcribing");
+    expect(stateChanges).not.toContain("interrupted");
 
     resolveSpeak();
     await started;

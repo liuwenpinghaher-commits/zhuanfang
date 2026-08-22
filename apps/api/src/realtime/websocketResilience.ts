@@ -10,6 +10,8 @@ export interface HeartbeatOptions {
   intervalMs: number;
   maxMissedPongs: number;
   onTimeout: () => void;
+  /** Read each tick. Timeout while true must not dispose / terminate the socket. */
+  isInFlight?: () => boolean;
 }
 
 export interface RealtimeProxyLogInput {
@@ -20,6 +22,7 @@ export interface RealtimeProxyLogInput {
   reason?: string;
   phase: "connecting" | "ready" | "closing";
   durationMs?: number;
+  inFlight?: boolean;
 }
 
 export interface RealtimeProxyLogPayload {
@@ -30,6 +33,7 @@ export interface RealtimeProxyLogPayload {
   reason: string | undefined;
   phase: "connecting" | "ready" | "closing";
   durationMs: number | undefined;
+  inFlight?: boolean;
 }
 
 const WEB_SOCKET_OPEN = 1;
@@ -66,6 +70,15 @@ export function attachWebSocketHeartbeat(
 
     missedPongs += 1;
     if (missedPongs >= options.maxMissedPongs) {
+      if (options.isInFlight?.()) {
+        missedPongs = 0;
+        try {
+          options.onTimeout();
+        } catch {
+          /* in-flight synthesis must keep the timer */
+        }
+        return;
+      }
       dispose();
       try {
         options.onTimeout();
@@ -89,7 +102,8 @@ export function buildRealtimeProxyLog(input: RealtimeProxyLogInput): RealtimePro
     code: input.code,
     reason: input.reason === undefined ? undefined : sanitizeLogReason(input.reason),
     phase: input.phase,
-    durationMs: input.durationMs
+    durationMs: input.durationMs,
+    ...(input.inFlight !== undefined ? { inFlight: input.inFlight } : {})
   };
 }
 
