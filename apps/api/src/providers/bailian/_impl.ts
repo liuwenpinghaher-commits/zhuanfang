@@ -7,6 +7,10 @@ import { sanitizeExternalMaterialList } from "../../../../../src/domain/utils";
 import { resolveRequestTimeoutMs } from "../../request-timeout";
 import { normalizeCosyVoiceId } from "../../voice-presets";
 import { resolveBailianApiKey } from "../../runtime-secrets";
+import {
+  synthesizeQwenAudioTts,
+  type SynthesizeQwenAudioTtsOptions
+} from "../bailian-tts-inference";
 
 /** Default OpenAI-compatible base for text + Qwen-Audio ASR (token-plan MaaS). */
 export const BAILIAN_DEFAULT_BASE_URL = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1";
@@ -251,6 +255,9 @@ export interface BailianPodcastAudioResult {
   audioUrl: string;
   expiresAt?: number;
   durationSec?: number;
+  /** Present when synthesis returned bytes instead of a remote URL (Qwen-Audio WS). */
+  audioBytes?: Uint8Array;
+  mimeType?: string;
 }
 
 export interface BailianAudioTranscriptionRequest {
@@ -315,6 +322,9 @@ interface BailianPodcastAudioClientOptions {
   /** Emit the AIGC content tag (default true). */
   enableAigcTag?: boolean;
   fetchImpl?: FetchLike;
+  /** Inference WebSocket for qwen-audio-3.0-tts-* (HTTP SpeechSynthesizer 400s on this model). */
+  wsUrl?: string;
+  wsFactory?: SynthesizeQwenAudioTtsOptions["wsFactory"];
 }
 
 interface BailianAudioTranscriptionClientOptions {
@@ -787,29 +797,40 @@ export function createBailianPodcastAudioClient(options: BailianPodcastAudioClie
       const text = (input.text ?? "").trim();
       const timeoutMs = Math.min(180_000, Math.max(60_000, 45_000 + Math.ceil(text.length / 4) * 1000));
       const qwenAudio = isQwenAudioTtsModel(model);
+      if (qwenAudio) {
+        const rendered = await synthesizeQwenAudioTts({
+          apiKey: options.apiKey,
+          text,
+          voice,
+          model,
+          wsUrl: options.wsUrl ?? BAILIAN_DEFAULT_TTS_WS_URL,
+          sampleRate,
+          overallTimeoutMs: timeoutMs,
+          ...(options.wsFactory ? { wsFactory: options.wsFactory } : {})
+        });
+        return {
+          providerId: "bailian-qwen-audio-tts",
+          model,
+          voice: rendered.voice,
+          audioUrl: `local-audio://${voice}.wav`,
+          durationSec: rendered.durationSec,
+          audioBytes: rendered.wav,
+          mimeType: "audio/wav"
+        };
+      }
       const url = `${audioBaseUrl}/api/v1/services/audio/tts/SpeechSynthesizer`;
-      const body = qwenAudio
-        ? {
-            model,
-            input: {
-              text,
-              voice,
-              format,
-              sample_rate: sampleRate
-            }
-          }
-        : {
-            model,
-            input: {
-              text,
-              voice,
-              format,
-              sample_rate: sampleRate,
-              rate,
-              enable_markdown_filter: enableMarkdownFilter,
-              enable_aigc_tag: enableAigcTag
-            }
-          };
+      const body = {
+        model,
+        input: {
+          text,
+          voice,
+          format,
+          sample_rate: sampleRate,
+          rate,
+          enable_markdown_filter: enableMarkdownFilter,
+          enable_aigc_tag: enableAigcTag
+        }
+      };
       const response = await fetchImpl(url, {
         method: "POST",
         headers: {
@@ -821,7 +842,13 @@ export function createBailianPodcastAudioClient(options: BailianPodcastAudioClie
       });
 
       if (!response.ok) {
-        throw new Error(`Bailian TTS request failed: ${response.status}`);
+        const detail = await response.text().catch(() => "");
+        const clipped = detail.replace(/\s+/g, " ").trim().slice(0, 240);
+        throw new Error(
+          clipped
+            ? `Bailian TTS request failed: ${response.status} ${clipped}`
+            : `Bailian TTS request failed: ${response.status}`
+        );
       }
 
       const payload = (await response.json()) as BailianPodcastAudioOutput;
@@ -1097,6 +1124,7 @@ export function createBailianPodcastAudioClientFromEnv(
   return createBailianPodcastAudioClient({
     apiKey,
     audioBaseUrl: env.BAILIAN_AUDIO_BASE_URL,
+    wsUrl: resolveBailianTtsWsUrl(env),
     model: env.BAILIAN_TTS_MODEL ?? BAILIAN_PODCAST_TTS_MODEL,
     voice: env.BAILIAN_TTS_VOICE ?? BAILIAN_PODCAST_TTS_VOICE,
     // Documented CosyVoice tuning knobs (README) — previously hardcoded, now honored.

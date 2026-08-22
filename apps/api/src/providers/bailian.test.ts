@@ -119,58 +119,55 @@ describe("bailian provider client", () => {
     expect(result.sources[0].url).not.toContain("dashscope.aliyun");
   });
 
-  it("uses qwen-audio-3.0-tts-plus for rendered podcast audio by default", async () => {
-    const fetchImpl = vi.fn(async () =>
-      new Response(
-        JSON.stringify({
-          output: {
-            audio: {
-              url: "https://dashscope-result.example.com/podcast.mp3",
-              expires_at: 1791705600
-            }
-          },
-          request_id: "request-qwen-audio-tts"
-        }),
-        { status: 200 }
-      )
-    );
+  it("uses qwen-audio-3.0-tts-plus over inference WebSocket by default", async () => {
+    const pcm = Buffer.alloc(4800);
+    const sent: string[] = [];
+    let onOpen: (() => void) | undefined;
+    let onMessage: ((data: Buffer | string, isBinary: boolean) => void) | undefined;
     const client = createBailianPodcastAudioClient({
       apiKey: "test-key",
-      fetchImpl
+      fetchImpl: vi.fn(async () => {
+        throw new Error("HTTP SpeechSynthesizer must not be used for qwen-audio TTS");
+      }),
+      wsFactory: () => {
+        const ws = {
+          on(event: string, handler: (...args: unknown[]) => void) {
+            if (event === "open") onOpen = handler as () => void;
+            if (event === "message") onMessage = handler as (data: Buffer | string, isBinary: boolean) => void;
+            return ws;
+          },
+          send(data: string) {
+            sent.push(data);
+            const parsed = JSON.parse(data) as { header?: { action?: string } };
+            if (parsed.header?.action === "run-task") {
+              queueMicrotask(() => onMessage?.(Buffer.from(JSON.stringify({ header: { event: "task-started" } })), false));
+            }
+            if (parsed.header?.action === "finish-task") {
+              queueMicrotask(() => {
+                onMessage?.(pcm, true);
+                onMessage?.(Buffer.from(JSON.stringify({ header: { event: "task-finished" } })), false);
+              });
+            }
+          },
+          close() {}
+        };
+        queueMicrotask(() => onOpen?.());
+        return ws;
+      }
     });
 
     const result = await client.synthesize({
       text: "开场：这是一段确认后的播客脚本。"
     });
 
-    expect(fetchImpl).toHaveBeenCalledWith(
-      "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer",
-      expect.objectContaining({
-        method: "POST",
-        headers: {
-          authorization: "Bearer test-key",
-          "content-type": "application/json"
-        }
-      })
-    );
-    const requestBody = JSON.parse(getLastFetchCall(fetchImpl as FetchMock)[1]?.body as string);
-    expect(requestBody).toMatchObject({
-      model: "qwen-audio-3.0-tts-plus",
-      input: {
-        text: "开场：这是一段确认后的播客脚本。",
-        voice: "longanlingxin",
-        format: "mp3",
-        sample_rate: 24000
-      }
-    });
-    expect(result).toEqual({
-      providerId: "bailian-qwen-audio-tts",
-      model: "qwen-audio-3.0-tts-plus",
-      voice: "longanlingxin",
-      audioUrl: "https://dashscope-result.example.com/podcast.mp3",
-      expiresAt: 1791705600,
-      durationSec: undefined
-    });
+    const runTask = sent.map((row) => JSON.parse(row)).find((row) => row.header?.action === "run-task");
+    expect(runTask.payload.model).toBe("qwen-audio-3.0-tts-plus");
+    expect(runTask.payload.parameters.voice).toBe("longanlingxin");
+    expect(runTask.payload.parameters.format).toBe("pcm");
+    expect(result.providerId).toBe("bailian-qwen-audio-tts");
+    expect(result.mimeType).toBe("audio/wav");
+    expect(result.audioBytes?.byteLength).toBeGreaterThan(44);
+    expect(result.durationSec).toBeGreaterThan(0);
   });
 
   it("threads the documented configurable TTS params into the synthesis request body", async () => {

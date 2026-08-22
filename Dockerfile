@@ -43,7 +43,7 @@ COPY --from=build /app/dist ./dist
 COPY apps ./apps
 COPY packages ./packages
 COPY src ./src
-RUN mkdir -p /app/.data/corpus-audio && chown -R node:node /app
+RUN mkdir -p /app/.data/corpus-audio /app/.data/podcast-audio && chown -R node:node /app
 USER node
 EXPOSE 3210
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

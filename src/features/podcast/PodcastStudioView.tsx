@@ -616,12 +616,14 @@ function formatAudioPlaceholder(episode: PodcastEpisode): string {
 }
 
 function isPlayableAudioUrl(value: string) {
-  return /^(https?:\/\/|blob:|data:audio\/)/i.test(value);
+  return /^(https?:\/\/|blob:|data:audio\/|\/api\/podcast\/episodes\/)/i.test(value);
 }
 
 function inferAudioMimeType(value: string) {
   const cleanUrl = value.split("?")[0].toLowerCase();
-  if (cleanUrl.endsWith(".wav")) return "audio/wav";
+  if (cleanUrl.endsWith(".wav") || /\/api\/podcast\/episodes\/[^/]+\/audio$/.test(cleanUrl)) {
+    return "audio/wav";
+  }
   if (cleanUrl.endsWith(".ogg")) return "audio/ogg";
   if (cleanUrl.endsWith(".pcm")) return "audio/L16";
   return "audio/mpeg";

@@ -19,6 +19,7 @@ import { generatePodcastScriptFromSource } from "../intelligence/podcast-script-
 import { normalizeCosyVoiceId } from "../voice-presets";
 import { runStateCommand } from "../state-command";
 import type { WriteGate } from "../server";
+import { readPodcastAudio, writePodcastAudio } from "../podcast-audio-store";
 
 const PODCAST_SCRIPT_MAX_CHARS = 32_000;
 
@@ -58,8 +59,12 @@ export async function renderEpisodeAudio(
       text: episode.script,
       voice: normalizeProviderVoice(episode.voice)
     });
+    let audioUrl = renderedAudio.audioUrl;
+    if (renderedAudio.audioBytes && renderedAudio.audioBytes.byteLength > 0) {
+      audioUrl = await writePodcastAudio(episode.id, Buffer.from(renderedAudio.audioBytes));
+    }
     return {
-      audioUrl: renderedAudio.audioUrl,
+      audioUrl,
       durationSec: renderedAudio.durationSec ?? episode.durationSec,
       voice: renderedAudio.voice,
       audioRenderStatus: "rendered",
@@ -201,6 +206,24 @@ export async function registerPodcastRoutes(
       return reply.code(f.code).send({ error: f.error });
     }
     return { episode: autoEpisode, state: persistedFinal };
+  });
+
+  server.get("/api/podcast/episodes/:id/audio", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const episode = repository.getState().podcastEpisodes.find((item) => item.id === id);
+    if (!episode) {
+      return reply.code(404).send({ error: "Episode not found." });
+    }
+    const bytes = await readPodcastAudio(id);
+    if (!bytes) {
+      return reply.code(404).send({ error: "Audio not found." });
+    }
+    return reply
+      .header("content-type", "audio/wav")
+      .header("content-length", String(bytes.length))
+      .header("x-content-type-options", "nosniff")
+      .header("cache-control", "private, max-age=3600")
+      .send(bytes);
   });
 
   server.post("/api/podcast/episodes/:id/confirm", async (request, reply) => {

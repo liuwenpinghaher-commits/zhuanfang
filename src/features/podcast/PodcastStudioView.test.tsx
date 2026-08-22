@@ -52,6 +52,26 @@ describe("PodcastStudioView", () => {
     expect(container?.textContent).toContain("本地占位");
   });
 
+  it("treats same-origin podcast audio routes as playable", () => {
+    const state = createInitialProductState();
+    const episode = createEpisode("/api/podcast/episodes/podcast-test/audio?t=1", {
+      audioRenderStatus: "rendered",
+      scriptReviewStatus: "用户确认"
+    });
+
+    renderView({
+      ...state,
+      podcastEpisodes: [episode]
+    });
+
+    const audio = container?.querySelector("audio");
+    expect(audio).toBeTruthy();
+    expect(audio?.querySelector("source")?.getAttribute("src")).toBe(
+      "/api/podcast/episodes/podcast-test/audio?t=1"
+    );
+    expect(audio?.querySelector("source")?.getAttribute("type")).toBe("audio/wav");
+  });
+
   it("does not show a player for pending episodes with leftover https URLs", () => {
     const state = createInitialProductState();
     const episode = createEpisode("https://cdn.example.com/stale.mp3", {
