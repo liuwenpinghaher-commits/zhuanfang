@@ -54,6 +54,20 @@ function shorten(text: string, max = 80): string {
   return clean.length > max ? clean.slice(0, max) + "…" : clean;
 }
 
+function rawMaterialEmptyHint(sessionId: string, state: ProductState): string {
+  const session = state.sessions.find((item) => item.id === sessionId);
+  if (!session) {
+    return "这条笔记没有逐字稿。演示笔记只有摘要，没有真专访对话。结束一场完整专访后，原文才会出现在这里。";
+  }
+  if ((session.turns?.length ?? 0) > 0) {
+    return "这场对话还在当场记录里，还没有写成可回看的逐字稿。结束专访并生成笔记后再打开。";
+  }
+  if (session.rawMaterialOffloaded) {
+    return "这场的逐字稿找不到了。上面的摘要还在，原文没有存下来。";
+  }
+  return "这场还没有逐字稿。结束专访并生成笔记后才会出现。";
+}
+
 function describeAudio(meta: SessionAudioMeta): string | null {
   const parts: string[] = [];
   if (typeof meta.durationMs === "number" && meta.durationMs > 0) {
@@ -256,7 +270,7 @@ export function RawMaterialViewer({
   if (status === "empty") {
     return (
       <div className="panel mt-3">
-        <p className="empty-hint">原始材料未找到 / 该会话尚未降冷。</p>
+        <p className="empty-hint">{rawMaterialEmptyHint(sessionId, state)}</p>
       </div>
     );
   }

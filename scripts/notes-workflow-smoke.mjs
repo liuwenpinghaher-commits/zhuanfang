@@ -101,7 +101,7 @@ async function main() {
     await rawToggle.click();
     await page.waitForTimeout(1200);
     const rawText = await page.locator("main").innerText();
-    const rawOk = /正在加载原始材料|主持人|原始材料未找到|加载原始材料失败|播这一段|加旁注|受访者录音/.test(rawText);
+    const rawOk = /正在加载原始材料|主持人|没有逐字稿|原始材料未找到|加载原始材料失败|播这一段|加旁注|受访者录音/.test(rawText);
     step("open-raw-material", { status: rawOk ? "pass" : "warn", hasHostOrEmpty: rawOk });
 
     // Capture target question text from first question row
