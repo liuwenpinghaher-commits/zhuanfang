@@ -1308,6 +1308,20 @@ describe("connectCascadedPipeline", () => {
     pipeline.close();
   });
 
+  it("Layer-1: 只有未定稿的转写、识别已判交卷时也要进书", async () => {
+    asr.setExpressionState("fluent");
+    asr.setRecentEnergy(0.01);
+    const pipeline = connectCascadedPipeline(makeOpts({
+      decisionOpts: { finalStabilityMs: 0, minPauseMs: 200 },
+    }));
+    await pipeline.startListening();
+    asr.pushDelta("我先说一句授权让我最难受的是那次救火", false);
+    asr.pushSpeechStopped(900);
+    await vi.waitFor(() => expect(sendUserTurn.fn).toHaveBeenCalledOnce());
+    expect(sendUserTurn.fn.mock.calls[0][0]).toContain("那次救火");
+    pipeline.close();
+  });
+
   it("Layer-1: 能量已落的无标点口语直接交卷，不 arm 8s", async () => {
     asr.setExpressionState("fluent");
     asr.setRecentEnergy(0.01);

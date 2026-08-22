@@ -335,9 +335,22 @@ export function connectCascadedPipeline(
     }
   }
 
+  function noteAuthoritativeTranscript(text: string) {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    turnAssembler.ingest({
+      text: trimmed,
+      isFinal: true,
+      atMs: Date.now(),
+      hasUserEnergyEvidence: asr.hasRecentUserEnergyEvidence?.() ?? true
+    });
+  }
+
   function requestStableCommit(allowCommit: boolean) {
     if (closed || state === "thinking" || state === "speaking") return;
     if (activeReview?.source === "recovery") return;
+    const pending = (committedTranscript + partialTranscript).trim();
+    if (allowCommit && pending) noteAuthoritativeTranscript(pending);
     const decision = turnAssembler.decide({ atMs: Date.now(), allowCommit, questionContext: true });
     if (decision.action === "quarantine") {
       surfaceQuarantine({ text: decision.transcript, reason: decision.reason, source: "echo" });
