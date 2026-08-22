@@ -37,6 +37,9 @@ services:
       BAILIAN_EMBEDDING_API_KEY: ${BAILIAN_EMBEDDING_API_KEY:-}
       BAILIAN_EMBEDDING_BASE_URL: ${BAILIAN_EMBEDDING_BASE_URL:-}
       BAILIAN_EMBEDDING_MODEL: ${BAILIAN_EMBEDDING_MODEL:-}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-}
+      TRANSFORMERS_CACHE: ${TRANSFORMERS_CACHE:-/app/.data/hf-cache}
+      HF_ENDPOINT: ${HF_ENDPOINT:-}
       BAILIAN_BASE_URL: ${BAILIAN_BASE_URL:-https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1}
       BAILIAN_AUDIO_BASE_URL: ${BAILIAN_AUDIO_BASE_URL:-https://token-plan.cn-beijing.maas.aliyuncs.com}
       BAILIAN_MODEL: ${BAILIAN_MODEL:-qwen3.7-plus}
@@ -67,6 +70,18 @@ services:
       PROVIDER_SMOKE_TEST_WEBRTC_OFFER_SDP: ${PROVIDER_SMOKE_TEST_WEBRTC_OFFER_SDP:-}
     volumes:
       - zhuanfang-data:/app/.data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:' + (process.env.PORT || '3210') + '/api/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 8
+      start_period: 300s
     restart: unless-stopped
 
 volumes:

@@ -7,9 +7,22 @@
 //
 // 模型:首次需联网下载到 HuggingFace 缓存(~/.cache/huggingface),之后完全离线复用。
 // 量化 q8 体积/速度友好;质量略低于 text-embedding-v3 但中文检索够用。
+import { existsSync, mkdirSync } from "node:fs";
 import type { BailianEmbeddingClient } from "./bailian";
 
 export const LOCAL_EMBEDDING_MODEL = "Xenova/bge-large-zh-v1.5"; // 1024 维 = constants EMBEDDING_DIMENSION
+
+function resolveCacheDir(): string | undefined {
+  const explicit = (process.env.TRANSFORMERS_CACHE ?? process.env.HF_HOME ?? "").trim();
+  if (explicit) return explicit;
+  if (existsSync("/app/.data")) return "/app/.data/hf-cache";
+  return undefined;
+}
+
+function resolveRemoteHost(): string | undefined {
+  const endpoint = (process.env.HF_ENDPOINT ?? "").trim();
+  return endpoint ? endpoint.replace(/\/$/, "") : undefined;
+}
 
 // 进程级单例:首次 pipeline() 加载模型 ~20s(下载缓存命中后是纯加载),之后每次 embed 复用。
 // 用 promise 缓存避免并发首调重复加载。
@@ -24,9 +37,26 @@ async function getExtractor(): Promise<Extractor> {
     extractorPromise = (async () => {
       // 动态 import:避免在未启用本地 embedding 时把 transformers.js 拉进启动路径。
       const mod = (await import("@huggingface/transformers")) as unknown as {
-        pipeline: (task: string, model: string, opts: { dtype: string }) => Promise<Extractor>;
+        pipeline: (task: string, model: string, opts: { dtype: string; cache_dir?: string }) => Promise<Extractor>;
+        env?: { cacheDir?: string; remoteHost?: string };
       };
-      return mod.pipeline("feature-extraction", LOCAL_EMBEDDING_MODEL, { dtype: "q8" });
+      const cacheDir = resolveCacheDir();
+      if (cacheDir) {
+        mkdirSync(cacheDir, { recursive: true });
+        if (mod.env) mod.env.cacheDir = cacheDir;
+      }
+      const remoteHost = resolveRemoteHost();
+      if (remoteHost && mod.env) mod.env.remoteHost = remoteHost;
+      console.info(JSON.stringify({
+        event: "local_embedding_load_start",
+        model: LOCAL_EMBEDDING_MODEL,
+        cacheDir: cacheDir ?? null,
+        remoteHost: remoteHost ?? null
+      }));
+      return mod.pipeline("feature-extraction", LOCAL_EMBEDDING_MODEL, {
+        dtype: "q8",
+        ...(cacheDir ? { cache_dir: cacheDir } : {})
+      });
     })().catch((err) => {
       // 加载失败 → 重置单例,下次可重试(否则永久 reject)。
       extractorPromise = null;

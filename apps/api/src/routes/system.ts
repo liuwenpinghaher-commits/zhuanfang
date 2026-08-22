@@ -127,6 +127,17 @@ const runtimeSettingDefinitions: RuntimeSettingDefinition[] = [
     defaultValue: "text-embedding-v3"
   },
   {
+    key: "EMBEDDING_PROVIDER",
+    section: "models",
+    label: "记忆检索方式",
+    description: "local=服务器本地中文向量模型，不需要云端检索钥匙。空=云端向量（要 embeddings 专用钥）。",
+    valueKind: "select",
+    options: [
+      { label: "云端向量", value: "" },
+      { label: "服务器本地", value: "local" }
+    ]
+  },
+  {
     key: "ANYSEARCH_API_KEY",
     section: "secrets",
     label: "AnySearch API Key",
