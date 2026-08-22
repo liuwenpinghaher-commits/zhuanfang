@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { COSYVOICE_PRESET_VOICES, normalizeCosyVoiceId, resolveQwenAudioTtsVoice } from "./voice-presets";
+import {
+  COSYVOICE_PRESET_VOICES,
+  normalizeCosyVoiceId,
+  pairQwenAudioTtsVoice,
+  resolveQwenAudioTtsVoice
+} from "./voice-presets";
 
 describe("normalizeCosyVoiceId", () => {
   it("keeps verified presets", () => {
@@ -28,5 +33,13 @@ describe("normalizeCosyVoiceId", () => {
     expect(resolveQwenAudioTtsVoice("longanyang")).toBe("longanqian");
     expect(resolveQwenAudioTtsVoice("longanlingxin")).toBe("longanlingxin");
     expect(resolveQwenAudioTtsVoice("longanqian")).toBe("longanqian");
+  });
+});
+
+describe("pairQwenAudioTtsVoice", () => {
+  it("pairs the host with the other speaking voice", () => {
+    expect(pairQwenAudioTtsVoice("longanlingxin")).toBe("longanqian");
+    expect(pairQwenAudioTtsVoice("longanqian")).toBe("longanlingxin");
+    expect(pairQwenAudioTtsVoice("longanhuan")).toBe("longanqian");
   });
 });

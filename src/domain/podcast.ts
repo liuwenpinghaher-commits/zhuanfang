@@ -478,6 +478,54 @@ export function generatePodcastEpisodeFromTheme(
 }
 const podcastAiDisclosure = "AI 合成语音：本节目由系统根据用户确认内容生成，请以原始笔记和来源为准。";
 
+export type PodcastDialogueTurn = { role: "host" | "guest"; text: string };
+
+const SPEAKER_LINE = /^(主持人|主持|来宾|嘉宾|被访者|Host|Guest)\s*[：:]\s*(.*)$/i;
+
+function speakerRole(label: string): "host" | "guest" {
+  return /^(主持人|主持|host)$/i.test(label.trim()) ? "host" : "guest";
+}
+
+/** Split a host-guest script into spoken turns. Prefixes are stripped. */
+export function parsePodcastDialogue(script: string): PodcastDialogueTurn[] {
+  const pieces = script
+    .replace(/\r\n/g, "\n")
+    .split(/(?=(?:主持人|主持|来宾|嘉宾|被访者|Host|Guest)\s*[：:])/);
+  const turns: PodcastDialogueTurn[] = [];
+  for (const raw of pieces) {
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const match = trimmed.match(SPEAKER_LINE);
+      if (match) {
+        const text = (match[2] ?? "").trim();
+        if (!text) continue;
+        const role = speakerRole(match[1] ?? "");
+        const last = turns[turns.length - 1];
+        if (last && last.role === role) last.text += ` ${text}`;
+        else turns.push({ role, text });
+        continue;
+      }
+      if (turns.length) turns[turns.length - 1].text += ` ${trimmed}`;
+    }
+  }
+  return turns.filter((item) => item.text.trim());
+}
+
+export function scalePodcastChapters(
+  chapters: PodcastEpisode["chapters"],
+  previousDurationSec: number,
+  nextDurationSec: number
+): PodcastEpisode["chapters"] {
+  if (!chapters.length) return chapters;
+  const prev = Math.max(1, previousDurationSec);
+  const next = Math.max(1, nextDurationSec);
+  return chapters.map((chapter, index) => ({
+    ...chapter,
+    startsAtSec: index === 0 ? 0 : Math.min(next, Math.round((chapter.startsAtSec / prev) * next))
+  }));
+}
+
 /** 仅创建：新节目插到节目库最前。 */
 export function prependPodcastEpisode(
   state: ProductState,

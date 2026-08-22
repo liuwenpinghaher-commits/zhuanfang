@@ -98,7 +98,11 @@ export function PodcastStudioView({
   const busy = generating || synthesizing || confirming;
   const editorDirty = Boolean(activeEpisode && editingScript !== activeEpisode.script);
   const editorEmpty = !editingScript.trim();
-  const pendingExists = state.podcastEpisodes.some((item) => item.scriptReviewStatus === "待确认");
+  const pipelineStep: 1 | 2 | 3 = !activeEpisode
+    ? 1
+    : activeEpisode.scriptReviewStatus !== "用户确认" || editorDirty
+      ? 2
+      : 3;
 
   const voiceOptions = useMemo(() => {
     const preset = voices.map((v) => v.voice);
@@ -122,11 +126,9 @@ export function PodcastStudioView({
       />
 
       <div className="config-hint podcast-pipeline" aria-label="制作进度">
-        <span className={!activeEpisode && state.podcastEpisodes.length === 0 ? "is-emphasis" : undefined}>① 选来源</span>
-        <span className={showDraftEditor || pendingExists ? "is-emphasis" : undefined}>② 确认脚本</span>
-        <span className={state.podcastEpisodes.some((e) => e.audioRenderStatus === "rendered") ? "is-emphasis" : undefined}>
-          ③ 合成收听
-        </span>
+        <span className={pipelineStep === 1 ? "is-emphasis" : undefined}>① 选来源</span>
+        <span className={pipelineStep === 2 ? "is-emphasis" : undefined}>② 确认脚本</span>
+        <span className={pipelineStep === 3 ? "is-emphasis" : undefined}>③ 合成收听</span>
       </div>
 
       <section className="panel podcast-setup-panel">
@@ -187,7 +189,7 @@ export function PodcastStudioView({
               onChange={(event) => onFormat(event.target.value as PodcastEpisode["format"])}
             >
               <option value="solo">单人旁白</option>
-              <option value="host-guest">主持对谈</option>
+              <option value="host-guest">主持对谈（两个声音）</option>
             </select>
           </label>
 
@@ -208,7 +210,11 @@ export function PodcastStudioView({
                 </option>
               ))}
             </datalist>
-            <span className="field-help">推荐龙安聆心（longanlingxin）或龙安谦（longanqian）。其它名字会在合成时换成能出声的音色。</span>
+            <span className="field-help">
+              {format === "host-guest"
+                ? "主持对谈会用龙安聆心和龙安谦两个人声轮流说。你选的是主持人；另一个当来宾。"
+                : "推荐龙安聆心（longanlingxin）或龙安谦（longanqian）。单人旁白只用这一个声音。"}
+            </span>
           </label>
         </div>
 

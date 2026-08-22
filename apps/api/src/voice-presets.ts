@@ -48,3 +48,7 @@ export function resolveQwenAudioTtsVoice(raw: string | undefined | null): string
   const normalized = normalizeCosyVoiceId(raw);
   return QWEN_AUDIO_TTS_VOICE_FALLBACKS[normalized] ?? normalized;
 }
+
+export function pairQwenAudioTtsVoice(host: string): string {
+  return resolveQwenAudioTtsVoice(host) === "longanqian" ? "longanlingxin" : "longanqian";
+}

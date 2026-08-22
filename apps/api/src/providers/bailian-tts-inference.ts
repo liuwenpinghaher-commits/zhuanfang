@@ -69,6 +69,13 @@ export function splitPodcastScript(text: string, maxChars = 1500): string[] {
   return parts;
 }
 
+export function wavToPcm(wav: Buffer): Buffer {
+  if (wav.length >= 44 && wav.toString("ascii", 0, 4) === "RIFF") {
+    return wav.subarray(44);
+  }
+  return wav;
+}
+
 export function pcmToWav(pcm: Buffer, sampleRate: number): Buffer {
   const header = Buffer.alloc(44);
   header.write("RIFF", 0);

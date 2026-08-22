@@ -5,8 +5,10 @@ import {
   generatePodcastEpisodeFromKnowledgeDebt,
   generatePodcastEpisodeFromSearchBrief,
   generatePodcastEpisodeFromTheme,
+  parsePodcastDialogue,
   prependPodcastEpisode,
   replacePodcastEpisode,
+  scalePodcastChapters,
   withGeneratedArtifactWorkflowRun
 } from "../../../../src/domain/engine";
 import { deletePodcastEpisode } from "../../../../src/domain/lifecycle";
@@ -16,7 +18,8 @@ import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import type { BailianChatClient, BailianPodcastAudioClient } from "../providers/bailian";
 import type { ProductStateRepository } from "../product-state-repository";
 import { generatePodcastScriptFromSource } from "../intelligence/podcast-script-llm";
-import { normalizeCosyVoiceId } from "../voice-presets";
+import { normalizeCosyVoiceId, pairQwenAudioTtsVoice, resolveQwenAudioTtsVoice } from "../voice-presets";
+import { pcmToWav, QWEN_AUDIO_TTS_SAMPLE_RATE, wavToPcm } from "../providers/bailian-tts-inference";
 import { runStateCommand } from "../state-command";
 import type { WriteGate } from "../server";
 import { readPodcastAudio, writePodcastAudio } from "../podcast-audio-store";
@@ -55,24 +58,56 @@ export async function renderEpisodeAudio(
   audioClient: BailianPodcastAudioClient
 ): Promise<Partial<PodcastEpisode>> {
   try {
-    const renderedAudio = await audioClient.synthesize({
-      text: episode.script,
-      voice: normalizeProviderVoice(episode.voice)
-    });
-    let audioUrl = renderedAudio.audioUrl;
-    if (renderedAudio.audioBytes && renderedAudio.audioBytes.byteLength > 0) {
-      audioUrl = await writePodcastAudio(episode.id, Buffer.from(renderedAudio.audioBytes));
+    const hostVoice = resolveQwenAudioTtsVoice(normalizeProviderVoice(episode.voice));
+    const guestVoice = pairQwenAudioTtsVoice(hostVoice);
+    const dialogue = parsePodcastDialogue(episode.script);
+    const dual =
+      dialogue.some((item) => item.role === "host") &&
+      dialogue.some((item) => item.role === "guest");
+    const turns = dual ? dialogue : [{ role: "host" as const, text: episode.script }];
+
+    const sampleRate = QWEN_AUDIO_TTS_SAMPLE_RATE;
+    const silence = Buffer.alloc(Math.round(sampleRate * 0.28 * 2));
+    const pcmParts: Buffer[] = [];
+    let lastRemoteUrl: string | undefined;
+    let lastExpiresAt: number | undefined;
+    for (let index = 0; index < turns.length; index += 1) {
+      const turn = turns[index]!;
+      const renderedAudio = await audioClient.synthesize({
+        text: turn.text,
+        voice: turn.role === "guest" ? guestVoice : hostVoice
+      });
+      if (renderedAudio.audioBytes && renderedAudio.audioBytes.byteLength > 0) {
+        pcmParts.push(wavToPcm(Buffer.from(renderedAudio.audioBytes)));
+      } else if (dual) {
+        throw new Error("主持对谈需要两个人声，当前合成没有返回逐句声音。");
+      } else if (renderedAudio.audioUrl) {
+        lastRemoteUrl = renderedAudio.audioUrl;
+      }
+      if (typeof renderedAudio.expiresAt === "number") lastExpiresAt = renderedAudio.expiresAt;
+      if (dual && index < turns.length - 1) pcmParts.push(silence);
     }
+
+    let audioUrl = lastRemoteUrl ?? `local-audio://${episode.id}.wav`;
+    let durationSec = episode.durationSec;
+    if (pcmParts.length > 0) {
+      const pcm = Buffer.concat(pcmParts);
+      const wav = pcmToWav(pcm, sampleRate);
+      audioUrl = await writePodcastAudio(episode.id, wav);
+      durationSec = Math.max(1, Math.round(pcm.length / 2 / sampleRate));
+    } else if (!lastRemoteUrl) {
+      throw new Error("TTS returned no audio.");
+    }
+
     return {
       audioUrl,
-      durationSec: renderedAudio.durationSec ?? episode.durationSec,
-      voice: renderedAudio.voice,
+      durationSec,
+      voice: hostVoice,
       audioRenderStatus: "rendered",
-      audioRenderMessage: "音频已渲染。",
-      // 审计修复(P3-31):provider 返回的过期时间此前被丢弃、audioExpiresAt 字段全库零写入
-      // → 次日播放 403 无过期语义。落地为 ISO(expiresAt 是秒级 epoch)。
-      ...(typeof renderedAudio.expiresAt === "number"
-        ? { audioExpiresAt: new Date(renderedAudio.expiresAt * 1000).toISOString() }
+      audioRenderMessage: dual ? "音频已渲染（主持 / 来宾双声）。" : "音频已渲染。",
+      chapters: scalePodcastChapters(episode.chapters, episode.durationSec, durationSec),
+      ...(typeof lastExpiresAt === "number"
+        ? { audioExpiresAt: new Date(lastExpiresAt * 1000).toISOString() }
         : {})
     };
   } catch (ttsError) {

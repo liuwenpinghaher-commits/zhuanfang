@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { createInitialProductState, generatePodcastEpisode } from "./engine";
-import { confirmPodcastScript, prependPodcastEpisode, replacePodcastEpisode } from "./podcast";
+import {
+  confirmPodcastScript,
+  parsePodcastDialogue,
+  prependPodcastEpisode,
+  replacePodcastEpisode,
+  scalePodcastChapters
+} from "./podcast";
 
 describe("confirmPodcastScript", () => {
   it("returns null when the episode is missing", () => {
@@ -90,5 +96,28 @@ describe("confirmPodcastScript", () => {
     const extra = { ...first.episode, id: "podcast-new-front", title: "新节目" };
     const prepended = prependPodcastEpisode(replaced, extra);
     expect(prepended.podcastEpisodes[0]?.id).toBe("podcast-new-front");
+  });
+});
+
+describe("parsePodcastDialogue", () => {
+  it("splits host and guest turns and strips speaker labels", () => {
+    const turns = parsePodcastDialogue(
+      "主持人：今天我们回来。\n来宾：那句原话还在。\n主持人：下一问是什么？"
+    );
+    expect(turns).toEqual([
+      { role: "host", text: "今天我们回来。" },
+      { role: "guest", text: "那句原话还在。" },
+      { role: "host", text: "下一问是什么？" }
+    ]);
+    const scaled = scalePodcastChapters(
+      [
+        { title: "开场", startsAtSec: 0, summary: "a" },
+        { title: "中段", startsAtSec: 90, summary: "b" }
+      ],
+      180,
+      12
+    );
+    expect(scaled[0]?.startsAtSec).toBe(0);
+    expect(scaled[1]?.startsAtSec).toBe(6);
   });
 });

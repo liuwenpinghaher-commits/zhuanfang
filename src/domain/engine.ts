@@ -138,6 +138,8 @@ export {
   prependPodcastEpisode,
   replacePodcastEpisode,
   confirmPodcastScript,
+  parsePodcastDialogue,
+  scalePodcastChapters,
 } from "./podcast";
 
 // ============================================================================
