@@ -149,6 +149,28 @@ describe("attachWebSocketHeartbeat", () => {
     expect(socket.terminate).not.toHaveBeenCalled();
     expect(socket.listenerCount("pong")).toBe(1);
   });
+
+  it("tolerateSilentOpen: 无 pong 无入站帧也不 terminate，继续 ping", () => {
+    vi.useFakeTimers();
+    const socket = new FakeHeartbeatSocket();
+    const onTimeout = vi.fn();
+    const dispose = attachWebSocketHeartbeat(socket, {
+      intervalMs: 15_000,
+      maxMissedPongs: 2,
+      onTimeout,
+      tolerateSilentOpen: true
+    });
+
+    vi.advanceTimersByTime(15_000);
+    expect(socket.ping).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(15_000);
+    expect(onTimeout).not.toHaveBeenCalled();
+    expect(socket.terminate).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(15_000);
+    expect(socket.ping).toHaveBeenCalledTimes(3);
+    expect(socket.terminate).not.toHaveBeenCalled();
+    dispose();
+  });
 });
 
 describe("buildRealtimeProxyLog", () => {

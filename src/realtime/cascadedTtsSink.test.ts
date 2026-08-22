@@ -172,6 +172,18 @@ afterEach(() => {
 });
 
 describe("createBrowserTtsSink", () => {
+  it("创建时先暖连接，speak 复用同一条 socket", async () => {
+    const sink = createBrowserTtsSink("ws://test/tts");
+    expect(sockets).toHaveLength(1);
+    const speaking = sink.speak(["开场"]);
+    expect(sockets).toHaveLength(1);
+    sockets[0].open();
+    await vi.waitFor(() => expect(sentSpeakSegments(sockets[0])).toEqual([["开场"]]));
+    sockets[0].message(JSON.stringify({ type: "tts.done" }));
+    await speaking;
+    sink.close();
+  });
+
   async function expectSettled(promise: Promise<void>) {
     let settled = false;
     void promise.then(() => { settled = true; }, () => { settled = true; });

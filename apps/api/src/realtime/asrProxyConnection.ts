@@ -217,6 +217,7 @@ export function connectRealtimeAsrProxy(options: RealtimeAsrProxyOptions): void 
         if (startFallback(current, "upstream rejected realtime session")) return;
       }
       if (browser.readyState === WebSocket.OPEN) browser.send(payload);
+      if (phase === "ready") armRecycleTimer();
       if (phase !== "connecting" || messageType !== "session.created") return;
       phase = "ready";
       clearTimeout(current.handshakeTimer);
@@ -295,15 +296,10 @@ export function connectRealtimeAsrProxy(options: RealtimeAsrProxyOptions): void 
     current.disposeHeartbeat = attachWebSocketHeartbeat(socket, {
       intervalMs: heartbeatIntervalMs,
       maxMissedPongs: heartbeatMaxMissedPongs,
-      onTimeout: () => {
-        if (cleaned || binding !== current) return;
-        const reason = "upstream heartbeat timeout";
-        writeProxyLog("realtime_proxy_heartbeat_timeout", "upstream");
-        // Token-plan omni often ignores ping/pong. Killing the browser socket
-        // made captions freeze then jump. Recycle the upstream only.
-        if (recycleUpstream(reason)) return;
-        cleanup({ closeBrowser: { code: 1011, reason } });
-      },
+      // Omni does not pong, and is silent while the guest listens to the host.
+      // Recycle on that timeout made captions hitch every ~30s.
+      tolerateSilentOpen: true,
+      onTimeout: () => undefined,
     });
   }
 
@@ -320,6 +316,7 @@ export function connectRealtimeAsrProxy(options: RealtimeAsrProxyOptions): void 
     if (messageType === "session.update") lastSessionUpdate = payload;
     if (phase === "ready" && binding?.socket.readyState === WebSocket.OPEN) {
       binding.socket.send(payload);
+      armRecycleTimer();
       return;
     }
     if (Buffer.byteLength(payload, "utf8") > 64 * 1024) return;

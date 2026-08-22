@@ -12,6 +12,11 @@ export interface HeartbeatOptions {
   onTimeout: () => void;
   /** Read each tick. Timeout while true must not dispose / terminate the socket. */
   isInFlight?: () => boolean;
+  /**
+   * DashScope omni never RFC6455-pongs and is silent while the guest listens.
+   * Timeout must not recycle that socket; onclose/onerror still catch real death.
+   */
+  tolerateSilentOpen?: boolean;
 }
 
 export interface RealtimeProxyLogInput {
@@ -77,6 +82,11 @@ export function attachWebSocketHeartbeat(
         } catch {
           /* in-flight synthesis must keep the timer */
         }
+        return;
+      }
+      if (options.tolerateSilentOpen) {
+        missedPongs = 0;
+        socket.ping();
         return;
       }
       dispose();

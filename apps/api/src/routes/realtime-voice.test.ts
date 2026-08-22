@@ -1510,6 +1510,51 @@ describe("realtime-voice ASR WebSocket proxy resilience", () => {
       infoSpy.mockRestore();
     }
   });
+
+  it("ASR upstream 静音无 pong 也不 recycle（听开场时转写不得卡顿）", async () => {
+    const testApp = Fastify();
+    const upstream = new FakeRealtimeUpstream(false);
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    await registerRealtimeVoiceRoutes(testApp, {
+      env: { DASHSCOPE_API_KEY: "test-secret" },
+      createRealtimeUpstream: () => upstream,
+      heartbeatIntervalMs: 40,
+      heartbeatMaxMissedPongs: 2
+    } as never);
+    await testApp.ready();
+    const sessionRes = await testApp.inject({ method: "POST", url: "/api/realtime-voice/sessions", payload: {} });
+    const { sessionId } = sessionRes.json() as { sessionId: string };
+    await testApp.listen({ port: 0, host: "127.0.0.1" });
+    const port = (testApp.server.address() as { port: number }).port;
+    const { WebSocket: WsClient } = require("ws") as typeof import("ws");
+    const ws = new WsClient(`ws://127.0.0.1:${port}/api/realtime-voice/ws/${sessionId}`);
+
+    try {
+      const firstUpstreamPing = waitForFirstUpstreamPing(upstream);
+      await once(ws, "open");
+      upstream.open();
+      await firstUpstreamPing;
+      upstream.message({ type: "session.created" });
+      await once(ws, "message");
+
+      await new Promise((r) => setTimeout(r, 160));
+
+      expect(ws.readyState).toBe(WsClient.OPEN);
+      expect(upstream.terminateCalls).toBe(0);
+      const logs = infoSpy.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
+      expect(logs).not.toContainEqual(expect.objectContaining({
+        event: "realtime_proxy_upstream_recycle"
+      }));
+      expect(logs).not.toContainEqual(expect.objectContaining({
+        event: "realtime_proxy_heartbeat_timeout",
+        direction: "upstream"
+      }));
+    } finally {
+      if (ws.readyState !== WsClient.CLOSED) ws.terminate();
+      await testApp.close();
+      infoSpy.mockRestore();
+    }
+  });
 });
 
 describe("realtime-voice TTS WebSocket proxy (/api/realtime-voice/ws/tts/:sessionId)", () => {

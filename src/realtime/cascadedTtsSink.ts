@@ -232,50 +232,70 @@ export function createBrowserTtsSink(
     leftoverByte = null;
   }
 
+  function warmSocket() {
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+    try {
+      const socket = new WebSocket(ttsWsUrl);
+      socket.binaryType = "arraybuffer";
+      ws = socket;
+      socket.onopen = () => { ws = socket; };
+      socket.onerror = () => { if (ws === socket) ws = null; };
+      socket.onclose = () => { if (ws === socket) ws = null; };
+    } catch {
+      /* jsdom / tests without WebSocket */
+    }
+  }
+
   function openWs(attempt: NonNullable<typeof pendingSpeak>): Promise<WebSocket> {
     return new Promise((resolve, reject) => {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        attempt.socket = ws;
-        resolve(ws);
+      const adopt = (socket: WebSocket) => {
+        attempt.socket = socket;
+        socket.binaryType = "arraybuffer";
+        const finishOpen = () => {
+          if (!isCurrentSpeak(attempt.generation)) {
+            try { socket.close(1000, "stale tts connection"); } catch { /* already closed */ }
+            resolve(socket);
+            return;
+          }
+          ws = socket;
+          resolve(socket);
+        };
+        socket.onopen = finishOpen;
+        socket.onerror = () => {
+          const error = new TtsPlaybackInterruptedError("TTS WebSocket interrupted");
+          if (ws === socket) ws = null;
+          interruptSpeakForSocket(socket, error);
+          reject(error);
+          try {
+            if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+              socket.close(1011, "tts socket error");
+            }
+          } catch { /* already closing/closed */ }
+        };
+        socket.onclose = (event) => {
+          if (ws === socket) ws = null;
+          if (synthesisComplete) {
+            resolveActiveSpeak(socket);
+            return;
+          }
+          const error = new TtsPlaybackInterruptedError(event.reason || "TTS WebSocket interrupted", event.code);
+          interruptSpeakForSocket(socket, error);
+          reject(error);
+        };
+        if (socket.readyState === WebSocket.OPEN) finishOpen();
+      };
+
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        adopt(ws);
         return;
       }
       const socket = new WebSocket(ttsWsUrl);
-      attempt.socket = socket;
-      socket.binaryType = "arraybuffer";
-      socket.onopen = () => {
-        if (!isCurrentSpeak(attempt.generation)) {
-          try { socket.close(1000, "stale tts connection"); } catch { /* already closed */ }
-          resolve(socket);
-          return;
-        }
-        ws = socket;
-        resolve(socket);
-      };
-      socket.onerror = () => {
-        const error = new TtsPlaybackInterruptedError("TTS WebSocket interrupted");
-        if (ws === socket) ws = null;
-        interruptSpeakForSocket(socket, error);
-        reject(error);
-        try {
-          if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
-            socket.close(1011, "tts socket error");
-          }
-        } catch { /* already closing/closed */ }
-      };
-      socket.onclose = (event) => {
-        if (ws === socket) ws = null;
-        // After tts.done, a close is end-of-utterance, not a playback failure.
-        // Mid-stream close before done still interrupts (even if some PCM arrived).
-        if (synthesisComplete) {
-          resolveActiveSpeak(socket);
-          return;
-        }
-        const error = new TtsPlaybackInterruptedError(event.reason || "TTS WebSocket interrupted", event.code);
-        interruptSpeakForSocket(socket, error);
-        reject(error);
-      };
+      ws = socket;
+      adopt(socket);
     });
   }
+
+  warmSocket();
 
   return {
     async speak(segments: string[], speakVoice?: string, prosody?: SpeechProsody): Promise<void> {
