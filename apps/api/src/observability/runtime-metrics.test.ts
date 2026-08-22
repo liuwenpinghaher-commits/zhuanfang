@@ -138,6 +138,54 @@ describe("runtime-metrics", () => {
     expect(snap.reindex.successTotal).toBe(1);
   });
 
+  it("records ttsPcmTtfbMs without redefining ttsTtfbMs", () => {
+    recordVoiceLatency({ path: "cascade", ttsTtfbMs: 60, ttsPcmTtfbMs: 180 });
+    recordVoiceLatency({ path: "cascade", ttsTtfbMs: 80, ttsPcmTtfbMs: 220 });
+    const s = summarizeVoiceLatency();
+    expect(s.ttsTtfbDefinition).toBe("pcm_scheduled");
+    expect(s.segments.ttsTtfb.count).toBe(2);
+    expect(s.segments.ttsTtfb.p50Ms).toBe(60);
+    expect(s.segments.ttsPcmTtfb.count).toBe(2);
+    expect(s.segments.ttsPcmTtfb.p50Ms).toBe(180);
+    expect(s.segments.ttsTtfb.p50Ms).not.toBe(s.segments.ttsPcmTtfb.p50Ms);
+  });
+
+  it("openingAudible and playbackContextState are summarized separately from barge success", () => {
+    recordVoiceLatency({
+      path: "cascade",
+      openingAudible: true,
+      playbackContextState: "running",
+      ttsPcmTtfbMs: 140
+    });
+    recordVoiceLatency({
+      path: "cascade",
+      openingAudible: false,
+      playbackContextState: "suspended"
+    });
+    recordVoiceLatency({
+      path: "cascade",
+      falseTriggerKind: "opening_second_turn_abort",
+      bargeInSuccess: false,
+      takeFloor: false,
+      openingAudible: false
+    });
+    recordVoiceLatency({
+      path: "cascade",
+      interrupted: true,
+      bargeInSuccess: true,
+      takeFloor: true
+    });
+    const s = summarizeVoiceLatency();
+    expect(s.openingAudibleCount).toBe(1);
+    expect(s.openingInaudibleCount).toBe(2);
+    expect(s.playbackContextState).toBe("suspended");
+    expect(s.takeFloorCount).toBe(1);
+    expect(s.bargeInSuccessCount).toBe(1);
+    expect(s.bargeInFailCount).toBe(1);
+    expect(s.falseTriggerByKind.opening_second_turn_abort).toBe(1);
+    expect(s.interruptCount).toBe(1);
+  });
+
   it("resolveMetricsJsonlPath prefers PRODUCT_METRICS_JSONL_PATH then PERSIST_PATH alias", () => {
     expect(resolveMetricsJsonlPath({})).toBeUndefined();
     expect(resolveMetricsJsonlPath({ PRODUCT_METRICS_JSONL_PATH: " /tmp/m.jsonl " })).toBe("/tmp/m.jsonl");

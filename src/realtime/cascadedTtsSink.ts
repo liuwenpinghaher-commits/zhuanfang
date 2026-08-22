@@ -68,6 +68,7 @@ export function createBrowserTtsSink(
   /** True after the proxy sent tts.done for the in-flight utterance. */
   let synthesisComplete = false;
   let scheduledPlayback = false;
+  let onFirstPcmScheduled: ((atMs: number) => void) | null = null;
 
   // Side-channel recording of the host (interviewer) TTS audio. We accumulate a
   // verbatim copy of every PCM chunk as it arrives so the assembled stream can be
@@ -212,7 +213,9 @@ export function createBrowserTtsSink(
     } catch {
       return;
     }
+    const firstPcm = !scheduledPlayback;
     scheduledPlayback = true;
+    if (firstPcm) onFirstPcmScheduled?.(Date.now());
     nextStartTime = startAt + buffer.duration;
     scheduledSources.add(source);
     source.onended = () => { scheduledSources.delete(source); };
@@ -469,6 +472,18 @@ export function createBrowserTtsSink(
         audioCtx.close().catch(() => { /* best-effort */ });
       }
       audioCtx = null;
+    },
+
+    setOnFirstPcmScheduled(cb: ((atMs: number) => void) | null) {
+      onFirstPcmScheduled = cb;
+    },
+
+    getPlaybackContextState(): "running" | "suspended" {
+      return audioCtx?.state === "running" ? "running" : "suspended";
+    },
+
+    didSchedulePcm(): boolean {
+      return scheduledPlayback;
     },
 
     // Returns the whole host (interviewer) TTS audio captured so far as a single

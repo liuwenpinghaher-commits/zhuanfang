@@ -18,6 +18,8 @@ import type {
   TtsSink,
   ConnectCascadedPipelineOptions,
   AsrEventHandlers,
+  CascadeLatencySample,
+  PlaybackContextState,
 } from "./cascadedPipeline";
 import { connectCascadedPipeline } from "./cascadedPipeline";
 import { TtsPlaybackInterruptedError } from "./cascadedTtsSink";
@@ -664,7 +666,7 @@ describe("connectCascadedPipeline", () => {
         // intentionally never resolves
       });
     });
-    const latencySamples: Array<{ interrupted?: boolean; bargeInSuccess?: boolean }> = [];
+    const latencySamples: Array<{ interrupted?: boolean; bargeInSuccess?: boolean; takeFloor?: boolean }> = [];
 
     const pipeline = connectCascadedPipeline(
       makeOpts({
@@ -699,7 +701,7 @@ describe("connectCascadedPipeline", () => {
     expect(stateChanges).toContain("interrupted");
     // Phase-0: natural barge-in reports success metrics
     expect(
-      latencySamples.some((s) => s.interrupted === true && s.bargeInSuccess === true)
+      latencySamples.some((s) => s.interrupted === true && s.bargeInSuccess === true && s.takeFloor === true)
     ).toBe(true);
 
     pipeline.close();
@@ -1790,6 +1792,168 @@ describe("connectCascadedPipeline", () => {
     await vi.waitFor(() => expect(sendUserTurn.fn).toHaveBeenCalledOnce());
     expect(sendUserTurn.fn.mock.calls[0][0]).toBe("不是");
     expect(quarantined).toHaveLength(0);
+    pipeline.close();
+  });
+
+  function makePcmTts(opts?: {
+    speak?: TtsSink["speak"];
+    contextState?: PlaybackContextState;
+  }): TtsSink & { firePcm: () => void } {
+    let pcmCb: ((atMs: number) => void) | null = null;
+    let scheduled = false;
+    const tts: TtsSink & { firePcm: () => void } = {
+      speak: opts?.speak ?? (async () => {
+        scheduled = true;
+        pcmCb?.(Date.now());
+      }),
+      stop: vi.fn(),
+      close: vi.fn(),
+      setOnFirstPcmScheduled(cb) {
+        pcmCb = cb;
+      },
+      getPlaybackContextState() {
+        return opts?.contextState ?? "running";
+      },
+      didSchedulePcm() {
+        return scheduled;
+      },
+      firePcm() {
+        scheduled = true;
+        pcmCb?.(Date.now());
+      },
+    };
+    return tts;
+  }
+
+  it("开场 settle 且已排 PCM → openingAudible，不打旧 ttsTtfbMs", async () => {
+    const latencySamples: CascadeLatencySample[] = [];
+    const pcmTts = makePcmTts();
+    const pipeline = connectCascadedPipeline(
+      makeOpts({
+        tts: pcmTts,
+        callbacks: {
+          onStateChange: (s) => stateChanges.push(s),
+          onUserTranscript: (text, isFinal) => userTranscripts.push({ text, isFinal }),
+          onAssistantText: (text) => assistantTexts.push(text),
+          onError: (e) => errors.push(e),
+          onLatency: (sample) => latencySamples.push(sample),
+        },
+      })
+    );
+    await pipeline.startListening("你好，今天我们聊聊你的工作。");
+    expect(latencySamples.some((s) => s.openingAudible === true)).toBe(true);
+    expect(latencySamples.some((s) => typeof s.ttsPcmTtfbMs === "number")).toBe(true);
+    expect(latencySamples.some((s) => typeof s.ttsTtfbMs === "number")).toBe(false);
+    expect(latencySamples.some((s) => s.playbackContextState === "running")).toBe(true);
+    pipeline.close();
+  });
+
+  it("开场未排 PCM → openingAudible false，不当抢话成功", async () => {
+    const latencySamples: CascadeLatencySample[] = [];
+    const muteTts: TtsSink = {
+      speak: async () => undefined,
+      stop: vi.fn(),
+      close: vi.fn(),
+      getPlaybackContextState: () => "suspended",
+      didSchedulePcm: () => false,
+    };
+    const pipeline = connectCascadedPipeline(
+      makeOpts({
+        tts: muteTts,
+        callbacks: {
+          onStateChange: (s) => stateChanges.push(s),
+          onUserTranscript: (text, isFinal) => userTranscripts.push({ text, isFinal }),
+          onAssistantText: (text) => assistantTexts.push(text),
+          onError: (e) => errors.push(e),
+          onLatency: (sample) => latencySamples.push(sample),
+        },
+      })
+    );
+    await pipeline.startListening("你好，今天我们聊聊你的工作。");
+    expect(latencySamples.some((s) => s.openingAudible === false)).toBe(true);
+    expect(latencySamples.some((s) => s.playbackContextState === "suspended")).toBe(true);
+    expect(latencySamples.some((s) => s.bargeInSuccess === true)).toBe(false);
+    expect(latencySamples.some((s) => s.takeFloor === true)).toBe(false);
+    expect(latencySamples.some((s) => typeof s.ttsTtfbMs === "number")).toBe(false);
+    pipeline.close();
+  });
+
+  it("开场第二路 abort 记 false-trigger，不记 takeFloor / bargeInSuccess", async () => {
+    const latencySamples: CascadeLatencySample[] = [];
+    const abortTts: TtsSink = {
+      speak: async () => {
+        throw new TtsPlaybackInterruptedError("upstream interrupted", 1011);
+      },
+      stop: vi.fn(),
+      close: vi.fn(),
+      getPlaybackContextState: () => "running",
+      didSchedulePcm: () => false,
+    };
+    const onTtsPlaybackInterrupted = vi.fn();
+    const pipeline = connectCascadedPipeline(
+      makeOpts({
+        tts: abortTts,
+        callbacks: {
+          onStateChange: (s) => stateChanges.push(s),
+          onUserTranscript: (text, isFinal) => userTranscripts.push({ text, isFinal }),
+          onAssistantText: (text) => assistantTexts.push(text),
+          onError: (e) => errors.push(e),
+          onTtsPlaybackInterrupted,
+          onLatency: (sample) => latencySamples.push(sample),
+        },
+      })
+    );
+    await pipeline.startListening("你好，今天我们聊聊你的工作。");
+    expect(onTtsPlaybackInterrupted).toHaveBeenCalledOnce();
+    expect(latencySamples.some((s) => s.falseTriggerKind === "opening_second_turn_abort")).toBe(true);
+    expect(latencySamples.some((s) => s.openingAudible === false)).toBe(true);
+    expect(latencySamples.every((s) => s.bargeInSuccess !== true && s.takeFloor !== true && s.interrupted !== true)).toBe(true);
+    pipeline.close();
+  });
+
+  it("追问仍记 speak 调用时刻的 ttsTtfbMs，PCM 另记 ttsPcmTtfbMs", async () => {
+    const latencySamples: CascadeLatencySample[] = [];
+    let pcmCb: ((atMs: number) => void) | null = null;
+    let scheduled = false;
+    const pcmTts: TtsSink = {
+      speak: () =>
+        new Promise((resolve) => {
+          setTimeout(() => {
+            scheduled = true;
+            pcmCb?.(Date.now());
+            resolve();
+          }, 25);
+        }),
+      stop: vi.fn(),
+      close: vi.fn(),
+      setOnFirstPcmScheduled(cb) {
+        pcmCb = cb;
+      },
+      getPlaybackContextState: () => "running",
+      didSchedulePcm: () => scheduled,
+    };
+    const pipeline = connectCascadedPipeline(
+      makeOpts({
+        tts: pcmTts,
+        callbacks: {
+          onStateChange: (s) => stateChanges.push(s),
+          onUserTranscript: (text, isFinal) => userTranscripts.push({ text, isFinal }),
+          onAssistantText: (text) => assistantTexts.push(text),
+          onError: (e) => errors.push(e),
+          onLatency: (sample) => latencySamples.push(sample),
+        },
+      })
+    );
+    await pipeline.startListening();
+    asr.pushDelta("这件事情我想清楚了", true);
+    asr.pushSpeechStopped(1000);
+    await vi.waitFor(() => {
+      expect(latencySamples.some((s) => typeof s.ttsTtfbMs === "number")).toBe(true);
+      expect(latencySamples.some((s) => typeof s.ttsPcmTtfbMs === "number")).toBe(true);
+    });
+    const callTime = latencySamples.find((s) => typeof s.ttsTtfbMs === "number");
+    const pcmTime = latencySamples.find((s) => typeof s.ttsPcmTtfbMs === "number");
+    expect(pcmTime!.ttsPcmTtfbMs!).toBeGreaterThanOrEqual(callTime!.ttsTtfbMs!);
     pipeline.close();
   });
 });

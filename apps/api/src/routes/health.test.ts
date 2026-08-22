@@ -1,8 +1,11 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import Fastify from "fastify";
 import { registerHealthRoutes } from "./health";
+import { resetRuntimeMetricsForTests } from "../observability/runtime-metrics";
 
 describe("health route", () => {
+  beforeEach(() => resetRuntimeMetricsForTests());
+
 it("无探针(sqlite/测试)→ ok:true ready:true,无 persist 字段", async () => {
     const app = Fastify();
     await app.register(registerHealthRoutes());
@@ -31,6 +34,46 @@ it("无探针(sqlite/测试)→ ok:true ready:true,无 persist 字段", async ()
     await app.register(registerHealthRoutes(() => ({ consecutiveFailures: 0 })));
     const res = await app.inject({ method: "GET", url: "/api/health" });
     expect((res.json() as { persist?: unknown }).persist).toBeUndefined();
+    await app.close();
+  });
+
+  it("GET /api/health 透出 PCM TTFB 与开场出声，不改写 ttsTtfb", async () => {
+    const app = Fastify();
+    await app.register(registerHealthRoutes());
+    const posted = await app.inject({
+      method: "POST",
+      url: "/api/system/runtime-metrics/voice",
+      payload: {
+        path: "cascade",
+        ttsTtfbMs: 50,
+        ttsPcmTtfbMs: 180,
+        openingAudible: true,
+        playbackContextState: "running",
+        takeFloor: false
+      }
+    });
+    expect(posted.statusCode).toBe(200);
+    const res = await app.inject({ method: "GET", url: "/api/health" });
+    const voice = (res.json() as {
+      metrics: {
+        voice: {
+          ttsTtfbDefinition?: string;
+          openingAudibleCount?: number;
+          playbackContextState?: string;
+          takeFloorCount?: number;
+          segments?: {
+            ttsTtfb?: { p50Ms?: number };
+            ttsPcmTtfb?: { p50Ms?: number };
+          };
+        };
+      };
+    }).metrics.voice;
+    expect(voice.ttsTtfbDefinition).toBe("pcm_scheduled");
+    expect(voice.openingAudibleCount).toBe(1);
+    expect(voice.playbackContextState).toBe("running");
+    expect(voice.takeFloorCount).toBe(0);
+    expect(voice.segments?.ttsTtfb?.p50Ms).toBe(50);
+    expect(voice.segments?.ttsPcmTtfb?.p50Ms).toBe(180);
     await app.close();
   });
 });

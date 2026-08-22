@@ -45,13 +45,21 @@ export interface ProductApiClient {
     sttToLlmMs?: number;
     llmTtftMs?: number;
     ttsTtfbMs?: number;
+    ttsPcmTtfbMs?: number;
+    openingAudible?: boolean;
+    playbackContextState?: "running" | "suspended";
     interrupted?: boolean;
     /** Cascade/interrupt: barge-in stopped playback / aborted turn. */
     bargeInSuccess?: boolean;
+    takeFloor?: boolean;
     /** Post-interrupt next turn retained interrupted context (stash). */
     interruptRecovery?: boolean;
     /** Phase-0 false-trigger / echo-guard countable event. */
-    falseTriggerKind?: "quarantine_echo_suspect" | "max_wait_suppressed" | "auto_committed_echo_suspect";
+    falseTriggerKind?:
+      | "quarantine_echo_suspect"
+      | "max_wait_suppressed"
+      | "auto_committed_echo_suspect"
+      | "opening_second_turn_abort";
     sessionId?: string;
   }): Promise<void>;
   getSystemCapabilities(): Promise<SystemCapabilitiesResponse>;
@@ -718,13 +726,20 @@ export interface RuntimeMetricsLite {
       quarantine_echo_suspect?: number;
       max_wait_suppressed?: number;
       auto_committed_echo_suspect?: number;
+      opening_second_turn_abort?: number;
     };
+    takeFloorCount?: number;
+    openingAudibleCount?: number;
+    openingInaudibleCount?: number;
+    playbackContextState?: "running" | "suspended";
+    ttsTtfbDefinition?: "pcm_scheduled";
     /** Per-stage latency percentiles (cascade reports segments when available). */
     segments?: {
       vadEndToStt?: { count?: number; p50Ms?: number; p95Ms?: number };
       sttToLlm?: { count?: number; p50Ms?: number; p95Ms?: number };
       llmTtft?: { count?: number; p50Ms?: number; p95Ms?: number };
       ttsTtfb?: { count?: number; p50Ms?: number; p95Ms?: number };
+      ttsPcmTtfb?: { count?: number; p50Ms?: number; p95Ms?: number };
     };
     budgetHint?: { ttfaP50TargetMs?: number; ttfaP95TargetMs?: number; bargeInStopTargetMs?: number };
   };

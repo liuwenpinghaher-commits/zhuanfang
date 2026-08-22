@@ -410,6 +410,58 @@ describe("createBrowserTtsSink", () => {
     expect(sentSpeakSegments(sockets[0])).toEqual([]);
   });
 
+  it("第一块 PCM 排进 AudioContext 时回调一次，后续块不再回调", async () => {
+    const sink = createBrowserTtsSink("ws://test/tts");
+    const pcmAt: number[] = [];
+    sink.setOnFirstPcmScheduled?.((atMs) => pcmAt.push(atMs));
+    const speaking = sink.speak(["开场"]);
+    sockets[0].open();
+    await vi.waitFor(() => expect(sentSpeakSegments(sockets[0])).toEqual([["开场"]]));
+    expect(sink.didSchedulePcm?.()).toBe(false);
+    expect(sink.getPlaybackContextState?.()).toBe("running");
+
+    sockets[0].message(new Uint8Array([0, 0]).buffer);
+    expect(audioSources).toHaveLength(1);
+    expect(audioSources[0].startCalls).toBe(1);
+    expect(pcmAt).toHaveLength(1);
+    expect(sink.didSchedulePcm?.()).toBe(true);
+
+    sockets[0].message(new Uint8Array([0, 0]).buffer);
+    expect(audioSources).toHaveLength(2);
+    expect(pcmAt).toHaveLength(1);
+
+    sink.stop();
+    await speaking;
+  });
+
+  it("新一轮 speak 重置 PCM 排程旗，可再次回调", async () => {
+    const sink = createBrowserTtsSink("ws://test/tts");
+    const pcmAt: number[] = [];
+    sink.setOnFirstPcmScheduled?.((atMs) => pcmAt.push(atMs));
+
+    const first = sink.speak(["第一句"]);
+    sockets[0].open();
+    await vi.waitFor(() => expect(sentSpeakSegments(sockets[0])).toEqual([["第一句"]]));
+    sockets[0].message(new Uint8Array([0, 0]).buffer);
+    expect(pcmAt).toHaveLength(1);
+    sink.stop();
+    await first;
+
+    const second = sink.speak(["第二句"]);
+    expect(sink.didSchedulePcm?.()).toBe(false);
+    await vi.waitFor(() => expect(sentSpeakSegments(sockets[0])).toEqual([["第一句"], ["第二句"]]));
+    sockets[0].message(new Uint8Array([0, 0]).buffer);
+    expect(pcmAt).toHaveLength(2);
+    sink.stop();
+    await second;
+  });
+
+  it("无播放上下文时 playbackContextState 为 suspended", () => {
+    const sink = createBrowserTtsSink("ws://test/tts");
+    expect(sink.getPlaybackContextState?.()).toBe("suspended");
+    expect(sink.didSchedulePcm?.()).toBe(false);
+  });
+
   it("已排上 PCM 后上下文挂起，drain 不得改口成自动播放拦截", async () => {
     const sink = createBrowserTtsSink("ws://test/tts");
     const speaking = sink.speak(["已经在响"]);

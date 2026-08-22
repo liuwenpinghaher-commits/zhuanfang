@@ -226,10 +226,18 @@ export function createProductApiClient(
       sttToLlmMs?: number;
       llmTtftMs?: number;
       ttsTtfbMs?: number;
+      ttsPcmTtfbMs?: number;
+      openingAudible?: boolean;
+      playbackContextState?: "running" | "suspended";
       interrupted?: boolean;
       bargeInSuccess?: boolean;
+      takeFloor?: boolean;
       interruptRecovery?: boolean;
-      falseTriggerKind?: "quarantine_echo_suspect" | "max_wait_suppressed" | "auto_committed_echo_suspect";
+      falseTriggerKind?:
+        | "quarantine_echo_suspect"
+        | "max_wait_suppressed"
+        | "auto_committed_echo_suspect"
+        | "opening_second_turn_abort";
       sessionId?: string;
     }): Promise<void> {
       try {

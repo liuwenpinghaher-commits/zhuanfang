@@ -13,6 +13,7 @@
 
 import type { ExpressionState, InteractionPreSignals } from "../domain/types";
 import { stripSpokenAsides, deriveSpeechProsody, type SpeechProsody } from "../domain/speech-text";
+import { TTS_AUTOPLAY_BLOCKED_MESSAGE } from "./cascadedTtsSink";
 import type { EndpointingMode } from "./pvadEndpointing";
 import { decideTurn } from "./turnEngine";
 import { assessTurnCompleteness, type Completeness } from "./turnCompleteness";
@@ -71,6 +72,34 @@ export interface AsrSource {
   getEchoCancellationEnabled?(): boolean;
 }
 
+/** AudioContext.state collapsed to the two values operators can act on. */
+export type PlaybackContextState = "running" | "suspended";
+
+export type CascadeFalseTriggerKind =
+  | "quarantine_echo_suspect"
+  | "max_wait_suppressed"
+  | "auto_committed_echo_suspect"
+  | "opening_second_turn_abort";
+
+export type CascadeLatencySample = {
+  ttfaMs?: number;
+  vadEndToSttMs?: number;
+  sttToLlmMs?: number;
+  llmTtftMs?: number;
+  /** Call-time of speak(); do not redefine as first PCM. */
+  ttsTtfbMs?: number;
+  /** First PCM buffer scheduled into AudioContext, same origin as ttsTtfbMs. */
+  ttsPcmTtfbMs?: number;
+  openingAudible?: boolean;
+  playbackContextState?: PlaybackContextState;
+  interrupted?: boolean;
+  bargeInSuccess?: boolean;
+  /** Successful barge that took the floor — not a second-turn abort of opening. */
+  takeFloor?: boolean;
+  interruptRecovery?: boolean;
+  falseTriggerKind?: CascadeFalseTriggerKind;
+};
+
 /**
  * Injected TTS sink.
  * Real implementation sends to WS /api/realtime-voice/ws/tts/:id.
@@ -102,6 +131,10 @@ export interface TtsSink {
    * doubles omit it. Read-only side channel; never affects playback.
    */
   getRecordedPcm?(): { pcm: Uint8Array; sampleRate: number } | null;
+  /** Pipeline registers this so first AudioBufferSourceNode.start can emit PCM TTFB. */
+  setOnFirstPcmScheduled?(cb: ((atMs: number) => void) | null): void;
+  getPlaybackContextState?(): PlaybackContextState;
+  didSchedulePcm?(): boolean;
 }
 
 export type CascadePipelineState =
@@ -129,17 +162,7 @@ export interface CascadedPipelineCallbacks {
    * Stage-2/3: TTFA probe + barge-in / false-trigger countable events.
    * ttfaMs optional so event-only samples (quarantine, max_wait_suppressed, barge-in) can fire without latency.
    */
-  onLatency?: (sample: {
-    ttfaMs?: number;
-    vadEndToSttMs?: number;
-    sttToLlmMs?: number;
-    llmTtftMs?: number;
-    ttsTtfbMs?: number;
-    interrupted?: boolean;
-    bargeInSuccess?: boolean;
-    interruptRecovery?: boolean;
-    falseTriggerKind?: "quarantine_echo_suspect" | "max_wait_suppressed" | "auto_committed_echo_suspect";
-  }) => void;
+  onLatency?: (sample: CascadeLatencySample) => void;
   onTranscriptQuarantined?: (item: TranscriptReviewItem) => void;
 }
 
@@ -256,6 +279,25 @@ export function connectCascadedPipeline(
     similarityThreshold: echoSimilarityThreshold
   });
   const recoveryTranscriptBuffer = createRecoveryTranscriptBuffer();
+
+  // PCM TTFB origin is armed at speak() call; callback fires on first scheduled buffer.
+  let pcmTtfbOriginMs = 0;
+  let pcmTtfbEmitted = false;
+  function armPcmTtfb(originMs: number) {
+    pcmTtfbOriginMs = originMs;
+    pcmTtfbEmitted = false;
+  }
+  function playbackContextState(): PlaybackContextState | undefined {
+    return tts.getPlaybackContextState?.();
+  }
+  tts.setOnFirstPcmScheduled?.((atMs) => {
+    if (pcmTtfbEmitted || pcmTtfbOriginMs <= 0) return;
+    pcmTtfbEmitted = true;
+    callbacks.onLatency?.({
+      ttsPcmTtfbMs: Math.max(0, atMs - pcmTtfbOriginMs),
+      playbackContextState: playbackContextState()
+    });
+  });
 
   let state: CascadePipelineState = "idle";
   let closed = false;
@@ -505,7 +547,7 @@ export function connectCascadedPipeline(
       partialTranscript = "";
       turnAssembler.reset();
     }
-    callbacks.onLatency?.({ interrupted: true, bargeInSuccess: true });
+    callbacks.onLatency?.({ interrupted: true, bargeInSuccess: true, takeFloor: true });
     return true;
   }
   function suppressMic() {
@@ -726,6 +768,7 @@ export function connectCascadedPipeline(
           setState("speaking");
           muteForTts();
           ttsStartedAtMs = Date.now();
+          armPcmTtfb(llmFirstTokenAt || thinkingStartedAt);
           callbacks.onLatency?.({
             ttfaMs: ttsStartedAtMs - (speechStoppedAt || thinkingStartedAt),
             vadEndToSttMs: speechStoppedAt
@@ -806,6 +849,7 @@ export function connectCascadedPipeline(
         callbacks.onAssistantText(filler);
         setState("speaking");
         muteForTts();
+        armPcmTtfb(Date.now());
         try {
           await speakSegments([filler]);
         } catch (error) {
@@ -821,6 +865,7 @@ export function connectCascadedPipeline(
       setState("speaking");
       muteForTts();
       ttsStartedAtMs = Date.now();
+      armPcmTtfb(llmFirstTokenAt || thinkingStartedAt);
       callbacks.onLatency?.({
         ttfaMs: ttsStartedAtMs - (speechStoppedAt || thinkingStartedAt),
         vadEndToSttMs: speechStoppedAt
@@ -985,13 +1030,28 @@ export function connectCascadedPipeline(
       if (opening) {
         openingHold = true;
         setState("speaking");
+        const startedAtMs = Date.now();
+        armPcmTtfb(startedAtMs);
+        let openingInterrupted = false;
+        let openingAutoplayBlocked = false;
         try {
           await speakSegments([opening]);
         } catch (error) {
+          openingInterrupted = true;
+          openingAutoplayBlocked =
+            error instanceof Error && error.message === TTS_AUTOPLAY_BLOCKED_MESSAGE;
           reportTtsPlaybackInterrupted(error);
         } finally {
           openingHold = false;
         }
+        const pcmOk = tts.didSchedulePcm?.() === true;
+        callbacks.onLatency?.({
+          openingAudible: !openingInterrupted && pcmOk,
+          playbackContextState: playbackContextState(),
+          ...(openingInterrupted && !openingAutoplayBlocked
+            ? { falseTriggerKind: "opening_second_turn_abort" as const }
+            : {})
+        });
         settleAfterHostSpeech();
         releaseMicAfterGuard();
       }

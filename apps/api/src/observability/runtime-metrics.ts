@@ -15,17 +15,24 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
-/** Phase-0 false-trigger countable kinds (echo / max-wait suppress). */
+/** Phase-0 false-trigger countable kinds (echo / max-wait suppress / opening abort). */
 export type FalseTriggerKind =
   | "quarantine_echo_suspect"
   | "max_wait_suppressed"
-  | "auto_committed_echo_suspect";
+  | "auto_committed_echo_suspect"
+  | "opening_second_turn_abort";
 
 export const FALSE_TRIGGER_KINDS: readonly FalseTriggerKind[] = [
   "quarantine_echo_suspect",
   "max_wait_suppressed",
-  "auto_committed_echo_suspect"
+  "auto_committed_echo_suspect",
+  "opening_second_turn_abort"
 ] as const;
+
+export type PlaybackContextState = "running" | "suspended";
+/** Snapshot tag for the PCM ring — never silently rewrite ttsTtfbMs. */
+export const TTS_TTFB_DEFINITION = "pcm_scheduled" as const;
+export type TtsTtfbDefinition = typeof TTS_TTFB_DEFINITION;
 
 export function isFalseTriggerKind(value: unknown): value is FalseTriggerKind {
   return (FALSE_TRIGGER_KINDS as readonly string[]).includes(value as string);
@@ -39,10 +46,17 @@ export interface VoiceLatencySample {
   vadEndToSttMs?: number;
   sttToLlmMs?: number;
   llmTtftMs?: number;
+  /** Call-time of speak(); legacy diagnostic — do not swap to first PCM. */
   ttsTtfbMs?: number;
+  /** First PCM buffer scheduled into AudioContext. */
+  ttsPcmTtfbMs?: number;
+  openingAudible?: boolean;
+  playbackContextState?: PlaybackContextState;
   interrupted?: boolean;
   /** Stage-3: interrupt stopped playback / cancelled turn successfully. */
   bargeInSuccess?: boolean;
+  /** Successful barge that took the floor; opening second-turn abort is not this. */
+  takeFloor?: boolean;
   /** Stage-3: post-interrupt next turn retained interrupted context (stash). */
   interruptRecovery?: boolean;
   /**
@@ -117,7 +131,8 @@ function hasLatencyFields(sample: Omit<VoiceLatencySample, "at">): boolean {
     typeof sample.vadEndToSttMs === "number" ||
     typeof sample.sttToLlmMs === "number" ||
     typeof sample.llmTtftMs === "number" ||
-    typeof sample.ttsTtfbMs === "number"
+    typeof sample.ttsTtfbMs === "number" ||
+    typeof sample.ttsPcmTtfbMs === "number"
   );
 }
 
@@ -125,7 +140,10 @@ function isBargeOrInterruptSample(sample: Omit<VoiceLatencySample, "at">): boole
   return (
     sample.interrupted === true ||
     sample.bargeInSuccess !== undefined ||
-    sample.interruptRecovery !== undefined
+    sample.interruptRecovery !== undefined ||
+    sample.takeFloor !== undefined ||
+    sample.openingAudible !== undefined ||
+    sample.playbackContextState !== undefined
   );
 }
 
@@ -220,6 +238,16 @@ export function summarizeVoiceLatency(
       falseTriggerCount += 1;
     }
   }
+  const openingAudibleCount = samples.filter((s) => s.openingAudible === true).length;
+  const openingInaudibleCount = samples.filter((s) => s.openingAudible === false).length;
+  const takeFloorCount = samples.filter((s) => s.takeFloor === true).length;
+  let playbackContextState: PlaybackContextState | undefined;
+  for (let i = samples.length - 1; i >= 0; i--) {
+    if (samples[i].playbackContextState) {
+      playbackContextState = samples[i].playbackContextState;
+      break;
+    }
+  }
   return {
     /** Total records in latency ring + event ring (not equal to ttfaCount). */
     sampleCount: samples.length + eventSamples.length,
@@ -235,6 +263,12 @@ export function summarizeVoiceLatency(
     interruptRecoveryCount,
     interruptRecoveryRate:
       recoveryKnown.length > 0 ? interruptRecoveryCount / recoveryKnown.length : undefined,
+    takeFloorCount,
+    openingAudibleCount,
+    openingInaudibleCount,
+    playbackContextState,
+    /** New ring is first PCM scheduled; ttsTtfbMs stays call-time. */
+    ttsTtfbDefinition: TTS_TTFB_DEFINITION,
     /** Phase-0: countable false-trigger / echo-guard events. */
     falseTriggerCount,
     falseTriggerByKind,
@@ -242,7 +276,8 @@ export function summarizeVoiceLatency(
       vadEndToStt: segmentPercentiles(samples, "vadEndToSttMs"),
       sttToLlm: segmentPercentiles(samples, "sttToLlmMs"),
       llmTtft: segmentPercentiles(samples, "llmTtftMs"),
-      ttsTtfb: segmentPercentiles(samples, "ttsTtfbMs")
+      ttsTtfb: segmentPercentiles(samples, "ttsTtfbMs"),
+      ttsPcmTtfb: segmentPercentiles(samples, "ttsPcmTtfbMs")
     },
     /**
      * Local cascade budget reference (not a hard SLA).

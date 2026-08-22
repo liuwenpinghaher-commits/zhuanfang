@@ -56,6 +56,11 @@ server.get("/api/health", async () => {
             ttfaP50Ms: metrics.voice.ttfaP50Ms,
             ttfaP95Ms: metrics.voice.ttfaP95Ms,
             interruptCount: metrics.voice.interruptCount,
+            takeFloorCount: metrics.voice.takeFloorCount,
+            openingAudibleCount: metrics.voice.openingAudibleCount,
+            openingInaudibleCount: metrics.voice.openingInaudibleCount,
+            playbackContextState: metrics.voice.playbackContextState,
+            ttsTtfbDefinition: metrics.voice.ttsTtfbDefinition,
             segments: metrics.voice.segments,
             budgetHint: metrics.voice.budgetHint
           },
@@ -96,6 +101,10 @@ server.get("/api/health", async () => {
       const falseTriggerKind = isFalseTriggerKind(body.falseTriggerKind)
         ? body.falseTriggerKind
         : undefined;
+      const playbackContextState =
+        body.playbackContextState === "running" || body.playbackContextState === "suspended"
+          ? body.playbackContextState
+          : undefined;
       recordVoiceLatency({
         path,
         ttfaMs: num("ttfaMs"),
@@ -103,8 +112,12 @@ server.get("/api/health", async () => {
         sttToLlmMs: num("sttToLlmMs"),
         llmTtftMs: num("llmTtftMs"),
         ttsTtfbMs: num("ttsTtfbMs"),
+        ttsPcmTtfbMs: num("ttsPcmTtfbMs"),
+        openingAudible: boolOpt("openingAudible"),
+        playbackContextState,
         interrupted: body.interrupted === true,
         bargeInSuccess: boolOpt("bargeInSuccess"),
+        takeFloor: boolOpt("takeFloor"),
         interruptRecovery: boolOpt("interruptRecovery"),
         falseTriggerKind,
         sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined
