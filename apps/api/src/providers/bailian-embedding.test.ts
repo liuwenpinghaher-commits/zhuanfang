@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   BAILIAN_DEFAULT_EMBEDDING_BASE_URL,
   createBailianEmbeddingClient,
+  createBailianEmbeddingClientFromEnv,
   resolveBailianEmbeddingBaseUrl
 } from "./bailian";
 
@@ -93,5 +94,19 @@ describe("createBailianEmbeddingClient", () => {
     const url = String(fetchImpl.mock.calls[0][0]);
     expect(url).toBe("https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings");
     expect(url).not.toMatch(/token-plan/);
+  });
+});
+
+describe("createBailianEmbeddingClientFromEnv", () => {
+  it("does not use the chat/token-plan key for embeddings", () => {
+    expect(createBailianEmbeddingClientFromEnv({
+      DASHSCOPE_API_KEY: "chat-key"
+    })).toBeNull();
+  });
+
+  it("creates a client when the dedicated embeddings key is set", () => {
+    expect(createBailianEmbeddingClientFromEnv({
+      BAILIAN_EMBEDDING_API_KEY: "emb-key"
+    })).not.toBeNull();
   });
 });

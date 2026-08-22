@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   attachWebSocketHeartbeat,
   buildRealtimeProxyLog,
+  isOmniIdleTimeoutClose,
   mapUpstreamCloseCodeForBrowser,
   sanitizeWebSocketCloseCode,
   sanitizeWebSocketCloseReason
@@ -176,6 +177,15 @@ describe("WebSocket close sanitization", () => {
   it("关闭 reason 命中密钥、逐字稿或音频标记时整段脱敏", () => {
     expect(sanitizeWebSocketCloseReason("Bearer secret transcript=用户原话")).toBe("[REDACTED]");
     expect(sanitizeWebSocketCloseReason("input_audio_buffer=base64-pcm")).toBe("[REDACTED]");
+  });
+
+  it("只听不回话被 180 秒踢掉，识别成空闲而不是坏配置", () => {
+    expect(isOmniIdleTimeoutClose(
+      1007,
+      "Your session was closed because no response was generated for 180 seconds"
+    )).toBe(true);
+    expect(isOmniIdleTimeoutClose(1007, "Model not found")).toBe(false);
+    expect(isOmniIdleTimeoutClose(1006, "no response was generated")).toBe(false);
   });
 
   it("上游保留或非法异常码映射为可传输的 1011，而非正常停止 1000", () => {

@@ -101,6 +101,13 @@ export function mapUpstreamCloseCodeForBrowser(code: number): number {
   return sanitized === 1000 && code !== 1000 ? 1011 : sanitized;
 }
 
+/** Omni realtime idle TTL when the session never created a model response. */
+export function isOmniIdleTimeoutClose(code?: number, reason?: string): boolean {
+  if (code !== 1007) return false;
+  const r = String(reason ?? "").toLowerCase();
+  return r.includes("no response was generated") || r.includes("no response is generated");
+}
+
 export function sanitizeWebSocketCloseReason(reason: string): string {
   return truncateUtf8(sanitizeLogReason(reason), CLOSE_REASON_MAX_BYTES);
 }

@@ -2,6 +2,18 @@ import { describe, expect, it } from "vitest";
 import { applyPvadDecisionBias, resolveEndpointingTuning } from "./pvadEndpointing";
 
 describe("resolveEndpointingTuning", () => {
+  it("semantic treats unpunctuated speech as respond-ready after energy has fallen", () => {
+    const t = resolveEndpointingTuning({
+      mode: "semantic",
+      expressionState: "fluent",
+      silenceMs: 900,
+      completeness: "ambiguous",
+      recentEnergy: 0.01,
+      baseMinPauseMs: 600
+    });
+    expect(t.preferRespondOnAmbiguous).toBe(true);
+  });
+
   it("silence mode keeps base pauses", () => {
     const t = resolveEndpointingTuning({
       mode: "silence",

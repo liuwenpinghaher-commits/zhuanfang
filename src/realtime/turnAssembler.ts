@@ -55,7 +55,6 @@ export function createTurnAssembler(_options: TurnAssemblerOptions = {}) {
         && recentTts
         && input.atMs >= recentTts.startedAtMs
         && input.atMs <= recentTts.endedAtMs + echoWindowMs
-        && !input.hasUserEnergyEvidence
         && textSimilarity(text, recentTts.text) >= similarityThreshold
       ) {
         quarantined = {

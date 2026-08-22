@@ -61,6 +61,7 @@ export type {
 
 export {
   buildInterviewEnginePolicy, decideInterviewStrategy,
+  overlayThinHostStrategy, isSpaceHoldingUserText, isThinHostReply,
 } from "./strategy";
 
 export {

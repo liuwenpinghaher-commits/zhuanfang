@@ -1723,6 +1723,9 @@ export function createBailianEmbeddingClient(
       });
 
       if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          console.warn(JSON.stringify({ event: "embedding_key_unusable", status: response.status }));
+        }
         throw new Error(`Bailian embeddings request failed: ${response.status}`);
       }
 
@@ -1743,10 +1746,16 @@ export function createBailianEmbeddingClient(
   };
 }
 
+export function resolveBailianEmbeddingApiKey(
+  env: Record<string, string | undefined> = process.env
+): string {
+  return (env.BAILIAN_EMBEDDING_API_KEY ?? env.DASHSCOPE_EMBEDDING_API_KEY ?? "").trim();
+}
+
 export function createBailianEmbeddingClientFromEnv(
   env: Record<string, string | undefined> = process.env
 ): BailianEmbeddingClient | null {
-  const apiKey = resolveBailianApiKey(env);
+  const apiKey = resolveBailianEmbeddingApiKey(env);
   if (!apiKey) {
     return null;
   }

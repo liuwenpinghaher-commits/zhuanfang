@@ -218,6 +218,35 @@ function buildQualityRemediationActions(
     })
     .slice(0, 8);
 }
+export function isSpaceHoldingUserText(text: string): boolean {
+  const t = String(text ?? "").replace(/\s+/g, "");
+  if (!t) return true;
+  if (/^(等一下|我想打断你|打断一下|先停一下|停一下|等下)/.test(t)) return true;
+  if (t.length < 8 && !/[吗呢？?]/.test(t)) return true;
+  return false;
+}
+
+export function isThinHostReply(text: string): boolean {
+  const t = String(text ?? "").replace(/\s+/g, "");
+  if (!t) return true;
+  if (t.length < 8) return true;
+  return /^(好[，,]?你说|嗯+|请继续|你说|继续说|再说)[。！.]*$/.test(t);
+}
+
+export function overlayThinHostStrategy(
+  decision: InterviewStrategyDecision,
+  assistantText: string
+): InterviewStrategyDecision {
+  if (decision.strategy === "space_holding") return decision;
+  if (!isThinHostReply(assistantText)) return decision;
+  return {
+    ...decision,
+    strategy: "space_holding",
+    label: "让人把那件事说完",
+    reason: "嘴里只是让人继续说，不能再叫追问机制。"
+  };
+}
+
 export function decideInterviewStrategy(session: InterviewSession, userText: string): InterviewStrategyDecision {
   const previousUserTurns = session.turns.filter((turn) => turn.role === "user").length;
   const trace = session.strategyTrace ?? [];
@@ -231,6 +260,16 @@ export function decideInterviewStrategy(session: InterviewSession, userText: str
       ? { referencedMemory: selectedReference.text, references: [selectedReference] }
       : {})
   };
+
+  if (isSpaceHoldingUserText(userText)) {
+    return {
+      ...base,
+      strategy: "space_holding",
+      label: "让人把那件事说完",
+      reason: "人刚插嘴或只说了半句，先让他把那件事说完。",
+      depth: "surface"
+    };
+  }
 
   if (
     hasConcreteMomentPlaybookRule(session) &&

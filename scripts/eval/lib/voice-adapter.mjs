@@ -96,8 +96,20 @@ async function deliverUtterance(page, pcm, log) {
   const afterMs = Number(playedMs) > 8000
     ? 1800
     : Math.max(900, Number(playedMs) * 0.15 + 900);
+  if (info.hasFeed) {
+    await page.evaluate(() => {
+      const feed = window.__asrFeedPcm;
+      if (typeof feed === "function") feed(new Array(16000).fill(0));
+    });
+  }
+  const health = await page.evaluate(() => ({
+    wsReady: Boolean(window.__asrWsReady),
+    lastTranscriptAt: Number(window.__asrLastTranscriptAt ?? 0),
+    ticks: Number(window.__asrTicks ?? 0)
+  }));
+  log(JSON.stringify({ event: "eval_asr_health", ...health }));
   await page.waitForTimeout(afterMs);
-  return info;
+  return { ...info, ...health };
 }
 
 async function waitUntil(pollBook, pred, timeoutMs, log, event) {
@@ -215,25 +227,34 @@ export async function deliverVoiceScenario({
       }
     }
 
-    await waitListening(page, Number(scenario.maxUserTurns ?? 0) >= 8 ? 90000 : 28000);
+    const readyListen = await waitListening(page, Number(scenario.maxUserTurns ?? 0) >= 8 ? 90000 : 28000);
+    if (!readyListen) {
+      log(JSON.stringify({ event: "eval_voice_not_listening" }));
+      result.error = "not_listening";
+    }
     await page.waitForTimeout(600);
     const statusText = await page.locator(".status-dot").locator("xpath=..").innerText().catch(() => "");
     log(JSON.stringify({ event: "eval_voice_ready", statusText: String(statusText).slice(0, 80) }));
 
     const longSpeech = Number(scenario.maxUserTurns ?? 0) >= 8 || scenario.id === "VOICE-speech20";
-    if (longSpeech) {
+    if (longSpeech && result.error !== "not_listening") {
       const n = Math.min(utterances.length, Number(scenario.maxUserTurns ?? utterances.length));
+      let emptyStreak = 0;
       for (let i = 0; i < n; i++) {
         if (i > 0) {
           const listening = await waitListening(page, 120000);
           log(JSON.stringify({ event: "eval_speech_listen", i, listening }));
+          if (!listening) {
+            result.error = "not_listening";
+            break;
+          }
         }
         const before = await readBook(bookPoll);
         const pcm = utterances[i]?.pcmBase64;
         if (!pcm) break;
         await deliverUtterance(page, pcm, log);
-        await waitUntil(bookPoll, (b) => b.userTurns > before.userTurns, 180000, log, "eval_speech_wait_user");
-        await waitUntil(bookPoll, (b) => b.assistantTurns > before.assistantTurns, 180000, log, "eval_speech_wait_host");
+        await waitUntil(bookPoll, (b) => b.userTurns > before.userTurns, 60000, log, "eval_speech_wait_user");
+        await waitUntil(bookPoll, (b) => b.assistantTurns > before.assistantTurns, 90000, log, "eval_speech_wait_host");
         const now = await readBook(bookPoll);
         log(JSON.stringify({
           event: "eval_speech_turn",
@@ -241,8 +262,18 @@ export async function deliverVoiceScenario({
           userTurns: now.userTurns,
           assistantTurns: now.assistantTurns
         }));
+        if (now.userTurns <= before.userTurns) {
+          emptyStreak += 1;
+          if (emptyStreak >= 2) {
+            result.error = "book_not_growing";
+            log(JSON.stringify({ event: "eval_speech_abort", i, emptyStreak }));
+            break;
+          }
+        } else {
+          emptyStreak = 0;
+        }
       }
-    } else {
+    } else if (!longSpeech) {
     const beforeStory = await readBook(bookPoll);
     await deliverUtterance(page, storyPcm, log);
     const hostSpeech = scenario.id === "VOICE-barge"

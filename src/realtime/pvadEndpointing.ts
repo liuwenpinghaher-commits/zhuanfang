@@ -47,7 +47,9 @@ export function resolveEndpointingTuning(input: PvadEndpointingInput): PvadEndpo
     return {
       minPauseMs: baseMin,
       maxWaitMs: baseMax,
-      preferRespondOnAmbiguous: input.completeness === "complete",
+      // Spoken Chinese rarely has 。/吗/呢. Ambiguous + energy already fallen
+      // must commit; pipeline still waits first when energy is hot or hanging.
+      preferRespondOnAmbiguous: input.completeness === "complete" || input.completeness === "ambiguous",
       label: "semantic"
     };
   }

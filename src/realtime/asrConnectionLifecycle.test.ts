@@ -24,6 +24,14 @@ describe("ASR 会中重连策略", () => {
     expect(isRecoverableAsrCloseCode(1011)).toBe(true);
   });
 
+  it("omni 因只听不回话被 180 秒踢掉，是可恢复的空闲，不是坏配置", () => {
+    expect(isRecoverableAsrCloseCode(
+      1007,
+      "Your session was closed because no response was generated for 180 seconds"
+    )).toBe(true);
+    expect(isRecoverableAsrCloseCode(1007, "Model not found")).toBe(false);
+  });
+
   it("事件类型保留 code/reason 与预算", () => {
     const event: AsrConnectionEvent = {
       state: "reconnecting", attempt: 2, maxAttempts: 5, code: 1006, reason: "network",

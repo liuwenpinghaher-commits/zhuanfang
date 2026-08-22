@@ -1101,6 +1101,59 @@ describe("realtime-voice ASR WebSocket proxy resilience", () => {
     }
   });
 
+  it("omni 因只听不回话被 180 秒踢掉时，换上游、浏览器连接保持", async () => {
+    const testApp = Fastify();
+    const first = new FakeRealtimeUpstream();
+    const recycled = new FakeRealtimeUpstream();
+    const upstreams = [first, recycled];
+    const requestedUrls: string[] = [];
+    await registerRealtimeVoiceRoutes(testApp, {
+      env: { DASHSCOPE_API_KEY: "test-secret", BAILIAN_REALTIME_MODEL: "omni-flash" },
+      createRealtimeUpstream: (url: string) => {
+        requestedUrls.push(url);
+        const next = upstreams.shift();
+        if (!next) throw new Error("idle recycle 只应再建一次上游");
+        return next;
+      },
+      heartbeatIntervalMs: 10_000,
+      heartbeatMaxMissedPongs: 2
+    } as never);
+    await testApp.ready();
+    const sessionRes = await testApp.inject({ method: "POST", url: "/api/realtime-voice/sessions", payload: {} });
+    const { sessionId } = sessionRes.json() as { sessionId: string };
+    await testApp.listen({ port: 0, host: "127.0.0.1" });
+    const port = (testApp.server.address() as { port: number }).port;
+    const { WebSocket: WsClient } = require("ws") as typeof import("ws");
+    const ws = new WsClient(`ws://127.0.0.1:${port}/api/realtime-voice/ws/${sessionId}`);
+    const browserMessages: string[] = [];
+    ws.on("message", (data: Buffer) => browserMessages.push(data.toString()));
+    try {
+      await once(ws, "open");
+      ws.send(JSON.stringify({ type: "session.update", session: { modalities: ["text"] } }));
+      first.open();
+      first.message({ type: "session.created" });
+      await vi.waitFor(() => expect(browserMessages).toContain(JSON.stringify({ type: "proxy.connected" })));
+
+      first.remoteClose(1007, "Your session was closed because no response was generated for 180 seconds");
+      await vi.waitFor(() => expect(requestedUrls).toHaveLength(2));
+      expect(ws.readyState).toBe(WsClient.OPEN);
+
+      recycled.open();
+      recycled.message({ type: "session.created" });
+      await vi.waitFor(() => {
+        expect(browserMessages).toContain(JSON.stringify({ type: "proxy.upstream_ready" }));
+        expect(recycled.sent).toContain(JSON.stringify({
+          type: "session.update",
+          session: { modalities: ["text"] }
+        }));
+      });
+      expect(ws.readyState).toBe(WsClient.OPEN);
+    } finally {
+      if (ws.readyState !== WsClient.CLOSED) ws.terminate();
+      await testApp.close();
+    }
+  });
+
   it("主模型迟迟没有 session.created 时按握手超时切换 fallback", async () => {
     const testApp = Fastify();
     const primary = new FakeRealtimeUpstream();

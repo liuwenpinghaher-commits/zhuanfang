@@ -32,6 +32,8 @@ function makeFakeAsr(fixedState: ExpressionState = "concluding"): AsrSource & {
   pushSpeechStopped(silenceMs: number): void;
   setExpressionState(s: ExpressionState): void;
   setUserEnergyEvidence(value: boolean): void;
+  setRecentEnergy(value: number): void;
+  setEchoCancellationEnabled(value: boolean): void;
 } {
   let handlers: AsrEventHandlers = {
     onTranscriptDelta: () => {},
@@ -40,6 +42,8 @@ function makeFakeAsr(fixedState: ExpressionState = "concluding"): AsrSource & {
   };
   let currentState: ExpressionState = fixedState;
   let userEnergyEvidence = true;
+  let recentEnergy = 0;
+  let echoCancellationEnabled = false;
   let started = false;
   return {
     _handlers: handlers as AsrEventHandlers,
@@ -62,6 +66,12 @@ function makeFakeAsr(fixedState: ExpressionState = "concluding"): AsrSource & {
     hasRecentUserEnergyEvidence() {
       return userEnergyEvidence;
     },
+    getRecentEnergy() {
+      return recentEnergy;
+    },
+    getEchoCancellationEnabled() {
+      return echoCancellationEnabled;
+    },
 
     // test helpers
     pushDelta(text: string, isFinal = false) {
@@ -78,6 +88,12 @@ function makeFakeAsr(fixedState: ExpressionState = "concluding"): AsrSource & {
     },
     setUserEnergyEvidence(value: boolean) {
       userEnergyEvidence = value;
+    },
+    setRecentEnergy(value: number) {
+      recentEnergy = value;
+    },
+    setEchoCancellationEnabled(value: boolean) {
+      echoCancellationEnabled = value;
     },
   };
 }
@@ -315,7 +331,10 @@ describe("connectCascadedPipeline", () => {
           resolveLate = res;
         })
     );
-    const pipeline = connectCascadedPipeline(makeOpts({ sendUserTurn: lateSend }));
+    const pipeline = connectCascadedPipeline(makeOpts({
+      sendUserTurn: lateSend,
+      decisionOpts: { minBargeInMs: 0 },
+    }));
     await pipeline.startListening();
 
     asr.pushDelta("我把一个完整的想法说完了", true);
@@ -648,6 +667,7 @@ describe("connectCascadedPipeline", () => {
     const pipeline = connectCascadedPipeline(
       makeOpts({
         sendUserTurn: slowSend,
+        decisionOpts: { minBargeInMs: 0 },
         callbacks: {
           onStateChange: (s) => stateChanges.push(s),
           onUserTranscript: (text, isFinal) => userTranscripts.push({ text, isFinal }),
@@ -1285,6 +1305,78 @@ describe("connectCascadedPipeline", () => {
     await Promise.resolve();
     expect(sendUserTurn.fn).toHaveBeenCalledOnce();
     expect(sendUserTurn.fn.mock.calls[0][0]).toBe("我上周和产品一起改了优先级。");
+    pipeline.close();
+  });
+
+  it("Layer-1: 能量已落的无标点口语直接交卷，不 arm 8s", async () => {
+    asr.setExpressionState("fluent");
+    asr.setRecentEnergy(0.01);
+    const decisions: Array<{ action: string; reason: string }> = [];
+    const pipeline = connectCascadedPipeline(makeOpts({
+      onDecision: (d) => decisions.push({ action: d.action, reason: d.reason }),
+      decisionOpts: { finalStabilityMs: 0, minPauseMs: 200, maxWaitMs: 8000 },
+    }));
+    await pipeline.startListening();
+    asr.pushDelta("授权让我最难受的是那次救火", true);
+    asr.pushSpeechStopped(900);
+    await vi.waitFor(() => expect(sendUserTurn.fn).toHaveBeenCalledOnce());
+    expect(sendUserTurn.fn.mock.calls[0][0]).toBe("授权让我最难受的是那次救火");
+    expect(decisions.some((d) => d.reason === "max-wait timer fired")).toBe(false);
+    pipeline.close();
+  });
+
+  it("Layer-1: 能量仍高时不交卷，下一段拼进同一轮", async () => {
+    asr.setExpressionState("fluent");
+    asr.setRecentEnergy(0.4);
+    const pipeline = connectCascadedPipeline(makeOpts({
+      decisionOpts: { finalStabilityMs: 0, minPauseMs: 200 },
+    }));
+    await pipeline.startListening();
+    asr.pushDelta("授权让我最难受的是那次救火", true);
+    asr.pushSpeechStopped(900);
+    await Promise.resolve();
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+
+    asr.setRecentEnergy(0.01);
+    asr.pushSpeechStarted();
+    asr.pushDelta("所以我把检索砍了", true);
+    asr.pushSpeechStopped(900);
+    await vi.waitFor(() => expect(sendUserTurn.fn).toHaveBeenCalledOnce());
+    expect(sendUserTurn.fn.mock.calls[0][0]).toBe("授权让我最难受的是那次救火所以我把检索砍了");
+    pipeline.close();
+  });
+
+  it("AEC 开着时，不相似高能量可以打断正在出声的主持人", async () => {
+    vi.useFakeTimers();
+    asr.setExpressionState("concluding");
+    asr.setEchoCancellationEnabled(true);
+    asr.setUserEnergyEvidence(true);
+    asr.setRecentEnergy(0.5);
+    let resolveSpeak!: () => void;
+    const heldSpeak = vi.fn(
+      (_segs: string[]) => new Promise<void>((res) => { resolveSpeak = res; })
+    );
+    const heldStop = vi.fn();
+    const heldTts = { speak: heldSpeak, stop: heldStop, close: vi.fn() } as unknown as TtsSink;
+    const pipeline = connectCascadedPipeline(makeOpts({
+      tts: heldTts,
+      echoCancellationEnabled: true,
+      decisionOpts: { minBargeInMs: 280, finalStabilityMs: 0 },
+    }));
+    await pipeline.startListening();
+    asr.pushDelta("我把那次救火说完了。", true);
+    asr.pushSpeechStopped(1000);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(heldSpeak).toHaveBeenCalled();
+
+    asr.pushSpeechStarted();
+    vi.advanceTimersByTime(280);
+    await Promise.resolve();
+    expect(heldStop).toHaveBeenCalled();
+    expect(stateChanges).toContain("interrupted");
+    resolveSpeak();
     pipeline.close();
   });
 });

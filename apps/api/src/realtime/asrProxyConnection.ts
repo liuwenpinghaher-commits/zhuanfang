@@ -2,6 +2,7 @@ import { WebSocket } from "ws";
 import {
   attachWebSocketHeartbeat,
   buildRealtimeProxyLog,
+  isOmniIdleTimeoutClose,
   mapUpstreamCloseCodeForBrowser,
   sanitizeWebSocketCloseCode,
   sanitizeWebSocketCloseReason,
@@ -30,6 +31,10 @@ export interface RealtimeAsrProxyOptions {
   now: () => number;
   onBrowserActivity: () => void;
   onClosed: () => void;
+  /** Recycle the omni socket before its 180s idle TTL. Default 120s. */
+  recycleIdleAfterMs?: number;
+  /** Cap on mid-session upstream recycles for one browser socket. */
+  maxUpstreamRecycles?: number;
 }
 
 export function connectRealtimeAsrProxy(options: RealtimeAsrProxyOptions): void {
@@ -47,14 +52,22 @@ export function connectRealtimeAsrProxy(options: RealtimeAsrProxyOptions): void 
     now,
     onBrowserActivity,
     onClosed,
+    recycleIdleAfterMs = 120_000,
+    maxUpstreamRecycles = 40,
   } = options;
   const startedAt = now();
   let phase: "connecting" | "ready" | "closing" = "connecting";
   let binding: UpstreamBinding | null = null;
-  let pendingSessionUpdate: string | null = null;
+  let lastSessionUpdate: string | null = null;
+  const pendingAudio: string[] = [];
+  let recycleCount = 0;
+  let recycleTimer: ReturnType<typeof setTimeout> | null = null;
+  let currentModel = primaryModel;
+  let browserAnnounced = false;
   let fallbackAttempted = primaryModel === fallbackModel;
   let cleaned = false;
   let disposeBrowserHeartbeat: () => void = () => undefined;
+  const PENDING_AUDIO_MAX = 200;
 
   const writeProxyLog = (
     event: string,
@@ -93,6 +106,50 @@ export function connectRealtimeAsrProxy(options: RealtimeAsrProxyOptions): void 
     }
   }
 
+  function clearRecycleTimer(): void {
+    if (recycleTimer === null) return;
+    clearTimeout(recycleTimer);
+    recycleTimer = null;
+  }
+
+  function armRecycleTimer(): void {
+    clearRecycleTimer();
+    if (recycleIdleAfterMs <= 0) return;
+    recycleTimer = setTimeout(() => {
+      recycleTimer = null;
+      if (cleaned || phase !== "ready") return;
+      recycleUpstream("proactive idle recycle");
+    }, recycleIdleAfterMs);
+  }
+
+  function enqueuePendingAudio(payload: string): void {
+    pendingAudio.push(payload);
+    while (pendingAudio.length > PENDING_AUDIO_MAX) pendingAudio.shift();
+  }
+
+  function flushPendingAudio(socket: WebSocket): void {
+    if (socket.readyState !== WebSocket.OPEN) return;
+    const queued = pendingAudio.splice(0, pendingAudio.length);
+    for (const frame of queued) socket.send(frame);
+  }
+
+  function recycleUpstream(reason: string): boolean {
+    if (cleaned || recycleCount >= maxUpstreamRecycles) return false;
+    recycleCount += 1;
+    writeProxyLog("realtime_proxy_upstream_recycle", "upstream", undefined, reason);
+    const current = binding;
+    phase = "connecting";
+    clearRecycleTimer();
+    if (current) {
+      detachUpstream(current);
+      if (current.socket.readyState === WebSocket.OPEN || current.socket.readyState === WebSocket.CONNECTING) {
+        current.socket.terminate();
+      }
+    }
+    connectModel(currentModel);
+    return true;
+  }
+
   function cleanup(cleanupOptions: {
     closeBrowser?: { code: number; reason: string };
     closeUpstream?: boolean;
@@ -100,6 +157,7 @@ export function connectRealtimeAsrProxy(options: RealtimeAsrProxyOptions): void 
     if (cleaned) return;
     cleaned = true;
     phase = "closing";
+    clearRecycleTimer();
     disposeBrowserHeartbeat();
     if (cleanupOptions.closeUpstream) closeUpstreamForBrowser();
     else if (binding) detachUpstream(binding);
@@ -118,6 +176,7 @@ export function connectRealtimeAsrProxy(options: RealtimeAsrProxyOptions): void 
   function startFallback(current: UpstreamBinding | null, reason: string): boolean {
     if (cleaned || phase !== "connecting" || fallbackAttempted || !fallbackModel) return false;
     fallbackAttempted = true;
+    currentModel = fallbackModel;
     writeProxyLog("realtime_proxy_fallback_started", "upstream", undefined, reason);
     if (current) {
       detachUpstream(current);
@@ -161,13 +220,19 @@ export function connectRealtimeAsrProxy(options: RealtimeAsrProxyOptions): void 
       if (phase !== "connecting" || messageType !== "session.created") return;
       phase = "ready";
       clearTimeout(current.handshakeTimer);
-      if (pendingSessionUpdate && socket.readyState === WebSocket.OPEN) {
-        socket.send(pendingSessionUpdate);
-        pendingSessionUpdate = null;
+      if (lastSessionUpdate && socket.readyState === WebSocket.OPEN) {
+        socket.send(lastSessionUpdate);
       }
+      flushPendingAudio(socket);
       if (browser.readyState === WebSocket.OPEN) {
-        browser.send(JSON.stringify({ type: "proxy.connected" }));
+        if (!browserAnnounced) {
+          browser.send(JSON.stringify({ type: "proxy.connected" }));
+          browserAnnounced = true;
+        } else {
+          browser.send(JSON.stringify({ type: "proxy.upstream_ready" }));
+        }
       }
+      armRecycleTimer();
     };
 
     const onError = (error: Error) => {
@@ -191,6 +256,9 @@ export function connectRealtimeAsrProxy(options: RealtimeAsrProxyOptions): void 
       if (cleaned || !current || current.socket !== socket) return;
       const closeReason = reason.toString() || "dashscope closed";
       writeProxyLog("realtime_proxy_upstream_closed", "upstream", code, closeReason);
+      if (isOmniIdleTimeoutClose(code, closeReason) && (phase === "ready" || phase === "connecting")) {
+        if (recycleUpstream(closeReason)) return;
+      }
       if ((code === 1007 || code === 1008) && startFallback(current, closeReason)) return;
       cleanup({
         closeBrowser: {
@@ -240,17 +308,21 @@ export function connectRealtimeAsrProxy(options: RealtimeAsrProxyOptions): void 
     if (cleaned) return;
     onBrowserActivity();
     const payload = data.toString();
+    let messageType: unknown;
+    try {
+      messageType = (JSON.parse(payload) as { type?: unknown }).type;
+    } catch {
+      messageType = undefined;
+    }
+    if (messageType === "session.update") lastSessionUpdate = payload;
     if (phase === "ready" && binding?.socket.readyState === WebSocket.OPEN) {
       binding.socket.send(payload);
       return;
     }
     if (Buffer.byteLength(payload, "utf8") > 64 * 1024) return;
-    try {
-      if ((JSON.parse(payload) as { type?: unknown }).type === "session.update") {
-        pendingSessionUpdate = payload;
-      }
-    } catch {
-      // Malformed pre-ready control frames are ignored and never logged.
+    if (messageType === "session.update") return;
+    if (messageType === "input_audio_buffer.append") {
+      enqueuePendingAudio(payload);
     }
   }
 

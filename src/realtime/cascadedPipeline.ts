@@ -13,7 +13,7 @@
 
 import type { ExpressionState, InteractionPreSignals } from "../domain/types";
 import { stripSpokenAsides, deriveSpeechProsody, type SpeechProsody } from "../domain/speech-text";
-import { decideCascadeTurn } from "./cascadeTurnDecision";
+import { decideCascadeTurn, shouldAcceptBargeIn } from "./cascadeTurnDecision";
 import type { EndpointingMode } from "./pvadEndpointing";
 import { decideTurn } from "./turnEngine";
 import { assessTurnCompleteness, type Completeness } from "./turnCompleteness";
@@ -67,6 +67,8 @@ export interface AsrSource {
   /** Optional peak |sample| energy 0..1 from the latest speech window (pVAD-lite). */
   getRecentEnergy?(): number;
   hasRecentUserEnergyEvidence?(): boolean;
+  /** True when getUserMedia reported echoCancellation:true. */
+  getEchoCancellationEnabled?(): boolean;
 }
 
 /**
@@ -194,8 +196,17 @@ export interface ConnectCascadedPipelineOptions {
      */
     endpointingMode?: EndpointingMode;
   };
-  /** Layer-2 LLM endpoint: returns done=true when the transcript reads complete. */
+  /**
+   * Layer-2 LLM endpoint. Live path default is off; pass only when
+   * `systemConfig.voice.useLayer2Endpoint` is true.
+   */
   classifyEndpoint?: (transcript: string, signal: AbortSignal) => Promise<{ done: boolean; reason?: string }>;
+  /**
+   * When true, TTS does not mute the mic. Barge uses turnAssembler + minBargeInMs.
+   * When false/undefined, half-duplex suppressMic (today's behavior).
+   * After asr.start(), pipeline also reads asr.getEchoCancellationEnabled?.().
+   */
+  echoCancellationEnabled?: boolean;
   /** Called after every turn-taking decision with a structured trace. */
   onDecision?: (trace: DecisionTrace) => void;
   /** Override completeness assessment (default: assessTurnCompleteness). */
@@ -230,6 +241,7 @@ export function connectCascadedPipeline(
   const {
     asr, tts, sendUserTurn, sendUserTurnStream, callbacks, preSignals = null, decisionOpts = {},
     classifyEndpoint, onDecision, assessCompleteness = assessTurnCompleteness,
+    echoCancellationEnabled: echoCancellationEnabledOpt,
   } = opts;
   const {
     minPauseMs = 600,
@@ -378,6 +390,42 @@ export function connectCascadedPipeline(
   let micSuppressed = false;
   let echoGuardTimer: ReturnType<typeof setTimeout> | null = null;
   const ECHO_GUARD_MS = 600;
+  let halfDuplexMute = echoCancellationEnabledOpt !== true;
+  let bargeArmTimer: ReturnType<typeof setTimeout> | null = null;
+  let bargeSpeechStartedAt = 0;
+
+  function usesHalfDuplexMute(): boolean {
+    return halfDuplexMute;
+  }
+  function muteForTts() {
+    if (usesHalfDuplexMute()) suppressMic();
+  }
+  function clearBargeArm() {
+    if (bargeArmTimer !== null) {
+      clearTimeout(bargeArmTimer);
+      bargeArmTimer = null;
+    }
+    bargeSpeechStartedAt = 0;
+  }
+  function performBarge(): boolean {
+    if (closed) return false;
+    if (state !== "thinking" && state !== "speaking") return false;
+    if (activeAbort) {
+      activeAbort.abort();
+      activeAbort = null;
+    }
+    tts.stop();
+    classifyAbort?.abort();
+    classifyAbort = null;
+    clearMaxWaitTimer();
+    clearBargeArm();
+    setState("interrupted");
+    committedTranscript = "";
+    partialTranscript = "";
+    turnAssembler.reset();
+    callbacks.onLatency?.({ interrupted: true, bargeInSuccess: true });
+    return true;
+  }
   function suppressMic() {
     micSuppressed = true;
     if (echoGuardTimer !== null) {
@@ -415,44 +463,32 @@ export function connectCascadedPipeline(
    */
   function handleSpeechStarted(): boolean {
     if (closed) return false;
-    // Echo guard: while the AI's TTS is playing, the mic is hearing the AI's own
-    // voice — do NOT treat it as the user barging in. (Real user barge-in during
-    // the LLM "thinking" window — before any audio plays — is still honored.)
     if (micSuppressed) return false;
     const wasActive = state === "thinking" || state === "speaking";
-    if (wasActive) {
-      // Abort in-flight LLM call
-      if (activeAbort) {
-        activeAbort.abort();
-        activeAbort = null;
-      }
-      // Stop TTS playback
-      tts.stop();
-      // Cancel any in-flight layer-2 classify call
-      classifyAbort?.abort();
-      classifyAbort = null;
-      clearMaxWaitTimer();
-      setState("interrupted");
-      // Barge-in discards the superseded turn → reset so the new utterance starts fresh.
-      // CRITICAL: only reset on barge-in. A listening-state speech_started is the SAME
-      // utterance RESUMING after a VAD-induced pause (server_vad cuts on silence). Resetting
-      // there dropped everything said before the pause — the "话被断成很多段 + 前段丢失" bug:
-      // committedTranscript kept only the last fragment (or emptied → turn never met
-      // completeness → never committed → session.turns stayed 0 → /end 422 "结束失败").
-      // Normal turn boundaries are cleared by resetTurn() after doRespond() instead.
-      committedTranscript = "";
-      partialTranscript = "";
-      turnAssembler.reset();
-      // Phase-0: cascade natural barge-in succeeded (abort + stop TTS).
-      callbacks.onLatency?.({ interrupted: true, bargeInSuccess: true });
+    if (!wasActive) return false;
+    if (shouldAcceptBargeIn(0, minBargeInMs)) {
+      return performBarge();
     }
-    return wasActive;
+    bargeSpeechStartedAt = Date.now();
+    if (bargeArmTimer !== null) clearTimeout(bargeArmTimer);
+    bargeArmTimer = setTimeout(() => {
+      bargeArmTimer = null;
+      if (closed || micSuppressed) return;
+      if (state !== "thinking" && state !== "speaking") return;
+      performBarge();
+      if (!closed) setState("listening");
+    }, minBargeInMs);
+    return false;
   }
 
   // ── Speech stopped: analysis gate ─────────────────────────────────────────
   async function handleSpeechStopped(silenceMs: number) {
     speechStoppedAt = Date.now();
     if (closed) return;
+    if (bargeArmTimer !== null && bargeSpeechStartedAt > 0
+      && Date.now() - bargeSpeechStartedAt < minBargeInMs) {
+      clearBargeArm();
+    }
     if (micSuppressed) return;
     if (state === "thinking" || state === "speaking") return;
 
@@ -463,6 +499,43 @@ export function connectCascadedPipeline(
     const completeness: Completeness =
       expressionState === "concluding" ? "complete" : assessCompleteness(transcript);
     const energy = typeof asr.getRecentEnergy === "function" ? asr.getRecentEnergy() : undefined;
+    const energyHigh = typeof energy === "number" && energy > 0.08;
+    if (
+      completeness === "incomplete"
+      || (energyHigh && expressionState !== "concluding")
+      || (expressionState === "organizing" && completeness !== "complete")
+    ) {
+      onDecision?.({
+        layer: 1, action: "wait",
+        reason: energyHigh ? "energy still high — keep this turn open" : "transcript still hanging",
+        transcript, silenceMs, expressionState,
+      });
+      if (completeness === "incomplete" || expressionState === "organizing") {
+        armMaxWait(transcript, expressionState);
+      }
+      return;
+    }
+    if (classifyEndpoint && completeness === "ambiguous") {
+      clearMaxWaitTimer();
+      classifyAbort?.abort();
+      classifyAbort = new AbortController();
+      const sig = classifyAbort.signal;
+      let done = true;
+      try {
+        const r = await classifyEndpoint(transcript, sig);
+        if (sig.aborted || closed) return;
+        done = r.done;
+        onDecision?.({ layer: 2, action: done ? "respond" : "wait", reason: r.reason ?? "llm endpoint", transcript, silenceMs, expressionState });
+      } catch {
+        if (sig.aborted || closed) return;
+        done = true;
+      } finally {
+        if (classifyAbort?.signal === sig) classifyAbort = null;
+      }
+      if (done) { requestStableCommit(true); }
+      else { armMaxWait(transcript, expressionState); }
+      return;
+    }
     const decision = decideTurn({
       mode: endpointingMode,
       expressionState,
@@ -487,7 +560,7 @@ export function connectCascadedPipeline(
       clearMaxWaitTimer();
       const text = pickBackchannel(expressionState, currentPreSignals?.depthDirection?.guidance);
       const startedAtMs = Date.now();
-      suppressMic();
+      muteForTts();
       try { await tts.speak([text]); } catch (error) { reportTtsPlaybackInterrupted(error); }
       turnAssembler.noteTtsPlayback({ text, startedAtMs, endedAtMs: Date.now() });
       releaseMicAfterGuard();
@@ -589,7 +662,7 @@ export function connectCascadedPipeline(
         if (!firstSpeakStarted) {
           firstSpeakStarted = true;
           setState("speaking");
-          suppressMic();
+          muteForTts();
           ttsStartedAtMs = Date.now();
           callbacks.onLatency?.({
             ttfaMs: ttsStartedAtMs - (speechStoppedAt || thinkingStartedAt),
@@ -670,7 +743,7 @@ export function connectCascadedPipeline(
         const filler = "嗯，我在听，你可以继续说。";
         callbacks.onAssistantText(filler);
         setState("speaking");
-        suppressMic();
+        muteForTts();
         const startedAtMs = Date.now();
         try {
           await tts.speak([filler]);
@@ -686,7 +759,7 @@ export function connectCascadedPipeline(
       }
       callbacks.onAssistantText(assistantText);
       setState("speaking");
-      suppressMic();
+      muteForTts();
       ttsStartedAtMs = Date.now();
       callbacks.onLatency?.({
         ttfaMs: ttsStartedAtMs - (speechStoppedAt || thinkingStartedAt),
@@ -728,11 +801,12 @@ export function connectCascadedPipeline(
 
   function processTranscriptDelta(text: string, isFinal: boolean) {
     if (closed || micSuppressed) return; // ignore the AI's own echoed transcription
+    const speaking = state === "thinking" || state === "speaking";
     const assembled = turnAssembler.ingest({
       text,
       isFinal,
       atMs: Date.now(),
-      hasUserEnergyEvidence: asr.hasRecentUserEnergyEvidence?.() ?? true
+      hasUserEnergyEvidence: asr.hasRecentUserEnergyEvidence?.() ?? !speaking
     });
     if (assembled.action === "quarantine") {
       surfaceQuarantine({ text: assembled.transcript, reason: assembled.reason, source: "echo" });
@@ -838,10 +912,11 @@ export function connectCascadedPipeline(
   return {
     async startListening(openingText?: string) {
       const opening = openingText?.trim() || "";
-      if (opening) suppressMic();
       await asr.start();
       asrStarted = true;
       if (closed) return; // closed while the mic was coming up — don't speak
+      halfDuplexMute = !(echoCancellationEnabledOpt ?? asr.getEchoCancellationEnabled?.() ?? false);
+      if (opening && usesHalfDuplexMute()) suppressMic();
       if (opening) {
         setState("speaking");
         const startedAtMs = Date.now();
@@ -861,6 +936,7 @@ export function connectCascadedPipeline(
       classifyAbort?.abort(); classifyAbort = null;
       tts.stop();
       clearMaxWaitTimer();
+      clearBargeArm();
       setState("interrupted");
       return { spokenTextSoFar: spokenText || lastPlannedSpokenText };
     },
@@ -927,6 +1003,7 @@ export function connectCascadedPipeline(
       queuedRecoveryReviews.length = 0;
       recoveryTranscriptBuffer.clear();
       clearMaxWaitTimer();
+      clearBargeArm();
       if (stableCommitTimer !== null) { clearTimeout(stableCommitTimer); stableCommitTimer = null; }
       if (echoGuardTimer !== null) { clearTimeout(echoGuardTimer); echoGuardTimer = null; }
       micSuppressed = false;

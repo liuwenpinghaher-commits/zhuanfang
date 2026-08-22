@@ -236,7 +236,7 @@ export function buildInterviewCard(state: ProductState, searchBriefId?: string, 
   const title = fromRevisitQueue && autoLaunch
     ? autoLaunch.launchItem.title
     : userTopicHint
-    ? `继续追问：${formatQuestionTitle(userTopicHint)}`
+    ? formatQuestionTitle(userTopicHint)
     : focusQuestion
     ? `继续追问：${formatQuestionTitle(focusQuestion.question)}`
     : topTheme
@@ -272,7 +272,7 @@ export function buildInterviewCard(state: ProductState, searchBriefId?: string, 
       : userTopicHint && hasContextSources
         ? `你刚选中的线索命中了可引用的导入资料，适合先借外部材料校准问题，再回到你的具体场景。`
       : userTopicHint
-        ? `你刚在资产库中选中了这条线索，适合直接接上它继续专访，而不是回到泛泛复盘。`
+        ? `你准备谈这件事，适合直接从这里开始，而不是回到泛泛复盘。`
         : focusQuestion
           ? `你在会后反馈里明确要求继续追问这个问题，适合直接接上上次的未完成线索。`
           : topTheme

@@ -433,6 +433,7 @@ const VALID_STRATEGY_IDS: ReadonlySet<InterviewStrategyId> = new Set<InterviewSt
   "blindspot_probe",
   "premise_challenge",
   "synthesis",
+  "space_holding",
 ]);
 
 /**
@@ -452,6 +453,7 @@ export const INTERVIEW_STRATEGY_LABELS: Record<InterviewStrategyId, string> = {
   blindspot_probe: "盲区探测",
   premise_challenge: "挑战前提",
   synthesis: "阶段总结",
+  space_holding: "让人把那件事说完",
 };
 
 /**

@@ -5,6 +5,7 @@ import {
   createInitialProductState,
   createSessionDraft,
   decideInterviewStrategy,
+  overlayThinHostStrategy,
   receiveUserTurn,
   receiveUserTurnWithAssistant,
   updateInterviewControl,
@@ -86,6 +87,20 @@ describe("structured interview references", () => {
     expect((decision as typeof decision & { references?: unknown[] }).references).toEqual([reference]);
     expect((session.strategyTrace?.at(-1) as typeof decision & { references?: unknown[] }).references).toEqual([reference]);
     expect((session.turns.at(-1) as (typeof session.turns)[number] & { references?: unknown[] }).references).toEqual([reference]);
+  });
+
+  it("插嘴或短接话在开口前就是让人把话说完", () => {
+    const session = createSessionDraft(createInitialProductState(), "organization");
+    const decision = decideInterviewStrategy(session, "等一下");
+    expect(decision.strategy).toBe("space_holding");
+    expect(decision.label).toBe("让人把那件事说完");
+  });
+
+  it("嘴里只客套接话时，策略不能再叫追问机制", () => {
+    const session = createSessionDraft(createInitialProductState(), "organization");
+    const raw = decideInterviewStrategy(session, "授权让我最难受的是那次救火");
+    const overlaid = overlayThinHostStrategy(raw, "好，你说。");
+    expect(overlaid.strategy).toBe("space_holding");
   });
 
   it("does not quote a card history string when no structured source is available", () => {

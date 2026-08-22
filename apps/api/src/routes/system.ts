@@ -103,6 +103,30 @@ const runtimeSettingDefinitions: RuntimeSettingDefinition[] = [
     secret: true
   },
   {
+    key: "BAILIAN_EMBEDDING_API_KEY",
+    section: "secrets",
+    label: "Embeddings 专用 Key",
+    description: "只用于记忆检索向量。不要填聊天/语音那把 token-plan 钥。",
+    valueKind: "secret",
+    secret: true
+  },
+  {
+    key: "BAILIAN_EMBEDDING_BASE_URL",
+    section: "models",
+    label: "Embeddings 接口地址",
+    description: "DashScope compatible-mode embeddings 端点。",
+    valueKind: "string",
+    defaultValue: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  },
+  {
+    key: "BAILIAN_EMBEDDING_MODEL",
+    section: "models",
+    label: "Embeddings 模型",
+    description: "记忆检索用的向量模型。",
+    valueKind: "string",
+    defaultValue: "text-embedding-v3"
+  },
+  {
     key: "ANYSEARCH_API_KEY",
     section: "secrets",
     label: "AnySearch API Key",
@@ -480,16 +504,20 @@ export async function registerSystemRoutes(
         id: "embedding",
         kind: "llm",
         label: "向量嵌入（记忆/知识召回）",
-        status: options.embeddingConfigured || Boolean(bailianApiKey) || (env.EMBEDDING_PROVIDER ?? "").trim().toLowerCase() === "local"
+        status: (env.EMBEDDING_PROVIDER ?? "").trim().toLowerCase() === "local"
+          || Boolean((env.BAILIAN_EMBEDDING_API_KEY ?? env.DASHSCOPE_EMBEDDING_API_KEY ?? "").trim())
+          || options.embeddingConfigured
           ? "ready"
           : "needs-key",
         active: true,
         detail: (env.EMBEDDING_PROVIDER ?? "").trim().toLowerCase() === "local"
           ? "本地 embedding（EMBEDDING_PROVIDER=local）已启用。"
-          : bailianApiKey
-            ? "云端 embedding 可用（DashScope/百炼 key）。"
-            : "未配置 embedding：chat/interview 语义召回会受限（关键词仍可用）。",
-        requiredEnv: (env.EMBEDDING_PROVIDER ?? "").trim().toLowerCase() === "local" ? ["EMBEDDING_PROVIDER"] : ["DASHSCOPE_API_KEY"],
+          : (env.BAILIAN_EMBEDDING_API_KEY ?? env.DASHSCOPE_EMBEDDING_API_KEY ?? "").trim()
+            ? "已配置 embeddings 专用钥。"
+            : "未配置 embeddings 专用钥：记忆检索走关键词，不影响开场。",
+        requiredEnv: (env.EMBEDDING_PROVIDER ?? "").trim().toLowerCase() === "local"
+          ? ["EMBEDDING_PROVIDER"]
+          : ["BAILIAN_EMBEDDING_API_KEY"],
         lastCheckedAt: generatedAt
       },
       {

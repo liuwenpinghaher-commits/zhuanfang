@@ -16,7 +16,8 @@ import {
   applyTurnPatch,
   buildInterviewEnginePolicy,
   buildInterviewGuide,
-  decideInterviewStrategy
+  decideInterviewStrategy,
+  overlayThinHostStrategy
 } from "../../../../src/domain/engine";
 import {
   applyCraftOutputGuard,
@@ -400,7 +401,9 @@ export async function handleTurnsRequest(
     content: lastAssistant.content,
     intent: lastAssistant.intent,
     referencedMemory: lastAssistant.referencedMemory,
-    strategyDecision: guardedSession.strategyTrace?.at(-1),
+    ...(guardedSession.strategyTrace?.at(-1)
+      ? { strategyDecision: overlayThinHostStrategy(guardedSession.strategyTrace.at(-1)!, lastAssistant.content) }
+      : {}),
     preSignals,
     enginePolicy,
     guide: refreshedGuide,
@@ -552,7 +555,7 @@ export async function handleTurnsStreamRequest(
         content: guardedContent,
         intent: assistantResult?.intent ?? "百炼角色扮演追问",
         referencedMemory: strategyDecision.referencedMemory,
-        strategyDecision,
+        strategyDecision: overlayThinHostStrategy(strategyDecision, guardedContent),
         preSignals: assistantResult?.preSignals ?? preSignals
       });
       const assistantTurnId = persisted
@@ -580,7 +583,7 @@ export async function handleTurnsStreamRequest(
       content: guardedContent,
       intent: assistantResult.intent,
       referencedMemory: strategyDecision.referencedMemory,
-      strategyDecision,
+      strategyDecision: overlayThinHostStrategy(strategyDecision, guardedContent),
       preSignals: assistantResult.preSignals
     });
     if (!persisted) {

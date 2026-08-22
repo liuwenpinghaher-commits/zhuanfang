@@ -465,7 +465,7 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
                   ? { endpointingMode: productState.systemConfig.voice.endpointingMode }
                   : {})
               },
-              classifyEndpoint: interviewId
+              classifyEndpoint: interviewId && productState.systemConfig.voice.useLayer2Endpoint
                 ? (text: string, signal: AbortSignal) => productApiClient.classifyTurnComplete(interviewId, text, signal)
                 : undefined,
               onDecision: (trace) => {

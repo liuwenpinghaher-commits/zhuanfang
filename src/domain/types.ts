@@ -55,6 +55,10 @@ export interface SystemConfig {
      *   to semantic/energy heuristics (honest capability; no separate pVAD model binary)
      */
     endpointingMode?: "silence" | "semantic" | "pvad-experimental";
+    /** Default false. When true, cascade still calls POST /turn-complete. */
+    useLayer2Endpoint?: boolean;
+    /** Optional override; default follows getSettings().echoCancellation. */
+    halfDuplexFallback?: boolean;
   };
   models: {
     planningModel: string;
@@ -348,7 +352,8 @@ export type InterviewStrategyId =
   | "perspective_shift"
   | "blindspot_probe"
   | "premise_challenge"
-  | "synthesis";
+  | "synthesis"
+  | "space_holding";
 
 export type InterviewDepth = "surface" | "mechanism" | "meta" | "synthesis";
 

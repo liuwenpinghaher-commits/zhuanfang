@@ -158,6 +158,7 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
   let sileroVadCtrl: SileroVadController | null = null;
   let lowEnergyFrames = 0;
   let lastHighEnergyAtMs = 0;
+  let echoCancellationEnabled = false;
   let frameMs = 256; // will be updated once AudioContext is created
 
   let semanticFlags = {
@@ -224,6 +225,9 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
     __asrTicks?: number;
     __asrPeak?: number;
     __asrCapture?: string;
+    __asrWsReady?: boolean;
+    __asrLastTranscriptAt?: number;
+    __asrEchoCancellation?: boolean;
     __asrFeedPcm?: (data: ArrayLike<number>) => void;
     __zhuanfangAudioUnlock?: AudioContext;
   };
@@ -286,6 +290,8 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
       binary += String.fromCharCode(bytes[i]);
     }
     const audio = btoa(binary);
+    const wReady = debugWindow();
+    if (wReady) wReady.__asrWsReady = Boolean(ws && ws.readyState === WebSocket.OPEN && lifecycle === "ready");
     if (!ws || ws.readyState !== WebSocket.OPEN || lifecycle !== "ready") {
       pendingPcm.push(audio);
       if (pendingPcm.length > 80) pendingPcm.shift();
@@ -395,6 +401,10 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
     }
 
     stream = await getStream();
+    const settings = stream.getAudioTracks()[0]?.getSettings?.();
+    echoCancellationEnabled = settings?.echoCancellation === true;
+    const wEcho = debugWindow();
+    if (wEcho) wEcho.__asrEchoCancellation = echoCancellationEnabled;
     // Tee the live mic stream to the caller (e.g. whole-session recorder) before
     // building the ASR graph. Defensive: a throwing/failing recorder must never
     // break ASR start.
@@ -549,7 +559,7 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
         const failure = error as SocketFailure;
         lastCode = failure.code;
         lastReason = failure.reason ?? failure.message;
-        if (!isRecoverableAsrCloseCode(lastCode)) {
+        if (!isRecoverableAsrCloseCode(lastCode, lastReason)) {
           exhaustMidSession(lastCode, lastReason);
           return;
         }
@@ -560,7 +570,7 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
 
   function handleReadySocketTermination(code?: number, reason?: string) {
     if (closed || (recoveryTask && lifecycle !== "ready")) return;
-    if (!isRecoverableAsrCloseCode(code)) {
+    if (!isRecoverableAsrCloseCode(code, reason)) {
       // Local stop() marks the source closed and emits stopped before closing
       // the socket, so any termination reaching here came from the remote side.
       // Even a remote 1000 must be visible as terminal loss, not normal user stop.
@@ -621,13 +631,19 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
         const type = msg.type as string | undefined;
         switch (type) {
           case "proxy.connected":
-            if (settled) return;
+            if (settled) {
+              flushPendingPcm();
+              return;
+            }
             ready = true;
             settled = true;
             latestProviderPartial = "";
             emitConnectionState("ready", 0);
             flushPendingPcm();
             resolve();
+            break;
+          case "proxy.upstream_ready":
+            flushPendingPcm();
             break;
           case "input_audio_buffer.speech_started":
             handlers?.onSpeechStarted();
@@ -651,6 +667,8 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
             }
             latestProviderPartial = text;
             updateSemanticFlags(text);
+            const wDelta = debugWindow();
+            if (wDelta) wDelta.__asrLastTranscriptAt = Date.now();
             handlers?.onTranscriptDelta(text, false);
             break;
           }
@@ -659,6 +677,8 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
             if (transcript) {
               latestProviderPartial = "";
               updateSemanticFlags(transcript);
+              const wDone = debugWindow();
+              if (wDone) wDone.__asrLastTranscriptAt = Date.now();
               handlers?.onTranscriptDelta(transcript, true);
             }
             break;
@@ -689,7 +709,7 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
         const failure = error as SocketFailure;
-        if (!isRecoverableAsrCloseCode(failure.code)) break;
+        if (!isRecoverableAsrCloseCode(failure.code, failure.reason)) break;
         if (attempt < maxReconnectAttempts) {
           console.warn(JSON.stringify({ event: "asr_reconnect", attempt: attempt + 1, maxReconnectAttempts, error: lastError.message }));
         }
@@ -746,6 +766,10 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
     hasRecentUserEnergyEvidence(): boolean {
       if (sileroSpeechProb > 0.35) return true;
       return Date.now() - lastHighEnergyAtMs <= 1_500;
+    },
+
+    getEchoCancellationEnabled(): boolean {
+      return echoCancellationEnabled;
     }
   };
 }
