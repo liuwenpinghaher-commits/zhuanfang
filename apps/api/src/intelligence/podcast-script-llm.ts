@@ -47,6 +47,9 @@ export type PodcastScriptSource =
       format: PodcastEpisode["format"];
     };
 
+/** Host-guest 3–5 min scripts routinely exceed the chat client 60s default. */
+export const PODCAST_SCRIPT_TIMEOUT_MS = 180_000;
+
 function formatLabel(format: PodcastEpisode["format"]) {
   return format === "host-guest" ? "主持对谈（双人）" : "单人旁白";
 }
@@ -151,7 +154,9 @@ export async function generatePodcastScriptFromSource(
       { role: "user", content: userPrompt }
     ],
     responseFormat: "text",
-    temperature: 0.6
+    temperature: 0.6,
+    maxTokens: 4096,
+    timeoutMs: PODCAST_SCRIPT_TIMEOUT_MS
   });
   const script = raw.trim();
   if (!script) {

@@ -1243,7 +1243,16 @@ export default function App() {
       setNotice(buildNotice("success", "播客脚本已生成", voiceSummary));
       setView("podcast");
     } catch (err) {
-      const message = err instanceof Error && err.message ? err.message : "请检查服务与配置后重试。";
+      const serverReason =
+        err instanceof ApiError && err.body && typeof err.body === "object"
+          ? (err.body as { error?: unknown }).error
+          : undefined;
+      const message =
+        typeof serverReason === "string" && serverReason
+          ? serverReason
+          : err instanceof Error && err.message
+            ? err.message
+            : "请检查服务与配置后重试。";
       if (isNetworkError(err)) {
         setApiPersistenceEnabled(false);
       }

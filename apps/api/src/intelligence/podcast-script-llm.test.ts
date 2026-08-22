@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { BailianChatClient } from "../providers/bailian";
-import { generatePodcastScript, generatePodcastScriptFromSource } from "./podcast-script-llm";
+import {
+  generatePodcastScript,
+  generatePodcastScriptFromSource,
+  PODCAST_SCRIPT_TIMEOUT_MS
+} from "./podcast-script-llm";
 
 const mockNote = {
   title: "关于产品决策的访谈",
@@ -80,6 +84,19 @@ describe("generatePodcastScript", () => {
     expect(result.length).toBeGreaterThan(0);
     const userContent = capturedMessages.find((m) => m.role === "user")?.content ?? "";
     expect(userContent).toContain("主持对谈（双人）");
+  });
+
+  it("asks the chat client for a long enough timeout and token budget", async () => {
+    let captured: { timeoutMs?: number; maxTokens?: number } = {};
+    const capturingChat: BailianChatClient = {
+      async complete(input) {
+        captured = { timeoutMs: input.timeoutMs, maxTokens: input.maxTokens };
+        return "主持人：开场。\n来宾：回应。";
+      }
+    };
+    await generatePodcastScript({ note: mockNote, format: "host-guest" }, capturingChat);
+    expect(captured.timeoutMs).toBe(PODCAST_SCRIPT_TIMEOUT_MS);
+    expect(captured.maxTokens).toBe(4096);
   });
 
   it("throws when LLM client throws", async () => {

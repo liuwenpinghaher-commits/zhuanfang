@@ -196,8 +196,9 @@ export async function registerPodcastRoutes(
     try {
       llmScript = await generatePodcastScriptFromSource(scriptSource, options.bailianChatClient);
     } catch (llmError) {
-      const message = llmError instanceof Error ? llmError.message : String(llmError);
-      console.warn(JSON.stringify({ event: "llm_failed", capability: "podcast_script", error: message, sourceType }));
+      const raw = llmError instanceof Error ? llmError.message : String(llmError);
+      const message = /timeout|aborted/i.test(raw) ? "模型写稿超时，请再试一次。" : raw;
+      console.warn(JSON.stringify({ event: "llm_failed", capability: "podcast_script", error: raw, sourceType }));
       return reply.code(502).send({ error: `播客脚本生成失败：${message}` });
     }
 
