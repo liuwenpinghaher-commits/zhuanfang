@@ -55,6 +55,7 @@ export interface CreateSessionPayload {
   searchBriefId?: unknown;
   topicHint?: unknown;
   relatedThemeIds?: unknown;
+  clientRequestId?: unknown;
 }
 
 export interface TurnPayload {

@@ -15,6 +15,7 @@ import type { InterviewAudio, InterviewRawMaterial, ProductState } from "../../.
 import type { BailianEmbeddingClient } from "../providers/bailian";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import { rebuildKnowledgeIndex } from "./knowledge";
+import { purgePodcastAudioDir } from "../podcast-audio-store";
 
 // 审计修复(P1-8):import 恢复通道的独立体限(默认全局 28MB 会让大备份"导出成功、恢复 413")。
 const IMPORT_BODY_LIMIT_BYTES = 64 * 1024 * 1024;
@@ -65,6 +66,21 @@ export async function registerStateRoutes(
   const rawMaterialRepository = options.rawMaterialRepository;
   const audioRepository = options.audioRepository;
   const knowledgeIndexRepository = options.knowledgeIndexRepository;
+
+  const wipePodcastAudioBestEffort = async (reason: "reset" | "purge") => {
+    try {
+      const result = await purgePodcastAudioDir(options.env);
+      if (result.deleted > 0 || result.missing > 0) {
+        console.info(JSON.stringify({ event: "podcast_audio_dir_purged", reason, ...result }));
+      }
+    } catch (err) {
+      console.warn(JSON.stringify({
+        event: "podcast_audio_dir_purge_failed",
+        reason,
+        error: err instanceof Error ? err.message : String(err)
+      }));
+    }
+  };
 
   // ═══ R2b · 治理事务(真 ACID)共用小工具 ══════════════════════════════════════════════
   // "清空三冷层"的治理冷层规格 + 成功回执 stores(与既有 best-effort 三态口径一致:配置了的库标
@@ -140,6 +156,7 @@ export async function registerStateRoutes(
       const { cold, stores } = buildWipeColdSpec();
       try {
         const next = await resetGov.runGovernanceTransaction({ kind: "reset" }, cold);
+        await wipePodcastAudioBestEffort("reset");
         return { ...next, resetReceipt: { partialFailure: false, stores } };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -200,6 +217,7 @@ export async function registerStateRoutes(
         resetReceipt
       });
     }
+    await wipePodcastAudioBestEffort("reset");
     return { ...next, resetReceipt };
   });
 
@@ -797,6 +815,7 @@ export async function registerStateRoutes(
     if (scope === "all") {
       const { deletedCount } = createScopedPurge(state, "all");
       const artifactPurge = purgeLocalObjectArtifactsForState(state, { env: options.env });
+      await wipePodcastAudioBestEffort("purge");
       let purged = createPurgedProductState(state);
       if (artifactPurge.referenceCount > 0) {
         purged = withAuditEvent(purged, {

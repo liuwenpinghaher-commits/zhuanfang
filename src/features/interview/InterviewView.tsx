@@ -22,9 +22,10 @@ interface InterviewViewProps {
   voiceReviewItem?: TranscriptReviewItem | null;
   voiceTransport: "webrtc" | "websocket" | "livekit" | null;
   onInput: (value: string) => void;
-  onStart: (mode?: InterviewMode, searchBriefId?: string, topicHint?: string) => void;
+  onStart: (mode?: InterviewMode, searchBriefId?: string, topicHint?: string, relatedThemeIds?: string[]) => void;
   launchSearchBriefId?: string;
   launchTopicHint?: string;
+  launchRelatedThemeIds?: string[];
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onFinish: () => void;
   onControl: (action: InterviewControlAction) => void;
@@ -84,6 +85,7 @@ export function InterviewView({
   onStart,
   launchSearchBriefId,
   launchTopicHint,
+  launchRelatedThemeIds,
   onSubmit,
   onFinish,
   onControl,
@@ -147,7 +149,7 @@ export function InterviewView({
           <button
             className="launch-action"
             type="button"
-            onClick={() => onStart(pendingMode, launchSearchBriefId, launchTopicHint)}
+            onClick={() => onStart(pendingMode, launchSearchBriefId, launchTopicHint, launchRelatedThemeIds)}
             disabled={starting}
             aria-busy={starting}
           >

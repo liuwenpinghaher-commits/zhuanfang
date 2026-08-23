@@ -314,6 +314,8 @@ export interface CreateSessionOptions {
   topicHint?: string;
   /** 创建时软归属的主题线（主题线「继续这条线」闭环）。 */
   relatedThemeIds?: string[];
+  /** 同一启动意图因网络重试不得产生第二场。 */
+  clientRequestId?: string;
   /** M3c: route-computed query vector for semantic memory recall at session creation. */
   queryEmbedding?: number[];
   /** P2b:server 预召回数据;前端/sqlite 不传,走域层回落。 */
@@ -1212,8 +1214,10 @@ export function createSessionDraft(
   const relatedThemeIds = Array.from(
     new Set((options.relatedThemeIds ?? []).filter((id) => state.themes.some((theme) => theme.id === id)))
   );
+  const clientRequestId = options.clientRequestId?.trim();
   return {
     id: makeId("session"),
+    ...(clientRequestId ? { clientRequestId } : {}),
     mode,
     strength,
     status: "active",

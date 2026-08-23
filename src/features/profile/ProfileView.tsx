@@ -35,11 +35,48 @@ function formatBytes(bytes: number): string {
 // 非法条目等),而不是只显示 ApiError 的英文状态码 message("Product API request failed: 422 …")。
 // import 422 还可能携带 invalidRawMaterials / invalidAudios 逐条清单——摘要展示前 3 条 + 总数,
 // 让用户知道具体哪些条目坏了,而不是笼统的"导入失败"。
+const IMPORT_STEP_LABELS: Record<string, string> = {
+  "raw-material": "逐字稿",
+  audio: "录音",
+  "knowledge-index": "知识索引",
+  "hot-state": "当前状态",
+  validation: "检查",
+  transaction: "写入"
+};
+
 function describeGovernanceError(err: unknown, fallback: string): string {
   if (err instanceof ApiError && err.body && typeof err.body === "object") {
-    const body = err.body as { error?: unknown; detail?: unknown; invalidRawMaterials?: unknown; invalidAudios?: unknown };
+    const body = err.body as {
+      error?: unknown;
+      detail?: unknown;
+      invalidRawMaterials?: unknown;
+      invalidAudios?: unknown;
+      failedStep?: unknown;
+      rolledBack?: unknown;
+      steps?: unknown;
+    };
     if (typeof body.error === "string" && body.error.length > 0) {
       const details: string[] = [];
+      if (typeof body.failedStep === "string" && body.failedStep) {
+        details.push(`卡在${IMPORT_STEP_LABELS[body.failedStep] ?? body.failedStep}`);
+      }
+      if (body.rolledBack === true) {
+        details.push("已退回导入前的状态");
+      } else if (body.rolledBack === false) {
+        details.push("退回未完成，请不要再导入覆盖");
+      }
+      if (Array.isArray(body.steps) && body.steps.length > 0) {
+        const stepText = body.steps
+          .slice(0, 6)
+          .map((item) => {
+            const entry = item as { store?: unknown; status?: unknown };
+            const store = typeof entry.store === "string" ? (IMPORT_STEP_LABELS[entry.store] ?? entry.store) : "?";
+            const status = typeof entry.status === "string" ? entry.status : "";
+            return status ? `${store}：${status}` : store;
+          })
+          .join("，");
+        if (stepText) details.push(stepText);
+      }
       for (const [label, list] of [
         ["逐字稿", body.invalidRawMaterials],
         ["录音", body.invalidAudios]
@@ -645,7 +682,7 @@ export function ProfileView({
       <section className="danger-zone">
         <div>
           <strong>清空全部数据，从头开始</strong>
-          <p>移除当前全部访谈、资产、记忆与逐字稿（包括你自己的真实记录，不只是示例），从空白状态重新开始，且无法撤销。</p>
+          <p>访谈、资产、记忆和逐字稿会清空。称呼和身份会回到演示用的「Mia」，不是空白名片。若要连称呼一起清掉，请用上面的「清空个人数据」。此操作无法撤销。</p>
         </div>
         <button className="danger-button" type="button" onClick={onReset}><Trash2 size={16} />清空全部数据，从头开始</button>
       </section>

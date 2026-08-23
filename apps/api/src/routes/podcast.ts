@@ -24,7 +24,7 @@ import { normalizeCosyVoiceId, resolveQwenAudioTtsVoice } from "../voice-presets
 import { pcmToWav, QWEN_AUDIO_TTS_SAMPLE_RATE, wavToPcm } from "../providers/bailian-tts-inference";
 import { runStateCommand } from "../state-command";
 import type { WriteGate } from "../server";
-import { readPodcastAudio, writePodcastAudio } from "../podcast-audio-store";
+import { deletePodcastAudio, readPodcastAudio, writePodcastAudio } from "../podcast-audio-store";
 
 const PODCAST_SCRIPT_MAX_CHARS = 32_000;
 
@@ -442,6 +442,15 @@ export async function registerPodcastRoutes(
     if (!persisted) {
       const f = failure ?? { code: 500, error: "播客未能删除。" };
       return reply.code(f.code).send({ error: f.error });
+    }
+    try {
+      await deletePodcastAudio(id);
+    } catch (err) {
+      console.warn(JSON.stringify({
+        event: "podcast_audio_delete_failed",
+        episodeId: id,
+        error: err instanceof Error ? err.message : String(err)
+      }));
     }
     return { state: persisted };
   });

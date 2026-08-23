@@ -14,7 +14,7 @@ import type {
   MemoryCandidate,
   ProductState
 } from "../../../../src/domain/types";
-import { makeId, nowIso, withAuditEvent } from "../../../../src/domain/utils";
+import { makeId, nowIso, sanitizeExternalMaterialText, withAuditEvent } from "../../../../src/domain/utils";
 import { buildRealtimeVoiceInstructions } from "../../../../src/domain/voice-instructions";
 import { finalizeSessionWithLlm } from "../intelligence/finalize-llm";
 import { generatePreSignals } from "../intelligence/pre-signals-llm";
@@ -135,10 +135,12 @@ export async function registerInterviewSessionRoutes(
       recall = undefined;
     }
     const mode = normalizeMode(payload.mode);
+    const clientRequestId = normalizeOptionalString(payload.clientRequestId);
     const draftInput = {
       ...(searchBriefId ? { searchBriefId } : {}),
       ...(topicHint ? { topicHint } : {}),
       ...(relatedThemeIds.length > 0 ? { relatedThemeIds } : {}),
+      ...(clientRequestId ? { clientRequestId } : {}),
       ...(queryEmbedding ? { queryEmbedding } : {}),
       ...(recall ? { recall } : {})
     };
@@ -148,6 +150,13 @@ export async function registerInterviewSessionRoutes(
     const persisted = await runStateCommand(
       repository,
       (latest) => {
+        if (clientRequestId) {
+          const existing = latest.sessions.find((item) => item.clientRequestId === clientRequestId);
+          if (existing) {
+            session = existing;
+            return latest;
+          }
+        }
         session = createSessionDraft(latest, mode, normalizeStrength(payload.strength, latest), draftInput);
         return upsertSession(latest, session);
       },
@@ -560,10 +569,11 @@ export async function registerInterviewSessionRoutes(
       strategy?: unknown;
       strategyDecision?: unknown;
     }>(request.body);
-    const content = normalizeOptionalString(body.content);
-    if (!content) {
+    const rawContent = normalizeOptionalString(body.content);
+    if (!rawContent) {
       return reply.code(422).send({ error: "content is required." });
     }
+    const content = sanitizeExternalMaterialText(rawContent, rawContent);
     const role: "user" | "assistant" = body.role === "assistant" ? "assistant" : "user";
     const intent =
       normalizeOptionalString(body.intent) ??

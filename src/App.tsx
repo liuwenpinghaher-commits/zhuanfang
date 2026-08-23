@@ -473,6 +473,34 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (view !== "config") return;
+    let cancelled = false;
+    setVoicesLoading(true);
+    productApiClient
+      .listVoices()
+      .then((list) => {
+        if (cancelled) return;
+        const custom = Array.isArray(list.custom) ? list.custom : [];
+        const preset = Array.isArray(list.preset) ? list.preset : [];
+        setVoices([...custom, ...preset]);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.warn(JSON.stringify({
+          event: "list_voices_failed",
+          error: err instanceof Error ? err.message : String(err)
+        }));
+        setNotice(buildNotice("warning", "音色列表未能刷新", "稍后打开系统配置再试。已复刻的声音还在服务器上。"));
+      })
+      .finally(() => {
+        if (!cancelled) setVoicesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [view]);
+
+  useEffect(() => {
     if (view !== "themes") return;
     let cancelled = false;
     setReviewsLoading(true);
@@ -2086,6 +2114,7 @@ export default function App() {
             onStart={startInterview}
             launchSearchBriefId={activeSearchBriefId}
             launchTopicHint={suggestedTopicHint}
+            launchRelatedThemeIds={recommendedLaunch.relatedThemeIds}
             onSubmit={submitTurn}
             onFinish={finishInterview}
             onControl={applyInterviewControl}

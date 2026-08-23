@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const SAFE_ID = /^[A-Za-z0-9._-]+$/;
@@ -38,6 +38,54 @@ export async function readPodcastAudio(
   } catch {
     return null;
   }
+}
+
+export async function deletePodcastAudio(
+  episodeId: string,
+  env: Record<string, string | undefined> = process.env
+): Promise<"deleted" | "missing"> {
+  const id = assertSafeEpisodeId(episodeId);
+  try {
+    await unlink(join(resolvePodcastAudioDir(env), `${id}.wav`));
+    return "deleted";
+  } catch (err) {
+    const code = err && typeof err === "object" && "code" in err ? String((err as { code?: unknown }).code) : "";
+    if (code === "ENOENT") return "missing";
+    throw err;
+  }
+}
+
+/** Full wipe: remove leftover wavs after purge/reset (ids may already be gone from state). */
+export async function purgePodcastAudioDir(
+  env: Record<string, string | undefined> = process.env
+): Promise<{ deleted: number; missing: number }> {
+  const dir = resolvePodcastAudioDir(env);
+  let names: string[] = [];
+  try {
+    names = await readdir(dir);
+  } catch (err) {
+    const code = err && typeof err === "object" && "code" in err ? String((err as { code?: unknown }).code) : "";
+    if (code === "ENOENT") return { deleted: 0, missing: 0 };
+    throw err;
+  }
+  let deleted = 0;
+  let missing = 0;
+  for (const name of names) {
+    if (!name.endsWith(".wav")) continue;
+    const id = name.slice(0, -4);
+    if (!SAFE_ID.test(id)) continue;
+    try {
+      await unlink(join(dir, name));
+      deleted += 1;
+    } catch (err) {
+      const code = err && typeof err === "object" && "code" in err ? String((err as { code?: unknown }).code) : "";
+      if (code === "ENOENT") missing += 1;
+      else {
+        console.warn(JSON.stringify({ event: "podcast_audio_purge_failed", file: name, error: err instanceof Error ? err.message : String(err) }));
+      }
+    }
+  }
+  return { deleted, missing };
 }
 
 function assertSafeEpisodeId(episodeId: string): string {

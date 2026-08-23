@@ -511,6 +511,7 @@ export interface CreateSessionOptions {
   searchBriefId?: string;
   topicHint?: string;
   relatedThemeIds?: string[];
+  clientRequestId?: string;
 }
 
 export function createInitialProductState(): ProductState {
