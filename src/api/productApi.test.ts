@@ -112,6 +112,26 @@ describe("product api client", () => {
     });
   });
 
+  it("forgetSessionNote posts confirm token and optional cascade flags", async () => {
+    const state = createInitialProductState();
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ state, receipt: { summary: "已拿走这篇笔记。", noteId: "n1" } }), { status: 200 })
+    );
+    const client = createProductApiClient("http://127.0.0.1:8787", fetchImpl);
+    const result = await client.forgetSessionNote("n1", { exclusiveAssets: true });
+    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:8787/api/notes/n1/forget", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        confirm: "DELETE_SESSION_NOTE",
+        exclusiveAssets: true,
+        confirmedMemory: false
+      })
+    });
+    expect(result.state.profile.name).toBe("Mia");
+    expect(result.receipt.noteId).toBe("n1");
+  });
+
   it("saves state through the API", async () => {
     const state = createInitialProductState();
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify(state), { status: 200 }));

@@ -458,6 +458,7 @@ export interface AuditEvent {
     | "chat_session_created"
     | "knowledge_index_rebuilt"
     | "import_source_deleted"
+    | "session_note_forgotten"
     | "axiom_violation";
   label: string;
   detail: string;

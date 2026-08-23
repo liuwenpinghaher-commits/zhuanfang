@@ -243,6 +243,8 @@ describe("R3 试点路由 CAS 换轨(全栈)", () => {
     expect(isWriteGateExempt("POST", "/api/podcast/episodes/x/synthesize")).toBe(true);
     expect(isWriteGateExempt("POST", "/api/podcast/episodes")).toBe(true);
     expect(isWriteGateExempt("DELETE", "/api/podcast/episodes/x")).toBe(true);
+    expect(isWriteGateExempt("POST", "/api/notes/n1/forget")).toBe(true);
+    expect(isWriteGateExempt("POST", "/api/notes/n1/forget/extra")).toBe(false);
     expect(isWriteGateExempt("POST", "/api/podcast/episodes/x/confirm/extra")).toBe(false);
     expect(isWriteGateExempt("POST", "/api/memory-candidates/x/approve")).toBe(false);
   });

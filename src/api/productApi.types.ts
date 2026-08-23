@@ -24,6 +24,7 @@ import type {
   SearchProviderId,
   YearlyReview
 } from "../domain/types";
+import type { ForgetSessionNoteReceipt } from "../domain/lifecycle";
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -200,6 +201,14 @@ export interface ProductApiClient {
   ): Promise<GeneratePodcastEpisodeResponse>;
   /** Delete one podcast episode; returns authoritative product state. */
   deletePodcastEpisode(episodeId: string): Promise<ProductState>;
+  /**
+   * 拿走一场双轨笔记。默认只删这场记录；抽出物和已点头记忆要显式勾选。
+   * confirm 由客户端写死 DELETE_SESSION_NOTE。
+   */
+  forgetSessionNote(
+    noteId: string,
+    options?: { exclusiveAssets?: boolean; confirmedMemory?: boolean }
+  ): Promise<ForgetSessionNoteResponse>;
   transcribeCorpusAudio(input: AudioTranscriptionInput): Promise<TranscribeCorpusAudioResponse>;
   analyzeCorpusImport(input: CorpusImportInput, focus?: string): Promise<AnalyzeCorpusImportResponse>;
   listVoices(): Promise<VoiceListResponse>;
@@ -234,6 +243,19 @@ export interface ProductApiClient {
 /** Which speaker's audio track. interviewee (受访者麦克风录音) is the default;
  *  interviewer (主持人 TTS 合成音) is the bypass-tapped host stream. */
 export type SessionAudioRole = "interviewee" | "interviewer";
+
+export interface ForgetSessionNoteResponse {
+  state: ProductState;
+  receipt: ForgetSessionNoteReceipt & {
+    cold?: {
+      audio: string;
+      rawMaterial: string;
+      knowledge: string;
+      podcastAudio: { deleted: number; failed: number; missing: number };
+    };
+    partialColdFailure?: boolean;
+  };
+}
 
 export interface SessionAudioMeta {
   exists: boolean;

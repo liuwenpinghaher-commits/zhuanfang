@@ -7,10 +7,12 @@ import {
   FileText,
   Headphones,
   Play,
-  Search
+  Search,
+  Trash2
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { HeaderBlock } from "../../components/HeaderBlock";
+import { describeForgetImpact } from "../../domain/lifecycle";
 import type {
   DualTrackNote,
   InterviewMode,
@@ -38,6 +40,10 @@ interface NotesViewProps {
   onOpenTrack?: (themeId: string) => void;
   onGeneratePodcast?: (noteId: string) => void;
   onOpenArchive?: (sessionId: string) => void;
+  onForgetNote?: (
+    noteId: string,
+    options: { exclusiveAssets: boolean; confirmedMemory: boolean }
+  ) => Promise<void>;
 }
 
 function isLightNote(note: DualTrackNote): boolean {
@@ -70,12 +76,18 @@ export function NotesView({
   focus,
   onOpenTrack,
   onGeneratePodcast,
-  onOpenArchive
+  onOpenArchive,
+  onForgetNote
 }: NotesViewProps) {
   const [openSessionId, setOpenSessionId] = useState<string | null>(null);
   const [expandedNoteIds, setExpandedNoteIds] = useState<Record<string, boolean>>({});
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | "with-questions" | "light">("all");
+  const [forgetNoteId, setForgetNoteId] = useState<string | null>(null);
+  const [forgetExclusive, setForgetExclusive] = useState(false);
+  const [forgetMemory, setForgetMemory] = useState(false);
+  const [forgetBusy, setForgetBusy] = useState(false);
+  const [forgetError, setForgetError] = useState("");
 
   // 收到跳源 focus → 自动展开对应会话的原始材料(RawMaterialViewer 再按 focusTurnId 滚动高亮该轮)。
   // 依赖含 nonce:连点同一引用(sessionId/turnId 不变)时也重新触发,避免"第二次点击无反应"。
@@ -129,6 +141,35 @@ export function NotesView({
       return;
     }
     onStart("daily");
+  }
+
+  function openForget(noteId: string) {
+    setForgetNoteId(noteId);
+    setForgetExclusive(false);
+    setForgetMemory(false);
+    setForgetError("");
+  }
+
+  async function confirmForget(noteId: string) {
+    if (!onForgetNote || forgetBusy) return;
+    setForgetBusy(true);
+    setForgetError("");
+    try {
+      await onForgetNote(noteId, {
+        exclusiveAssets: forgetExclusive,
+        confirmedMemory: forgetMemory
+      });
+      setForgetNoteId(null);
+    } catch (err) {
+      setForgetError(err instanceof Error && err.message ? err.message : "这场没能拿走，请再试一次。");
+    } finally {
+      setForgetBusy(false);
+    }
+  }
+
+  function countList(parts: Array<[number, string]>): string {
+    const bits = parts.filter(([n]) => n > 0).map(([n, label]) => `${n} 条${label}`);
+    return bits.length ? bits.join("、") : "";
   }
 
   return (
@@ -365,7 +406,38 @@ export function NotesView({
                       打开专访档案
                     </button>
                   )}
+                  {onForgetNote && (
+                    <button
+                      className="danger-button"
+                      type="button"
+                      disabled={forgetBusy}
+                      onClick={() => openForget(note.id)}
+                    >
+                      <Trash2 size={16} />
+                      删除这场
+                    </button>
+                  )}
                 </div>
+
+                {forgetNoteId === note.id && (
+                  <ForgetConfirmPanel
+                    state={state}
+                    noteId={note.id}
+                    exclusive={forgetExclusive}
+                    memory={forgetMemory}
+                    busy={forgetBusy}
+                    error={forgetError}
+                    countList={countList}
+                    onExclusive={setForgetExclusive}
+                    onMemory={setForgetMemory}
+                    onCancel={() => {
+                      if (forgetBusy) return;
+                      setForgetNoteId(null);
+                      setForgetError("");
+                    }}
+                    onConfirm={() => void confirmForget(note.id)}
+                  />
+                )}
               </div>
 
               {openSessionId === note.sessionId && (
@@ -417,6 +489,106 @@ export function NotesView({
             </div>
           </article>
         )}
+      </div>
+    </section>
+  );
+}
+
+function ForgetConfirmPanel({
+  state,
+  noteId,
+  exclusive,
+  memory,
+  busy,
+  error,
+  countList,
+  onExclusive,
+  onMemory,
+  onCancel,
+  onConfirm
+}: {
+  state: ProductState;
+  noteId: string;
+  exclusive: boolean;
+  memory: boolean;
+  busy: boolean;
+  error: string;
+  countList: (parts: Array<[number, string]>) => string;
+  onExclusive: (value: boolean) => void;
+  onMemory: (value: boolean) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const impact = describeForgetImpact(state, noteId);
+  const exclusiveCopy = impact
+    ? countList([
+        [impact.exclusive.points, "观点"],
+        [impact.exclusive.questions, "问题"],
+        [impact.exclusive.decisions, "决策"],
+        [impact.exclusive.debts, "债"]
+      ])
+    : "";
+  const sharedCopy = impact
+    ? countList([
+        [impact.shared.points, "观点"],
+        [impact.shared.questions, "问题"],
+        [impact.shared.decisions, "决策"],
+        [impact.shared.debts, "债"]
+      ])
+    : "";
+
+  return (
+    <section className="danger-zone notes-forget-panel span-all" aria-label="确认删除这场">
+      <strong>确定拿走这场？</strong>
+      <p>
+        会拿走这篇笔记、这场专访、逐字稿和录音
+        {impact && impact.pendingMemories > 0 ? `、还没点头的 ${impact.pendingMemories} 条待审记忆` : ""}
+        {impact && impact.podcasts > 0 ? `、用这篇笔记做的 ${impact.podcasts} 条播客` : ""}
+        。主题线和别的场的笔记不动。
+      </p>
+      {sharedCopy ? <p className="field-help">已经并进别的场的 {sharedCopy} 会留下，只从这场档案里摘掉。</p> : null}
+      <label className="field-inline">
+        <input
+          type="checkbox"
+          checked={exclusive}
+          disabled={busy}
+          onChange={(event) => onExclusive(event.target.checked)}
+        />
+        <span>
+          同时拿走只属于这场的抽出物
+          {exclusiveCopy ? `（${exclusiveCopy}）` : "（这场没有只属于它的抽出物）"}
+        </span>
+      </label>
+      <label className="field-inline">
+        <input
+          type="checkbox"
+          checked={memory}
+          disabled={busy}
+          onChange={(event) => onMemory(event.target.checked)}
+        />
+        <span>
+          同时拿走只来自这场的已点头记忆
+          {impact && impact.exclusive.confirmedMemories
+            ? `（${impact.exclusive.confirmedMemories} 条）`
+            : "（这场没有只属于它的已点头记忆）"}
+        </span>
+      </label>
+      {error ? <p className="field-status is-danger" role="alert">{error}</p> : null}
+      <div className="form-actions">
+        <button className="secondary-action" type="button" disabled={busy} onClick={onCancel}>
+          取消
+        </button>
+        <button
+          className={`danger-button${busy ? " btn-loading" : ""}`}
+          type="button"
+          disabled={busy}
+          aria-busy={busy}
+          onClick={onConfirm}
+        >
+          {busy && <span className="spinner" aria-hidden="true" />}
+          <Trash2 size={16} />
+          确定删除这场
+        </button>
       </div>
     </section>
   );

@@ -76,6 +76,7 @@ import { createRateLimiter, rateLimitBucket } from "./rate-limit";
 import { resolveRequestTimeoutMs } from "./request-timeout";
 import { resolveBailianApiKey } from "./runtime-secrets";
 import { registerAssetRoutes } from "./routes/assets";
+import { registerNotesRoutes } from "./routes/notes";
 import { registerCorpusRoutes } from "./routes/corpus";
 import { registerHealthRoutes } from "./routes/health";
 import { registerImportRoutes } from "./routes/import";
@@ -516,6 +517,14 @@ export function buildApiServer(options: BuildApiServerOptions = {}) {
   void server.register(async (registeredServer) => {
     // R3:决策确认已豁免全局写锁,CAS commit 经写门。
     await registerAssetRoutes(registeredServer, productStateRepository, { writeGate });
+  });
+  void server.register(async (registeredServer) => {
+    await registerNotesRoutes(registeredServer, productStateRepository, {
+      writeGate,
+      rawMaterialRepository,
+      audioRepository,
+      knowledgeIndexRepository
+    });
   });
   void server.register(async (registeredServer) => {
     // R3:apply/revert 已豁免全局写锁,CAS commit 经写门。

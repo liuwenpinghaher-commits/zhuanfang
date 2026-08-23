@@ -187,7 +187,36 @@ describe("empty-state render guards", () => {
     expect(html).toContain("用此问题开场");
     expect(html).toContain("保存到资产库");
     expect(html).toContain("轻量记录");
-    expect(html).toContain("矛盾具体卡在哪？");
+    expect(html).not.toContain("删除这场");
+  });
+
+  it("NotesView shows delete action when onForgetNote is provided", () => {
+    const s = createEmptyProductState();
+    s.notes = [
+      {
+        id: "note-1",
+        sessionId: "sess-1",
+        title: "关于控制感",
+        summary: "完整摘要",
+        keyQuote: "我有点矛盾",
+        saidTrack: ["原话一"],
+        learnedTrack: ["学到一"],
+        nextQuestions: [],
+        createdAt: new Date().toISOString()
+      }
+    ];
+    const html = renderToString(
+      <NotesView
+        state={s}
+        onStart={() => {}}
+        onSaveQuestion={() => {}}
+        onAddAnnotation={() => {}}
+        onRemoveAnnotation={() => {}}
+        getRawMaterial={async () => null}
+        onForgetNote={async () => {}}
+      />
+    );
+    expect(html).toContain("删除这场");
   });
 
   it("MaterialLibraryView renders empty workshop copy", () => {

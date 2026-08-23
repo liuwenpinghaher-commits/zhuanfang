@@ -2541,6 +2541,23 @@ html[data-theme="light"] .sidebar {
   color: var(--text-secondary);
 }
 
+.notes-forget-panel {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 10px;
+}
+
+.notes-forget-panel .field-inline {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.notes-forget-panel .form-actions {
+  margin-top: 4px;
+}
+
 .interview-launch {
   min-height: calc(100vh - 72px);
   display: grid;

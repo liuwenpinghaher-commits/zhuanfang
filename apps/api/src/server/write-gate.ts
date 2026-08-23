@@ -201,6 +201,11 @@ export const WRITE_GATE_EXEMPTIONS: WriteGateExemption[] = [
     reason: "R3 试点:纯同步小 RMW,走 CAS(commit 经写门)"
   },
   {
+    method: "POST",
+    matches: (p) => /^\/api\/notes\/[^/]+\/forget$/.test(p),
+    reason: "终写=CAS 删热态(commit 经写门);冷层文件删在锁外尽力"
+  },
+  {
     // R3 试点:playbook 补丁状态流转(apply/revert)——纯同步小 RMW(proposed→applied→reverted
     // 状态机在域层纯函数内),CAS 前置校验拦非法流转。
     method: "POST",

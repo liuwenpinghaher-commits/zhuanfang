@@ -1471,6 +1471,37 @@ export default function App() {
     }
   }
 
+  async function forgetSessionNote(
+    noteId: string,
+    options: { exclusiveAssets: boolean; confirmedMemory: boolean }
+  ) {
+    try {
+      const { state: next, receipt } = await productApiClient.forgetSessionNote(noteId, options);
+      adoptServerState(next);
+      setApiPersistenceEnabled(true);
+      if (podcastNoteId === noteId) {
+        setPodcastNoteId(next.notes[0]?.id ?? "");
+      }
+      const coldFailed = receipt.partialColdFailure;
+      setNotice(
+        buildNotice(
+          coldFailed ? "warning" : "success",
+          coldFailed ? "这场记录已拿走，有些原文还在" : "这场已拿走",
+          coldFailed
+            ? `${receipt.summary}录音或原文有一部分没删干净，可以再试一次。`
+            : receipt.summary
+        )
+      );
+    } catch (err) {
+      const message = err instanceof Error && err.message ? err.message : "这场没能拿走，请再试一次。";
+      if (isNetworkError(err)) {
+        setApiPersistenceEnabled(false);
+      }
+      setNotice(buildNotice("danger", "这场没能拿走", message));
+      throw err;
+    }
+  }
+
   async function analyzeCorpus() {
     if (!corpusContent.trim()) {
       return;
@@ -2268,6 +2299,7 @@ export default function App() {
               setArchiveFocusSessionId(sessionId);
               setView("my-assets");
             }}
+            onForgetNote={forgetSessionNote}
           />
         )}
         {view === "material" && (

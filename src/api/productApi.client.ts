@@ -15,6 +15,7 @@ import type {
   CreateSearchBriefResponse,
   EndInterviewSessionResponse,
   FetchLike,
+  ForgetSessionNoteResponse,
   GeneratePodcastEpisodeResponse,
   GeneratePreSignalsResponse,
   HealthResponse,
@@ -860,6 +861,21 @@ export function createProductApiClient(
         method: "DELETE"
       })) as { state: ProductState };
       return normalizeProductState(response.state);
+    },
+    async forgetSessionNote(noteId, options) {
+      const response = (await requestJson(`/api/notes/${encodeURIComponent(noteId)}/forget`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          confirm: "DELETE_SESSION_NOTE",
+          exclusiveAssets: Boolean(options?.exclusiveAssets),
+          confirmedMemory: Boolean(options?.confirmedMemory)
+        })
+      })) as ForgetSessionNoteResponse;
+      return {
+        ...response,
+        state: normalizeProductState(response.state)
+      };
     },
     async transcribeCorpusAudio(input) {
       return (await requestJson("/api/corpus/transcriptions", {
