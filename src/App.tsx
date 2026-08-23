@@ -37,6 +37,8 @@ import {
   resolveInterviewTopicHint,
   searchProductAssets,
   toggleAssetImportance,
+  interviewLaunchFromAsset,
+  knowledgeFocusFromAsset,
   updateDecisionStatus,
   updateKnowledgeDebtStatus,
   updatePointStatus,
@@ -91,6 +93,7 @@ import type {
   InterviewControlAction,
   InterviewMode,
   InterviewSession,
+  KnowledgeSourceType,
   PodcastEpisode, PodcastSourceType,
   ProductState,
   SearchBriefInput,
@@ -240,6 +243,10 @@ export default function App() {
   const [materialFocusSourceId, setMaterialFocusSourceId] = useState<string | null>(null);
   /** 跨模块带入资产对话的预填问句。 */
   const [assetChatPrefill, setAssetChatPrefill] = useState<string | null>(null);
+  const [assetChatFocus, setAssetChatFocus] = useState<{
+    sourceType: KnowledgeSourceType;
+    sourceId: string;
+  } | null>(null);
   const [recording, setRecording] = useState(false);
   const [realtimeVoiceSession, setRealtimeVoiceSession] = useState<RealtimeVoiceSessionResponse | null>(null);
   const [realtimeVoiceConnection, setRealtimeVoiceConnection] = useState<BailianRealtimeWebrtcConnection | BailianRealtimeWebsocketConnection | LivekitVoiceSession | null>(null);
@@ -570,7 +577,8 @@ export default function App() {
     shouldProbeReconnect,
     keepLocalConflictVersion,
     useRemoteConflictVersion,
-    alignOfflineBaseline
+    alignOfflineBaseline,
+    flushPendingProductState
   } = useOfflineProductSync({
     productState,
     setProductState,
@@ -821,7 +829,8 @@ export default function App() {
     adoptServerState,
     closeRealtimeVoiceSession,
     scheduleReconnectProbe,
-    onControlApplied: refreshLiveVoiceInstructions
+    onControlApplied: refreshLiveVoiceInstructions,
+    flushPendingProductState
   });
 
   const {
@@ -891,8 +900,12 @@ export default function App() {
     setNotice(buildNotice("info", "已定位来源", `${citation.title}（${label}）`));
   }
 
-  function openAssetChat(opts?: { prefill?: string }) {
+  function openAssetChat(opts?: {
+    prefill?: string;
+    focusSource?: { sourceType: KnowledgeSourceType; sourceId: string } | null;
+  }) {
     setChatSessionId(ASSET_CHAT_DRAFT_ID);
+    setAssetChatFocus(opts?.focusSource ?? null);
     if (opts?.prefill?.trim()) {
       setAssetChatPrefill(opts.prefill.trim());
     }
@@ -1050,8 +1063,8 @@ export default function App() {
   }
   function confirmDecision(id: string) {
     setConfirmingDecisionId(id);
-    productApiClient
-      .confirmDecision(id)
+    void flushPendingProductState()
+      .then(() => productApiClient.confirmDecision(id))
       .then((next) => adoptServerState(next))
       // P3-02:区分业务冲突(409/422/404:决策已确认或状态已变)与后端离线,不再一律"需要后端在线"。
       .catch((err) => {
@@ -2370,15 +2383,25 @@ export default function App() {
           <AssetChatView
             state={productState}
             selectedSessionId={chatSessionId}
-            onSelectChat={setChatSessionId}
-            onNewChat={() => setChatSessionId(ASSET_CHAT_DRAFT_ID)}
+            onSelectChat={(id) => {
+              setChatSessionId(id);
+              setAssetChatFocus(null);
+            }}
+            onNewChat={() => {
+              setChatSessionId(ASSET_CHAT_DRAFT_ID);
+              setAssetChatFocus(null);
+            }}
             prefill={assetChatPrefill}
             onPrefillConsumed={() => setAssetChatPrefill(null)}
             onOpenMaterial={() => setView("material")}
             onStartInterview={(topicHint) => void launchInterview("decision", activeSearchBriefId, topicHint)}
             onSend={async (sid, msg) => {
               try {
-                const result = await productApiClient.sendChatMessage(sid, msg);
+                const result = await productApiClient.sendChatMessage(
+                  sid,
+                  msg,
+                  assetChatFocus ?? undefined
+                );
                 adoptServerState(result.state);
                 setApiPersistenceEnabled(true);
                 setChatSessionId(result.sessionId);
@@ -2428,13 +2451,14 @@ export default function App() {
             onDecisionConfirm={confirmDecision}
             confirmingDecisionId={confirmingDecisionId}
             onBringIntoInterview={(asset) => {
-              const hint = `${asset.type}：${asset.title}`.slice(0, 80);
+              const launch = interviewLaunchFromAsset(asset);
               setNotice(buildNotice("info", "已带入下一次专访", asset.summary.slice(0, 120)));
-              void launchInterview("decision", "", hint);
+              void launchInterview(launch.mode, activeSearchBriefId, launch.topicHint, launch.relatedThemeIds);
             }}
             onAskAsset={(asset) =>
               openAssetChat({
-                prefill: `关于我的${asset.type}「${asset.title}」：${asset.summary.slice(0, 120)}。请结合我的资料说明含义与未决问题。`
+                prefill: `关于我的${asset.kind === "points" ? "观点" : asset.kind === "questions" ? "问题" : asset.kind === "decisions" ? "决策" : "知识债"}「${asset.title}」：${asset.summary.slice(0, 120)}。请结合我的资料说明含义与未决问题。`,
+                focusSource: knowledgeFocusFromAsset(asset.kind, asset.id)
               })
             }
             onGeneratePodcast={(noteId) => {

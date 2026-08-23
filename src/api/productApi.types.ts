@@ -16,6 +16,7 @@ import type {
   InterviewRawMaterial,
   InterviewSession,
   InterviewStrength,
+  KnowledgeSourceType,
   MonthlyReview,
   PodcastEpisode,
   ProductState,
@@ -90,7 +91,8 @@ export interface ProductApiClient {
    */
   sendChatMessage(
     sessionId: string | null,
-    message: string
+    message: string,
+    focusSource?: { sourceType: KnowledgeSourceType; sourceId: string }
   ): Promise<{
     state: ProductState;
     sessionId: string;

@@ -1,7 +1,8 @@
 import { Archive, CheckCircle, ExternalLink, Flag, Search } from "lucide-react";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import { StatusButtons } from "../../components/StatusButtons";
-import type { searchProductAssets } from "../../domain/engine";
+import type { CognitiveAssetActionTarget, searchProductAssets } from "../../domain/engine";
+import { assetAppearedInSession } from "../../domain/session-archive";
 import type { AssetStatus, DecisionAsset } from "../../domain/types";
 import { assetFilterOptions, type AssetFilter } from "../../ui";
 
@@ -25,8 +26,8 @@ interface AssetsViewProps {
   onSelectAsset: (key: string) => void;
   onClearSessionScope?: () => void;
   onOpenSourceSession?: (sessionId: string) => void;
-  onBringIntoInterview?: (asset: { type: string; title: string; summary: string }) => void;
-  onAskAsset?: (asset: { type: string; title: string; summary: string }) => void;
+  onBringIntoInterview?: (asset: CognitiveAssetActionTarget) => void;
+  onAskAsset?: (asset: CognitiveAssetActionTarget) => void;
   onToggleImportant: (assetId: string) => void;
   onPointStatus: (assetId: string, status: Extract<AssetStatus, "临时想法" | "稳定观点" | "被挑战中" | "已修正" | "已放弃">) => void;
   onQuestionStatus: (assetId: string, status: Extract<AssetStatus, "开放" | "反复出现" | "正在聚焦" | "阶段性回答">) => void;
@@ -228,7 +229,20 @@ type UnifiedAsset = {
   confirmationStatus?: string;
   sourceSessionId?: string;
   updatedAt?: string;
+  nextPrompt?: string;
+  relatedThemeIds?: string[];
 };
+
+function toAssetActionTarget(asset: UnifiedAsset): CognitiveAssetActionTarget {
+  return {
+    kind: asset.type,
+    id: asset.id,
+    title: asset.title,
+    summary: asset.summary,
+    ...(asset.nextPrompt ? { nextPrompt: asset.nextPrompt } : {}),
+    ...(asset.relatedThemeIds?.length ? { relatedThemeIds: asset.relatedThemeIds } : {})
+  };
+}
 
 function sortUnifiedAssets(
   items: UnifiedAsset[],
@@ -255,8 +269,8 @@ function applySessionScope(
   sessionScopeId?: string | null
 ): ReturnType<typeof searchProductAssets> {
   if (!sessionScopeId) return results;
-  const match = <T extends { sourceSessionId?: string }>(items: T[]) =>
-    items.filter((item) => item.sourceSessionId === sessionScopeId);
+  const match = <T extends Parameters<typeof assetAppearedInSession>[0]>(items: T[]) =>
+    items.filter((item) => assetAppearedInSession(item, sessionScopeId));
   const points = match(results.points);
   const questions = match(results.questions);
   const decisions = match(results.decisions);
@@ -289,7 +303,8 @@ function buildUnifiedAssets(results: ReturnType<typeof searchProductAssets>): Un
         important: point.important,
         evidence: point.evidence,
         sourceSessionId: point.sourceSessionId,
-        updatedAt: point.updatedAt
+        updatedAt: point.updatedAt,
+        relatedThemeIds: point.relatedThemeIds
       })
     ),
     ...results.questions.map(
@@ -305,7 +320,9 @@ function buildUnifiedAssets(results: ReturnType<typeof searchProductAssets>): Un
         important: question.important,
         evidence: [`出现次数：${question.appearances}`],
         sourceSessionId: question.sourceSessionId,
-        updatedAt: question.updatedAt
+        updatedAt: question.updatedAt,
+        nextPrompt: question.nextPrompt,
+        relatedThemeIds: question.relatedThemeIds
       })
     ),
     ...results.decisions.map(
@@ -322,7 +339,8 @@ function buildUnifiedAssets(results: ReturnType<typeof searchProductAssets>): Un
         evidence: [`复盘时间：${decision.reviewAt}`],
         confirmationStatus: decision.confirmationStatus,
         sourceSessionId: decision.sourceSessionId,
-        updatedAt: decision.updatedAt
+        updatedAt: decision.updatedAt,
+        relatedThemeIds: decision.relatedThemeIds
       })
     ),
     ...results.debts.map(
@@ -338,7 +356,9 @@ function buildUnifiedAssets(results: ReturnType<typeof searchProductAssets>): Un
         important: false,
         evidence: [debt.nextQuestion],
         sourceSessionId: debt.sourceSessionId,
-        updatedAt: debt.updatedAt
+        updatedAt: debt.updatedAt,
+        nextPrompt: debt.nextQuestion,
+        relatedThemeIds: debt.relatedThemeIds
       })
     )
   ];
@@ -353,8 +373,8 @@ interface AssetDetailProps {
   onDecisionStatus: (assetId: string, status: DecisionAsset["status"]) => void;
   onDecisionConfirm: (assetId: string) => void;
   onOpenSourceSession?: (sessionId: string) => void;
-  onBringIntoInterview?: (asset: { type: string; title: string; summary: string }) => void;
-  onAskAsset?: (asset: { type: string; title: string; summary: string }) => void;
+  onBringIntoInterview?: (asset: CognitiveAssetActionTarget) => void;
+  onAskAsset?: (asset: CognitiveAssetActionTarget) => void;
   confirmingDecisionId?: string;
 }
 
@@ -430,13 +450,7 @@ function AssetDetail({
           <button
             className="secondary-action"
             type="button"
-            onClick={() =>
-              onBringIntoInterview({
-                type: asset.typeLabel,
-                title: asset.title,
-                summary: asset.summary
-              })
-            }
+            onClick={() => onBringIntoInterview(toAssetActionTarget(asset))}
           >
             <Flag size={16} />
             带入专访
@@ -446,13 +460,7 @@ function AssetDetail({
           <button
             className="secondary-action"
             type="button"
-            onClick={() =>
-              onAskAsset({
-                type: asset.typeLabel,
-                title: asset.title,
-                summary: asset.summary
-              })
-            }
+            onClick={() => onAskAsset(toAssetActionTarget(asset))}
           >
             <Search size={16} />
             问资产

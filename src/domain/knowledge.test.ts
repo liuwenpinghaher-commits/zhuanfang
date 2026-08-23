@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildKnowledgeChunks, diffIndexableSources, createChatSession, appendChatMessage, renameChatSession, deleteChatSession, rankKnowledgeChunks, buildChatPrompt } from "./knowledge";
+import { buildKnowledgeChunks, diffIndexableSources, createChatSession, appendChatMessage, renameChatSession, deleteChatSession, rankKnowledgeChunks, buildChatPrompt, knowledgeChunkForFocus, pinKnowledgeFocus } from "./knowledge";
 import { createInitialProductState } from "./engine";
 import type { ChatMessage, InterviewTurn, KnowledgeChunk, MemoryRecord, ProductState } from "./types";
 
@@ -368,3 +368,35 @@ describe("buildChatPrompt", () => {
     expect(user).toContain("历史消息9"); // 最新保留
   });
 });
+
+describe("pin focused asset into chat retrieval", () => {
+  it("knowledgeChunkForFocus builds the live point/debt from the book", () => {
+    const state = createInitialProductState();
+    const point = knowledgeChunkForFocus(state, "point", "point-seed-1");
+    expect(point?.sourceType).toBe("point");
+    expect(point?.sourceId).toBe("point-seed-1");
+    expect(point?.text).toContain("亲自救火");
+    expect(knowledgeChunkForFocus(state, "point", "missing")).toBeNull();
+  });
+
+  it("pinKnowledgeFocus puts the focused chunk first and drops the duplicate", () => {
+    const state = createInitialProductState();
+    const focus = knowledgeChunkForFocus(state, "point", "point-seed-1");
+    expect(focus).not.toBeNull();
+    const other: KnowledgeChunk = {
+      id: "kc-other",
+      sourceType: "memory",
+      sourceId: "me_x",
+      title: "其他",
+      text: "别的记忆",
+      keywords: [],
+      createdAt: "2026-06-22T00:00:00.000Z"
+    };
+    const duplicate = { ...focus!, id: "kc-dup" };
+    const pinned = pinKnowledgeFocus([other, duplicate], focus, 3);
+    expect(pinned[0]?.sourceId).toBe("point-seed-1");
+    expect(pinned).toHaveLength(2);
+    expect(pinned.filter((item) => item.sourceId === "point-seed-1")).toHaveLength(1);
+  });
+});
+

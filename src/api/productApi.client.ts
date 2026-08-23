@@ -292,11 +292,15 @@ export function createProductApiClient(
         body: JSON.stringify({ question })
       })) as RagQueryResponse;
     },
-    async sendChatMessage(sessionId, message) {
+    async sendChatMessage(sessionId, message, focusSource) {
       const response = (await requestJson("/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...(sessionId ? { sessionId } : {}), message })
+        body: JSON.stringify({
+          ...(sessionId ? { sessionId } : {}),
+          message,
+          ...(focusSource ? { focusSource } : {})
+        })
       })) as {
         state: ProductState;
         sessionId: string;

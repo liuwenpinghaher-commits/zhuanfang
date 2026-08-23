@@ -61,6 +61,7 @@ export function useOfflineProductSync({
   const outboxStagingFailedRef = useRef(false);
   const outboxStagingNoticeShownRef = useRef(false);
   const offlineSyncQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const autosaveDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function scheduleReconnectProbe() {
     if (reconnectProbeTimerRef.current !== null) return;
@@ -286,6 +287,37 @@ export function useOfflineProductSync({
     return chained;
   }
 
+  function clearAutosaveDebounce() {
+    if (autosaveDebounceTimerRef.current !== null) {
+      clearTimeout(autosaveDebounceTimerRef.current);
+      autosaveDebounceTimerRef.current = null;
+    }
+  }
+
+  /** Push unsaved local edits to the server before a read-on-server action (create session, confirm). */
+  async function flushPendingProductState(): Promise<boolean> {
+    clearAutosaveDebounce();
+    const live = productStateRef.current;
+    const signature = productStateContentSignature(live);
+    if (signature === lastSavedContentRef.current) return true;
+    if (!apiPersistenceEnabled) {
+      stageOfflineState(live);
+      return false;
+    }
+    try {
+      const pending = stageOfflineState(live);
+      const result = await productApiClient.saveState(live);
+      if (result.conflicted) {
+        await synchronizeOfflineOutbox(pending, result.state);
+      } else {
+        acknowledgeSavedState(result.state, signature);
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   // Autosave when online; stage outbox when offline.
   useEffect(() => {
     const signature = productStateContentSignature(productState);
@@ -302,10 +334,15 @@ export function useOfflineProductSync({
     if (signature === lastSavedContentRef.current) {
       return;
     }
-    const timer = setTimeout(() => {
-      const pending = stageOfflineState(productState);
+    stageOfflineState(productState);
+    autosaveDebounceTimerRef.current = setTimeout(() => {
+      autosaveDebounceTimerRef.current = null;
+      const live = productStateRef.current;
+      const liveSig = productStateContentSignature(live);
+      if (liveSig === lastSavedContentRef.current) return;
+      const pending = stageOfflineState(live);
       productApiClient
-        .saveState(productState)
+        .saveState(live)
         .then(({ state: server, conflicted }) => {
           if (autosaveRetryTimerRef.current !== null) {
             clearTimeout(autosaveRetryTimerRef.current);
@@ -320,7 +357,7 @@ export function useOfflineProductSync({
               }
             });
           } else {
-            acknowledgeSavedState(server, signature);
+            acknowledgeSavedState(server, liveSig);
           }
         })
         .catch((err) => {
@@ -369,7 +406,7 @@ export function useOfflineProductSync({
           }
         });
     }, 300);
-    return () => clearTimeout(timer);
+    return () => clearAutosaveDebounce();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional signature-driven autosave
   }, [productState, apiPersistenceEnabled, autosaveRetryNonce, syncConflict]);
 
@@ -518,6 +555,7 @@ export function useOfflineProductSync({
     shouldProbeReconnect,
     keepLocalConflictVersion,
     useRemoteConflictVersion,
-    alignOfflineBaseline
+    alignOfflineBaseline,
+    flushPendingProductState
   };
 }

@@ -362,4 +362,30 @@ describe("POST /api/chat", () => {
     expect(body.state.chatSessions[0].messages[1].citations).toEqual(body.citations);
     await server.close();
   });
+
+  it("focusSource pins that asset as [1] even when recall would rank something else first", async () => {
+    const repository = createInMemoryProductStateRepository(createInitialProductState());
+    const knowledgeIndexRepository = await seedKnowledge();
+    const server = buildApiServer({
+      env: { DASHSCOPE_API_KEY: "", BAILIAN_API_KEY: "" },
+      productStateRepository: repository,
+      knowledgeIndexRepository,
+      bailianChatClient: { complete: async () => "观点[1]说你不该继续亲自救火。" } as never
+    });
+    const res = await server.inject({
+      method: "POST",
+      url: "/api/chat",
+      payload: {
+        message: "今天天气不错吗",
+        focusSource: { sourceType: "point", sourceId: "point-seed-1" }
+      }
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.citations[0].sourceType).toBe("point");
+    expect(body.citations[0].sourceId).toBe("point-seed-1");
+    expect(body.citations[0].number).toBe(1);
+    await server.close();
+  });
 });
+

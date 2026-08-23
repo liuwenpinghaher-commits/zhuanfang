@@ -4,7 +4,7 @@ import { HeaderBlock } from "../../components/HeaderBlock";
 import { buildSessionArchive } from "../../domain/session-archive";
 import type { ProductState } from "../../domain/types";
 import { AssetsView } from "../assets/AssetsView";
-import type { searchProductAssets } from "../../domain/engine";
+import type { CognitiveAssetActionTarget, searchProductAssets } from "../../domain/engine";
 import type { AssetStatus, DecisionAsset } from "../../domain/types";
 import type { AssetFilter } from "../../ui";
 
@@ -31,8 +31,8 @@ interface MyAssetsViewProps {
   sortMode?: "updated-desc" | "important-first";
   onImportantOnly?: (value: boolean) => void;
   onSortMode?: (value: "updated-desc" | "important-first") => void;
-  onBringIntoInterview?: (asset: { type: string; title: string; summary: string }) => void;
-  onAskAsset?: (asset: { type: string; title: string; summary: string }) => void;
+  onBringIntoInterview?: (asset: CognitiveAssetActionTarget) => void;
+  onAskAsset?: (asset: CognitiveAssetActionTarget) => void;
   onGeneratePodcast: (noteId: string) => void;
   onOpenNote?: (sessionId: string) => void;
   /** 外部跳入时高亮并滚到对应专访档案。 */

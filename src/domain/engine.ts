@@ -119,7 +119,9 @@ export {
   confirmDecisionCandidate, searchProductAssets, toggleAssetImportance,
   updateDecisionStatus, updateKnowledgeDebtStatus, updatePointStatus,
   updateQuestionStatus,
+  interviewLaunchFromAsset, knowledgeFocusFromAsset,
 } from "./assets";
+export type { CognitiveAssetKind, CognitiveAssetActionTarget } from "./assets";
 export {
   createQuestionFromNote, markMemoryCorrection,
 } from "./note-feedback";

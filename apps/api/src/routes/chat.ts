@@ -1,10 +1,12 @@
 import type { FastifyInstance } from "fastify";
-import type { ChatCitation, ChatSession, KnowledgeChunk } from "../../../../src/domain/types";
+import type { ChatCitation, ChatSession, KnowledgeChunk, KnowledgeSourceType } from "../../../../src/domain/types";
 import {
   appendChatMessage,
   buildChatPrompt,
   createChatSession,
   getKnowledgeSourceLabel,
+  knowledgeChunkForFocus,
+  pinKnowledgeFocus,
   rankKnowledgeChunks,
   renameChatSession,
   retrieveAndRankKnowledge
@@ -149,6 +151,15 @@ export async function registerChatRoutes(
       rejectReason = ranked.reason;
       topScore = ranked.topScore;
     }
+    const focus = parseFocusSource(payload.focusSource);
+    if (focus) {
+      const pinned = knowledgeChunkForFocus(state, focus.sourceType, focus.sourceId);
+      retrieved = pinKnowledgeFocus(retrieved, pinned, TOP_K);
+      if (pinned) {
+        recallRejected = false;
+        rejectReason = undefined;
+      }
+    }
     recordRecallEvent({
       capability: "chat",
       outcome: recallRejected ? (rejectReason === "below_threshold" ? "low_score" : "empty") : "hit",
@@ -249,6 +260,26 @@ export async function registerChatRoutes(
       groundingMode
     } satisfies ChatResponse);
   });
+}
+
+const FOCUS_SOURCE_TYPES: KnowledgeSourceType[] = [
+  "note",
+  "memory",
+  "theme",
+  "point",
+  "decision",
+  "debt",
+  "transcript",
+  "material"
+];
+
+function parseFocusSource(raw: unknown): { sourceType: KnowledgeSourceType; sourceId: string } | null {
+  if (!raw || typeof raw !== "object") return null;
+  const body = raw as { sourceType?: unknown; sourceId?: unknown };
+  const sourceType = typeof body.sourceType === "string" ? body.sourceType : "";
+  const sourceId = typeof body.sourceId === "string" ? body.sourceId.trim() : "";
+  if (!sourceId || !FOCUS_SOURCE_TYPES.includes(sourceType as KnowledgeSourceType)) return null;
+  return { sourceType: sourceType as KnowledgeSourceType, sourceId };
 }
 
 function validateAndBuildChatCitations(answer: string, retrieved: KnowledgeChunk[]): ChatCitation[] {

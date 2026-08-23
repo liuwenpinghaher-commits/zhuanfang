@@ -9,6 +9,7 @@ import {
   searchProductAssets
 } from "../../domain/engine";
 import type { ProductState } from "../../domain/types";
+import { AssetsView } from "../assets/AssetsView";
 import { MyAssetsView } from "./MyAssetsView";
 
 function makeAssetsProps(state: ProductState) {
@@ -178,3 +179,49 @@ it("assets tab renders AssetsView content (search panel) without nested page tit
     ).not.toThrow();
   });
 });
+
+describe("AssetsView session scope matches archive badges", () => {
+  it("keeps a later appearance even when sourceSessionId is another session", () => {
+    const s = createEmptyProductState();
+    const state: ProductState = {
+      ...s,
+      points: [
+        {
+          id: "p-later",
+          sourceSessionId: "sess-1",
+          appearedInSessionIds: ["sess-1", "sess-2"],
+          title: "后来又出现的观点",
+          content: "第二场又碰到了",
+          confidence: "用户确认",
+          status: "稳定观点",
+          important: false,
+          evidence: [],
+          relatedThemeIds: [],
+          updatedAt: "2024-02-01T00:00:00Z"
+        },
+        {
+          id: "p-other",
+          sourceSessionId: "sess-1",
+          title: "只属于第一场",
+          content: "没再出现",
+          confidence: "AI 推断",
+          status: "临时想法",
+          important: false,
+          evidence: [],
+          relatedThemeIds: [],
+          updatedAt: "2024-01-01T00:00:00Z"
+        }
+      ]
+    };
+    const html = renderToString(
+      <AssetsView
+        {...makeAssetsProps(state)}
+        embedded
+        sessionScopeId="sess-2"
+      />
+    );
+    expect(html).toContain("后来又出现的观点");
+    expect(html).not.toContain("只属于第一场");
+  });
+});
+

@@ -413,6 +413,69 @@ export function retrieveAndRankKnowledge(
   });
 }
 
+/** Build the live book chunk for a focused asset so chat can pin it into retrieval. */
+export function knowledgeChunkForFocus(
+  state: ProductState,
+  sourceType: KnowledgeSourceType,
+  sourceId: string
+): KnowledgeChunk | null {
+  const createdAt = nowIso();
+  if (sourceType === "point") {
+    const point = state.points.find((item) => item.id === sourceId);
+    if (!point) return null;
+    const text = `${point.title} ${point.content}`.trim();
+    return text ? makeChunk("point", point.id, point.title, text, createdAt) : null;
+  }
+  if (sourceType === "decision") {
+    const decision = state.decisions.find((item) => item.id === sourceId);
+    if (!decision) return null;
+    const text = `${decision.title} ${decision.choice}`.trim();
+    return text ? makeChunk("decision", decision.id, decision.title, text, createdAt) : null;
+  }
+  if (sourceType === "debt") {
+    const debt = state.debts.find((item) => item.id === sourceId);
+    if (!debt) return null;
+    const text = `${debt.concept} ${debt.context} ${debt.nextQuestion}`.trim();
+    return text ? makeChunk("debt", debt.id, debt.concept, text, createdAt) : null;
+  }
+  if (sourceType === "note") {
+    const note = state.notes.find((item) => item.id === sourceId);
+    if (!note) return null;
+    const text = `${note.summary} ${note.keyQuote}`.trim();
+    return text ? makeChunk("note", note.id, note.title || note.summary, text, createdAt) : null;
+  }
+  if (sourceType === "memory") {
+    const record = state.memoryRecords.find((item) => item.id === sourceId && item.status === "confirmed");
+    if (!record) return null;
+    return makeChunk("memory", record.id, truncate(record.text, TITLE_LIMIT), record.text, createdAt);
+  }
+  if (sourceType === "theme") {
+    const theme = state.themes.find((item) => item.id === sourceId);
+    if (!theme) return null;
+    const text = `${theme.name} ${theme.summary} ${theme.representativeQuote}`.trim();
+    return text ? makeChunk("theme", theme.id, theme.name, text, createdAt) : null;
+  }
+  if (sourceType === "material") {
+    const source = state.importSources.find((item) => item.id === sourceId);
+    if (!source) return null;
+    const text = truncate(source.content, MATERIAL_TEXT_LIMIT);
+    return text ? makeChunk("material", source.id, source.title, text, createdAt) : null;
+  }
+  return null;
+}
+
+export function pinKnowledgeFocus(
+  retrieved: KnowledgeChunk[],
+  focus: KnowledgeChunk | null,
+  topK: number
+): KnowledgeChunk[] {
+  if (!focus) return retrieved;
+  const rest = retrieved.filter(
+    (chunk) => !(chunk.sourceType === focus.sourceType && chunk.sourceId === focus.sourceId)
+  );
+  return [focus, ...rest].slice(0, Math.max(1, topK));
+}
+
 export { decideGroundingMode, toCitationEnvelopes, type CitationEnvelope, type GroundingMode } from "./retrieval";
 
 /**

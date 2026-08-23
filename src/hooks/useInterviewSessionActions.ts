@@ -58,6 +58,8 @@ export interface UseInterviewSessionActionsArgs {
   scheduleReconnectProbe: () => void;
   /** After a control lands, push pendingControl into the live omni session if connected. */
   onControlApplied?: (session: InterviewSession) => void;
+  /** Persist local asset edits before the server reads the book to open a session. */
+  flushPendingProductState?: () => Promise<boolean>;
 }
 
 export function useInterviewSessionActions(args: UseInterviewSessionActionsArgs) {
@@ -89,7 +91,8 @@ export function useInterviewSessionActions(args: UseInterviewSessionActionsArgs)
     adoptServerState,
     closeRealtimeVoiceSession,
     scheduleReconnectProbe,
-    onControlApplied
+    onControlApplied,
+    flushPendingProductState
   } = args;
 
   /** 继续一个未完成的 active 会话:把它装回 session 并切到工作台。 */
@@ -160,6 +163,7 @@ export function useInterviewSessionActions(args: UseInterviewSessionActionsArgs)
     }
     const clientRequestId = pendingSessionCreateRef.current.id;
     try {
+      await flushPendingProductState?.();
       const apiRun = await productApiClient.createInterviewSession({
         mode,
         strength: productState.profile.preferredStrength,

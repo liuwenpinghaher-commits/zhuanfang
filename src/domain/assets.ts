@@ -3,6 +3,7 @@
 // post-interview feedback, and memory corrections live in note-feedback.ts.
 import type {
   DebtStatus,
+  InterviewMode,
   PointStatus,
   ProductState,
   QuestionStatus,
@@ -10,6 +11,50 @@ import type {
 } from "./types";
 
 import { nowIso, withAuditEvent } from "./utils";
+
+export type CognitiveAssetKind = "points" | "questions" | "decisions" | "debts";
+
+export interface CognitiveAssetActionTarget {
+  kind: CognitiveAssetKind;
+  id: string;
+  title: string;
+  summary: string;
+  nextPrompt?: string;
+  relatedThemeIds?: string[];
+}
+
+const MODE_BY_KIND: Record<CognitiveAssetKind, InterviewMode> = {
+  points: "point",
+  questions: "daily",
+  decisions: "decision",
+  debts: "learning"
+};
+
+/** Map a library row to the interview that should actually open for it. */
+export function interviewLaunchFromAsset(asset: CognitiveAssetActionTarget): {
+  mode: InterviewMode;
+  topicHint: string;
+  relatedThemeIds?: string[];
+} {
+  const topicHint = (asset.nextPrompt?.trim() || asset.title.trim() || asset.summary.trim()).slice(0, 160);
+  const relatedThemeIds = Array.from(new Set((asset.relatedThemeIds ?? []).filter(Boolean)));
+  return {
+    mode: MODE_BY_KIND[asset.kind],
+    topicHint,
+    ...(relatedThemeIds.length > 0 ? { relatedThemeIds } : {})
+  };
+}
+
+export function knowledgeFocusFromAsset(
+  kind: CognitiveAssetKind,
+  id: string
+): { sourceType: "point" | "decision" | "debt"; sourceId: string } | null {
+  if (!id.trim()) return null;
+  if (kind === "points") return { sourceType: "point", sourceId: id };
+  if (kind === "decisions") return { sourceType: "decision", sourceId: id };
+  if (kind === "debts") return { sourceType: "debt", sourceId: id };
+  return null;
+}
 
 export function confirmDecisionCandidate(state: ProductState, decisionId: string): ProductState {
   const decision = state.decisions.find((item) => item.id === decisionId);
