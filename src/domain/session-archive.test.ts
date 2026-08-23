@@ -228,6 +228,22 @@ describe("buildSessionArchive", () => {
     expect(entry2.debts).toEqual([]);
   });
 
+  it("合并后的资产在后一场档案里也能看见", () => {
+    const s1 = makeSession("s1");
+    const s2 = makeSession("s2");
+    const note1 = makeNote("n1", "s1", "2024-01-02T10:00:00.000Z");
+    const note2 = makeNote("n2", "s2", "2024-01-01T10:00:00.000Z");
+    const reused = { ...makePoint("p-reused", "s1"), appearedInSessionIds: ["s1", "s2"] };
+    const state = makeMinimalState({
+      sessions: [s1, s2],
+      notes: [note1, note2],
+      points: [reused]
+    });
+    const archive = buildSessionArchive(state);
+    expect(archive[0].points.map((p) => p.id)).toEqual(["p-reused"]);
+    expect(archive[1].points.map((p) => p.id)).toEqual(["p-reused"]);
+  });
+
   it("note 对应 session 不存在时 session 字段为 undefined", () => {
     const note = makeNote("n1", "nonexistent-session", "2024-01-01T10:00:00.000Z");
     const state = makeMinimalState({ notes: [note] });

@@ -568,7 +568,10 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
                   // Record on the server session to keep it authoritative (no fork).
                   productApiClient
                     .recordInterviewTurn(interviewId, { role: "user", content: text })
-                    .then((r) => setSession(r.session))
+                    .then((r) => {
+                      setSession(r.session);
+                      if (r.state) adoptServerState(r.state);
+                    })
                     .catch((err) => recordTurnFailedFallback(text, err));
                   // Phase 8: regenerate pre_signals for the next turn (voice path).
                   if (interviewId) {
@@ -592,9 +595,23 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
                 onAssistantTranscript: (text, isFinal) => {
                   if (!isFinal || !text.trim()) return;
                   setVoiceStatus("speaking");
-                  setSession((prev) =>
-                    prev ? appendAssistantTranscriptFinal(prev, text, assistantTranscriptTurnRef) : prev
-                  );
+                  if (!interviewId) {
+                    setSession((prev) =>
+                      prev ? appendAssistantTranscriptFinal(prev, text, assistantTranscriptTurnRef) : prev
+                    );
+                    return;
+                  }
+                  productApiClient
+                    .recordInterviewTurn(interviewId, { role: "assistant", content: text })
+                    .then((r) => {
+                      setSession(r.session);
+                      if (r.state) adoptServerState(r.state);
+                    })
+                    .catch(() => {
+                      setSession((prev) =>
+                        prev ? appendAssistantTranscriptFinal(prev, text, assistantTranscriptTurnRef) : prev
+                      );
+                    });
                 },
                 onAudioLevel: (level) => setAudioLevel(level),
                 onError: (err) => {
@@ -685,7 +702,10 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
                   if (voiceSid) {
                     productApiClient
                       .recordInterviewTurn(voiceSid, { role: "user", content: text })
-                      .then((r) => setSession(r.session))
+                      .then((r) => {
+                        setSession(r.session);
+                        if (r.state) adoptServerState(r.state);
+                      })
                       .catch((err) => recordTurnFailedFallback(text, err));
                   } else {
                     setSession((prev) => (prev ? receiveUserTurn(prev, text) : prev));
@@ -718,9 +738,24 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
                 },
                 onAssistantTranscript: (text, isFinal) => {
                   if (!isFinal || !text.trim()) return;
-                  setSession((prev) =>
-                    prev ? appendAssistantTranscriptFinal(prev, text, assistantTranscriptTurnRef) : prev
-                  );
+                  const assistantSid = session?.id ?? "";
+                  if (!assistantSid) {
+                    setSession((prev) =>
+                      prev ? appendAssistantTranscriptFinal(prev, text, assistantTranscriptTurnRef) : prev
+                    );
+                    return;
+                  }
+                  productApiClient
+                    .recordInterviewTurn(assistantSid, { role: "assistant", content: text })
+                    .then((r) => {
+                      setSession(r.session);
+                      if (r.state) adoptServerState(r.state);
+                    })
+                    .catch(() => {
+                      setSession((prev) =>
+                        prev ? appendAssistantTranscriptFinal(prev, text, assistantTranscriptTurnRef) : prev
+                      );
+                    });
                 },
                 // 重连过程对用户可见（此前 3 次重连期间 UI 仍显示"聆听中"，用户不知连接已断）。
                 // Residual (PR-2o): UX + bailianWebsocket structured logs (omni_reconnecting/…)

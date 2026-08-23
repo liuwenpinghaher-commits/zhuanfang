@@ -826,6 +826,7 @@ export interface PointAsset extends Distillation {
   updatedAt: string;
   /** 产出该资产的专访会话 id */
   sourceSessionId?: string;
+  appearedInSessionIds?: string[];
   evidenceAnchors?: EvidenceAnchor[];
   /**
    * 轻量推理(欠账②):与本观点【语义对立】的其他观点 id(内嵌软链,与 relatedThemeIds 同模式)。
@@ -851,6 +852,7 @@ export interface QuestionAsset extends Inquiry {
   updatedAt: string;
   /** 产出该资产的专访会话 id */
   sourceSessionId?: string;
+  appearedInSessionIds?: string[];
 }
 
 export interface DecisionAsset extends Distillation {
@@ -874,6 +876,7 @@ export interface DecisionAsset extends Distillation {
   evidence?: string[];
   /** 产出该资产的专访会话 id */
   sourceSessionId?: string;
+  appearedInSessionIds?: string[];
   evidenceAnchors?: EvidenceAnchor[];
 }
 
@@ -892,6 +895,7 @@ export interface KnowledgeDebt extends Distillation {
   relatedThemeIds?: string[];
   /** 产出该资产的专访会话 id */
   sourceSessionId?: string;
+  appearedInSessionIds?: string[];
   evidenceAnchors?: EvidenceAnchor[];
 }
 

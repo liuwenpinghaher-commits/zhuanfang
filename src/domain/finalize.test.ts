@@ -371,4 +371,53 @@ describe("审计修复:知识债状态守卫 + 问题 upsert", () => {
     const out = upsertFinalizeQuestions(existing, incoming, "se_2", "2026-06-28T00:00:00.000Z");
     expect(out[0].relatedThemeIds).toEqual(["th_keep"]);
   });
+
+  it("upsertFinalizeDebts:复现时合并 relatedThemeIds", async () => {
+    const { upsertFinalizeDebts } = await import("./finalize");
+    const existing = [{ id: "d1", concept: "RAG", context: "", whyImportant: "", nextQuestion: "", status: "待了解" as const, appearances: 1, relatedThemeIds: ["th_old"], updatedAt: "2026-06-27T00:00:00.000Z" }];
+    const incoming = [{ id: "d2", concept: "RAG", context: "c", whyImportant: "w", nextQuestion: "n", status: "待了解" as const, appearances: 1, relatedThemeIds: ["th_new"], updatedAt: "2026-06-28T00:00:00.000Z" }];
+    const out = upsertFinalizeDebts(existing, incoming, "se_2", "2026-06-28T00:00:00.000Z");
+    expect(out).toHaveLength(1);
+    expect(out[0].relatedThemeIds).toEqual(["th_old", "th_new"]);
+    expect(out[0].appearedInSessionIds).toEqual(["se_2"]);
+  });
+
+  it("upsertFinalizePoints:同标题合并，用户确认不被覆盖", async () => {
+    const { upsertFinalizePoints } = await import("./finalize");
+    const existing = [{
+      id: "p1", title: "放权会变贵", content: "旧", status: "稳定观点" as const, confidence: "用户确认" as const,
+      evidence: ["旧证"], relatedThemeIds: ["th_a"], important: false, updatedAt: "2026-06-27T00:00:00.000Z", sourceSessionId: "se_1"
+    }];
+    const incoming = [{
+      id: "p2", title: "放权会变贵", content: "新", status: "临时想法" as const, confidence: "AI 推断" as const,
+      evidence: ["新证"], relatedThemeIds: ["th_b"], important: false, updatedAt: "2026-06-28T00:00:00.000Z"
+    }];
+    const out = upsertFinalizePoints(existing, incoming, "se_2", "2026-06-28T00:00:00.000Z");
+    expect(out).toHaveLength(1);
+    expect(out[0].confidence).toBe("用户确认");
+    expect(out[0].status).toBe("稳定观点");
+    expect(out[0].sourceSessionId).toBe("se_1");
+    expect(out[0].appearedInSessionIds).toContain("se_1");
+    expect(out[0].appearedInSessionIds).toContain("se_2");
+    expect(out[0].relatedThemeIds).toEqual(["th_a", "th_b"]);
+  });
+
+  it("upsertFinalizeDecisions:同标题合并，已确认不被打回待确认", async () => {
+    const { upsertFinalizeDecisions } = await import("./finalize");
+    const existing = [{
+      id: "de1", title: "是否亲自救火", decisionKind: "候选决策" as const, confirmationStatus: "用户确认" as const,
+      choice: "不救", tradeOff: "t", riskHypothesis: "r", reviewAt: "", status: "已复盘" as const,
+      updatedAt: "2026-06-27T00:00:00.000Z", sourceSessionId: "se_1"
+    }];
+    const incoming = [{
+      id: "de2", title: "是否亲自救火", decisionKind: "候选决策" as const, confirmationStatus: "待用户确认" as const,
+      choice: "再想想", tradeOff: "t2", riskHypothesis: "r2", reviewAt: "", status: "待复盘" as const,
+      updatedAt: "2026-06-28T00:00:00.000Z"
+    }];
+    const out = upsertFinalizeDecisions(existing, incoming, "se_2", "2026-06-28T00:00:00.000Z");
+    expect(out).toHaveLength(1);
+    expect(out[0].confirmationStatus).toBe("用户确认");
+    expect(out[0].status).toBe("已复盘");
+    expect(out[0].appearedInSessionIds).toEqual(["se_1", "se_2"]);
+  });
 });

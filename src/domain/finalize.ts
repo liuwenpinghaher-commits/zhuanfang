@@ -212,9 +212,9 @@ export function mergeFinalizedState(
   }
   // providedCandidates 为空数组 = LLM 明确判定本次对话没有值得沉淀的长期记忆——诚实的空。
   // （旧的"从 keyQuote 启发式造一条模板候选"回退已剔除：不能用就暴露，不伪造记忆候选。）
-  nextState.points = [...content.points.map(p => ({ ...p, sourceSessionId: session.id })), ...nextState.points];
+  nextState.points = upsertFinalizePoints(nextState.points, content.points, session.id, completedAt);
   nextState.questions = upsertFinalizeQuestions(nextState.questions, content.questions, session.id, completedAt);
-  nextState.decisions = [...content.decisions.map(d => ({ ...d, sourceSessionId: session.id })), ...nextState.decisions];
+  nextState.decisions = upsertFinalizeDecisions(nextState.decisions, content.decisions, session.id, completedAt);
   nextState.debts = upsertFinalizeDebts(nextState.debts, content.debts, session.id, completedAt);
   nextState.themes = upsertFinalizeThemes(nextState.themes, content.themes, completedAt);
 
@@ -224,13 +224,25 @@ export function mergeFinalizedState(
   // points/decisions/debts(都是 Distillation,A1 要求溯源):本次 session 产生且尚未盖锚点的,
   // 用首个非空证据原话解析回 user turn。匹配不到不盖、不伪造来源(诚实留空,A1 会如实报缺)。
   // F:decisions/debts 此前从不盖锚 → checkA1 每次违例;现与 points 对称(LLM 也为它们输出 evidence)。
-  const stampDistillationAnchor = <T extends { sourceSessionId?: string; evidence?: string[]; evidenceAnchors?: ReturnType<typeof resolveEvidenceAnchors> }>(asset: T): T => {
-    if (asset.sourceSessionId !== session.id || (asset.evidenceAnchors && asset.evidenceAnchors.length > 0)) {
+  const stampDistillationAnchor = <T extends {
+    sourceSessionId?: string;
+    appearedInSessionIds?: string[];
+    evidence?: string[];
+    evidenceAnchors?: ReturnType<typeof resolveEvidenceAnchors>;
+  }>(asset: T): T => {
+    const appearedHere =
+      asset.sourceSessionId === session.id || (asset.appearedInSessionIds ?? []).includes(session.id);
+    if (!appearedHere) {
+      return asset;
+    }
+    if (asset.evidenceAnchors?.some((item) => item.sessionId === session.id)) {
       return asset;
     }
     const evidenceQuote = asset.evidence?.find((e) => e.trim());
     const anchors = resolveEvidenceAnchors(evidenceQuote ?? "", session.id, session.turns);
-    return anchors.length > 0 ? { ...asset, evidenceAnchors: anchors } : asset;
+    return anchors.length > 0
+      ? { ...asset, evidenceAnchors: [...(asset.evidenceAnchors ?? []), ...anchors] }
+      : asset;
   };
   nextState.points = nextState.points.map(stampDistillationAnchor);
   nextState.decisions = nextState.decisions.map(stampDistillationAnchor);
@@ -321,6 +333,32 @@ function normalizeThemeName(name: string): string {
   return name.trim().replace(/[\s。，、；：！？·.,;:!?]/g, "");
 }
 
+function mergeRelatedThemeIds(existing: string[] | undefined, incoming: string[] | undefined): string[] {
+  return Array.from(new Set([...(existing ?? []), ...(incoming ?? [])]));
+}
+
+function mergeAppearedInSessionIds(
+  existing: string[] | undefined,
+  origin: string | undefined,
+  sessionId: string
+): string[] {
+  return Array.from(new Set([...(existing ?? []), ...(origin ? [origin] : []), sessionId].filter(Boolean)));
+}
+
+function mergeEvidence(existing: string[] | undefined, incoming: string[] | undefined): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of [...(existing ?? []), ...(incoming ?? [])]) {
+    const trimmed = item.trim();
+    if (!trimmed) continue;
+    const key = normalizeThemeName(trimmed);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(trimmed);
+  }
+  return out;
+}
+
 /** Upsert each theme: merge into an existing theme line by normalized name (increment
  *  appearances, refresh quote/next-question, clamp maturity to the new count), else create a
  *  fresh theme born at 萌芽. */
@@ -330,6 +368,86 @@ function normalizeThemeName(name: string): string {
  *  「出现次数」展示、「反复出现」状态机器不可达。与 debts/themes 对称:按问题文本归一 upsert,
  *  命中则 appearances+1 并将仍处「开放」的问题升为「反复出现」(该状态首次获得机器写入路径);
  *  用户已置的「正在聚焦/阶段性回答」不被覆盖(与 debt 守卫同公理)。 */
+export function upsertFinalizePoints(
+  existingPoints: PointAsset[],
+  incoming: PointAsset[],
+  sessionId: string,
+  completedAt: string
+): PointAsset[] {
+  let points = existingPoints;
+  for (const inc of incoming) {
+    const key = normalizeThemeName(inc.title) || normalizeThemeName(inc.content);
+    const match = key
+      ? points.find((p) => (normalizeThemeName(p.title) || normalizeThemeName(p.content)) === key)
+      : undefined;
+    if (match) {
+      const userLocked = match.confidence === "用户确认" || match.status === "已放弃" || match.status === "已修正";
+      points = points.map((p) =>
+        p.id === match.id
+          ? {
+              ...p,
+              content: inc.content || p.content,
+              evidence: mergeEvidence(p.evidence, inc.evidence),
+              relatedThemeIds: mergeRelatedThemeIds(p.relatedThemeIds, inc.relatedThemeIds),
+              appearedInSessionIds: mergeAppearedInSessionIds(p.appearedInSessionIds, p.sourceSessionId, sessionId),
+              status: userLocked ? p.status : inc.status || p.status,
+              confidence: userLocked ? p.confidence : inc.confidence || p.confidence,
+              updatedAt: completedAt
+            }
+          : p
+      );
+    } else {
+      points = [{
+        ...inc,
+        sourceSessionId: sessionId,
+        appearedInSessionIds: [sessionId]
+      }, ...points];
+    }
+  }
+  return points;
+}
+
+export function upsertFinalizeDecisions(
+  existingDecisions: DecisionAsset[],
+  incoming: DecisionAsset[],
+  sessionId: string,
+  completedAt: string
+): DecisionAsset[] {
+  let decisions = existingDecisions;
+  for (const inc of incoming) {
+    const key = normalizeThemeName(inc.title) || normalizeThemeName(inc.choice);
+    const match = key
+      ? decisions.find((d) => (normalizeThemeName(d.title) || normalizeThemeName(d.choice)) === key)
+      : undefined;
+    if (match) {
+      const userLocked = match.confirmationStatus === "用户确认" || match.status === "已复盘";
+      decisions = decisions.map((d) =>
+        d.id === match.id
+          ? {
+              ...d,
+              choice: inc.choice || d.choice,
+              tradeOff: inc.tradeOff || d.tradeOff,
+              riskHypothesis: inc.riskHypothesis || d.riskHypothesis,
+              evidence: mergeEvidence(d.evidence, inc.evidence),
+              relatedThemeIds: mergeRelatedThemeIds(d.relatedThemeIds, inc.relatedThemeIds),
+              appearedInSessionIds: mergeAppearedInSessionIds(d.appearedInSessionIds, d.sourceSessionId, sessionId),
+              confirmationStatus: userLocked ? d.confirmationStatus : inc.confirmationStatus || d.confirmationStatus,
+              status: userLocked ? d.status : inc.status || d.status,
+              updatedAt: completedAt
+            }
+          : d
+      );
+    } else {
+      decisions = [{
+        ...inc,
+        sourceSessionId: sessionId,
+        appearedInSessionIds: [sessionId]
+      }, ...decisions];
+    }
+  }
+  return decisions;
+}
+
 export function upsertFinalizeQuestions(
   existingQuestions: QuestionAsset[],
   incoming: QuestionAsset[],
@@ -350,14 +468,20 @@ export function upsertFinalizeQuestions(
               nextPrompt: inc.nextPrompt || q.nextPrompt,
               // 回归审查 R5-4:合并去重(旧∪新)而非替换——一个问题可跨多主题,替换会丢历史主题链
               // (首次[控制感]、再现命中[风险偏好]→原替换只剩[风险偏好])。与 debt upsert"保留既有"语义对齐。
-              relatedThemeIds: Array.from(new Set([...(q.relatedThemeIds ?? []), ...(inc.relatedThemeIds ?? [])])),
+              relatedThemeIds: mergeRelatedThemeIds(q.relatedThemeIds, inc.relatedThemeIds),
+              appearedInSessionIds: mergeAppearedInSessionIds(q.appearedInSessionIds, q.sourceSessionId, sessionId),
               status: q.status === "开放" ? "反复出现" : q.status,
               updatedAt: completedAt
             }
           : q
       );
     } else {
-      questions = [{ ...inc, sourceSessionId: sessionId, appearances: inc.appearances ?? 1 }, ...questions];
+      questions = [{
+        ...inc,
+        sourceSessionId: sessionId,
+        appearedInSessionIds: [sessionId],
+        appearances: inc.appearances ?? 1
+      }, ...questions];
     }
   }
   return questions;
@@ -386,13 +510,21 @@ export function upsertFinalizeDebts(
               context: inc.context,
               whyImportant: inc.whyImportant,
               nextQuestion: inc.nextQuestion,
+              relatedThemeIds: mergeRelatedThemeIds(d.relatedThemeIds, inc.relatedThemeIds),
+              appearedInSessionIds: mergeAppearedInSessionIds(d.appearedInSessionIds, d.sourceSessionId, sessionId),
+              evidence: mergeEvidence(d.evidence, inc.evidence),
               status: d.status === "待了解" ? inc.status : d.status,
               updatedAt: completedAt
             }
           : d
       );
     } else {
-      debts = [{ ...inc, sourceSessionId: sessionId, appearances: inc.appearances ?? 1 }, ...debts];
+      debts = [{
+        ...inc,
+        sourceSessionId: sessionId,
+        appearedInSessionIds: [sessionId],
+        appearances: inc.appearances ?? 1
+      }, ...debts];
     }
   }
   return debts;
