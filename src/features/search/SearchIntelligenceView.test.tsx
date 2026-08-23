@@ -129,9 +129,10 @@ describe("SearchIntelligenceView — consolidated provider control", () => {
     const selectCount = html.split('<select').length - 1;
     expect(selectCount).toBe(1);
     // every provider label appears as an option
-    for (const provider of searchProviderIds) {
+    for (const provider of searchProviderIds.filter((id) => id !== "local-demo")) {
       expect(html).toContain(searchProviderLabels[provider]);
     }
+    expect(html).not.toContain(searchProviderLabels["local-demo"]);
   });
 
   it("renders exactly one 设为默认 button (no per-provider default chips)", () => {

@@ -351,6 +351,12 @@ export async function registerSystemRoutes(
   });
 
   server.patch("/api/system/config", async (request, reply) => {
+    const env = options.env ?? process.env;
+    if (isProductionRuntime(env)) {
+      return reply.code(422).send({
+        error: "线上环境请改服务器上的配置文件后重启，不能从页面改钥匙。"
+      });
+    }
     const updates = normalizeRuntimeConfigUpdates(request.body);
     if (Object.keys(updates).length === 0) {
       return reply.code(422).send({ error: "At least one supported config update is required." });
@@ -368,7 +374,6 @@ export async function registerSystemRoutes(
       return reply.code(422).send({ error: `不能清空必填密钥：${clearedRequired.join("、")}。如需更换请直接填入新值。` });
     }
 
-    const env = options.env ?? process.env;
     if (options.envFilePath) {
       writeEnvFileUpdates(options.envFilePath, updates);
     }
@@ -503,7 +508,7 @@ export async function registerSystemRoutes(
         kind: "llm",
         label: "百炼角色扮演专访",
         status: options.bailianInterviewClient ? "ready" : "needs-key",
-        active: Boolean(state.systemConfig.models.interviewModel),
+        active: Boolean(options.bailianInterviewClient),
         detail: options.bailianInterviewClient
           ? "已配置文本专访模型，可走 token-plan 追问。"
           : "缺少 DASHSCOPE_API_KEY 或 BAILIAN_API_KEY，文本专访无法调用角色扮演模型（接口 fail-loud 返回 5xx，不会用本地模板冒充 AI 追问）。",
@@ -560,7 +565,7 @@ export async function registerSystemRoutes(
         kind: "voice",
         label: "pVAD 实验端点检测",
         status: "ready",
-        active: true,
+        active: state.systemConfig.voice.endpointingMode === "pvad-experimental",
         detail:
           "endpointingMode=pvad-experimental：浏览器 Silero 神经 VAD（同源 /vad/ onnx+wasm；失败软降级能量/表情启发式）+ cascade turns/stream 子句级流式 TTS。WebRTC 优先建连，失败诚实回退 WebSocket。",
         requiredEnv: [],
@@ -571,7 +576,7 @@ export async function registerSystemRoutes(
         kind: "voice",
         label: "LiveKit barge-in interrupt",
         status: "ready",
-        active: true,
+        active: state.systemConfig.voice.realtimeMode === "livekit",
         detail:
           "客户端 data channel 发送 {type:interrupt}；Python agent await session.interrupt()，失败时 mute/stop 本地音频轨并打点可观测。本地播报立即静音。",
         requiredEnv: [],
@@ -582,7 +587,7 @@ export async function registerSystemRoutes(
         kind: "voice",
         label: "百炼 Qwen-Omni Realtime",
         status: dashscopeKeyConfigured ? "ready" : "needs-key",
-        active: dashscopeKeyConfigured,
+        active: dashscopeKeyConfigured && state.systemConfig.voice.realtimeMode === "bailian",
         detail: buildRealtimeDetail(dashscopeKeyConfigured, realtimeEndpointConfigured, realtimeTransport),
         requiredEnv: ["DASHSCOPE_API_KEY"],
         model: realtimeModels.model,
@@ -647,12 +652,18 @@ export async function registerSystemRoutes(
   });
 }
 
+function isProductionRuntime(env: RuntimeEnv): boolean {
+  return (env.DEPLOYMENT_PROFILE ?? "").trim().toLowerCase() === "production";
+}
+
 function buildRuntimeConfigResponse(options: SystemRouteOptions) {
   const env = options.env ?? process.env;
   const generatedAt = new Date().toISOString();
+  const production = isProductionRuntime(env);
   return {
     generatedAt,
-    envFilePath: options.envFilePath,
+    editable: !production,
+    envFilePath: production ? undefined : options.envFilePath,
     sections: (Object.keys(configSectionLabels) as ConfigSectionId[]).map((sectionId) => ({
       id: sectionId,
       label: configSectionLabels[sectionId],

@@ -497,6 +497,7 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
                 }
               },
               decisionOpts: {
+                minPauseMs: Math.max(300, Math.min(6000, productState.systemConfig.interview.silenceHoldMs)),
                 finalStabilityMs: 450,
                 echoWindowMs: 1_500,
                 echoSimilarityThreshold: 0.8,
@@ -670,6 +671,11 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
           const connection = await connectBailianRealtimeWebsocket(sessionWithOpening, {
                 productApiBaseUrl: deriveRealtimeWsBaseUrl(getProductApiBaseUrl()),
                 preSignals: session?.interactionPreSignals,
+                guidanceEnabled: productState.systemConfig.interview.guidanceEnabled !== false,
+                guidanceBudget: {
+                  maxPerTurn: productState.systemConfig.interview.maxGuidancePerTurn ?? 2,
+                  minIntervalMs: productState.systemConfig.interview.minGuidanceIntervalMs ?? 5000
+                },
                 onAudioLevel: (level) => setAudioLevel(level),
                 onSpeechStart: () => setVoiceStatus("listening"),
                 onSpeechEnd: () => setVoiceStatus("speaking"),

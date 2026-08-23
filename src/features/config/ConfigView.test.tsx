@@ -2,7 +2,7 @@ import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SystemCapabilitiesResponse, SystemConfigResponse } from "../../api/productApi";
-import { searchProviderIds, searchProviderLabels } from "../../capabilities/contracts";
+import { selectableSearchProviderIds, searchProviderLabels } from "../../capabilities/contracts";
 import { buildSystemStatus, createInitialProductState } from "../../domain/engine";
 import { ConfigView } from "./ConfigView";
 
@@ -118,7 +118,7 @@ describe("ConfigView", () => {
     const keyInput = container?.querySelector<HTMLInputElement>('input[name="DASHSCOPE_API_KEY"]');
     const modelInput = container?.querySelector<HTMLInputElement>('input[name="BAILIAN_SEARCH_MODEL"]');
     expect(container?.textContent).toContain("服务端配置（env）");
-    expect(container?.textContent).toContain("/tmp/.env.local");
+    expect(container?.textContent).toContain("Env 文件：/tmp/.env.local");
     expect(keyInput?.placeholder).toContain("未配置");
     expect(modelInput?.value).toBe("qwen-plus");
 
@@ -136,6 +136,49 @@ describe("ConfigView", () => {
       DASHSCOPE_API_KEY: "secret-dashscope-key",
       BAILIAN_SEARCH_MODEL: "qwen3.7-plus"
     });
+  });
+
+  it("locks runtime env fields when the server says they are not editable", () => {
+    const state = createInitialProductState();
+    const onSaveRuntimeConfig = vi.fn();
+    const runtimeConfig: SystemConfigResponse = {
+      generatedAt: "2026-06-10T00:00:00.000Z",
+      editable: false,
+      envFilePath: "/app/.env.local",
+      sections: [
+        {
+          id: "secrets",
+          label: "密钥",
+          settings: [
+            {
+              key: "DASHSCOPE_API_KEY",
+              section: "secrets",
+              label: "DashScope / 百炼 API Key",
+              description: "百炼主密钥。",
+              valueKind: "secret",
+              secret: true,
+              required: true,
+              configured: true,
+              value: null,
+              maskedValue: "已配置（••••）",
+              restartRequired: false
+            }
+          ]
+        }
+      ]
+    };
+
+    renderView(state, emptyCapabilities(), {
+      runtimeConfig,
+      section: "settings",
+      onSaveRuntimeConfig
+    });
+
+    expect(container?.textContent).toContain("不能从这里改");
+    expect(container?.textContent).not.toContain("/app/.env.local");
+    expect(container?.querySelector('[data-testid="save-runtime-config"]')).toBeNull();
+    const keyInput = container?.querySelector<HTMLInputElement>('input[name="DASHSCOPE_API_KEY"]');
+    expect(keyInput?.disabled).toBe(true);
   });
 
   it("edits product strategy settings and saves the next system config", () => {
@@ -223,12 +266,9 @@ describe("ConfigView", () => {
     const providerSelect = container?.querySelector<HTMLSelectElement>('select[name="search.activeProvider"]');
     const optionValues = Array.from(providerSelect?.options ?? []).map((o) => o.value);
 
-    // Must match searchProviderIds exactly (same set, same order)
-    expect(optionValues).toEqual(searchProviderIds);
-
-    // Each option label must match the searchProviderLabels entry
+    expect(optionValues).toEqual(selectableSearchProviderIds);
     const optionTexts = Array.from(providerSelect?.options ?? []).map((o) => o.text);
-    const expectedTexts = searchProviderIds.map((id) => searchProviderLabels[id]);
+    const expectedTexts = selectableSearchProviderIds.map((id) => searchProviderLabels[id]);
     expect(optionTexts).toEqual(expectedTexts);
   });
 

@@ -1,7 +1,7 @@
 import { Archive, Cpu, Mic, RefreshCcw, Search, ShieldCheck, Sliders, Upload, Volume2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SystemCapabilitiesResponse, SystemConfigResponse, SystemConfigSetting, SystemConfigUpdateRequest, VoiceInfo } from "../../api/productApi";
-import { searchProviderIds, searchProviderLabels } from "../../capabilities/contracts";
+import { selectableSearchProviderIds, searchProviderLabels } from "../../capabilities/contracts";
 import { HeaderBlock } from "../../components/HeaderBlock";
 import { Metric } from "../../components/Metric";
 import type { buildSystemStatus } from "../../domain/engine";
@@ -19,7 +19,8 @@ interface ConfigViewProps {
   onSection: (section: ConfigSection) => void;
   onCleanupGeneratedArtifacts: () => void;
   onSaveRuntimeConfig: (updates: SystemConfigUpdateRequest) => void;
-  onSaveProductConfig: (config: SystemConfig) => void;
+  onSaveProductConfig: (config: SystemConfig) => void | Promise<void>;
+  productConfigSaving?: boolean;
   voices: VoiceInfo[];
   voicesLoading: boolean;
   onUploadVoice: (audioBase64: string, name: string) => Promise<void>;
@@ -37,6 +38,7 @@ export function ConfigView({
   onCleanupGeneratedArtifacts,
   onSaveRuntimeConfig,
   onSaveProductConfig,
+  productConfigSaving = false,
   voices,
   voicesLoading,
   onUploadVoice,
@@ -103,11 +105,15 @@ export function ConfigView({
     setProductDirty(true);
   }
 
-  function saveProductConfig() {
-    if (productDirty) {
-      onSaveProductConfig(productDraft);
-    }
+  async function saveProductConfig() {
+    if (!productDirty || productConfigSaving) return;
+    await onSaveProductConfig(productDraft);
   }
+
+  const runtimeEditable = runtimeConfig?.editable !== false;
+  const interviewModelLabel =
+    systemCapabilities?.capabilities.find((capability) => capability.id === "bailian-character")?.model
+    ?? status.activeProviders.interviewModel;
 
   return (
     <section className="view-stack">
@@ -221,7 +227,7 @@ export function ConfigView({
                 <dt>访谈策略</dt>
                 <dd>{state.systemConfig.interview.playbookVersion}</dd>
                 <dt>访谈模型</dt>
-                <dd>{status.activeProviders.interviewModel}</dd>
+                <dd>{interviewModelLabel}</dd>
                 <dt>已应用补丁</dt>
                 <dd>{appliedPatchCount}</dd>
               </dl>
@@ -271,13 +277,17 @@ export function ConfigView({
         <div className="view-stack">
           <section className="panel">
             <div className="panel-title"><ShieldCheck size={18} /><h2>服务端配置（env）</h2></div>
-            <p className="muted-copy">服务端运行配置（密钥、模型名、端点、部署开关）。写入 API 的 .env，经 PATCH /api/system/config 生效；密钥字段留空表示保持不变。与下方「产品策略」分离——这里不存访谈 playbook / 记忆开关。</p>
+            <p className="muted-copy">
+              {runtimeEditable
+                ? "服务端运行配置（密钥、模型名、端点）。写入本机 API 的环境文件；密钥留空表示保持不变。与下方「产品策略」分开。"
+                : "线上钥匙在服务器配置文件里。这一页只能看是否已配置，改了重启也会丢，所以不能从这里改。"}
+            </p>
             {runtimeConfig ? (
               <>
                 <div className="config-hint">
-                  <span>Env 文件：{runtimeConfig.envFilePath ?? "未绑定"}</span>
+                  {runtimeEditable && runtimeConfig.envFilePath ? <span>Env 文件：{runtimeConfig.envFilePath}</span> : null}
                   <span>读取时间：{new Date(runtimeConfig.generatedAt).toLocaleString("zh-CN")}</span>
-                  <span>已修改：{runtimeDirtyCount} 项</span>
+                  {runtimeEditable ? <span>已修改：{runtimeDirtyCount} 项</span> : <span>只读</span>}
                 </div>
                 <div className="runtime-config-sections">
                   {runtimeConfig.sections.map((runtimeSection) => (
@@ -289,12 +299,14 @@ export function ConfigView({
                             key={setting.key}
                             setting={setting}
                             value={runtimeDraft[setting.key] ?? ""}
+                            disabled={!runtimeEditable}
                             onChange={(value) => updateRuntimeSetting(setting, value)} />
                         ))}
                       </div>
                     </section>
                   ))}
                 </div>
+                {runtimeEditable ? (
                 <div className="record-actions">
                   <button
                     className="primary-action"
@@ -306,6 +318,7 @@ export function ConfigView({
                     <ShieldCheck size={16} />{runtimeConfigSaving ? "保存中" : "保存服务端配置"}
                   </button>
                 </div>
+                ) : null}
               </>
             ) : (
               <p className="muted-copy">Product API 配置接口暂不可用，无法编辑服务端 env。</p>
@@ -330,7 +343,9 @@ export function ConfigView({
                     <select
                       id="product-search-provider"
                       name="search.activeProvider"
-                      value={productDraft.search.activeProvider}
+                      value={
+                        productDraft.search.activeProvider === "anysearch" ? "anysearch" : "bailian"
+                      }
                       onChange={(event) => {
                         const nextValue = event.target.value as SearchProviderId;
                         updateProductConfig((config) => ({
@@ -339,7 +354,7 @@ export function ConfigView({
                         }));
                       }}
 >
-                      {searchProviderIds.map((provider) => (
+                      {selectableSearchProviderIds.map((provider) => (
                         <option value={provider} key={provider}>{searchProviderLabels[provider]}</option>
                       ))}
                     </select>
@@ -575,27 +590,6 @@ export function ConfigView({
                     </select>
                     <span className="field-help">只影响下一期主持对谈。单人旁白不用这一栏。</span>
                   </label>
-                  <label className="field-stack runtime-setting-field" htmlFor="product-tts-provider">
-                    <span className="field-label">TTS Provider</span>
-                    <select
-                      id="product-tts-provider"
-                      name="voice.ttsProvider"
-                      value={productDraft.voice.ttsProvider}
-                      onChange={(event) => {
-                        const nextValue = event.target.value as typeof productDraft.voice.ttsProvider;
-                        updateProductConfig((config) => ({
-                          ...config,
-                          voice: { ...config.voice, ttsProvider: nextValue }
-                        }));
-                      }}
->
-                      <option value="local-demo">Local Demo</option>
-                      <option value="bailian">百炼 CosyVoice</option>
-                      <option value="openai">OpenAI</option>
-                      <option value="elevenlabs">ElevenLabs</option>
-                    </select>
-                    <span className="field-help">语音合成 provider，与上方「状态」页的语音能力健康对应。</span>
-                  </label>
                   <label className="field-stack runtime-setting-field" htmlFor="product-realtime-mode">
                     <span className="field-label">实时语音模式</span>
                     <select
@@ -632,7 +626,7 @@ export function ConfigView({
                           interview: { ...config.interview, silenceHoldMs: nextValue }
                         }));
                       }} />
-                    <span className="field-help">决定系统等待用户继续表达的最低毫秒数。</span>
+                    <span className="field-help">级联语音里，停这么久才当一句说完。加大更不容易被打断。</span>
                   </label>
                   <label className="field-stack runtime-setting-field" htmlFor="product-follow-up-depth">
                     <span className="field-label">最大追问深度</span>
@@ -667,7 +661,7 @@ export function ConfigView({
                       <option value="on">启用</option>
                       <option value="off">关闭</option>
                     </select>
-                    <span className="field-help">在用户思考停顿时用简短话语轻推，帮助把问题说深。</span>
+                    <span className="field-help">直通语音里，你停顿时要不要轻推一句。级联开口时机看上面的留白。</span>
                   </label>
                   <label className="field-stack runtime-setting-field" htmlFor="product-guidance-frequency">
                     <span className="field-label">引导频率</span>
@@ -675,9 +669,16 @@ export function ConfigView({
                       id="product-guidance-frequency"
                       value={productDraft.interview.guidanceFrequency}
                       onChange={(event) => {
+                        const next = event.target.value as "low" | "medium" | "high";
+                        const budget =
+                          next === "low"
+                            ? { maxGuidancePerTurn: 1, minGuidanceIntervalMs: 8000 }
+                            : next === "high"
+                              ? { maxGuidancePerTurn: 3, minGuidanceIntervalMs: 2500 }
+                              : { maxGuidancePerTurn: 2, minGuidanceIntervalMs: 5000 };
                         updateProductConfig((config) => ({
                           ...config,
-                          interview: { ...config.interview, guidanceFrequency: event.target.value as "low" | "medium" | "high" }
+                          interview: { ...config.interview, guidanceFrequency: next, ...budget }
                         }));
                       }}
 >
@@ -685,7 +686,7 @@ export function ConfigView({
                       <option value="medium">中 — 在关键锚点和情感信号处介入</option>
                       <option value="high">高 — 积极介入，发现锚点即追问</option>
                     </select>
-                    <span className="field-help">控制引导的积极程度。低频率更克制，高频率更主动。</span>
+                    <span className="field-help">直通语音里，停顿时插一句的频率。级联追问深度看上面那格。</span>
                   </label>
                 </div>
               </section>
@@ -695,10 +696,10 @@ export function ConfigView({
                 className="primary-action"
                 type="button"
                 data-testid="save-product-config"
-                onClick={saveProductConfig}
-                disabled={!productDirty}
+                onClick={() => void saveProductConfig()}
+                disabled={!productDirty || productConfigSaving}
 >
-                <ShieldCheck size={16} />保存产品策略
+                <ShieldCheck size={16} />{productConfigSaving ? "保存中" : "保存产品策略"}
               </button>
             </div>
           </section>
@@ -728,11 +729,13 @@ function buildRuntimeConfigDraft(runtimeConfig: SystemConfigResponse) {
 function RuntimeSettingField({
   setting,
   value,
-  onChange
+  onChange,
+  disabled = false
 }: {
   setting: SystemConfigSetting;
   value: string;
   onChange: (value: string) => void;
+  disabled?: boolean;
 }) {
   const fieldId = `runtime-setting-${setting.key}`;
   const helpText = [
@@ -747,13 +750,13 @@ function RuntimeSettingField({
     <label className="field-stack runtime-setting-field" htmlFor={fieldId}>
       <span className="field-label">{setting.label}</span>
       {setting.valueKind === "select" ? (
-        <select id={fieldId} name={setting.key} value={value} onChange={(event) => onChange(event.target.value)}>
+        <select id={fieldId} name={setting.key} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)}>
           {(setting.options ?? []).map((option) => (
             <option value={option.value} key={option.value || "empty"}>{option.label}</option>
           ))}
         </select>
       ) : setting.valueKind === "boolean" ? (
-        <select id={fieldId} name={setting.key} value={value || "false"} onChange={(event) => onChange(event.target.value)}>
+        <select id={fieldId} name={setting.key} value={value || "false"} disabled={disabled} onChange={(event) => onChange(event.target.value)}>
           <option value="true">开启</option>
           <option value="false">关闭</option>
         </select>
@@ -763,6 +766,7 @@ function RuntimeSettingField({
           name={setting.key}
           type={setting.secret ? "password" : setting.valueKind === "number" ? "number" : "text"}
           value={value}
+          disabled={disabled}
           placeholder={setting.secret ? setting.maskedValue ?? "未配置" : setting.defaultValue}
           onInput={(event) => onChange(event.currentTarget.value)} />
       )}

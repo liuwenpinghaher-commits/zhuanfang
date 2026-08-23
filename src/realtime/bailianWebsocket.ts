@@ -69,6 +69,9 @@ export interface ConnectBailianRealtimeWebsocketOptions {
    * baseReconnectDelayMs * attempt (linear backoff). Injectable for tests.
    */
   baseReconnectDelayMs?: number;
+  /** From product strategy; default on. */
+  guidanceEnabled?: boolean;
+  guidanceBudget?: { maxPerTurn: number; minIntervalMs: number };
 }
 
 export async function connectBailianRealtimeWebsocket(
@@ -197,8 +200,8 @@ export async function connectBailianRealtimeWebsocket(
       energy,
       guidanceCountThisTurn,
       timeSinceLastGuidance: features.timeSinceLastGuidance,
-      guidanceEnabled: true,
-      guidanceBudget: { maxPerTurn: 2, minIntervalMs: 5000 },
+      guidanceEnabled: options.guidanceEnabled !== false,
+      guidanceBudget: options.guidanceBudget ?? { maxPerTurn: 2, minIntervalMs: 5000 },
     });
   }
 

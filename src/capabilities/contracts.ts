@@ -12,3 +12,6 @@ export const searchProviderLabels: Record<SearchProviderId, string> = {
  * All UI lists (ConfigView, SearchIntelligenceView) must import this.
  */
 export const searchProviderIds = Object.keys(searchProviderLabels) as SearchProviderId[];
+
+/** Defaults the config page can actually persist. `local-demo` is remapped to bailian on save. */
+export const selectableSearchProviderIds: SearchProviderId[] = ["bailian", "anysearch"];

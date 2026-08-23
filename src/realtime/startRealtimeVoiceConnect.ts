@@ -100,6 +100,10 @@ export interface StartRealtimeVoiceConnectDeps {
   endpointingMode?: "silence" | "semantic" | "pvad-experimental";
   /** Barge-in sustain ms while agent speaks; pipeline default 280 if omitted. */
   minBargeInMs?: number;
+  /** Cascade pause before treating the user turn as complete. */
+  minPauseMs?: number;
+  guidanceEnabled?: boolean;
+  guidanceBudget?: { maxPerTurn: number; minIntervalMs: number };
 }
 
 export async function startRealtimeVoiceConnect(deps: StartRealtimeVoiceConnectDeps): Promise<"connected" | "failed" | "not-ready"> {
@@ -208,6 +212,7 @@ export async function startRealtimeVoiceConnect(deps: StartRealtimeVoiceConnectD
         ...(sendUserTurnStream ? { sendUserTurnStream } : {}),
         preSignals: interviewSession?.interactionPreSignals ?? null,
         decisionOpts: {
+          ...(deps.minPauseMs != null ? { minPauseMs: deps.minPauseMs } : {}),
           ...(deps.minBargeInMs != null ? { minBargeInMs: deps.minBargeInMs } : {}),
           ...(deps.endpointingMode ? { endpointingMode: deps.endpointingMode } : {})
         },
@@ -409,6 +414,8 @@ export async function startRealtimeVoiceConnect(deps: StartRealtimeVoiceConnectD
     connection = await connectBailianRealtimeWebsocket(sessionWithOpening, {
       productApiBaseUrl: baseWsUrl,
       preSignals: interviewSession?.interactionPreSignals,
+      guidanceEnabled: deps.guidanceEnabled,
+      guidanceBudget: deps.guidanceBudget,
       onAudioLevel: (level) => deps.setAudioLevel(level),
       onSpeechStart: () => deps.setVoiceStatus("listening"),
       onSpeechEnd: () => deps.setVoiceStatus("speaking"),

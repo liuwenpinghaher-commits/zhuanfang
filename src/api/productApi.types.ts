@@ -320,6 +320,8 @@ export interface SystemConfigSection {
 
 export interface SystemConfigResponse {
   generatedAt: string;
+  /** false in production: keys live on the server env file and are not writable here. */
+  editable?: boolean;
   envFilePath?: string;
   sections: SystemConfigSection[];
 }

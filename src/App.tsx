@@ -43,6 +43,7 @@ import {
   updatePointStatus,
   updateQuestionStatus,
   pairPodcastGuestVoice,
+  withSystemConfigVersion,
 } from "./domain/engine";
 import { addAnnotation, removeAnnotation } from "./domain/raw-material";
 import { deleteImportSource } from "./domain/material";
@@ -179,6 +180,7 @@ export default function App() {
   const [importing, setImporting] = useState(false);
   const [runtimeConfig, setRuntimeConfig] = useState<SystemConfigResponse | null>(null);
   const [runtimeConfigSaving, setRuntimeConfigSaving] = useState(false);
+  const [productConfigSaving, setProductConfigSaving] = useState(false);
   const [view, setView] = useState<View>("home");
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => readStoredThemePreference());
   const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(() => getSystemTheme());
@@ -1606,17 +1608,47 @@ export default function App() {
     }
   }
 
-  function saveProductConfig(nextConfig: SystemConfig) {
-    const nextState = {
-      ...productState,
-      systemConfig: nextConfig
+  async function saveProductConfig(nextConfig: SystemConfig) {
+    const clamped: SystemConfig = {
+      ...nextConfig,
+      search: {
+        ...nextConfig.search,
+        activeProvider: nextConfig.search.activeProvider === "anysearch" ? "anysearch" : "bailian"
+      },
+      voice: {
+        ...nextConfig.voice,
+        ttsProvider: "bailian"
+      }
     };
-    setProductState(nextState);
-    setPodcastVoice(nextConfig.voice.podcastVoice);
-    setPodcastGuestVoice(
-      nextConfig.voice.podcastGuestVoice ?? pairPodcastGuestVoice(nextConfig.voice.podcastVoice)
-    );
-    setNotice(buildNotice("success", "产品策略已保存", "搜索、语音和访谈策略会影响后续生成流程。"));
+    const nextState = withSystemConfigVersion(productState, clamped, {
+      changedBy: "user",
+      reason: "用户保存产品策略",
+      createdAt: new Date().toISOString()
+    });
+    setProductConfigSaving(true);
+    try {
+      const result = await productApiClient.saveState(nextState);
+      if (result.conflicted) {
+        setNotice(buildNotice("danger", "没能保存", "服务器上的内容已经变了，请刷新后再改。"));
+        return;
+      }
+      acceptAuthoritativeState(result.state);
+      setApiPersistenceEnabled(true);
+      setPodcastVoice(clamped.voice.podcastVoice);
+      setPodcastGuestVoice(
+        clamped.voice.podcastGuestVoice ?? pairPodcastGuestVoice(clamped.voice.podcastVoice)
+      );
+      setNotice(buildNotice("success", "产品策略已保存", "下一场专访、下一次搜索会按新规矩走。"));
+    } catch (err) {
+      const message = err instanceof Error && err.message ? err.message : "没能写入，请再试一次。";
+      if (isNetworkError(err)) {
+        setApiPersistenceEnabled(false);
+      }
+      setNotice(buildNotice("danger", "产品策略没能保存", message));
+      throw err;
+    } finally {
+      setProductConfigSaving(false);
+    }
   }
 
   function saveDefaultPodcastVoice() {
@@ -2516,6 +2548,7 @@ export default function App() {
             onCleanupGeneratedArtifacts={cleanupGeneratedArtifacts}
             onSaveRuntimeConfig={saveRuntimeConfig}
             onSaveProductConfig={saveProductConfig}
+            productConfigSaving={productConfigSaving}
             voices={voices}
             voicesLoading={voicesLoading}
             onUploadVoice={uploadVoice}

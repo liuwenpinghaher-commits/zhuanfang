@@ -215,7 +215,7 @@ export function SearchIntelligenceView({
                 onChange={(event) => setSelectedProvider(event.target.value as SearchProviderId)}
                 disabled={isRunning}
               >
-                {searchProviderIds.map((provider) => (
+                {searchProviderIds.filter((provider) => provider !== "local-demo").map((provider) => (
                   <option key={provider} value={provider}>
                     {searchProviderLabels[provider]}
                     {provider === activeProvider ? "（默认）" : ""}
