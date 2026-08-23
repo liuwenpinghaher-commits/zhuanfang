@@ -4,7 +4,8 @@ import { extname, join } from "node:path";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { sanitizeExternalMaterialText } from "../../../../src/domain/engine";
 import type { AudioTranscription, AudioTranscriptionInput, CorpusImportInput } from "../../../../src/domain/types";
-import { analyzeCorpusWithLlm } from "../intelligence/corpus-llm";
+import { requestCorpusAnalysis } from "../intelligence/corpus-llm";
+import { analyzeImportedInterview } from "../../../../src/domain/engine";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import { resolveCorpusUploadDir } from "../local-object-artifacts";
 import type { BailianAudioTranscriptionClient, BailianChatClient } from "../providers/bailian";
@@ -44,6 +45,7 @@ interface CorpusRouteOptions {
   /** Absolute public origin for local audio files (e.g. https://cdn.example.com). */
   corpusAudioPublicBaseUrl?: string;
   corpusUploadDir?: string;
+  writeGate?: { runExclusive<T>(label: string, fn: () => Promise<T> | T): Promise<T> };
 }
 
 export async function registerCorpusRoutes(
@@ -418,18 +420,23 @@ export async function registerCorpusRoutes(
       return reply.code(429).send({ error: "本时段 LLM 预算已用尽，语料分析暂不可用，请稍后重试。" });
     }
 
-    const state = repository.getState();
-    let analyzed: Awaited<ReturnType<typeof analyzeCorpusWithLlm>>;
+    let analysis: Awaited<ReturnType<typeof requestCorpusAnalysis>>;
     try {
-      analyzed = await analyzeCorpusWithLlm(state, input, options.bailianChatClient, focus);
+      analysis = await requestCorpusAnalysis(input, options.bailianChatClient, focus);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(JSON.stringify({ event: "llm_failed", capability: "corpus", error: message }));
       return reply.code(502).send({ error: `语料分析失败：${message}` });
     }
-    // state 必须是 replaceState 返回的权威态(revision 已 bump),否则客户端下一次乐观 PUT 必 409。
-    const persisted = await replaceStateDurable(repository, analyzed.nextState);
-    return { insight: analyzed.insight, state: persisted };
+    const commitInsight = async () => {
+      const latest = repository.getState();
+      const analyzed = analyzeImportedInterview(latest, input, analysis);
+      const persisted = await replaceStateDurable(repository, analyzed.nextState);
+      return { insight: analyzed.insight, state: persisted };
+    };
+    return options.writeGate
+      ? await options.writeGate.runExclusive("corpus-insights", commitInsight)
+      : await commitInsight();
   });
 }
 

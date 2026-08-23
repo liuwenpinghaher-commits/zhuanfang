@@ -57,4 +57,12 @@ describe("llm budget", () => {
     expect(b.tryConsume("never-seen-before")).toBe(true);
     expect(b.tryConsume("never-seen-before")).toBe(false);
   });
+
+  it("rolls over the reviews bucket after its sliding window elapses", async () => {
+    const b = createLlmBudget({ maxCallsPerSession: 1, systemWindowMs: 20 });
+    expect(b.tryConsume("reviews")).toBe(true);
+    expect(b.tryConsume("reviews")).toBe(false);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(b.tryConsume("reviews")).toBe(true);
+  });
 });

@@ -164,6 +164,8 @@ export interface CascadedPipelineCallbacks {
    */
   onLatency?: (sample: CascadeLatencySample) => void;
   onTranscriptQuarantined?: (item: TranscriptReviewItem) => void;
+  /** Natural barge after the host started speaking: persist spoken prefix, not the unsaid rest. */
+  onSpokenBarge?: (info: { spokenTextSoFar: string }) => void;
 }
 
 /** Trace emitted for each layer-0/1/2 turn decision, for logging / UI. */
@@ -525,29 +527,25 @@ export function connectCascadedPipeline(
     if (!take) return;
     if (performBarge()) setState("listening");
   }
-  function performBarge(): boolean {
-    if (closed) return false;
-    if (openingHold) return false;
-    if (state !== "thinking" && state !== "speaking") return false;
-    if (activeAbort) {
-      activeAbort.abort();
-      activeAbort = null;
-    }
+  function interruptHost(): { spokenTextSoFar: string } {
+    openingHold = false;
+    if (activeAbort) { activeAbort.abort(); activeAbort = null; }
+    classifyAbort?.abort(); classifyAbort = null;
     tts.stop();
-    classifyAbort?.abort();
-    classifyAbort = null;
     clearMaxWaitTimer();
     setState("interrupted");
     const side = currentSideTrack();
     clearSideTrack();
-    if (side && isGrabbingMatter(side)) {
-      promoteSideTrack(side);
-    } else {
-      committedTranscript = "";
-      partialTranscript = "";
-      turnAssembler.reset();
-    }
+    if (side && isGrabbingMatter(side)) promoteSideTrack(side);
+    return { spokenTextSoFar: spokenText || lastPlannedSpokenText };
+  }
+  function performBarge(): boolean {
+    if (closed) return false;
+    if (openingHold) return false;
+    if (state !== "thinking" && state !== "speaking") return false;
+    const { spokenTextSoFar } = interruptHost();
     callbacks.onLatency?.({ interrupted: true, bargeInSuccess: true, takeFloor: true });
+    callbacks.onSpokenBarge?.({ spokenTextSoFar });
     return true;
   }
   function suppressMic() {
@@ -1070,16 +1068,7 @@ export function connectCascadedPipeline(
     },
 
     interrupt() {
-      openingHold = false;
-      if (activeAbort) { activeAbort.abort(); activeAbort = null; }
-      classifyAbort?.abort(); classifyAbort = null;
-      tts.stop();
-      clearMaxWaitTimer();
-      setState("interrupted");
-      const side = currentSideTrack();
-      clearSideTrack();
-      if (side && isGrabbingMatter(side)) promoteSideTrack(side);
-      return { spokenTextSoFar: spokenText || lastPlannedSpokenText };
+      return interruptHost();
     },
 
     reviewRecoveryTranscript(item: { text: string; reason: string; code?: number }) {

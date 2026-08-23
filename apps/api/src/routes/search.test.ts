@@ -646,4 +646,54 @@ describe("POST /api/research/auto-run — N-05 治理代际丢弃", () => {
       await app.close();
     }
   });
+
+  it("auto-briefs 终写重读 latest，不盖掉联网期间新写入的会话", async () => {
+    const initial = createInitialProductState();
+    const theme = initial.themes[0];
+    expect(theme).toBeTruthy();
+    const repo = createInMemoryProductStateRepository({
+      ...initial,
+      systemConfig: {
+        ...initial.systemConfig,
+        search: { ...initial.systemConfig.search, activeProvider: "local-demo" }
+      }
+    });
+    const writeGate = {
+      async runExclusive(_label: string, fn: () => Promise<unknown> | unknown) {
+        const latest = repo.getState();
+        repo.replaceState({
+          ...latest,
+          sessions: [
+            {
+              id: "se_concurrent_auto_brief",
+              mode: "daily",
+              status: "active",
+              createdAt: "2026-08-23T00:00:00.000Z",
+              updatedAt: "2026-08-23T00:00:00.000Z",
+              turns: [],
+              relatedThemeIds: []
+            } as never,
+            ...latest.sessions
+          ]
+        });
+        return fn();
+      }
+    };
+    const app = Fastify();
+    await registerSearchRoutes(app, repo, { writeGate });
+    await app.ready();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/search/auto-briefs",
+        payload: { themeId: theme.id }
+      });
+      expect(res.statusCode).toBe(200);
+      const persisted = repo.getState();
+      expect(persisted.sessions.some((session) => session.id === "se_concurrent_auto_brief")).toBe(true);
+      expect(persisted.searchBriefs.length).toBeGreaterThan(initial.searchBriefs.length);
+    } finally {
+      await app.close();
+    }
+  });
 });

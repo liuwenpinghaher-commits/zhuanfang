@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createInitialProductState } from "./engine";
-import { chunkDocument, ingestImportSource, EMBED_BATCH_SIZE, MAX_EMBEDDED_CHUNKS } from "./import";
+import { attachImportChunkEmbeddings, chunkDocument, ingestImportSource, EMBED_BATCH_SIZE, MAX_EMBEDDED_CHUNKS } from "./import";
 import type { BailianEmbeddingClient } from "../../apps/api/src/providers/bailian";
 import type { LongTermTheme, ProductState } from "./types";
 
@@ -70,6 +70,23 @@ describe("ingestImportSource", () => {
     // Every chunk should have an embedding attached
     expect(newChunks.every((chunk) => Array.isArray(chunk.embedding))).toBe(true);
     expect(newChunks[0].embedding).toEqual(fakeEmbedding);
+  });
+
+  it("attaches embeddings after a deferred ingest", async () => {
+    const fakeEmbedding = [0.4, 0.5, 0.6];
+    const fakeClient: BailianEmbeddingClient = {
+      embed: async (texts: string[]) => texts.map(() => fakeEmbedding)
+    };
+    const ingested = await ingestImportSource(
+      createInitialProductState(),
+      { title: "Deferred", content: "alpha\n\nbeta", sourceType: "text" },
+      []
+    );
+    expect(ingested.nextState.ragChunks.filter((c) => c.sourceId === ingested.sourceId).every((c) => !c.embedding)).toBe(true);
+    const attached = await attachImportChunkEmbeddings(ingested.nextState, ingested.sourceId, fakeClient);
+    const chunks = attached.nextState.ragChunks.filter((c) => c.sourceId === ingested.sourceId);
+    expect(attached.embeddedCount).toBe(chunks.length);
+    expect(chunks.every((c) => c.embedding?.join(",") === fakeEmbedding.join(","))).toBe(true);
   });
 
   it("produces chunks without embedding when no embeddingClient is provided", async () => {

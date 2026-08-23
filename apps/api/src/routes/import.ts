@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { ingestImportSource, type ImportDocumentInput } from "../../../../src/domain/import";
+import { attachImportChunkEmbeddings, ingestImportSource, type ImportDocumentInput } from "../../../../src/domain/import";
 import { extractCandidateMemories } from "../intelligence/memory-extraction-llm";
 import { createLlmBudget, type LlmBudget } from "../llm-budget";
 import type { BailianChatClient, BailianEmbeddingClient } from "../providers/bailian";
@@ -61,11 +61,11 @@ export async function registerImportRoutes(
 
     const commitImport = async () => {
       const latest = repository.getState();
+      // 独占终写只入库资料+待审记忆；向量在锁外补，避免大文档嵌入卡住 /end。
       const { sourceId, candidateCount, nextState } = await ingestImportSource(
         latest,
         input,
-        candidates,
-        options.embeddingClient
+        candidates
       );
       // state 必须是 replaceState 返回的权威态(revision 已 bump),否则客户端下一次乐观 PUT 必 409。
       const persisted = await replaceStateDurable(repository, nextState);
@@ -74,18 +74,43 @@ export async function registerImportRoutes(
     const { sourceId, candidateCount, persisted } = options.writeGate
       ? await options.writeGate.runExclusive("import-documents", commitImport)
       : await commitImport();
+    let hotState = persisted;
+    if (options.embeddingClient) {
+      const attached = await attachImportChunkEmbeddings(hotState, sourceId, options.embeddingClient);
+      if (attached.embeddedCount > 0) {
+        const vectorsById = new Map(
+          attached.nextState.ragChunks
+            .filter((chunk) => chunk.sourceId === sourceId && chunk.embedding && chunk.embedding.length > 0)
+            .map((chunk) => [chunk.id, chunk.embedding as number[]])
+        );
+        const commitVectors = async () => {
+          const latest = repository.getState();
+          const nextState = {
+            ...latest,
+            ragChunks: latest.ragChunks.map((chunk) => {
+              const vec = vectorsById.get(chunk.id);
+              return vec ? { ...chunk, embedding: vec } : chunk;
+            })
+          };
+          return replaceStateDurable(repository, nextState);
+        };
+        hotState = options.writeGate
+          ? await options.writeGate.runExclusive("import-documents-embed", commitVectors)
+          : await commitVectors();
+      }
+    }
     // 知识索引补点：await 嵌入结果，把覆盖率诚实回传（R-P2-03）。
     let reindex = { chunkCount: 0, embeddedCount: 0, failed: false, staleDiscarded: false };
     if (options.knowledgeIndexRepository) {
       reindex = await reindexMaterial(
-        persisted,
+        hotState,
         sourceId,
         options.knowledgeIndexRepository,
         options.embeddingClient,
         budget
       );
     }
-    const sourceChunks = persisted.ragChunks.filter((chunk) => chunk.sourceId === sourceId);
+    const sourceChunks = hotState.ragChunks.filter((chunk) => chunk.sourceId === sourceId);
     const chunkCount = reindex.chunkCount > 0 ? reindex.chunkCount : sourceChunks.length;
     const embeddedChunkCount = reindex.embeddedCount;
     const embeddingReady = embeddedChunkCount > 0;
@@ -101,7 +126,7 @@ export async function registerImportRoutes(
     return {
       sourceId,
       candidateCount,
-      state: persisted,
+      state: hotState,
       chunkCount,
       embeddedChunkCount,
       embeddingFailedCount: Math.max(0, chunkCount - embeddedChunkCount),

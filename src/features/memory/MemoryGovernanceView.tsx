@@ -26,6 +26,7 @@ interface MemoryGovernanceViewProps {
   focusRecordId?: string | null;
   onImport: (title: string, content: string) => void;
   onApprove: (candidateId: string, mode?: "merge" | "add") => void;
+  onResolveConflict?: (candidateId: string, keepSide: "a" | "b") => void | Promise<unknown>;
   onReject: (candidateId: string) => void;
   onEditCandidate: (candidateId: string, text: string) => void;
   onDeprecate: (recordId: string) => void;
@@ -68,6 +69,7 @@ export function MemoryGovernanceView({
   focusRecordId = null,
   onImport,
   onApprove,
+  onResolveConflict,
   onReject,
   onEditCandidate,
   onDeprecate,
@@ -250,6 +252,17 @@ export function MemoryGovernanceView({
     setOp(candidateId, { approve: "loading" });
     try {
       await Promise.resolve(onApprove(candidateId, mode));
+      setOp(candidateId, { approve: "done" });
+    } catch {
+      setOp(candidateId, { approve: "error" });
+    }
+  }
+
+  async function handleResolveConflict(candidateId: string, keepSide: "a" | "b") {
+    if (!onResolveConflict) return;
+    setOp(candidateId, { approve: "loading" });
+    try {
+      await Promise.resolve(onResolveConflict(candidateId, keepSide));
       setOp(candidateId, { approve: "done" });
     } catch {
       setOp(candidateId, { approve: "error" });
@@ -444,6 +457,8 @@ export function MemoryGovernanceView({
                   const anyLoading = isApproving || isRejecting || isSaving;
                   const justSaved = savedId === candidate.id;
                   const hint = dedupHint(candidate);
+                  const isConflict =
+                    candidate.suggestedUpdate === "conflict" || candidate.text.startsWith("【待裁决矛盾】");
 
                   return (
                     <article
@@ -522,6 +537,32 @@ export function MemoryGovernanceView({
 
                       {!isEditing && (
                         <div className="note-actions memory-card-actions">
+                          {isConflict && onResolveConflict ? (
+                            <>
+                              <button
+                                className={`primary-action${isApproving ? " btn-loading" : ""}`}
+                                type="button"
+                                disabled={anyLoading}
+                                onClick={() => void handleResolveConflict(candidate.id, "a")}
+                                aria-busy={isApproving}
+                                title="留下 A 这一句，降下 B"
+                              >
+                                {isApproving && <span className="spinner" aria-hidden="true" />}
+                                <Check size={16} />
+                                留下 A
+                              </button>
+                              <button
+                                className="secondary-action"
+                                type="button"
+                                disabled={anyLoading}
+                                onClick={() => void handleResolveConflict(candidate.id, "b")}
+                                title="留下 B 这一句，降下 A"
+                              >
+                                留下 B
+                              </button>
+                            </>
+                          ) : (
+                            <>
                           <button
                             className={`primary-action${isApproving ? " btn-loading" : ""}`}
                             type="button"
@@ -545,6 +586,8 @@ export function MemoryGovernanceView({
                               <GitMerge size={16} />
                               仍新增
                             </button>
+                          )}
+                            </>
                           )}
                           <button
                             className="secondary-action"

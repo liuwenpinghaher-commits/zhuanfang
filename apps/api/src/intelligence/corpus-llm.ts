@@ -48,12 +48,12 @@ export function buildCorpusUserMessage(title: string, content: string, focus?: s
   return lines.join("\n");
 }
 
-export async function analyzeCorpusWithLlm(
-  state: ProductState,
+/** LLM only — no state write. Callers re-read latest then `analyzeImportedInterview`. */
+export async function requestCorpusAnalysis(
   input: CorpusImportInput,
   chatClient: BailianChatClient,
   focus?: string
-): Promise<{ insight: CorpusInsight; nextState: ProductState }> {
+): Promise<CorpusLlmAnalysis> {
   const raw = await chatClient.complete({
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
@@ -62,8 +62,16 @@ export async function analyzeCorpusWithLlm(
     responseFormat: "json",
     temperature: 0.4
   });
+  return parseCorpusAnalysis(raw);
+}
 
-  const analysis = parseCorpusAnalysis(raw);
+export async function analyzeCorpusWithLlm(
+  state: ProductState,
+  input: CorpusImportInput,
+  chatClient: BailianChatClient,
+  focus?: string
+): Promise<{ insight: CorpusInsight; nextState: ProductState }> {
+  const analysis = await requestCorpusAnalysis(input, chatClient, focus);
   return analyzeImportedInterview(state, input, analysis);
 }
 

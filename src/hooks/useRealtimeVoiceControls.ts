@@ -468,6 +468,20 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
                   if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
                   reportLatency(sample);
                 },
+                onSpokenBarge: ({ spokenTextSoFar }) => {
+                  if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
+                  const realtimeSessionId = voiceSession.sessionId;
+                  if (!realtimeSessionId) return;
+                  void productApiClient.interruptRealtimeVoiceSession(realtimeSessionId, {
+                    spokenTextSoFar,
+                    reason: "user_interrupt"
+                  }).catch((error) => {
+                    console.warn(JSON.stringify({
+                      event: "barge_truncate_failed",
+                      error: error instanceof Error ? error.message : String(error)
+                    }));
+                  });
+                },
                 onTranscriptQuarantined: (item) => {
                   if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
                   setLiveUserTranscript("");

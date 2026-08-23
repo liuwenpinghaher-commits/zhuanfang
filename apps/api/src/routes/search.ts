@@ -411,10 +411,21 @@ export async function registerSearchRoutes(
 
     // 与 generateBriefForTopic 同一策略:provider 未配置 → 503;联网/富化失败 → 502;
     // 仅显式 local-demo 配置走确定性演示简报。不再静默降级。
+    // 联网期间不持写槽；终写重读 latest，只把本轮 brief 并进去，避免用起点快照盖掉期间的专访/导入。
     try {
-      const { brief, nextState } = await generateBriefForTopic(state, topic, options, allowLlm);
-      const persisted = /*durable*/await replaceStateDurable(repository, nextState);
-      return { brief, state: persisted };
+      const { brief } = await generateBriefForTopic(state, topic, options, allowLlm);
+      const commitAutoBrief = async () => {
+        const latest = repository.getState();
+        const nextState = {
+          ...latest,
+          searchBriefs: [brief, ...latest.searchBriefs.filter((item) => item.id !== brief.id)]
+        };
+        const persisted = await replaceStateDurable(repository, nextState);
+        return { brief, state: persisted };
+      };
+      return options.writeGate
+        ? await options.writeGate.runExclusive("search-auto-briefs", commitAutoBrief)
+        : await commitAutoBrief();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(JSON.stringify({ event: "auto_brief_failed", topic, error: message }));

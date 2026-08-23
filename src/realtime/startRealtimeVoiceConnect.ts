@@ -228,6 +228,19 @@ export async function startRealtimeVoiceConnect(deps: StartRealtimeVoiceConnectD
           },
           onLatency: (sample) => {
             deps.reportLatency(sample);
+          },
+          onSpokenBarge: ({ spokenTextSoFar }) => {
+            const realtimeSessionId = deps.voiceSession.sessionId;
+            if (!realtimeSessionId) return;
+            void productApiClient.interruptRealtimeVoiceSession(realtimeSessionId, {
+              spokenTextSoFar,
+              reason: "user_interrupt"
+            }).catch((error) => {
+              console.warn(JSON.stringify({
+                event: "barge_truncate_failed",
+                error: error instanceof Error ? error.message : String(error)
+              }));
+            });
           }
         },
         classifyEndpoint: interviewId

@@ -268,6 +268,18 @@ export const WRITE_GATE_EXEMPTIONS: WriteGateExemption[] = [
     reason: "长 embed+LLM;终写=重读 latest append 经写门(D3)"
   },
   {
+    // 主题/债一键出简报：外网+enrich 与 create/refresh 同构；终写重读 latest 只并入新 brief。
+    method: "POST",
+    matches: (p) => p === "/api/search/auto-briefs",
+    reason: "长联网+enrich;终写=重读 latest 并入新简报经写门"
+  },
+  {
+    // 语料分析 LLM 可达数十秒；终写重读 latest 再跑 analyzeImportedInterview。
+    method: "POST",
+    matches: (p) => p === "/api/corpus/insights",
+    reason: "长 LLM 分析;终写=重读 latest 并入 insight/patch 经写门"
+  },
+  {
     // PR-6: login 只发 cookie，不碰 ProductState。挂在全局写槽后面会让别人收工时自己登不进去。
     method: "POST",
     matches: (p) => p === "/api/auth/login",

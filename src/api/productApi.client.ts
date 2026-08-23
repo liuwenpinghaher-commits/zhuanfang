@@ -378,6 +378,18 @@ export function createProductApiClient(
       })) as { state: ProductState };
       return normalizeProductState(response.state);
     },
+    async resolveMemoryConflict(id, opts) {
+      const response = (await requestJson(`/api/memory-candidates/${id}/resolve-conflict`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...(opts.keepSide ? { keepSide: opts.keepSide } : {}),
+          ...(opts.keepRecordId ? { keepRecordId: opts.keepRecordId } : {}),
+          ...(opts.demoteRecordId ? { demoteRecordId: opts.demoteRecordId } : {})
+        })
+      })) as { state: ProductState };
+      return normalizeProductState(response.state);
+    },
     async consolidateMemory() {
       const response = (await requestJson("/api/memory/consolidate", { method: "POST" })) as {
         state: ProductState;

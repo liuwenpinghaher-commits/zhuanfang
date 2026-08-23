@@ -233,6 +233,8 @@ describe("R3 试点路由 CAS 换轨(全栈)", () => {
     // SR/IM-P1-03: long-IO routes exempt; final write via writeGate.runExclusive
     expect(isWriteGateExempt("POST", "/api/search/briefs")).toBe(true);
     expect(isWriteGateExempt("POST", "/api/search/briefs/b1/refresh")).toBe(true);
+    expect(isWriteGateExempt("POST", "/api/search/auto-briefs")).toBe(true);
+    expect(isWriteGateExempt("POST", "/api/corpus/insights")).toBe(true);
     expect(isWriteGateExempt("POST", "/api/import/documents")).toBe(true);
     expect(isWriteGateExempt("POST", "/api/chat")).toBe(true);
     // 同前缀 /end 仍整段持锁（宽事务）。/turns 已豁免，终写走 CAS。

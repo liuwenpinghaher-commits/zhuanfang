@@ -114,6 +114,10 @@ export interface ProductApiClient {
     blocked?: boolean;
   }>;
   rejectMemoryCandidate(id: string, reviewNote?: string): Promise<ProductState>;
+  resolveMemoryConflict(
+    id: string,
+    opts: { keepSide?: "a" | "b"; keepRecordId?: string; demoteRecordId?: string }
+  ): Promise<ProductState>;
   consolidateMemory(): Promise<{ state: ProductState; deprecated: number }>;
   updateMemoryCandidate(id: string, text: string): Promise<ProductState>;
   deprecateMemoryRecord(id: string, reason?: string): Promise<ProductState>;

@@ -28,7 +28,7 @@
 | --- | --- | --- | --- |
 | **会话桶** | 真实 `session.id` | 该专访会话内后续 LLM 调用 429 | `POST .../end` 等路径 `budget.reset(sessionId)`；或新会话新 id |
 | **系统滑窗桶** | 固定名，见下表 | 该 key 在窗口内 429 | 等滑窗滚动（默认 1h）或调大 cap/窗 |
-| **孤立单调桶** | 目前主要是 `reviews` | 进程生命周期内到 cap 后一直 429 | **重启进程**或调大 cap（**未**进 `SYSTEM_BUDGET_KEYS`） |
+| **孤立单调桶** | （已无：`reviews` 已进滑窗） | — | — |
 
 ### 2.1 系统滑窗 key（`SYSTEM_BUDGET_KEYS`）
 
@@ -40,6 +40,7 @@
 | `knowledge_index` | 嵌入 / 重嵌 | `routes/knowledge.ts` 等 |
 | `memory_consolidate` | 记忆整理摘要 | `routes/memory-candidates.ts` |
 | `research_auto_run` | 后台研究调度 | `research-scheduler.ts` · search auto |
+| `reviews` | 月/年综述 LLM | `routes/reviews.ts` |
 
 每个 key **各自**享有「每窗最多 `LLM_MAX_CALLS_PER_SESSION` 次」——**不是**全局 200 均分所有 key，而是 **每 key 每窗最多 200**（默认）。
 
@@ -55,7 +56,7 @@
 
 | 项 | 说明 |
 | --- | --- |
-| `reviews` | 使用独立 key `reviews`，**不在**滑窗集合；长跑审批/批注 LLM 可能顶满后需重启。个人低频可忽略；批量审阅时注意。 |
+| `reviews` | 已纳入滑窗；顶满后等窗口滚动即可，不必重启进程。 |
 | 语音 cascade TTS/ASR | 浏览器/代理路径上的 **流式 TTS、SenseVoice ASR、Realtime** 多数 **不走** `llm-budget` 次数闸（仍受供应商配额与 `RATE_LIMIT` 影响）。专访 **LLM 追问**仍走 session 桶。 |
 | Embedding | `knowledge_index` 等走预算；本地 `EMBEDDING_PROVIDER=local` 仍计 **调用次数**（不产生云 embedding 费，但仍占进程闸）。 |
 | 未配置 key | 能力 **5xx / 诚实失败**，不会静默烧预算装成功。 |
@@ -172,7 +173,7 @@
 | 长专访 / 多辅助信号顶满 session | 提高 cap，或减少 per-turn 辅助 LLM |
 | chat/rag 一小时 429 | 提高 cap 或 `LLM_SYSTEM_WINDOW_MS`；同时检查 strict 限流 |
 | 索引重建中途 429 | 分批、提高 cap、或拉长窗；观察 `knowledge_index` |
-| `reviews` 莫名 429 | 查是否单调顶满 → 重启或把该能力纳入滑窗（代码改动属 D3.b+） |
+| `reviews` 莫名 429 | 查滑窗是否顶满；等窗口滚动或提高 cap |
 | 账单惊吓 | 先关 `PODCAST_AUTO_RENDER`、降 research 调度、限语音时长；控制台核对 TTS/ASR |
 
 ---

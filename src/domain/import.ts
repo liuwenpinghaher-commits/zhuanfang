@@ -197,3 +197,32 @@ export async function ingestImportSource(
 
   return { sourceId, candidateCount: memoryCandidates.length, nextState };
 }
+
+/** After a fast ingest (no vectors), attach embeddings onto this source's ragChunks. */
+export async function attachImportChunkEmbeddings(
+  state: ProductState,
+  sourceId: string,
+  embeddingClient: EmbeddingClient
+): Promise<{ nextState: ProductState; embeddedCount: number }> {
+  const pending = state.ragChunks.filter(
+    (chunk) => chunk.sourceId === sourceId && !(chunk.embedding && chunk.embedding.length > 0)
+  );
+  if (pending.length === 0) {
+    return { nextState: state, embeddedCount: 0 };
+  }
+  const textsToEmbed = pending.slice(0, MAX_EMBEDDED_CHUNKS).map((chunk) => chunk.text);
+  const embeddings = await batchEmbed(embeddingClient, textsToEmbed);
+  const byId = new Map<string, number[]>();
+  pending.slice(0, MAX_EMBEDDED_CHUNKS).forEach((chunk, index) => {
+    const vec = embeddings[index];
+    if (vec && vec.length > 0) byId.set(chunk.id, vec);
+  });
+  const nextState: ProductState = {
+    ...state,
+    ragChunks: state.ragChunks.map((chunk) => {
+      const vec = byId.get(chunk.id);
+      return vec ? { ...chunk, embedding: vec } : chunk;
+    })
+  };
+  return { nextState, embeddedCount: byId.size };
+}

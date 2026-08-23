@@ -445,6 +445,67 @@ export default function App() {
     saveProductState(productState);
   }, [productState]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const health = await productApiClient.getHealth();
+        if (cancelled) return;
+        if (health.persist?.degraded && health.persist.consecutiveFailures > 0) {
+          setPersistHealth({
+            consecutiveFailures: health.persist.consecutiveFailures,
+            lastErrorAt: health.persist.lastErrorAt
+          });
+        } else {
+          setPersistHealth(null);
+        }
+      } catch {
+        // 健康接口自己失败不等于落库失败，不亮存盘红灯。
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 15_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (view !== "themes") return;
+    let cancelled = false;
+    setReviewsLoading(true);
+    productApiClient
+      .getReviews()
+      .then((payload) => {
+        if (cancelled) return;
+        setServerReviews(payload);
+        setReviewsError(null);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setServerReviews(null);
+        const conflict = err instanceof ApiError;
+        const body = conflict && err.body && typeof err.body === "object"
+          ? (err.body as { error?: unknown }).error
+          : undefined;
+        setReviewsError(
+          typeof body === "string" && body.trim()
+            ? body
+            : isNetworkError(err)
+              ? "复盘暂时连不上服务器。"
+              : "复盘暂时不可用。"
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setReviewsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [view, reviewsNonce]);
+
   const podcastViewEnteredRef = useRef(false);
   useEffect(() => {
     if (view !== "podcast") {
@@ -972,7 +1033,10 @@ export default function App() {
       .finally(() => setConfirmingDecisionId(undefined));
   }
 
-  const approveCandidate = (id: string) => withMemoryAction(() => productApiClient.approveMemoryCandidate(id));
+  const approveCandidate = (id: string, mode?: "merge" | "add") =>
+    withMemoryAction(() => productApiClient.approveMemoryCandidate(id, mode ? { mode } : undefined));
+  const resolveConflictCandidate = (id: string, keepSide: "a" | "b") =>
+    withMemoryAction(() => productApiClient.resolveMemoryConflict(id, { keepSide }));
   const rejectCandidate = (id: string) => withMemoryAction(() => productApiClient.rejectMemoryCandidate(id));
   const editCandidate = (id: string, text: string) => withMemoryAction(() => productApiClient.updateMemoryCandidate(id, text));
   const deprecateRecord = (id: string) => {
@@ -2364,6 +2428,7 @@ export default function App() {
               });
             }}
             onApprove={approveCandidate}
+            onResolveConflict={resolveConflictCandidate}
             onReject={rejectCandidate}
             onEditCandidate={editCandidate}
             onDeprecate={deprecateRecord}
