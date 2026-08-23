@@ -99,4 +99,19 @@ describe("voice instructions", () => {
     const out = buildRealtimeVoiceInstructions(session, session.card, []);
     expect(out).not.toContain("用户已纠正过的表述");
   });
+
+  it("injects pendingControl so the omni next turn hears the control key", () => {
+    const session = createSessionDraft(createInitialProductState(), "decision", "standard", {});
+    session.pendingControl = "sharper";
+    const out = buildRealtimeVoiceInstructions(session, session.card);
+    expect(out).toContain("【用户控制·本轮务必照做】");
+    expect(out).toContain("更直接");
+    expect(out).toContain("回避");
+  });
+
+  it("omits the pendingControl block when the user has not pressed a control", () => {
+    const session = createSessionDraft(createInitialProductState(), "decision", "standard", {});
+    const out = buildRealtimeVoiceInstructions(session, session.card);
+    expect(out).not.toContain("【用户控制·本轮务必照做】");
+  });
 });

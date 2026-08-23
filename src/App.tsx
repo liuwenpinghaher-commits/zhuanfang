@@ -36,7 +36,6 @@ import {
   receiveUserTurn,
   resolveInterviewTopicHint,
   searchProductAssets,
-  suppressRevisitOnSession,
   toggleAssetImportance,
   updateDecisionStatus,
   updateKnowledgeDebtStatus,
@@ -746,7 +745,8 @@ export default function App() {
   const {
     closeRealtimeVoiceSession,
     interruptAssistant,
-    toggleRealtimeRecording
+    toggleRealtimeRecording,
+    refreshLiveVoiceInstructions
   } = useRealtimeVoiceControls({
     session,
     setSession,
@@ -790,7 +790,8 @@ export default function App() {
     startInterview,
     submitTurn,
     finishInterview,
-    applyInterviewControl
+    applyInterviewControl,
+    suppressRevisit
   } = useInterviewSessionActions({
     productState,
     setProductState,
@@ -819,7 +820,8 @@ export default function App() {
     cascadePipelineRef,
     adoptServerState,
     closeRealtimeVoiceSession,
-    scheduleReconnectProbe
+    scheduleReconnectProbe,
+    onControlApplied: refreshLiveVoiceInstructions
   });
 
   const {
@@ -2181,9 +2183,7 @@ export default function App() {
             onSubmit={submitTurn}
             onFinish={finishInterview}
             onControl={applyInterviewControl}
-            onSuppressRevisit={(kind, label) => {
-              setSession((prev) => (prev ? suppressRevisitOnSession(prev, kind, label) : prev));
-            }}
+            onSuppressRevisit={suppressRevisit}
             onToggleRecording={toggleRealtimeRecording}
             onInterrupt={interruptAssistant}
             onVoiceReviewText={(text) => {

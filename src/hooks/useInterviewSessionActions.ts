@@ -56,6 +56,8 @@ export interface UseInterviewSessionActionsArgs {
   adoptServerState: (state: ProductState) => void;
   closeRealtimeVoiceSession: () => void;
   scheduleReconnectProbe: () => void;
+  /** After a control lands, push pendingControl into the live omni session if connected. */
+  onControlApplied?: (session: InterviewSession) => void;
 }
 
 export function useInterviewSessionActions(args: UseInterviewSessionActionsArgs) {
@@ -86,7 +88,8 @@ export function useInterviewSessionActions(args: UseInterviewSessionActionsArgs)
     ttsSinkRef,
     adoptServerState,
     closeRealtimeVoiceSession,
-    scheduleReconnectProbe
+    scheduleReconnectProbe,
+    onControlApplied
   } = args;
 
   /** 继续一个未完成的 active 会话:把它装回 session 并切到工作台。 */
@@ -383,6 +386,7 @@ export function useInterviewSessionActions(args: UseInterviewSessionActionsArgs)
       setSession(apiRun.session);
       adoptServerState(apiRun.state);
       setApiPersistenceEnabled(true);
+      onControlApplied?.(apiRun.session);
       setNotice(buildNotice("info", "访谈控制已应用", `下一轮会按「${controlLabel}」调整。`));
     } catch (err) {
       // 失败即如实暴露——离线本地控制分叉已剔除（会话是服务端权威的，本地改了也不生效）。
@@ -394,6 +398,22 @@ export function useInterviewSessionActions(args: UseInterviewSessionActionsArgs)
     }
   }
 
+  async function suppressRevisit(kind: "decision" | "debt", label: string) {
+    if (!session) return;
+    try {
+      const apiRun = await productApiClient.suppressInterviewRevisit(session.id, { kind, label });
+      setSession(apiRun.session);
+      adoptServerState(apiRun.state);
+      setApiPersistenceEnabled(true);
+    } catch (err) {
+      const message = err instanceof Error && err.message ? err.message : "请稍后重试。";
+      if (isNetworkError(err)) {
+        setApiPersistenceEnabled(false);
+      }
+      setNotice(buildNotice("danger", "没能记下不追", message));
+    }
+  }
+
   return {
     continueInterview,
     discardEmptyInterview,
@@ -401,6 +421,7 @@ export function useInterviewSessionActions(args: UseInterviewSessionActionsArgs)
     startInterview,
     submitTurn,
     finishInterview,
-    applyInterviewControl
+    applyInterviewControl,
+    suppressRevisit
   };
 }

@@ -16,7 +16,7 @@ test.describe("timeline and track workspace journeys", () => {
   test("clicking a track chip navigates to track workspace with three columns and CTA", async ({ page }) => {
     await resetDemoState(page);
 
-    // 点击第一个主题线卡(排除"新建主题线"按钮)
+    // 点击第一个主题线卡(排除「用长期主题开一场」按钮)
     const firstChip = page.locator(".track-chip").filter({ hasNot: page.locator(".track-chip-add") }).first();
     await firstChip.click();
 

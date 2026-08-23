@@ -49,9 +49,44 @@ describe("HomeView 专访启动真值", () => {
     expect(onStart).toHaveBeenCalledWith("organization", "企业如何进行 AI Native 转型", undefined);
   });
 
+  it("推荐题目未改时，将带入只显示真会带上的主题线", () => {
+    const state = createInitialProductState();
+    const onStart = vi.fn<(mode?: InterviewMode, topicHint?: string, relatedThemeIds?: string[]) => void>();
+    renderHome(state, onStart, { recommendedRelatedThemeIds: ["theme-control"] });
+
+    expect(container?.textContent).toContain("将带入");
+    expect(container?.textContent).toContain("主题线：控制感");
+    expect(container?.textContent).not.toContain("新建主题线");
+    expect(container?.textContent).toContain("用长期主题开一场");
+
+    const button = Array.from(container?.querySelectorAll("button") ?? []).find((item) =>
+      item.textContent?.includes("开始 · 长期主题") || item.textContent?.includes("一键开始 · 长期主题")
+    );
+    act(() => button?.click());
+    expect(onStart).toHaveBeenCalledWith("long-term", "控制感", ["theme-control"]);
+  });
+
+  it("用户改了题目后不再谎称会带上推荐主题线", () => {
+    const state = createInitialProductState();
+    const onStart = vi.fn<(mode?: InterviewMode, topicHint?: string, relatedThemeIds?: string[]) => void>();
+    renderHome(state, onStart, { recommendedRelatedThemeIds: ["theme-control"] });
+    const input = container?.querySelector("input[placeholder*='专访主题']") as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    act(() => {
+      setter?.call(input, "企业如何进行 AI Native 转型");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    expect(container?.textContent).not.toContain("主题线：控制感");
+    const organization = Array.from(container?.querySelectorAll("button") ?? []).find((item) => item.textContent?.includes("组织/关系"));
+    act(() => organization?.click());
+    expect(onStart).toHaveBeenCalledWith("organization", "企业如何进行 AI Native 转型", undefined);
+  });
+
   function renderHome(
     state: ReturnType<typeof createInitialProductState>,
-    onStart: (mode?: InterviewMode, topicHint?: string, relatedThemeIds?: string[]) => void
+    onStart: (mode?: InterviewMode, topicHint?: string, relatedThemeIds?: string[]) => void,
+    extra?: { recommendedRelatedThemeIds?: string[] }
   ) {
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -64,6 +99,7 @@ describe("HomeView 专访启动真值", () => {
           suggestedTopicHint="控制感"
           recommendedMode="long-term"
           recommendationReason="适合回访反复出现的问题"
+          recommendedRelatedThemeIds={extra?.recommendedRelatedThemeIds}
           onStart={onStart} />
       );
     });

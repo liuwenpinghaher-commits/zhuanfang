@@ -53,4 +53,70 @@ describe("interview session create + record-turn (no full server)", () => {
       await server.close();
     }
   });
+
+  it("suppress-revisit writes the skip onto the live session", async () => {
+    const repo = createInMemoryProductStateRepository();
+    const server = Fastify({ logger: false });
+    await registerInterviewSessionRoutes(server, repo, {});
+    await server.ready();
+    try {
+      const created = (
+        await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "decision" } })
+      ).json();
+      const id = created.session.id as string;
+      const res = await server.inject({
+        method: "POST",
+        url: `/api/interview-sessions/${id}/suppress-revisit`,
+        payload: { kind: "decision", label: "是否继续亲自介入项目救火" }
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().session.suppressedRevisitIds).toEqual(["decision:是否继续亲自介入项目救火"]);
+      expect(
+        repo.getState().sessions.find((item) => item.id === id)?.suppressedRevisitIds
+      ).toEqual(["decision:是否继续亲自介入项目救火"]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("suppress-revisit rejects missing fields, missing session, and completed session", async () => {
+    const repo = createInMemoryProductStateRepository();
+    const server = Fastify({ logger: false });
+    await registerInterviewSessionRoutes(server, repo, {});
+    await server.ready();
+    try {
+      const missing = await server.inject({
+        method: "POST",
+        url: "/api/interview-sessions/se_gone/suppress-revisit",
+        payload: { kind: "debt", label: "组织惯性" }
+      });
+      expect(missing.statusCode).toBe(404);
+
+      const created = (
+        await server.inject({ method: "POST", url: "/api/interview-sessions", payload: { mode: "decision" } })
+      ).json();
+      const id = created.session.id as string;
+      const invalid = await server.inject({
+        method: "POST",
+        url: `/api/interview-sessions/${id}/suppress-revisit`,
+        payload: { kind: "nope", label: "x" }
+      });
+      expect(invalid.statusCode).toBe(422);
+
+      repo.replaceState({
+        ...repo.getState(),
+        sessions: repo.getState().sessions.map((item) =>
+          item.id === id ? { ...item, status: "completed" as const } : item
+        )
+      });
+      const ended = await server.inject({
+        method: "POST",
+        url: `/api/interview-sessions/${id}/suppress-revisit`,
+        payload: { kind: "debt", label: "组织惯性" }
+      });
+      expect(ended.statusCode).toBe(409);
+    } finally {
+      await server.close();
+    }
+  });
 });

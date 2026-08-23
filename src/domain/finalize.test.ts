@@ -421,3 +421,79 @@ describe("审计修复:知识债状态守卫 + 问题 upsert", () => {
     expect(out[0].appearedInSessionIds).toEqual(["se_1", "se_2"]);
   });
 });
+
+describe("finalize keeps launch theme ids on the note", () => {
+  it("writes session.relatedThemeIds onto the completed session and note even with no LLM themes", async () => {
+    const { mergeFinalizedState } = await import("./finalize");
+    const { createInitialProductState: initState, createInterviewSession: cis, addTurn: at } = await import("./engine");
+    const { nowIso } = await import("./utils");
+
+    const state = initState();
+    let s = cis({ id: "s-launch-theme", title: "带着线开场" });
+    s = { ...at(s, { role: "user", content: "我不敢把审批权交出去。" }), relatedThemeIds: ["theme-control"] };
+    const completedAt = nowIso();
+    const note = {
+      id: "note-launch-theme",
+      sessionId: "s-launch-theme",
+      title: s.title,
+      summary: "摘要",
+      keyQuote: "我不敢把审批权交出去。",
+      saidTrack: ["我不敢把审批权交出去。"],
+      learnedTrack: [],
+      nextQuestions: [],
+      createdAt: completedAt
+    };
+    const { nextState } = mergeFinalizedState(
+      state,
+      s,
+      { note, points: [], questions: [], decisions: [], debts: [], themes: [] },
+      completedAt
+    );
+    expect(nextState.notes[0].relatedThemeIds).toEqual(["theme-control"]);
+    expect(nextState.sessions.find((item) => item.id === "s-launch-theme")?.relatedThemeIds).toEqual(["theme-control"]);
+  });
+
+  it("unions launch theme ids with LLM theme ids on the note", async () => {
+    const { mergeFinalizedState } = await import("./finalize");
+    const { createInitialProductState: initState, createInterviewSession: cis, addTurn: at } = await import("./engine");
+    const { nowIso } = await import("./utils");
+
+    const state = initState();
+    let s = cis({ id: "s-union-theme", title: "进场线加新线" });
+    s = { ...at(s, { role: "user", content: "问题定义权不该让出去。" }), relatedThemeIds: ["theme-control"] };
+    const completedAt = nowIso();
+    const note = {
+      id: "note-union-theme",
+      sessionId: "s-union-theme",
+      title: s.title,
+      summary: "摘要",
+      keyQuote: "问题定义权不该让出去。",
+      saidTrack: ["问题定义权不该让出去。"],
+      learnedTrack: [],
+      nextQuestions: [],
+      createdAt: completedAt
+    };
+    const { nextState } = mergeFinalizedState(
+      state,
+      s,
+      {
+        note,
+        points: [],
+        questions: [],
+        decisions: [],
+        debts: [],
+        themes: [{
+          id: "theme-role",
+          name: "问题定义权",
+          summary: "s",
+          representativeQuote: "q",
+          nextQuestion: "nq",
+          maturity: "萌芽"
+        }]
+      },
+      completedAt
+    );
+    expect(nextState.notes[0].relatedThemeIds).toEqual(["theme-control", "theme-role"]);
+  });
+});
+

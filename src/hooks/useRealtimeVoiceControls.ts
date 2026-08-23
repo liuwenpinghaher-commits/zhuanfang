@@ -820,9 +820,22 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
     setNotice(buildNotice("warning", "实时语音不可用", "Product API 不可用，无法开始语音专访，请检查服务后重试。"));
   }
 
+  function refreshLiveVoiceInstructions() {
+    const voiceSid = session?.id;
+    const connection = realtimeVoiceConnection as { updateInstructions?: (text: string) => void } | null;
+    if (!voiceSid || !connection?.updateInstructions) return;
+    void productApiClient
+      .refreshVoiceInstructions(voiceSid)
+      .then((res) => {
+        connection.updateInstructions?.(res.instructions);
+      })
+      .catch((err) => voiceRecallRefreshFailed("voice_instructions", err));
+  }
+
   return {
     closeRealtimeVoiceSession,
     interruptAssistant,
-    toggleRealtimeRecording
+    toggleRealtimeRecording,
+    refreshLiveVoiceInstructions
   };
 }

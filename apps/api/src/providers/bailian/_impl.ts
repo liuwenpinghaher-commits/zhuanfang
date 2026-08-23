@@ -1,8 +1,8 @@
 /** Full Bailian implementation (split from providers/bailian.ts). */
 import { SpanStatusCode, trace } from "@opentelemetry/api";
-import type { InteractionPreSignals, InterviewControlAction, InterviewSession, InterviewStrategyDecision, MemoryCorrection, SearchBriefInput, SearchProviderId, SourceHighlight } from "../../../../../src/domain/types";
+import type { InteractionPreSignals, InterviewSession, InterviewStrategyDecision, MemoryCorrection, SearchBriefInput, SearchProviderId, SourceHighlight } from "../../../../../src/domain/types";
 import { INTERVIEWER_CRAFT_RULES } from "../../../../../src/domain/interviewer-craft";
-import { buildAppliedPlaybookRulesBlock, buildBoundariesBlock, buildCorrectionsBlock } from "../../../../../src/domain/voice-instructions";
+import { buildAppliedPlaybookRulesBlock, buildBoundariesBlock, buildCorrectionsBlock, buildPendingControlBlock } from "../../../../../src/domain/voice-instructions";
 import { sanitizeExternalMaterialList } from "../../../../../src/domain/utils";
 import { resolveRequestTimeoutMs } from "../../request-timeout";
 import { normalizeCosyVoiceId, resolveQwenAudioTtsVoice } from "../../voice-presets";
@@ -1275,17 +1275,10 @@ export function buildCharacterSystemPrompt(
     }
   }
 
-  // 用户刚下达的控制动作 —— 作为明确指令注入（替代脆弱的话术子串匹配）。
-  if (session.pendingControl) {
-    const controlDirectives: Record<InterviewControlAction, string> = {
-      skip: "用户刚要求跳过上一个问题。不要再追那个问题，换一个更低压力、更具体的方向继续。",
-      "different-angle": "用户刚要求换个角度。从一个明显不同的视角（如系统/机制/他人视角）重新切入同一主题。",
-      summary: "用户刚要求做阶段小结。先用一两句话凝练目前为止的关键点，再抛出下一个最值得深挖的问题。",
-      softer: "用户希望更温和。避免尖锐挑战，先把事实和真实感受分开问清楚。",
-      sharper: "用户希望更直接。优先检查前提、代价和用户可能在回避的地方。",
-      "do-not-save": "本次按不写入长期资产处理，但继续正常、自然地追问。"
-    };
-    lines.push(`【用户控制·本轮务必照做】${controlDirectives[session.pendingControl]}`);
+  // 用户刚下达的控制动作 —— 与语音 instructions 同一份措辞。
+  const pendingControlBlock = buildPendingControlBlock(session.pendingControl);
+  if (pendingControlBlock) {
+    lines.push(pendingControlBlock);
   }
 
   // 策略引擎为本轮选定的动作方向 —— 作为软指引注入，让策略真正驱动 LLM 提问，

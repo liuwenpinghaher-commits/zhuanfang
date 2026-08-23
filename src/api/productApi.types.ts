@@ -159,6 +159,10 @@ export interface ProductApiClient {
   classifyTurnComplete(sessionId: string, transcript: string, signal?: AbortSignal): Promise<{ done: boolean; reason: string }>;
   logCascadeDecision(sessionId: string, trace: { layer: number; action: string; reason: string; silenceMs: number; expressionState: string; transcript: string }): Promise<void>;
   applyInterviewControl(sessionId: string, input: ApplyInterviewControlRequest): Promise<InterviewSessionResponse>;
+  suppressInterviewRevisit(
+    sessionId: string,
+    input: { kind: "decision" | "debt"; label: string }
+  ): Promise<InterviewSessionResponse>;
   endInterviewSession(sessionId: string): Promise<EndInterviewSessionResponse>;
   discardInterviewSession(sessionId: string): Promise<{ state: ProductState }>;
   generateInterviewPreSignals(sessionId: string): Promise<GeneratePreSignalsResponse>;

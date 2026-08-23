@@ -182,13 +182,19 @@ export function mergeFinalizedState(
     return { note, nextState };
   }
 
-  // themeIds were resolved by finalize-llm into content.themes (existing id by name, or a
-  // fresh id). Attach them to the session AND note so the "by theme" axis — Track 工作区 /
-  // timeline / 会后反馈续问 — can actually aggregate this session's output. Deterministic
-  // path has no themes → empty → no-op (no dangling refs).
-  const themeIds = content.themes.map((theme) => theme.id).filter((id): id is string => Boolean(id));
+  // Keep launch-time relatedThemeIds and union any ids the LLM named on content.themes.
+  // Both session and note must carry them so Track / timeline / 会后续问 can find this
+  // session. Deterministic path has no LLM themes; launch ids still land.
+  const themeIds = Array.from(
+    new Set(
+      [
+        ...(session.relatedThemeIds ?? []),
+        ...content.themes.map((theme) => theme.id).filter((id): id is string => Boolean(id))
+      ].filter(Boolean)
+    )
+  );
   const completedSession: InterviewSession = themeIds.length
-    ? { ...baseCompletedSession, relatedThemeIds: Array.from(new Set([...(session.relatedThemeIds ?? []), ...themeIds])) }
+    ? { ...baseCompletedSession, relatedThemeIds: themeIds }
     : baseCompletedSession;
   const finalNote = themeIds.length ? { ...note, relatedThemeIds: themeIds } : note;
 

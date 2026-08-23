@@ -13,7 +13,8 @@ import {
   buildInterviewCard,
   buildMonthlyReview,
   buildYearlyReview,
-  createEmptyProductState
+  createEmptyProductState,
+  createInitialProductState
 } from "../domain/engine";
 import type { SearchBriefInput } from "../domain/types";
 import { HomeView } from "./home/HomeView";
@@ -58,6 +59,25 @@ describe("empty-state render guards", () => {
     );
     expect(html).toContain("还没有主题线");
     expect(html).toContain("完成专访后会自动浮现");
+  });
+
+  it("HomeView shows only launchable theme chips and does not call the add button a new theme", () => {
+    const s = createInitialProductState();
+    const html = renderToString(
+      <HomeView
+        state={s}
+        card={buildInterviewCard(s)}
+        suggestedTopicHint="控制感"
+        recommendedMode="long-term"
+        recommendationReason="适合回访反复出现的问题"
+        recommendedRelatedThemeIds={["theme-control"]}
+        onStart={() => {}} />
+    );
+    const text = html.replace(/<!-- -->/g, "");
+    expect(text).toContain("将带入");
+    expect(text).toContain("主题线：控制感");
+    expect(text).toContain("用长期主题开一场");
+    expect(text).not.toContain("新建主题线");
   });
 
   it("HomeView with onOpenTrack and onNavigate renders without throwing", () => {

@@ -5,6 +5,7 @@ import {
   buildInterviewGuide,
   createSessionDraft,
   decideInterviewStrategy,
+  suppressRevisitOnSession,
   updateInterviewControl
 } from "../../../../src/domain/engine";
 import type {
@@ -229,6 +230,26 @@ export async function registerInterviewSessionRoutes(
     const nextState = upsertSession(state, updatedSession);
 
     const persisted = /*durable*/await replaceStateDurable(repository, nextState);
+    return { session: updatedSession, state: persisted };
+  });
+
+  server.post("/api/interview-sessions/:id/suppress-revisit", async (request, reply) => {
+    const state = repository.getState();
+    const session = findSession(state, getSessionId(request.params));
+    if (!session) {
+      return reply.code(404).send({ error: "Interview session not found." });
+    }
+    if (session.status === "completed") {
+      return reply.code(409).send({ error: "会话已结束并归档，无法追加轮次。" });
+    }
+    const body = normalizeObject<{ kind?: unknown; label?: unknown }>(request.body);
+    const kind = body.kind === "decision" || body.kind === "debt" ? body.kind : null;
+    const label = typeof body.label === "string" ? body.label.trim() : "";
+    if (!kind || !label) {
+      return reply.code(422).send({ error: "需要说明不追哪一条。" });
+    }
+    const updatedSession = suppressRevisitOnSession(session, kind, label);
+    const persisted = await replaceStateDurable(repository, upsertSession(state, updatedSession));
     return { session: updatedSession, state: persisted };
   });
 

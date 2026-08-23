@@ -1,5 +1,22 @@
 import { INTERVIEWER_CRAFT_RULES, buildVoiceOpeningDiscipline } from "./interviewer-craft";
-import type { InterviewCard, InterviewSession, MemoryCorrection } from "./types";
+import type { InterviewCard, InterviewControlAction, InterviewSession, MemoryCorrection } from "./types";
+
+const PENDING_CONTROL_DIRECTIVES: Record<InterviewControlAction, string> = {
+  skip: "用户刚要求跳过上一个问题。不要再追那个问题，换一个更低压力、更具体的方向继续。",
+  "different-angle": "用户刚要求换个角度。从一个明显不同的视角（如系统/机制/他人视角）重新切入同一主题。",
+  summary: "用户刚要求做阶段小结。先用一两句话凝练目前为止的关键点，再抛出下一个最值得深挖的问题。",
+  softer: "用户希望更温和。避免尖锐挑战，先把事实和真实感受分开问清楚。",
+  sharper: "用户希望更直接。优先检查前提、代价和用户可能在回避的地方。",
+  "do-not-save": "本次按不写入长期资产处理，但继续正常、自然地追问。"
+};
+
+/** Shared with the text LLM prompt so voice and typing hear the same control. */
+export function buildPendingControlBlock(action: InterviewControlAction | undefined): string {
+  if (!action) return "";
+  const directive = PENDING_CONTROL_DIRECTIVES[action];
+  if (!directive) return "";
+  return `【用户控制·本轮务必照做】${directive}`;
+}
 
 // Bounds for what we surface into the realtime voice prompt. Kept small so the
 // instruction string stays focused and the LLM actually honours it.
@@ -86,6 +103,7 @@ export function buildRealtimeVoiceInstructions(
     INTERVIEWER_CRAFT_RULES,
     "",
     "【语音节奏】允许短反馈；用户一打断立刻停、把控制权还给用户；沉默时先留白，不要急着填满。不长篇、不替对方下结论、不像客服。",
+    buildPendingControlBlock(session?.pendingControl),
     qualityGuardrailsBlock,
     "",
     `本次主题：${session?.title ?? card?.title ?? "未命名专访"}`,

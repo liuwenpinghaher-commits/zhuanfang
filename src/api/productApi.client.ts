@@ -739,6 +739,17 @@ export function createProductApiClient(
         state: normalizeProductState(response.state)
       };
     },
+    async suppressInterviewRevisit(sessionId, input) {
+      const response = (await requestJson(`/api/interview-sessions/${sessionId}/suppress-revisit`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input)
+      })) as InterviewSessionResponse;
+      return {
+        ...response,
+        state: normalizeProductState(response.state)
+      };
+    },
     async endInterviewSession(sessionId) {
       const response = (await requestJson(`/api/interview-sessions/${sessionId}/end`, {
         method: "POST"

@@ -123,13 +123,19 @@ export function HomeView({
   }, [prefillMode]);
 
   const selectedTopic = topicInput.trim() || suggestedTopicHint;
+  const usingRecommendedTopic =
+    !topicInput.trim() || topicInput.trim() === (suggestedTopicHint || "").trim();
+  const launchThemeIds =
+    usingRecommendedTopic && recommendedRelatedThemeIds?.length ? recommendedRelatedThemeIds : undefined;
+  const launchThemes = (launchThemeIds ?? [])
+    .map((id) => state.themes.find((theme) => theme.id === id))
+    .filter((theme): theme is NonNullable<typeof theme> => Boolean(theme));
   const selectedModeLabel = modeLabel(selectedMode);
   const primaryResume = resumeCards[0];
   const hasResume = resumeCards.length > 0;
   const activeBrief = activeBriefId
     ? state.searchBriefs.find((b) => b.id === activeBriefId)
     : undefined;
-  const topTheme = [...state.themes].sort((a, b) => b.appearances - a.appearances)[0];
 
   function handleEventClick(ev: (typeof timelineEvents)[number]) {
     if (ev.href.view === "track" && ev.href.trackId) {
@@ -141,13 +147,7 @@ export function HomeView({
 
   function startWithCurrent(mode: InterviewMode = selectedMode) {
     if (starting) return;
-    const usingRecommendedTopic =
-      !topicInput.trim() || topicInput.trim() === (suggestedTopicHint || "").trim();
-    const themeIds =
-      usingRecommendedTopic && recommendedRelatedThemeIds?.length
-        ? recommendedRelatedThemeIds
-        : undefined;
-    onStart(mode, selectedTopic, themeIds);
+    onStart(mode, selectedTopic, launchThemeIds);
   }
 
   return (
@@ -380,7 +380,7 @@ export function HomeView({
           <span className="field-help">留空则沿用当前推荐主题：{suggestedTopicHint}</span>
         </label>
 
-        {(activeBrief || topTheme) && (
+        {(activeBrief || launchThemes.length > 0) && (
           <div className="inline-list context-chip-row" aria-label="将带入的上下文">
             <span className="field-label">将带入</span>
             {activeBrief && (
@@ -393,7 +393,9 @@ export function HomeView({
                 )}
               </span>
             )}
-            {topTheme && <span className="status-pill">主题线：{topTheme.name}</span>}
+            {launchThemes.map((theme) => (
+              <span className="status-pill" key={theme.id}>主题线：{theme.name}</span>
+            ))}
           </div>
         )}
       </section>
@@ -455,7 +457,7 @@ export function HomeView({
               onClick={() => onStart("long-term", selectedTopic)}
             >
               <Plus size={16} />
-              新建主题线
+              用长期主题开一场
             </button>
           </div>
         )}
