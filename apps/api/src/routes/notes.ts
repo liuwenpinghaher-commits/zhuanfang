@@ -152,6 +152,7 @@ async function deleteKnowledgeForForgottenNote(
   await knowledgeRepo.deleteBySource("note", receipt.noteId);
   const deleted: Array<{ type: KnowledgeSourceType; id: string }> = [
     ...receipt.removedIds.points.map((id) => ({ type: "point" as const, id })),
+    ...receipt.removedIds.questions.map((id) => ({ type: "question" as const, id })),
     ...receipt.removedIds.decisions.map((id) => ({ type: "decision" as const, id })),
     ...receipt.removedIds.debts.map((id) => ({ type: "debt" as const, id })),
     ...receipt.removedIds.memories.map((id) => ({ type: "memory" as const, id }))

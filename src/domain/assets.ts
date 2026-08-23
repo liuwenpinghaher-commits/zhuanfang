@@ -48,9 +48,10 @@ export function interviewLaunchFromAsset(asset: CognitiveAssetActionTarget): {
 export function knowledgeFocusFromAsset(
   kind: CognitiveAssetKind,
   id: string
-): { sourceType: "point" | "decision" | "debt"; sourceId: string } | null {
+): { sourceType: "point" | "question" | "decision" | "debt"; sourceId: string } | null {
   if (!id.trim()) return null;
   if (kind === "points") return { sourceType: "point", sourceId: id };
+  if (kind === "questions") return { sourceType: "question", sourceId: id };
   if (kind === "decisions") return { sourceType: "decision", sourceId: id };
   if (kind === "debts") return { sourceType: "debt", sourceId: id };
   return null;

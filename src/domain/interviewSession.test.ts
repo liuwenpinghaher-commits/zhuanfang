@@ -122,6 +122,14 @@ describe("createInterviewSession", () => {
     expect(() => buildInterviewAgentContext(session)).not.toThrow();
   });
 
+  it("agent-context instructions include a pending control so LiveKit next turn hears it", () => {
+    const session = createInterviewSession({ id: "s-ctrl", title: "标题" });
+    session.pendingControl = "sharper";
+    const ctx = buildInterviewAgentContext(session);
+    expect(ctx.instructions).toContain("【用户控制·本轮务必照做】");
+    expect(ctx.instructions).toContain("更直接");
+  });
+
   it("uses the provided createdAt as startedAt", () => {
     const ts = "2026-01-15T08:30:00.000Z";
     const session = createInterviewSession({ id: "s-t", title: "t", createdAt: ts });

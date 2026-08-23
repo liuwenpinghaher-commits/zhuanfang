@@ -377,6 +377,9 @@ describe("pin focused asset into chat retrieval", () => {
     expect(point?.sourceId).toBe("point-seed-1");
     expect(point?.text).toContain("亲自救火");
     expect(knowledgeChunkForFocus(state, "point", "missing")).toBeNull();
+    const question = knowledgeChunkForFocus(state, "question", "question-seed-1");
+    expect(question?.sourceType).toBe("question");
+    expect(question?.text).toContain("救火");
   });
 
   it("pinKnowledgeFocus puts the focused chunk first and drops the duplicate", () => {

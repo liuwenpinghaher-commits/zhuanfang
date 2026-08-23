@@ -163,7 +163,11 @@ export function useInterviewSessionActions(args: UseInterviewSessionActionsArgs)
     }
     const clientRequestId = pendingSessionCreateRef.current.id;
     try {
-      await flushPendingProductState?.();
+      const saved = flushPendingProductState ? await flushPendingProductState() : true;
+      if (!saved) {
+        setNotice(buildNotice("danger", "这场没开", "刚改的还没写进书里。恢复连接后再点一次。"));
+        return;
+      }
       const apiRun = await productApiClient.createInterviewSession({
         mode,
         strength: productState.profile.preferredStrength,
@@ -202,7 +206,8 @@ export function useInterviewSessionActions(args: UseInterviewSessionActionsArgs)
     mode: InterviewMode = recommendedMode,
     searchBriefId = activeSearchBriefId,
     topicHint?: string,
-    relatedThemeIds?: string[]
+    relatedThemeIds?: string[],
+    attachBrief = true
   ) {
     const activeSessions = productState.sessions.filter((item) => item.status === "active");
     if (activeSessions.length > 0) {
@@ -215,9 +220,11 @@ export function useInterviewSessionActions(args: UseInterviewSessionActionsArgs)
       }
     }
     setPendingMode(mode);
-    setActiveSearchBriefId(searchBriefId);
+    if (attachBrief) {
+      setActiveSearchBriefId(searchBriefId);
+    }
     setSession(null);
-    await startInterview(mode, searchBriefId, topicHint, relatedThemeIds);
+    await startInterview(mode, attachBrief ? searchBriefId : undefined, topicHint, relatedThemeIds);
   }
 
   async function submitTurn(event: FormEvent<HTMLFormElement>) {

@@ -258,7 +258,7 @@ export function HomeView({
                   onDismissLastSummary?.();
                 }}
               >
-                预约下次：{deskQueue[0].title.slice(0, 18)}
+                把这题填进来：{deskQueue[0].title.slice(0, 18)}
               </button>
             )}
           </div>

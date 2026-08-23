@@ -267,6 +267,7 @@ const FOCUS_SOURCE_TYPES: KnowledgeSourceType[] = [
   "memory",
   "theme",
   "point",
+  "question",
   "decision",
   "debt",
   "transcript",
@@ -296,6 +297,7 @@ function validateAndBuildChatCitations(answer: string, retrieved: KnowledgeChunk
     { pattern: /(?:双轨笔记|笔记)\s*\[(\d+)\]/g, allowed: ["note"], label: "笔记" },
     { pattern: /(?:长期主题|主题)\s*\[(\d+)\]/g, allowed: ["theme"], label: "主题" },
     { pattern: /(?:观点资产|观点)\s*\[(\d+)\]/g, allowed: ["point"], label: "观点" },
+    { pattern: /(?:问题资产|问题)\s*\[(\d+)\]/g, allowed: ["question"], label: "问题" },
     { pattern: /(?:决策资产|决策)\s*\[(\d+)\]/g, allowed: ["decision"], label: "决策" },
     { pattern: /知识债\s*\[(\d+)\]/g, allowed: ["debt"], label: "知识债" },
     { pattern: /(?:导入资料|素材)\s*\[(\d+)\]/g, allowed: ["material"], label: "导入资料" }

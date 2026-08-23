@@ -49,10 +49,11 @@ describe("interviewLaunchFromAsset", () => {
 });
 
 describe("knowledgeFocusFromAsset", () => {
-  it("pins point/decision/debt and skips questions", () => {
+  it("pins point/question/decision/debt", () => {
     expect(knowledgeFocusFromAsset("points", "pt_1")).toEqual({ sourceType: "point", sourceId: "pt_1" });
+    expect(knowledgeFocusFromAsset("questions", "q1")).toEqual({ sourceType: "question", sourceId: "q1" });
     expect(knowledgeFocusFromAsset("decisions", "de_1")).toEqual({ sourceType: "decision", sourceId: "de_1" });
     expect(knowledgeFocusFromAsset("debts", "d1")).toEqual({ sourceType: "debt", sourceId: "d1" });
-    expect(knowledgeFocusFromAsset("questions", "q1")).toBeNull();
+    expect(knowledgeFocusFromAsset("questions", "  ")).toBeNull();
   });
 });

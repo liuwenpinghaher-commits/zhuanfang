@@ -162,7 +162,7 @@ export interface InterviewAudio {
 }
 
 export type KnowledgeSourceType =
-  | "note" | "memory" | "theme" | "point" | "decision" | "debt" | "transcript" | "material";
+  | "note" | "memory" | "theme" | "point" | "question" | "decision" | "debt" | "transcript" | "material";
 
 export interface KnowledgeChunk {
   id: string;

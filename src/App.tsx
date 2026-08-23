@@ -886,6 +886,10 @@ export default function App() {
       setSelectedAssetKey(`points:${citation.sourceId}`);
       setAssetFilter("points");
       setView("my-assets");
+    } else if (citation.sourceType === "question") {
+      setSelectedAssetKey(`questions:${citation.sourceId}`);
+      setAssetFilter("questions");
+      setView("my-assets");
     } else if (citation.sourceType === "decision") {
       setSelectedAssetKey(`decisions:${citation.sourceId}`);
       setAssetFilter("decisions");
@@ -1063,19 +1067,24 @@ export default function App() {
   }
   function confirmDecision(id: string) {
     setConfirmingDecisionId(id);
-    void flushPendingProductState()
-      .then(() => productApiClient.confirmDecision(id))
-      .then((next) => adoptServerState(next))
-      // P3-02:区分业务冲突(409/422/404:决策已确认或状态已变)与后端离线,不再一律"需要后端在线"。
-      .catch((err) => {
+    void (async () => {
+      const saved = await flushPendingProductState();
+      if (!saved) {
+        setNotice(buildNotice("danger", "确认没生效", "刚改的还没写进书里。恢复连接后再点一次。"));
+        return;
+      }
+      try {
+        const next = await productApiClient.confirmDecision(id);
+        adoptServerState(next);
+      } catch (err) {
         const conflict = err instanceof ApiError && (err.status === 409 || err.status === 422 || err.status === 404);
         setNotice(buildNotice(
           "warning",
           conflict ? "操作未生效" : "操作失败",
           conflict ? "该决策的状态已变化(可能已确认),请刷新后重试。" : "确认决策需要后端在线。"
         ));
-      })
-      .finally(() => setConfirmingDecisionId(undefined));
+      }
+    })().finally(() => setConfirmingDecisionId(undefined));
   }
 
   const approveCandidate = (id: string, mode?: "merge" | "add") =>
@@ -2453,7 +2462,7 @@ export default function App() {
             onBringIntoInterview={(asset) => {
               const launch = interviewLaunchFromAsset(asset);
               setNotice(buildNotice("info", "已带入下一次专访", asset.summary.slice(0, 120)));
-              void launchInterview(launch.mode, activeSearchBriefId, launch.topicHint, launch.relatedThemeIds);
+              void launchInterview(launch.mode, undefined, launch.topicHint, launch.relatedThemeIds, false);
             }}
             onAskAsset={(asset) =>
               openAssetChat({

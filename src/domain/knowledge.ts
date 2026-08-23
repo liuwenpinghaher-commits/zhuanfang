@@ -19,6 +19,7 @@ export const KNOWLEDGE_SOURCE_LABELS: Record<KnowledgeSourceType, string> = {
   memory: "已确认长期记忆",
   theme: "长期主题",
   point: "观点资产",
+  question: "问题资产",
   decision: "决策资产",
   debt: "知识债",
   transcript: "访谈逐字稿（用户原话）",
@@ -100,6 +101,11 @@ export function buildKnowledgeChunks(
   for (const point of state.points) {
     const text = `${point.title} ${point.content}`.trim();
     chunks.push(makeChunk("point", point.id, point.title, text, createdAt));
+  }
+
+  for (const question of state.questions) {
+    const text = `${question.question} ${question.whyImportant} ${question.nextPrompt}`.trim();
+    if (text) chunks.push(makeChunk("question", question.id, question.question, text, createdAt));
   }
 
   // decision → title + choice
@@ -193,6 +199,7 @@ const DIFFABLE_ARRAYS: DiffableArray[] = [
   { sourceType: "memory", pick: (s) => s.memoryRecords },
   { sourceType: "theme", pick: (s) => s.themes },
   { sourceType: "point", pick: (s) => s.points },
+  { sourceType: "question", pick: (s) => s.questions },
   { sourceType: "decision", pick: (s) => s.decisions },
   { sourceType: "debt", pick: (s) => s.debts }
 ];
@@ -425,6 +432,12 @@ export function knowledgeChunkForFocus(
     if (!point) return null;
     const text = `${point.title} ${point.content}`.trim();
     return text ? makeChunk("point", point.id, point.title, text, createdAt) : null;
+  }
+  if (sourceType === "question") {
+    const question = state.questions.find((item) => item.id === sourceId);
+    if (!question) return null;
+    const text = `${question.question} ${question.whyImportant} ${question.nextPrompt}`.trim();
+    return text ? makeChunk("question", question.id, question.question, text, createdAt) : null;
   }
   if (sourceType === "decision") {
     const decision = state.decisions.find((item) => item.id === sourceId);
