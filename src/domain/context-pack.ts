@@ -590,7 +590,7 @@ export function buildInterviewGuide(state: ProductState, options: InterviewGuide
       ? `我们先拿这条联网讨论主题做外部参照：${ensureSentenceEnd(explicitTopicHint)}它和你最近反复说的“${topTheme?.name ?? "这个问题"}”有什么真实关系？`
       : `我们先拿“${searchBrief.topic}”做外部参照：它和你最近反复说的“${topTheme?.name ?? "这个问题"}”有什么真实关系？`
     : explicitTopicHint
-      ? `我们从你选中的资产继续：${ensureSentenceEnd(explicitTopicHint)}先讲一个最具体的场景。`
+      ? `我们从这件事继续：${ensureSentenceEnd(explicitTopicHint)}先讲一个最具体的场景。`
       : focusQuestion
         ? `${focusQuestion.question} 先从你上次明确要求继续的地方开始：${focusQuestion.nextPrompt}`
         : topTheme?.nextQuestion ?? "今天先从一个最近反复出现的问题讲起：它具体发生在哪个场景里？";
@@ -606,10 +606,10 @@ export function buildInterviewGuide(state: ProductState, options: InterviewGuide
           ? `本次会把联网素材作为参照；${agendaContext}；但必须回到用户自己的具体事件。`
           : `本次会把联网素材作为参照，但必须回到用户自己的具体事件。`
         : explicitTopicHint
-          ? `本次从用户在资产库中选中的主题继续追问。`
+          ? `本次从你指定的主题继续追问。`
           : focusQuestion
             ? `本次优先接上用户会后反馈中标记为“值得下次继续”的问题。`
-            : `本次优先回访长期主题“${topTheme?.name ?? "未命名主题"}”和未完成知识债。`
+            : `本次优先回访长期主题“${topTheme?.name ?? "未命名主题"}”和未完成知识债。`,
     },
     perspectiveCoverage,
     missingPerspectives,

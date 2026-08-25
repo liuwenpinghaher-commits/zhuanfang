@@ -362,12 +362,12 @@ export function useInterviewSessionActions(args: UseInterviewSessionActionsArgs)
       return;
     } catch (err) {
       // 已结束(409)/会话不存在(404):这场专访其实已经收尾(常见于 /end 调 LLM 较慢时用户
-      // 重复点"结束")。视为成功跳转,绝不误报"结束失败"再诱导继续点。
+      // 重复点"结束")。与成功路同归今日台，绝不误报"结束失败"或谎称已跳到笔记。
       if (err instanceof ApiError && (err.status === 409 || err.status === 404)) {
         setSession(null);
         closeRealtimeVoiceSession();
-        setNotice(buildNotice("info", "专访已结束", "这场专访已经收尾，已为你跳转到笔记。"));
-        setView("notes");
+        setNotice(buildNotice("info", "专访已结束", "这场专访已经收尾，可在下方「上场摘要」或笔记/资产中继续。"));
+        setView("home");
         return;
       }
       // 失败即如实暴露——会话保持打开可重试，离线本地确定性 finalize（模板轻量档案）已剔除。

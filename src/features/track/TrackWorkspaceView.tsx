@@ -13,7 +13,7 @@ interface TrackWorkspaceViewProps {
   onOpenSession?: (sessionId: string) => void;
   /** 沉淀产出 → 我的资产详情。 */
   onOpenAsset?: (key: string) => void;
-  /** 资料来源 → 素材库。 */
+  /** 资料来源 → 资料导入页。 */
   onOpenSource?: (sourceId: string) => void;
   // 透传给 RawMaterialViewer 的原文出处能力（Task 12 扩展：主题代表性引文 → 原文跳转）。
   state: ProductState;

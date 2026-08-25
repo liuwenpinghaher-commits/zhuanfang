@@ -385,7 +385,7 @@ R7 起 SurrealDB（`.data/surreal`）是**唯一**持久仓库，`GET /api/state
 - **记忆生命周期**：echo-chamber 过滤；矛盾 `POST /api/memory-candidates/:id/resolve-conflict`（supersede/demote-not-delete）；consolidate 支持 `mode=queue` 只预览。
 - **语音 SLO**：TTFA 分段 p50/p95、barge-in 成功率、interrupt recovery；打断 stash 注入下一轮（`previousAgentUtteranceInterrupted`）。本地参考预算 p50≤700ms / p95≤1200ms（非硬 SLA）。
 - **脚本**：`npx tsx scripts/voice-slo-smoke.ts`；`node scripts/backup-export-smoke.mjs`。
-- **语音 connect**：`src/realtime/startRealtimeVoiceConnect.ts` + `useRealtimeVoiceSession`（App 只负责建 session 与回调注入）。
+- **语音 connect**：`src/hooks/useRealtimeVoiceControls.ts`（cascade 默认走 `sendInterviewTurnStream`；App 注入 session / 回调）。
 - **语料预签名**：`POST /api/corpus/audio-files/presign`
   - 默认：`provider:"local"` → `PUT /api/corpus/audio-files/:file`（JSON `{ audioBase64 }`，需鉴权）
   - 云：配置 bucket + AWS 凭证后 → `provider:"s3"` → 客户端直传 `uploadUrl`（SigV4）
@@ -395,7 +395,7 @@ R7 起 SurrealDB（`.data/surreal`）是**唯一**持久仓库，`GET /api/state
   - `pvad-experimental`：浏览器 Silero 神经 VAD（`isSpeech`）与能量/`ExpressionState`/completeness 融合，调整 `minPauseMs`/`maxWaitMs`，并可把 `uncertain` 偏置为 `respond`
   - 资源：`scripts/copy-vad-assets.mjs` 在 `postinstall`/`dev`/`build` 将 onnx + ORT wasm 拷到 `public/vad/`；运行时同源 `/vad/`（**不依赖** jsDelivr CDN）
   - **诚实边界**：init/模型加载失败软降级能量启发式；Node/单测无 WebAudio 时不可用；capabilities 标注为实验端点
-  - 入口：`startRealtimeVoiceConnect` 从 `productState.systemConfig.voice` 注入 cascade `decisionOpts`
+  - 入口：`useRealtimeVoiceControls` 从 `productState.systemConfig.voice` 注入 cascade `decisionOpts`
 - **非目标**：多租户、Surreal 原生 CRDT 多设备同步、强绑单一 S2S。OSS/MinIO 已通过 `CORPUS_S3_ENDPOINT` + path-style 支持；不实现完整 AWS SDK 面。
 
 ## Stage-2：记忆 / 召回 / 语音度量

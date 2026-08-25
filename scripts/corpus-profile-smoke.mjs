@@ -36,7 +36,7 @@ async function main(){
     const dirty=await page.getByText("有未保存更改").isVisible().catch(()=>false);
     step("profile-dirty",{status:dirty?"pass":"warn",dirty});
     // memory CTA
-    const mem=page.getByRole("button",{name:"去记忆治理"}).first();
+    const mem=page.getByRole("button",{name:"去记忆"}).first();
     const memVis=await mem.isVisible().catch(()=>false);
     if(memVis){ await mem.click(); await page.waitForTimeout(500); step("profile-memory-cta",{status:page.url().includes("view=memory")?"pass":"warn",url:page.url()}); }
     else step("profile-memory-cta",{status:"warn",reason:"no cta"});

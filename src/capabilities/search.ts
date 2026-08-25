@@ -106,7 +106,7 @@ function buildSearchInput(input: SearchProviderInput, needsReview: boolean): Sea
     facts: [
       `${topic} 已经从单点工具演示进入流程改造讨论，适合追问具体业务环节。`,
       `近 ${input.recencyDays} 天的材料需要和用户自己的原话交叉验证，不能直接当结论。`,
-      `来源上限为 ${input.maxSources} 个，系统会优先保留能带入专访的问题素材。`
+      `来源上限为 ${input.maxSources} 个，系统会优先保留能用这份简报开场的问题素材。`
     ],
     controversies: [
       "争议：AI 产品商业化到底先验证效率提升，还是先验证用户是否愿意改变工作流。",

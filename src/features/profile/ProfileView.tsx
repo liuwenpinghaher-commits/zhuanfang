@@ -19,7 +19,7 @@ interface ProfileViewProps {
   onPurge: () => Promise<ProductState>;
   onSetProductState: (state: ProductState) => void;
   onSaveProfile: (state: ProductState) => Promise<ProductState>;
-  /** 跳转记忆治理（审批候选 / 编辑长期记忆）。 */
+  /** 跳转记忆（审批候选 / 编辑长期记忆）。 */
   onOpenMemory?: () => void;
 }
 
@@ -439,7 +439,7 @@ export function ProfileView({
           </div>
           {onOpenMemory && (
             <button className="secondary-action compact-action" type="button" onClick={onOpenMemory}>
-              去记忆治理
+              去记忆
             </button>
           )}
         </div>

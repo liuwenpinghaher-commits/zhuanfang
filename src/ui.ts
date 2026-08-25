@@ -104,15 +104,15 @@ export function isSessionRecordView(view: View): boolean {
   return view === "notes" || view === "my-assets";
 }
 
-/** 侧栏「资料」同时覆盖资产对话与素材库。 */
+/** 侧栏「资料」同时覆盖资产对话与导入索引。 */
 export function isLibraryView(view: View): boolean {
   return view === "asset-chat" || view === "material";
 }
 
 export function navItemIsActive(itemId: View, view: View): boolean {
   if (itemId === view) return true;
-  if (itemId === "notes" && view === "my-assets") return true;
-  if (itemId === "asset-chat" && view === "material") return true;
+  if (itemId === "notes" && isSessionRecordView(view) && view !== "notes") return true;
+  if (itemId === "asset-chat" && isLibraryView(view) && view !== "asset-chat") return true;
   return false;
 }
 

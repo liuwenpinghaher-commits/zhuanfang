@@ -19,7 +19,7 @@ interface AssetChatViewProps {
   onPrefillConsumed?: () => void;
   /** 就当前问题 / 回答开一场专访。 */
   onStartInterview?: (topicHint: string) => void;
-  /** 索引空时引导去素材库。 */
+  /** 索引空时引导去资料导入。 */
   onOpenMaterial?: () => void;
   /** 嵌在「资料」容器里时隐藏页头。 */
   embedded?: boolean;

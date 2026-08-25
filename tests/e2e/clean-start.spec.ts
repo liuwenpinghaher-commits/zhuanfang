@@ -70,4 +70,8 @@ test("清空示例 clears demo data and leaves app usable", async ({ page }) => 
   // 侧栏也有「实时专访」，必须限定主区，否则 strict mode 会命中导航按钮。
   await expect(page.locator("#main-content").getByText("实时专访", { exact: true })).toBeVisible();
   await expect(page.getByLabel("你的回答")).toBeVisible();
+  const opening = page.getByTestId("opening-hero");
+  await expect(opening).toBeVisible();
+  await expect(opening).not.toContainText("从你选中的资产继续");
+  await expect(opening).not.toContainText("把语音专访式日记从 demo 梳理成真正能长期使用的认知产品");
 });

@@ -121,6 +121,8 @@ import { buildTrackWorkspace } from "./domain/timeline";
 import {
   buildNotice,
   groupedNavigation,
+  isLibraryView,
+  isSessionRecordView,
   navItemIsActive,
   type AssetFilter,
   type ConfigSection,
@@ -238,11 +240,11 @@ export default function App() {
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   /** 从双轨笔记「打开专访档案」跳入我的资产时高亮对应场次。 */
   const [archiveFocusSessionId, setArchiveFocusSessionId] = useState<string | null>(null);
-  /** 从素材库「去审核」跳入记忆时，优先展示该 import source 的候选。 */
+  /** 从资料「去审核」跳入记忆时，优先展示该 import source 的候选。 */
   const [memoryFocusSourceId, setMemoryFocusSourceId] = useState<string | null>(null);
   /** 从资产对话 citation 跳入记忆时高亮已确认记忆。 */
   const [memoryFocusRecordId, setMemoryFocusRecordId] = useState<string | null>(null);
-  /** 从资产对话 citation 跳入素材库时展开对应素材。 */
+  /** 从资产对话 citation 跳入资料导入页时展开对应素材。 */
   const [materialFocusSourceId, setMaterialFocusSourceId] = useState<string | null>(null);
   /** 跨模块带入资产对话的预填问句。 */
   const [assetChatPrefill, setAssetChatPrefill] = useState<string | null>(null);
@@ -430,7 +432,7 @@ export default function App() {
         params.delete("chat");
       }
     } else {
-      // Prevent sticky my-assets query from hijacking refresh while on 素材库 etc.
+      // Prevent sticky my-assets query from hijacking refresh while on 资料 etc.
       params.set("view", view);
       params.delete("filter");
       params.delete("important");
@@ -975,7 +977,7 @@ export default function App() {
             "导入完成",
             `抽取了 ${result.candidateCount} 条候选记忆${
               typeof result.embeddedChunkCount === "number" ? `，向量 ${result.embeddedChunkCount} 段` : ""
-            }。可在素材库点「去审核」，或前往「记忆」。`
+            }。可在资料点「去审核」，或前往「记忆」。`
           )
         );
       }
@@ -1093,7 +1095,7 @@ export default function App() {
             ? serverError || "候选与用户修正冲突，未写入长期记忆。请拒绝或改写后再确认。"
             : conflict
               ? serverError || "该记忆的状态已变化(可能已被处理或清理),请刷新后重试。"
-              : "记忆治理需要后端在线。"
+              : "记忆需要后端在线。"
         ));
         throw err;
       });
@@ -2130,7 +2132,7 @@ export default function App() {
             <strong>{pendingMemoryCount} 条记忆待确认</strong>
             <span>未确认不会进入跨会话召回。关闭上场摘要后此条仍保留，直到全部审核完毕。</span>
             <button type="button" className="primary-action" onClick={() => setView("memory")}>
-              去记忆治理
+              去记忆
             </button>
           </section>
         )}
@@ -2362,7 +2364,7 @@ export default function App() {
             onSaveDefaultVoice={saveDefaultPodcastVoice}
           />
         )}
-        {(view === "notes" || view === "my-assets") && (
+        {isSessionRecordView(view) && (
           <SessionRecordView
             pane={
               view === "notes"
@@ -2469,7 +2471,7 @@ export default function App() {
             )}
           </SessionRecordView>
         )}
-        {(view === "material" || view === "asset-chat") && (
+        {isLibraryView(view) && (
           <LibraryView
             pane={view === "material" ? "import" : "chat"}
             onPane={(pane) => setView(pane === "import" ? "material" : "asset-chat")}

@@ -481,7 +481,7 @@ export function SearchIntelligenceView({
                       <button
                         className="secondary-action"
                         type="button"
-                        title="把这份调研转成一条专访问题，可带入下一次专访"
+                        title="把这份调研转成一条专访问题，可用这句当题开场"
                         onClick={() => onConvertToQuestion(brief.id)}
                       >
                         <HelpCircle size={16} />

@@ -52,7 +52,7 @@ export function buildInterviewEndPresentation(input: {
       noticeTitle: "专访档案已生成",
       noticeBody:
         pending > 0
-          ? `双轨笔记已更新。另有 ${pending} 条记忆待确认后才会进入跨会话召回——请在「记忆治理」审核。`
+          ? `双轨笔记已更新。另有 ${pending} 条记忆待确认后才会进入跨会话召回——请在「记忆」审核。`
           : "双轨笔记已更新。长期记忆需你确认后才会进入跨会话召回。",
       claimsArchiveGenerated: true,
       destination: "home",

@@ -12,7 +12,7 @@ import { resetServerState } from "./helpers";
  *   旧版用 UI 点「生成简报」来制造被测简报。但创建简报后端会走 enrichBriefInput（LLM 联网合成 insights，
  *   实测单条 ~16s）+ 联网搜索，本质慢；E2E 频繁跑会撑爆 timeout，且 in-flight 堆积拖垮共享后端
  *   （reset/turn 卡满 30s，整套 6–8 分钟）。改为 PUT /api/state 注入 searchBriefs 种子（确定性、秒级），
- *   只测**不联网的确定性业务流**（持续追踪开关 / 带入专访绑定）。创建简报的联网路径单列一个 test.skip
+ *   只测**不联网的确定性业务流**（持续追踪开关 / 用这份简报开场绑定）。创建简报的联网路径单列一个 test.skip
  *   说明本质慢，作为 provider+LLM 集成测试手动验证，不进常规套件。
  *
  * 种子为何是「真后端状态」而非 mock：
@@ -219,14 +219,14 @@ test.describe("真实业务·外部调研/搜索（UI→真后端 3210，无 moc
   });
 
   // ----------------------------------------------------------------
-  // 用例 3：带入专访 —— 注入一条 brief → UI「带入专访」
+  // 用例 3：用这份简报开场 —— 注入一条 brief → UI「用这份简报开场」
   //         → 断言后端某 session.card.searchBriefId 绑定该 brief（创建 session，不联网搜索）。
   //
   // 链路：onUseBrief → startFromBrief → launchInterview("learning", briefId)
   //   → POST /api/interview-sessions { searchBriefId } → createSessionDraft 把 searchBriefId 写进
   //     session.card.searchBriefId（interview-sessions.ts:130）→ replaceState 落库。整段无联网搜索。
   // ----------------------------------------------------------------
-  test("带入专访：UI 带入 → 后端 session.card.searchBriefId 绑定该简报（不联网）", async ({ page }) => {
+  test("用这份简报开场：UI 开场 → 后端 session.card.searchBriefId 绑定该简报（不联网）", async ({ page }) => {
     test.setTimeout(60_000);
     const briefId = `brief-use-${Date.now()}`;
     const topic = `AI Agent 落地案例-${Date.now()}`;
@@ -239,11 +239,11 @@ test.describe("真实业务·外部调研/搜索（UI→真后端 3210，无 moc
     // 起点：尚无 session 绑定该 brief。
     expect(
       (await sessions(page)).some((s) => s.card?.searchBriefId === briefId),
-      "带入前不应存在绑定该 brief 的 session"
+      "开场前不应存在绑定该 brief 的 session"
     ).toBe(false);
 
-    // 「带入专访」入口可见 → 点击（触发 launchInterview("learning", briefId)）。
-    const useBtn = card.getByRole("button", { name: "带入专访" });
+    // 「用这份简报开场」入口可见 → 点击（触发 launchInterview("learning", briefId)）。
+    const useBtn = card.getByRole("button", { name: "用这份简报开场" });
     await expect(useBtn).toBeVisible();
     await useBtn.click();
 

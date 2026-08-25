@@ -235,7 +235,7 @@ export function HomeView({
                   onDismissLastSummary?.();
                 }}
               >
-                {lastInterviewSummary.destination === "memory" ? "去记忆治理" : "查看本场笔记"}
+                {lastInterviewSummary.destination === "memory" ? "去记忆" : "查看本场笔记"}
               </button>
             )}
             <button
@@ -295,7 +295,7 @@ export function HomeView({
                       onClick={() => onNavigate?.("memory")}
                     >
                       <Brain size={16} />
-                      去记忆治理
+                      去记忆
                     </button>
                   ) : item.canLaunchInterview ? (
                     <button

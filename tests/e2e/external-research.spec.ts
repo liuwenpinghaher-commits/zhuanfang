@@ -3,11 +3,11 @@ import { expectNoHorizontalOverflow, openView, resetDemoState } from "./helpers"
 
 // ============================================================
 // 外部调研旅程 (R3)
-// 覆盖：创建简报 → 持续追踪开关 → 重新调研刷新 → 带入专访入口可见
+// 覆盖：创建简报 → 持续追踪开关 → 重新调研刷新 → 用这份简报开场入口可见
 // 全部走真实 Product API（local-demo fallback），不 mock 网络。
 // ============================================================
 
-test("外部调研：创建简报 → 标记持续追踪 → 重新调研 → 带入专访入口可见", async ({ page }) => {
+test("外部调研：创建简报 → 标记持续追踪 → 重新调研 → 用这份简报开场入口可见", async ({ page }) => {
   // AnySearch real API can take ~20s per call; this test makes 2 calls (create + refresh)
   test.setTimeout(120000);
   await resetDemoState(page);
@@ -31,7 +31,7 @@ test("外部调研：创建简报 → 标记持续追踪 → 重新调研 → �
   // 简报有 topic（输入的主题）
   await expect(briefArticle.getByRole("heading")).toBeVisible();
 
-  // 带入专访按钮可见
+  // 用这份简报开场按钮可见
   await expect(briefArticle.getByRole("button", { name: "用这份简报开场" })).toBeVisible();
   await expectNoHorizontalOverflow(page);
 
@@ -58,7 +58,7 @@ test("外部调研：创建简报 → 标记持续追踪 → 重新调研 → �
   // 简报卡片仍然存在（刷新后没有被删掉）
   await expect(briefArticle).toBeVisible();
 
-  // 带入专访入口仍然可见
+  // 用这份简报开场入口仍然可见
   await expect(briefArticle.getByRole("button", { name: "用这份简报开场" })).toBeVisible();
 
   // 追踪状态在刷新后应被保留（持续追踪中）
@@ -100,7 +100,7 @@ test("外部调研：持续追踪开关可反复切换", async ({ page }) => {
   await expectNoHorizontalOverflow(page);
 });
 
-test("外部调研：带入专访后可在实时专访中看到外部参照", async ({ page }) => {
+test("外部调研：用这份简报开场后可在实时专访中看到外部参照", async ({ page }) => {
   // AnySearch real API can take ~20s per call
   test.setTimeout(90000);
   await resetDemoState(page);
@@ -120,7 +120,7 @@ test("外部调研：带入专访后可在实时专访中看到外部参照", as
   const briefArticle = page.locator("article.record-row").first();
   await expect(briefArticle).toBeVisible({ timeout: 8000 });
 
-  // 带入专访 — 触发 launchInterview，页面切换到 interview 视图
+  // 用这份简报开场 — 触发 launchInterview，页面切换到 interview 视图
   await briefArticle.getByRole("button", { name: "用这份简报开场" }).click();
 
   await expect(

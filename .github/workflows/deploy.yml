@@ -24,37 +24,8 @@ jobs:
       - name: Pack deploy tree
         run: |
           set -euo pipefail
-          mkdir -p .deploy-artifact
-          rsync -a \
-            --exclude '.git' \
-            --exclude 'node_modules' \
-            --exclude 'dist' \
-            --exclude '**/.venv' \
-            --exclude '**/__pycache__' \
-            --exclude '.data' \
-            --exclude 'playwright-report' \
-            --exclude 'test-results' \
-            --exclude 'tests' \
-            --exclude '**/*.test.ts' \
-            --exclude '**/*.test.tsx' \
-            --exclude '.codegraph' \
-            --exclude '*.zip' \
-            --exclude '.env' \
-            --exclude '.env.local' \
-            --exclude '.env.production.local' \
-            --exclude '/memory' \
-            --exclude '.superpowers' \
-            --exclude 'agent' \
-            --exclude '._*' \
-            --exclude '.DS_Store' \
-            ./ .deploy-artifact/app/
-          # 双保险：绝不把密钥打进包
-          rm -f .deploy-artifact/app/.env \
-                .deploy-artifact/app/.env.local \
-                .deploy-artifact/app/.env.production.local
-          tar -C .deploy-artifact -czf zhuanfang-deploy.tgz app
-          sha256sum zhuanfang-deploy.tgz | tee zhuanfang-deploy.tgz.sha256
-          ls -lh zhuanfang-deploy.tgz
+          chmod +x scripts/pack_lighthouse.sh
+          bash scripts/pack_lighthouse.sh .
 
       - name: Configure SSH
         env:

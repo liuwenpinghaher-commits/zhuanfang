@@ -8,6 +8,6 @@
 | `useSearchBriefActions` | 搜索简报转换/删除/默认供应商 |
 | `useCorpusPlaybookActions` | 语料音频选择、insight 删除、playbook apply/revert |
 | `useInterviewSessionActions` | 开始/继续/结束/提交回合/控制/丢弃空场 |
-| `useRealtimeVoiceControls` | 关闭会话、打断、开关实时录音（cascade/livekit/omni） |
-| `useInterviewSessionShell` | 会话壳 state + 防重入 guards（可选接入） |
-| `useRealtimeVoiceSession` | 语音 transport state 早期骨架（App 现用 Controls） |
+| `useRealtimeVoiceControls` | 关闭会话、打断、开关实时录音（cascade/livekit/omni；live 路径） |
+| `useInterviewSessionShell` | 会话壳 state + 防重入 guards（未接入 App） |
+| `useRealtimeVoiceSession` | 语音 transport 早期骨架（未接入 App；现用 Controls） |

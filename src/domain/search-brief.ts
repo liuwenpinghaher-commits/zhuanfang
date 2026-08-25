@@ -67,7 +67,7 @@ export function buildProactiveSearchAgenda(state: ProductState): SearchAgendaIte
       id: `search-agenda-debt-${slugifyAgendaQuery(debt.concept)}`,
       query: `${debt.concept} 的最新讨论`,
       source: "知识债",
-      reason: "把未完成概念转成可带入专访的问题素材。",
+      reason: "把未完成概念转成可用这份简报开场的问题素材。",
       intent: "knowledge-refresh",
       seedAssetIds: [debt.id]
     });

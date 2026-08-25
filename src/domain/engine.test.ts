@@ -362,11 +362,15 @@ describe("interview business engine", () => {
 describe("createEmptyProductState", () => {
   it("clears all assets but keeps systemConfig + profile config", () => {
     const empty = createEmptyProductState();
+    const demo = createInitialProductState();
     for (const k of ["notes", "points", "questions", "decisions", "debts", "themes", "sessions", "memoryRecords", "memoryCandidates", "searchBriefs"] as const) {
       expect(empty[k]).toEqual([]);
     }
     expect(empty.systemConfig.models.interviewModel).toBe("qwen3.7-plus"); // config survives
     expect(empty.revision).toBe(0);
-    expect(JSON.stringify(empty)).not.toMatch(/救火|授权|控制感/); // no demo contamination
+    expect(empty.profile.currentFocus).toBe("");
+    expect(empty.profile.longTermGoal).toBe("");
+    expect(empty.profile.currentFocus).not.toBe(demo.profile.currentFocus);
+    expect(JSON.stringify(empty)).not.toMatch(/救火|授权|控制感|语音专访式日记/); // no demo contamination
   });
 });

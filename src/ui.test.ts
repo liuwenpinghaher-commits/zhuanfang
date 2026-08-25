@@ -27,16 +27,18 @@ describe("ui helpers", () => {
       ["profile", "个人档案"]
     ]);
     expect(navItemIsActive("notes", "my-assets")).toBe(true);
+    expect(navItemIsActive("notes", "notes")).toBe(true);
     expect(navItemIsActive("asset-chat", "material")).toBe(true);
+    expect(navItemIsActive("asset-chat", "asset-chat")).toBe(true);
     expect(navItemIsActive("notes", "search")).toBe(false);
   });
 
   it("builds notices with stable aria-live friendly content", () => {
-    const notice = buildNotice("success", "搜索简报已生成", "已自动选中新素材，可带入专访。");
+    const notice = buildNotice("success", "搜索简报已生成", "已自动选中新素材，可用这份简报开场。");
 
     expect(notice.kind).toBe("success");
     expect(notice.message).toBe("搜索简报已生成");
-    expect(notice.detail).toContain("专访");
+    expect(notice.detail).toContain("简报开场");
     expect(notice.id).toMatch(/^notice-/);
   });
 

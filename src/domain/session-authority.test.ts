@@ -61,6 +61,8 @@ describe("session honesty — doNotSave end presentation", () => {
     });
     expect(p.claimsArchiveGenerated).toBe(true);
     expect(p.noticeTitle).toMatch(/档案已生成/);
+    expect(p.noticeBody).toContain("记忆");
+    expect(p.noticeBody).not.toContain("记忆治理");
     expect(p.lastSummary.destination).toBe("memory");
     expect(p.lastSummary.pendingMemory).toBe(2);
   });

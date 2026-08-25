@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildInterviewCard, buildInterviewContextPack, buildInterviewGuide, buildInterviewResumeCards, buildOpinionEvolution, buildPointContradictions, buildSemanticRagContext, createSessionDraft, scoreMemoryForRetrieval } from "./context-pack";
-import { createInitialProductState } from "./engine";
+import { createEmptyProductState, createInitialProductState } from "./engine";
 import type { MemoryCorrection, MemoryRecord, PointAsset, RagChunk, ImportSource, SearchBrief } from "./types";
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -246,6 +246,17 @@ describe("context-pack (de-hardcoded)", () => {
     expect(card.suggestedOpening.length).toBeGreaterThan(0);
     expect(card.potentialTension.length).toBeGreaterThan(0);
     expect(`${card.title}${card.whyNow}${card.potentialTension}`).not.toMatch(/救火|授权/);
+  });
+
+  it("empty product state opening does not claim a selected asset or seed focus", () => {
+    const state = createEmptyProductState();
+    const card = buildInterviewCard(state);
+    const session = createSessionDraft(state, "daily");
+    const opening = `${card.title} ${card.whyNow} ${card.suggestedOpening} ${session.card.suggestedOpening} ${session.guide.suggestedOpening}`;
+    expect(opening).not.toContain("从你选中的资产继续");
+    expect(opening).not.toContain("资产库中选中");
+    expect(opening).not.toContain("把语音专访式日记从 demo 梳理成真正能长期使用的认知产品");
+    expect(session.guide.topicHint).not.toBe("把语音专访式日记从 demo 梳理成真正能长期使用的认知产品");
   });
 
   it("blindspot candidates never leak the 救火/授权 demo persona", () => {

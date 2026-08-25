@@ -424,7 +424,7 @@ function buildWorkflowRunDetails(
       return {
         outputSummary:
           `ImportIngestion 已同步：${importSource.title}，${metadata.chunkCount} 个 RAG 分块` +
-          (importSource.searchBriefId ? `，资料包 ${importSource.searchBriefId} 可带入专访` : "") + "。",
+          (importSource.searchBriefId ? `，资料包 ${importSource.searchBriefId} 可用这份简报开场` : "") + "。",
         metadata,
       };
     }
@@ -521,10 +521,11 @@ export function createInitialProductState(): ProductState {
 }
 
 /**
- * A clean-start state: same systemConfig + profile identity scaffolding as the demo,
- * but with every user-generated asset array empty and the demo-derived profile
- * memories cleared. Used by reset ("清空示例，开始我的真实记录"). Demo remains the
- * default first-run state; this is the explicit opt-out of the showcase data.
+ * A clean-start state: same systemConfig + identity scaffolding as the demo,
+ * but with every user-generated asset array empty and demo focus/goal cleared.
+ * Used by reset ("清空全部数据，从头开始"). Demo remains the default first-run
+ * state; this is the explicit opt-out of the showcase data. Name/role stay as the
+ * demo card; currentFocus/longTermGoal must not leak into the first opening.
  */
 export function createEmptyProductState(): ProductState {
   const base = createInitialProductState();
@@ -535,7 +536,11 @@ export function createEmptyProductState(): ProductState {
     searchBriefs: [], podcastEpisodes: [], corpusImports: [], corpusInsights: [], playbookPatches: [],
     importSources: [], ragChunks: [],
     configVersions: [], auditEvents: [], aiRunEvents: [], workflowRuns: [], operationalChecks: [],
-    profile: { ...base.profile },
+    profile: {
+      ...base.profile,
+      currentFocus: "",
+      longTermGoal: ""
+    },
     profileSuggestions: [],
     interviewAnnotations: [],
     chatSessions: [],

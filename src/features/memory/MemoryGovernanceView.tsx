@@ -20,7 +20,7 @@ import type { SessionAudioMeta } from "../../api/productApi";
 interface MemoryGovernanceViewProps {
   state: ProductState;
   importing: boolean;
-  /** 从素材库跳入时，优先展示该 import source 的待审候选。 */
+  /** 从资料导入页跳入时，优先展示该 import source 的待审候选。 */
   focusSourceId?: string | null;
   /** 从资产对话 citation 跳入时高亮已确认记忆。 */
   focusRecordId?: string | null;
@@ -306,7 +306,7 @@ export function MemoryGovernanceView({
   return (
     <section className="view-stack memory-view">
       <HeaderBlock
-        eyebrow="记忆治理"
+        eyebrow="记忆"
         title="点头之后，下场才认"
         subtitle={
           focusFilterActive

@@ -221,7 +221,7 @@ export function MaterialLibraryView({
     <section className="view-stack">
       {!embedded && (
       <HeaderBlock
-        eyebrow="认知资产 · 素材库"
+        eyebrow="资料 · 导入与索引"
         title="导入资料与知识索引"
         subtitle="原料车间：导入文本 → 切块索引 → 只问这份资料 → 抽取待审记忆。审核在「记忆」，全书问答走资料·问全书。"
         action={

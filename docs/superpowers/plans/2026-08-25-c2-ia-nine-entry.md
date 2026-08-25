@@ -24,10 +24,10 @@
 
 **Files:** Modify `src/ui.ts` `src/ui.test.ts`
 
-- [ ] 先改 `ui.test.ts` 期望为 9 项：home/interview/themes + notes/memory/asset-chat/search + config/profile
-- [ ] 跑测确认失败
-- [ ] `groupedNavigation` 改标签：notes=本场记录，asset-chat=资料；去掉 material/my-assets/podcast/corpus
-- [ ] 测绿
+- [x] 先改 `ui.test.ts` 期望为 9 项：home/interview/themes + notes/memory/asset-chat/search + config/profile
+- [x] 跑测确认失败
+- [x] `groupedNavigation` 改标签：notes=本场记录，asset-chat=资料；去掉 material/my-assets/podcast/corpus
+- [x] 测绿
 
 ---
 
@@ -35,7 +35,7 @@
 
 **Files:** Create `src/features/session-record/SessionRecordView.tsx` + test
 
-页内三段：笔记 | 档案 | 资产。eyebrow 保留「双轨笔记」。空态写「这里就是以前的双轨笔记」。
+- [x] 页内三段：笔记 | 档案 | 资产。eyebrow 保留「双轨笔记」。空态写「这里就是以前的双轨笔记」。
 
 ---
 
@@ -43,7 +43,7 @@
 
 **Files:** Create `src/features/library/LibraryView.tsx` + test
 
-页内两段：问全书 | 导入与索引。
+- [x] 页内两段：问全书 | 导入与索引。
 
 ---
 
@@ -51,12 +51,12 @@
 
 **Files:** Modify `src/App.tsx` 及相关 View
 
-- notes/my-assets → SessionRecordView；asset-chat/material → LibraryView
-- 侧栏高亮：my-assets 点亮本场记录；material 点亮资料
-- 实时专访空态改为回今日台，不再第二开场台
-- 记忆去掉导入表，改链到资料
-- 配置加「引擎调校」进 corpus
-- 带入专访 → 就这条开场 / 用这份简报开场；就这个开专访 → 用这句当题开场
+- [x] notes/my-assets → SessionRecordView；asset-chat/material → LibraryView
+- [x] 侧栏高亮：my-assets 点亮本场记录；material 点亮资料
+- [x] 实时专访空态改为回今日台，不再第二开场台
+- [x] 记忆去掉导入表，改链到资料
+- [x] 配置加「引擎调校」进 corpus
+- [x] 带入专访 → 就这条开场 / 用这份简报开场；就这个开专访 → 用这句当题开场
 
 ---
 
@@ -64,4 +64,4 @@
 
 **Files:** e2e navigation / my-assets / clean-start / corpus-podcast / external-research / interview-lifecycle / interview-api / visual-regression；相关单测
 
-`npm run typecheck`；相关 vitest；能跑则跑 navigation + my-assets e2e。
+- [x] `npm run typecheck`；相关 vitest；navigation / my-assets / clean-start / interview-lifecycle 已绿。

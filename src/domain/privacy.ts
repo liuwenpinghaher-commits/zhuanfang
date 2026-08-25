@@ -84,7 +84,7 @@ export function buildPrivacyReport(state: ProductState, generatedAt = new Date()
     },
     {
       id: "memory",
-      label: "长期记忆治理",
+      label: "长期记忆",
       count: state.memoryCorrections.length + state.memoryRecords.length + state.memoryCandidates.length,
       detail: "用户修正、候选记忆、确认记忆、敏感隔离和记忆主题归属。",
       exported: true,

@@ -15,7 +15,7 @@
 | S3-B1 记忆生命周期 | closed | echo-chamber；resolve-conflict supersede/demote；consolidate mode=queue；citation envelope |
 | S3-B2 语音质量 | closed | interrupt stash + voice-slo-smoke；mouth-to-ear 预算参考 |
 | S3-B3 Grounding | closed | chat groundingMode；prompt 引用门禁；runtime grounding 计数 |
-| S3-B4 壳切片 | closed | useInterviewSessionShell + useInterruptedUtteranceStash + useRealtimeVoiceSession + startRealtimeVoiceConnect |
+| S3-B4 壳切片 | closed | live 语音路径：`useRealtimeVoiceControls`（`startRealtimeVoiceConnect` 已删除，避免双实现） |
 | S3-B5 媒体运维 | closed | backup-export-smoke；本地 presign + 可选 S3 SigV4（`apps/api/src/s3-presign.ts`）；pVAD-lite 已接线 cascade |
 | S3-docs | closed | README Stage-3 + `.env.example` CORPUS_S3_* |
 
