@@ -11,3 +11,5 @@ coverage/
 !.env.production.example
 *.local
 tsconfig.tsbuildinfo
+._*
+.DS_Store

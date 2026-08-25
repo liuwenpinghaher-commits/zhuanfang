@@ -21,7 +21,9 @@ export async function applySchema(db: Surreal): Promise<string[]> {
   const [appliedRows] = await db.query<[MigrationRow[]]>("SELECT name FROM _migration;");
   const applied = new Set((appliedRows ?? []).map((r) => r.name));
 
-  const files = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".surql")).sort();
+  const files = readdirSync(MIGRATIONS_DIR)
+    .filter((f) => /^\d{3}_.+\.surql$/.test(f))
+    .sort();
   const newlyApplied: string[] = [];
   for (const file of files) {
     if (applied.has(file)) continue;

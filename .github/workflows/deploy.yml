@@ -42,9 +42,11 @@ jobs:
             --exclude '.env' \
             --exclude '.env.local' \
             --exclude '.env.production.local' \
-            --exclude 'memory' \
+            --exclude '/memory' \
             --exclude '.superpowers' \
             --exclude 'agent' \
+            --exclude '._*' \
+            --exclude '.DS_Store' \
             ./ .deploy-artifact/app/
           # 双保险：绝不把密钥打进包
           rm -f .deploy-artifact/app/.env \
