@@ -63,10 +63,16 @@ if find "$ARTIFACT_DIR/app" -name '._*' | grep -q .; then
 fi
 
 tar -C "$ARTIFACT_DIR" -czf "$TARBALL" app
-if command -v sha256sum >/dev/null 2>&1; then
-  sha256sum "$TARBALL" | tee "${TARBALL}.sha256"
-else
-  shasum -a 256 "$TARBALL" | tee "${TARBALL}.sha256"
-fi
+# Checksum file must use a basename so remote `sha256sum -c` works after scp.
+SUM_FILE="${TARBALL}.sha256"
+TARBALL_NAME="$(basename "$TARBALL")"
+(
+  cd "$(dirname "$TARBALL")"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$TARBALL_NAME"
+  else
+    shasum -a 256 "$TARBALL_NAME"
+  fi
+) | tee "$SUM_FILE"
 ls -lh "$TARBALL"
 echo "packed $TARBALL"
