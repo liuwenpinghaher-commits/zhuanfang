@@ -37,6 +37,9 @@ interface MyAssetsViewProps {
   onOpenNote?: (sessionId: string) => void;
   /** 外部跳入时高亮并滚到对应专访档案。 */
   focusSessionId?: string | null;
+  /** 嵌在「本场记录」里时隐藏页头与内层 tab。 */
+  embedded?: boolean;
+  forcedTab?: Tab;
 }
 
 export function MyAssetsView({
@@ -64,9 +67,11 @@ export function MyAssetsView({
   onAskAsset,
   onGeneratePodcast,
   onOpenNote,
-  focusSessionId = null
+  focusSessionId = null,
+  embedded = false,
+  forcedTab
 }: MyAssetsViewProps) {
-  const [activeTab, setActiveTab] = useState<Tab>(initialTab);
+  const [activeTab, setActiveTab] = useState<Tab>(forcedTab ?? initialTab);
   const [sessionScopeId, setSessionScopeId] = useState<string | null>(null);
   const [highlightSessionId, setHighlightSessionId] = useState<string | null>(null);
   const entries = buildSessionArchive(state);
@@ -79,14 +84,20 @@ export function MyAssetsView({
     return () => window.clearTimeout(t);
   }, [highlightSessionId]);
 
+  useEffect(() => {
+    if (forcedTab) setActiveTab(forcedTab);
+  }, [forcedTab]);
+
   // 从主题线 Track 钻取资产时自动切到资产库页签。
   useEffect(() => {
+    if (forcedTab) return;
     if (selectedAssetKey) setActiveTab("assets");
-  }, [selectedAssetKey]);
+  }, [selectedAssetKey, forcedTab]);
 
-  // 从双轨笔记打开专访档案：切到档案页并高亮场次。
+  // 从双轨笔记打开专访档案：切到档案页并高亮场次。外部强制资产页时不覆盖。
   useEffect(() => {
     if (!focusSessionId) return;
+    if (forcedTab === "assets") return;
     setActiveTab("archive");
     setSessionScopeId(null);
     setHighlightSessionId(focusSessionId);
@@ -94,7 +105,7 @@ export function MyAssetsView({
       const el = document.querySelector(`[data-archive-session="${focusSessionId}"]`);
       el?.scrollIntoView({ behavior: "smooth", block: "center" });
     });
-  }, [focusSessionId]);
+  }, [focusSessionId, forcedTab]);
 
   function openArchiveAssets(
     sessionId: string,
@@ -118,12 +129,15 @@ export function MyAssetsView({
 
   return (
     <section className="view-stack">
-      <HeaderBlock
-        eyebrow="我的资产"
-        title="专访档案与认知资产库"
-        subtitle="档案按场次归档每次专访的产出；点产出徽章可进入本场资产库审核观点、问题、决策和知识债。"
-      />
+      {!embedded && (
+        <HeaderBlock
+          eyebrow="我的资产"
+          title="专访档案与认知资产库"
+          subtitle="档案按场次归档每次专访的产出；点产出徽章可进入本场资产库审核观点、问题、决策和知识债。"
+        />
+      )}
 
+      {!embedded && (
       <nav className="seg-tabs" aria-label="视图切换">
         <button
           type="button"
@@ -146,6 +160,7 @@ export function MyAssetsView({
           <span className="seg-tab-count">{totalAssets}</span>
         </button>
       </nav>
+      )}
 
       {activeTab === "archive" && (
         <div className="record-list">

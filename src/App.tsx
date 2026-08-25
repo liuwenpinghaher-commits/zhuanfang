@@ -114,11 +114,14 @@ import { TrackWorkspaceView } from "./features/track/TrackWorkspaceView";
 import { MemoryGovernanceView } from "./features/memory/MemoryGovernanceView";
 import { MaterialLibraryView } from "./features/material/MaterialLibraryView";
 import { AssetChatView, ASSET_CHAT_DRAFT_ID } from "./features/chat/AssetChatView";
+import { LibraryView } from "./features/library/LibraryView";
+import { SessionRecordView } from "./features/session-record/SessionRecordView";
 import { deleteChatSession } from "./domain/knowledge";
 import { buildTrackWorkspace } from "./domain/timeline";
 import {
   buildNotice,
   groupedNavigation,
+  navItemIsActive,
   type AssetFilter,
   type ConfigSection,
   type UiNotice,
@@ -326,6 +329,7 @@ export default function App() {
   // 引用跳源:逐字稿引用点击后,要在双轨笔记里展开的会话 + 高亮的轮次。
   // nonce 每次点击自增,使 NotesView 的 effect 即便 sessionId/turnId 未变(连点同一引用)也重新触发滚动高亮。
   const [notesFocus, setNotesFocus] = useState<{ sessionId: string; turnId?: string; nonce: number } | null>(null);
+  const [sessionRecordTab, setSessionRecordTab] = useState<"archive" | "assets">("archive");
 
   function episodeGuestDraft(episode: PodcastEpisode): string {
     const stored = episode.guestVoice?.trim();
@@ -479,6 +483,30 @@ export default function App() {
       window.clearInterval(timer);
     };
   }, []);
+
+  useEffect(() => {
+    if (view !== "config") return;
+    let cancelled = false;
+    productApiClient
+      .getSystemCapabilities()
+      .then((capabilities) => {
+        if (!cancelled) setSystemCapabilities(capabilities);
+      })
+      .catch(() => {
+        if (!cancelled) setSystemCapabilities(null);
+      });
+    productApiClient
+      .getSystemConfig()
+      .then((config) => {
+        if (!cancelled) setRuntimeConfig(config);
+      })
+      .catch(() => {
+        if (!cancelled) setRuntimeConfig(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [view]);
 
   useEffect(() => {
     if (view !== "config") return;
@@ -885,20 +913,25 @@ export default function App() {
     } else if (citation.sourceType === "point") {
       setSelectedAssetKey(`points:${citation.sourceId}`);
       setAssetFilter("points");
+      setSessionRecordTab("assets");
       setView("my-assets");
     } else if (citation.sourceType === "question") {
       setSelectedAssetKey(`questions:${citation.sourceId}`);
       setAssetFilter("questions");
+      setSessionRecordTab("assets");
       setView("my-assets");
     } else if (citation.sourceType === "decision") {
       setSelectedAssetKey(`decisions:${citation.sourceId}`);
       setAssetFilter("decisions");
+      setSessionRecordTab("assets");
       setView("my-assets");
     } else if (citation.sourceType === "debt") {
       setSelectedAssetKey(`debts:${citation.sourceId}`);
       setAssetFilter("debts");
+      setSessionRecordTab("assets");
       setView("my-assets");
     } else {
+      setSessionRecordTab("assets");
       setView("my-assets");
     }
     setNotice(buildNotice("info", "已定位来源", `${citation.title}（${label}）`));
@@ -1982,7 +2015,7 @@ export default function App() {
               <div className="nav-group-items">
                 {group.items.map((item) => {
                   const Icon = navIconByView[item.id];
-                  const active = view === item.id;
+                  const active = navItemIsActive(item.id, view);
                   return (
                     <button
                       key={item.id}
@@ -2199,6 +2232,7 @@ export default function App() {
               }
             }}
             onStart={startInterview}
+            onGoHome={() => setView("home")}
             launchSearchBriefId={activeSearchBriefId}
             launchTopicHint={suggestedTopicHint}
             launchRelatedThemeIds={recommendedLaunch.relatedThemeIds}
@@ -2328,162 +2362,198 @@ export default function App() {
             onSaveDefaultVoice={saveDefaultPodcastVoice}
           />
         )}
-        {view === "notes" && (
-          <NotesView
-            state={productState}
-            onStart={(mode, topicHint, relatedThemeIds) =>
-              void launchInterview(mode, activeSearchBriefId, topicHint, relatedThemeIds)
+        {(view === "notes" || view === "my-assets") && (
+          <SessionRecordView
+            pane={
+              view === "notes"
+                ? "notes"
+                : selectedAssetKey || sessionRecordTab === "assets"
+                  ? "assets"
+                  : "archive"
             }
-            onSaveQuestion={saveNoteQuestion}
-            onAddAnnotation={addInterviewAnnotation}
-            onRemoveAnnotation={removeInterviewAnnotation}
-            getRawMaterial={(sessionId) => productApiClient.getRawMaterial(sessionId)}
-            getAudioMeta={(sessionId, role) => productApiClient.getSessionAudioMeta(sessionId, role)}
-            audioUrl={(sessionId) => productApiClient.sessionAudioUrl(sessionId)}
-            getAudioBlob={(sessionId, role) => productApiClient.fetchSessionAudioBlob(sessionId, role)}
-            focus={notesFocus}
-            onOpenTrack={openTrack}
-            onGeneratePodcast={(noteId) => {
-              setPodcastNoteId(noteId);
-              setPodcastSourceType("note");
-              setPodcastSourceId("");
-              setView("podcast");
-            }}
-            onOpenArchive={(sessionId) => {
-              setArchiveFocusSessionId(sessionId);
+            onPane={(pane) => {
+              if (pane === "notes") {
+                setView("notes");
+                return;
+              }
+              if (pane === "archive") {
+                setSelectedAssetKey(undefined);
+                setSessionRecordTab("archive");
+              } else {
+                // 清掉档案高亮，否则 MyAssetsView 的 focusSessionId effect 会把资产页打回档案。
+                setArchiveFocusSessionId(null);
+                setSessionRecordTab("assets");
+              }
               setView("my-assets");
             }}
-            onForgetNote={forgetSessionNote}
-          />
-        )}
-        {view === "material" && (
-          <MaterialLibraryView
-            state={productState}
-            onImport={importMemoryDocument}
-            onRebuildIndex={() => productApiClient.rebuildKnowledgeIndex()}
-            onAskMaterials={(question) => productApiClient.queryRag(question)}
-            onDeleteSource={(id) => {
-              // 素材删除会连带清其知识索引块(经包装的 PUT autosave 触发 reindex),不可撤销 → 二次确认。
-              if (typeof window !== "undefined" && !window.confirm("确定删除这份素材吗？它在知识库/资产对话中的索引也会一并移除，无法撤销。")) {
-                return;
-              }
-              setProductState(deleteImportSource(productState, id));
-              setNotice(buildNotice("info", "素材已删除", "列表已更新；知识索引将随同步重建。"));
-            }}
-            onReviewMemory={(sourceId) => {
-              setMemoryFocusSourceId(sourceId ?? null);
-              setView("memory");
-            }}
-            onStartInterview={(mode, topicHint, relatedThemeIds) =>
-              void launchInterview(mode, activeSearchBriefId, topicHint, relatedThemeIds)
-            }
-            focusSourceId={materialFocusSourceId}
-            onOpenAssetChat={(title) =>
-              openAssetChat({
-                prefill: title?.trim()
-                  ? `关于《${title.trim()}》这份素材，有哪些值得记住的判断或问题？`
-                  : undefined
-              })
-            }
-            onOpenTrack={openTrack}
-          />
-        )}
-        {view === "asset-chat" && (
-          <AssetChatView
-            state={productState}
-            selectedSessionId={chatSessionId}
-            onSelectChat={(id) => {
-              setChatSessionId(id);
-              setAssetChatFocus(null);
-            }}
-            onNewChat={() => {
-              setChatSessionId(ASSET_CHAT_DRAFT_ID);
-              setAssetChatFocus(null);
-            }}
-            prefill={assetChatPrefill}
-            onPrefillConsumed={() => setAssetChatPrefill(null)}
-            onOpenMaterial={() => setView("material")}
-            onStartInterview={(topicHint) => void launchInterview("decision", activeSearchBriefId, topicHint)}
-            onSend={async (sid, msg) => {
-              try {
-                const result = await productApiClient.sendChatMessage(
-                  sid,
-                  msg,
-                  assetChatFocus ?? undefined
-                );
-                adoptServerState(result.state);
-                setApiPersistenceEnabled(true);
-                setChatSessionId(result.sessionId);
-              } catch (err) {
-                // 让 AssetChatView 展示 formatChatSendError；网络错误时同步持久化标志。
-                if (isNetworkError(err)) {
-                  setApiPersistenceEnabled(false);
-                  scheduleReconnectProbe();
+          >
+            {view === "notes" ? (
+              <NotesView
+                embedded
+                state={productState}
+                onStart={(mode, topicHint, relatedThemeIds) =>
+                  void launchInterview(mode, activeSearchBriefId, topicHint, relatedThemeIds)
                 }
-                throw err;
-              }
-            }}
-            onDeleteChat={(id) => {
-              // 删除整条对话历史不可撤销 → 二次确认(与全站删除约定一致)。
-              if (typeof window !== "undefined" && !window.confirm("确定删除这条对话吗？整段对话历史将被移除，无法撤销。")) {
-                return;
-              }
-              setProductState(deleteChatSession(productState, id));
-              if (chatSessionId === id) {
-                const rest = productState.chatSessions.filter((s) => s.id !== id);
-                setChatSessionId(rest[0]?.id ?? ASSET_CHAT_DRAFT_ID);
-              }
-            }}
-            onCitationClick={handleCitationClick}
-          />
+                onSaveQuestion={saveNoteQuestion}
+                onAddAnnotation={addInterviewAnnotation}
+                onRemoveAnnotation={removeInterviewAnnotation}
+                getRawMaterial={(sessionId) => productApiClient.getRawMaterial(sessionId)}
+                getAudioMeta={(sessionId, role) => productApiClient.getSessionAudioMeta(sessionId, role)}
+                audioUrl={(sessionId) => productApiClient.sessionAudioUrl(sessionId)}
+                getAudioBlob={(sessionId, role) => productApiClient.fetchSessionAudioBlob(sessionId, role)}
+                focus={notesFocus}
+                onOpenTrack={openTrack}
+                onGeneratePodcast={(noteId) => {
+                  setPodcastNoteId(noteId);
+                  setPodcastSourceType("note");
+                  setPodcastSourceId("");
+                  setView("podcast");
+                }}
+                onOpenArchive={(sessionId) => {
+                  setArchiveFocusSessionId(sessionId);
+                  setSelectedAssetKey(undefined);
+                  setSessionRecordTab("archive");
+                  setView("my-assets");
+                }}
+                onForgetNote={forgetSessionNote}
+              />
+            ) : (
+              <MyAssetsView
+                embedded
+                forcedTab={selectedAssetKey ? "assets" : sessionRecordTab}
+                state={productState}
+                query={assetQuery}
+                results={assetResults}
+                filter={assetFilter}
+                selectedAssetKey={selectedAssetKey}
+                focusSessionId={archiveFocusSessionId}
+                importantOnly={assetImportantOnly}
+                sortMode={assetSortMode}
+                onQuery={setAssetQuery}
+                onFilter={setAssetFilter}
+                onImportantOnly={setAssetImportantOnly}
+                onSortMode={setAssetSortMode}
+                onSelectAsset={setSelectedAssetKey}
+                onToggleImportant={(assetId) => setProductState(toggleAssetImportance(productState, assetId))}
+                onPointStatus={(assetId, status) => setProductState(updatePointStatus(productState, assetId, status))}
+                onQuestionStatus={(assetId, status) => setProductState(updateQuestionStatus(productState, assetId, status))}
+                onDebtStatus={(assetId, status) => setProductState(updateKnowledgeDebtStatus(productState, assetId, status))}
+                onDecisionStatus={(assetId, status) => setProductState(updateDecisionStatus(productState, assetId, status))}
+                onDecisionConfirm={confirmDecision}
+                confirmingDecisionId={confirmingDecisionId}
+                onBringIntoInterview={(asset) => {
+                  const launch = interviewLaunchFromAsset(asset);
+                  setNotice(buildNotice("info", "已就这条开场", asset.summary.slice(0, 120)));
+                  void launchInterview(launch.mode, undefined, launch.topicHint, launch.relatedThemeIds, false);
+                }}
+                onAskAsset={(asset) =>
+                  openAssetChat({
+                    prefill: `关于我的${asset.kind === "points" ? "观点" : asset.kind === "questions" ? "问题" : asset.kind === "decisions" ? "决策" : "知识债"}「${asset.title}」：${asset.summary.slice(0, 120)}。请结合我的资料说明含义与未决问题。`,
+                    focusSource: knowledgeFocusFromAsset(asset.kind, asset.id)
+                  })
+                }
+                onGeneratePodcast={(noteId) => {
+                  setPodcastNoteId(noteId);
+                  setPodcastSourceType("note");
+                  setPodcastSourceId("");
+                  setView("podcast");
+                }}
+                onOpenNote={(sessionId) => {
+                  setNotesFocus((prev) => ({
+                    sessionId,
+                    nonce: (prev?.nonce ?? 0) + 1
+                  }));
+                  setView("notes");
+                }}
+              />
+            )}
+          </SessionRecordView>
         )}
-        {view === "my-assets" && (
-          <MyAssetsView
-            state={productState}
-            query={assetQuery}
-            results={assetResults}
-            filter={assetFilter}
-            selectedAssetKey={selectedAssetKey}
-            focusSessionId={archiveFocusSessionId}
-            importantOnly={assetImportantOnly}
-            sortMode={assetSortMode}
-            onQuery={setAssetQuery}
-            onFilter={setAssetFilter}
-            onImportantOnly={setAssetImportantOnly}
-            onSortMode={setAssetSortMode}
-            onSelectAsset={setSelectedAssetKey}
-            onToggleImportant={(assetId) => setProductState(toggleAssetImportance(productState, assetId))}
-            onPointStatus={(assetId, status) => setProductState(updatePointStatus(productState, assetId, status))}
-            onQuestionStatus={(assetId, status) => setProductState(updateQuestionStatus(productState, assetId, status))}
-            onDebtStatus={(assetId, status) => setProductState(updateKnowledgeDebtStatus(productState, assetId, status))}
-            onDecisionStatus={(assetId, status) => setProductState(updateDecisionStatus(productState, assetId, status))}
-            onDecisionConfirm={confirmDecision}
-            confirmingDecisionId={confirmingDecisionId}
-            onBringIntoInterview={(asset) => {
-              const launch = interviewLaunchFromAsset(asset);
-              setNotice(buildNotice("info", "已带入下一次专访", asset.summary.slice(0, 120)));
-              void launchInterview(launch.mode, undefined, launch.topicHint, launch.relatedThemeIds, false);
-            }}
-            onAskAsset={(asset) =>
-              openAssetChat({
-                prefill: `关于我的${asset.kind === "points" ? "观点" : asset.kind === "questions" ? "问题" : asset.kind === "decisions" ? "决策" : "知识债"}「${asset.title}」：${asset.summary.slice(0, 120)}。请结合我的资料说明含义与未决问题。`,
-                focusSource: knowledgeFocusFromAsset(asset.kind, asset.id)
-              })
-            }
-            onGeneratePodcast={(noteId) => {
-              setPodcastNoteId(noteId);
-              setPodcastSourceType("note");
-              setPodcastSourceId("");
-              setView("podcast");
-            }}
-            onOpenNote={(sessionId) => {
-              setNotesFocus((prev) => ({
-                sessionId,
-                nonce: (prev?.nonce ?? 0) + 1
-              }));
-              setView("notes");
-            }}
-          />
+        {(view === "material" || view === "asset-chat") && (
+          <LibraryView
+            pane={view === "material" ? "import" : "chat"}
+            onPane={(pane) => setView(pane === "import" ? "material" : "asset-chat")}
+          >
+            {view === "material" ? (
+              <MaterialLibraryView
+                embedded
+                state={productState}
+                onImport={importMemoryDocument}
+                onRebuildIndex={() => productApiClient.rebuildKnowledgeIndex()}
+                onAskMaterials={(question) => productApiClient.queryRag(question)}
+                onDeleteSource={(id) => {
+                  if (typeof window !== "undefined" && !window.confirm("确定删除这份素材吗？它在知识库/资产对话中的索引也会一并移除，无法撤销。")) {
+                    return;
+                  }
+                  setProductState(deleteImportSource(productState, id));
+                  setNotice(buildNotice("info", "素材已删除", "列表已更新；知识索引将随同步重建。"));
+                }}
+                onReviewMemory={(sourceId) => {
+                  setMemoryFocusSourceId(sourceId ?? null);
+                  setView("memory");
+                }}
+                onStartInterview={(mode, topicHint, relatedThemeIds) =>
+                  void launchInterview(mode, activeSearchBriefId, topicHint, relatedThemeIds)
+                }
+                focusSourceId={materialFocusSourceId}
+                onOpenAssetChat={(title) =>
+                  openAssetChat({
+                    prefill: title?.trim()
+                      ? `关于《${title.trim()}》这份素材，有哪些值得记住的判断或问题？`
+                      : undefined
+                  })
+                }
+                onOpenTrack={openTrack}
+              />
+            ) : (
+              <AssetChatView
+                embedded
+                state={productState}
+                selectedSessionId={chatSessionId}
+                onSelectChat={(id) => {
+                  setChatSessionId(id);
+                  setAssetChatFocus(null);
+                }}
+                onNewChat={() => {
+                  setChatSessionId(ASSET_CHAT_DRAFT_ID);
+                  setAssetChatFocus(null);
+                }}
+                prefill={assetChatPrefill}
+                onPrefillConsumed={() => setAssetChatPrefill(null)}
+                onOpenMaterial={() => setView("material")}
+                onStartInterview={(topicHint) => void launchInterview("daily", activeSearchBriefId, topicHint)}
+                onSend={async (sid, msg) => {
+                  try {
+                    const result = await productApiClient.sendChatMessage(
+                      sid,
+                      msg,
+                      assetChatFocus ?? undefined
+                    );
+                    adoptServerState(result.state);
+                    setApiPersistenceEnabled(true);
+                    setChatSessionId(result.sessionId);
+                  } catch (err) {
+                    if (isNetworkError(err)) {
+                      setApiPersistenceEnabled(false);
+                      scheduleReconnectProbe();
+                    }
+                    throw err;
+                  }
+                }}
+                onDeleteChat={(id) => {
+                  if (typeof window !== "undefined" && !window.confirm("确定删除这条对话吗？整段对话历史将被移除，无法撤销。")) {
+                    return;
+                  }
+                  setProductState(deleteChatSession(productState, id));
+                  if (chatSessionId === id) {
+                    const rest = productState.chatSessions.filter((s) => s.id !== id);
+                    setChatSessionId(rest[0]?.id ?? ASSET_CHAT_DRAFT_ID);
+                  }
+                }}
+                onCitationClick={handleCitationClick}
+              />
+            )}
+          </LibraryView>
         )}
         {view === "themes" && (
           <ThemesView
@@ -2518,6 +2588,7 @@ export default function App() {
               setView("notes");
             }}
             onOpenAsset={(key) => {
+              setSessionRecordTab("assets");
               setSelectedAssetKey(key);
               setAssetFilter(
                 key.startsWith("points:")
@@ -2548,11 +2619,7 @@ export default function App() {
             importing={importing}
             focusSourceId={memoryFocusSourceId}
             focusRecordId={memoryFocusRecordId}
-            onImport={(title, content) => {
-              void importMemoryDocument(title, content).catch(() => {
-                /* notice already set */
-              });
-            }}
+            onOpenLibrary={() => setView("material")}
             onApprove={approveCandidate}
             onResolveConflict={resolveConflictCandidate}
             onReject={rejectCandidate}
@@ -2586,6 +2653,7 @@ export default function App() {
             voicesLoading={voicesLoading}
             onUploadVoice={uploadVoice}
             onDeleteVoice={deleteVoice}
+            onOpenCorpus={() => setView("corpus")}
           />
         )}
         {view === "profile" && (

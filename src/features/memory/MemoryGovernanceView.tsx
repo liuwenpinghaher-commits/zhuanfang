@@ -24,7 +24,9 @@ interface MemoryGovernanceViewProps {
   focusSourceId?: string | null;
   /** 从资产对话 citation 跳入时高亮已确认记忆。 */
   focusRecordId?: string | null;
-  onImport: (title: string, content: string) => void;
+  onImport?: (title: string, content: string) => void;
+  /** 进口只留资料库；有此回调时不再渲染第二套导入表。 */
+  onOpenLibrary?: () => void;
   onApprove: (candidateId: string, mode?: "merge" | "add") => void;
   onResolveConflict?: (candidateId: string, keepSide: "a" | "b") => void | Promise<unknown>;
   onReject: (candidateId: string) => void;
@@ -68,6 +70,7 @@ export function MemoryGovernanceView({
   focusSourceId = null,
   focusRecordId = null,
   onImport,
+  onOpenLibrary,
   onApprove,
   onResolveConflict,
   onReject,
@@ -181,7 +184,7 @@ export function MemoryGovernanceView({
       return;
     }
     setContentError("");
-    onImport(title.trim() || "未命名导入资料", content.trim());
+    onImport?.(title.trim() || "未命名导入资料", content.trim());
     setTitle("");
     setContent("");
   }
@@ -304,11 +307,11 @@ export function MemoryGovernanceView({
     <section className="view-stack memory-view">
       <HeaderBlock
         eyebrow="记忆治理"
-        title="导入资料，审核长期记忆"
+        title="点头之后，下场才认"
         subtitle={
           focusFilterActive
             ? `正在查看素材导入的 ${pending.length} 条待审候选；确认后才进入长期记忆。`
-            : "导入或专访后产生候选；你确认后才进入长期记忆。敏感内容默认不写入上下文。"
+            : "专访或资料库导入后产生候选；你确认后才进入长期记忆。敏感内容默认不写入上下文。"
         }
       />
 
@@ -318,6 +321,21 @@ export function MemoryGovernanceView({
         {sensitiveCount > 0 && <span className="is-warning">敏感 {sensitiveCount}</span>}
       </div>
 
+      {onOpenLibrary ? (
+        <section className="panel memory-import">
+          <div className="panel-title row-between">
+            <div className="row">
+              <FileUp size={18} aria-hidden="true" />
+              <h2>进口在资料库</h2>
+            </div>
+            <button type="button" className="primary-action" onClick={onOpenLibrary}>
+              <FileUp size={16} />
+              去资料库导入
+            </button>
+          </div>
+          <p className="field-help">粘贴文本、上传文件和切块索引只留一处，避免和这里第二套表打架。</p>
+        </section>
+      ) : (
       <section
         ref={importSectionRef}
         className={`panel memory-import${importExpanded ? " is-open" : ""}`}
@@ -409,6 +427,7 @@ export function MemoryGovernanceView({
           </div>
         )}
       </section>
+      )}
 
       {bothEmpty ? (
         <section className="panel empty-state memory-empty">
@@ -419,9 +438,9 @@ export function MemoryGovernanceView({
           <p>暂无待审候选。导入资料或完成一次专访后会产生候选记忆。</p>
           <p>还没有确认的长期记忆。审批候选记忆后，它们会出现在这里。</p>
           <div className="empty-cta">
-            <button type="button" className="primary-action" onClick={focusImport}>
+            <button type="button" className="primary-action" onClick={onOpenLibrary ?? focusImport}>
               <FileUp size={16} />
-              去导入资料
+              {onOpenLibrary ? "去资料库导入" : "去导入资料"}
             </button>
           </div>
           <p className="field-help">也可以先去做一场实时专访，结束后回来审核候选。</p>

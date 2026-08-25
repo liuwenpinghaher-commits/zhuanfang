@@ -246,7 +246,7 @@ export function HomeView({
                 onDismissLastSummary?.();
               }}
             >
-              我的资产
+              本场记录
             </button>
             {deskQueue[0]?.canLaunchInterview && deskQueue[0].topicHint && (
               <button

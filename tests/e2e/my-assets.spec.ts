@@ -13,10 +13,10 @@ import { expectNoHorizontalOverflow, openView, resetDemoState } from "./helpers"
 
 test("my-assets: archive tab is default and shows demo entries", async ({ page }) => {
   await resetDemoState(page);
-  await openView(page, "我的资产", "专访档案与认知资产库");
+  await openView(page, "本场记录", "这里就是以前的双轨笔记");
+  await page.getByTestId("session-record-tab-archive").click();
 
-  // 默认打开档案 tab
-  await expect(page.getByRole("button", { name: /专访档案/ })).toBeVisible();
+  await expect(page.getByTestId("session-record-tab-archive")).toBeVisible();
 
   // demo state 中有专访记录，至少有一张档案卡
   await expect(page.locator("article.record-row").first()).toBeVisible();
@@ -26,10 +26,8 @@ test("my-assets: archive tab is default and shows demo entries", async ({ page }
 
 test("my-assets: switches to assets tab and back", async ({ page }) => {
   await resetDemoState(page);
-  await openView(page, "我的资产", "专访档案与认知资产库");
-
-  // 切换到资产库 tab（embedded：不再嵌套第二套页头）
-  await page.getByRole("button", { name: "资产库" }).click();
+  await openView(page, "本场记录", "这里就是以前的双轨笔记");
+  await page.getByTestId("session-record-tab-assets").click();
 
   await expect(page.getByPlaceholder(/输入关键词/)).toBeVisible();
   await expect(page.getByRole("complementary", { name: "资产筛选" })).toBeVisible();
@@ -37,14 +35,15 @@ test("my-assets: switches to assets tab and back", async ({ page }) => {
   await expectNoHorizontalOverflow(page);
 
   // 切回档案 tab
-  await page.getByRole("button", { name: /专访档案/ }).click();
-  await expect(page.getByText("专访档案与认知资产库")).toBeVisible();
+  await page.getByTestId("session-record-tab-archive").click();
+  await expect(page.getByText("这里就是以前的双轨笔记")).toBeVisible();
   await expect(page.locator("article.record-row").first()).toBeVisible();
 });
 
 test("my-assets: generate podcast button navigates to podcast studio", async ({ page }) => {
   await resetDemoState(page);
-  await openView(page, "我的资产", "专访档案与认知资产库");
+  await openView(page, "本场记录", "这里就是以前的双轨笔记");
+  await page.getByTestId("session-record-tab-archive").click();
 
   // 点击第一张档案卡的"生成播客"按钮
   await page.getByRole("button", { name: "生成播客" }).first().click();

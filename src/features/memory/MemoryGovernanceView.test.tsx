@@ -135,6 +135,30 @@ describe("SSR render guard", () => {
 });
 
 // ── 2. Empty states ────────────────────────────────────────────────────────
+describe("library-only import", () => {
+  it("hides the second import form when onOpenLibrary is provided", () => {
+    const html = renderToString(
+      <MemoryGovernanceView
+        state={makeState()}
+        importing={false}
+        onOpenLibrary={() => {}}
+        onApprove={noop}
+        onReject={noop}
+        onEditCandidate={noop}
+        onDeprecate={noop}
+        onDeleteRecord={noop}
+        onEditRecord={noop}
+        onConsolidate={noop}
+        onAddAnnotation={noop}
+        onRemoveAnnotation={noop}
+        getRawMaterial={async () => null} />
+    );
+    expect(html).toContain("去资料库导入");
+    expect(html).not.toContain("导入并抽取候选记忆");
+    expect(html).not.toContain("id=\"memory-import-content\"");
+  });
+});
+
 describe("empty states", () => {
   it("pending empty state uses .empty-state class", () => {
     const state = makeState();

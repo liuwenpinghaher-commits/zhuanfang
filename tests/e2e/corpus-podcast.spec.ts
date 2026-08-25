@@ -6,7 +6,9 @@ test("analyzes imported interview text and applies a PlaybookPatch", async ({ pa
   test.setTimeout(90000);
   const sampleTitle = `优秀专访样本-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
   await resetDemoState(page);
-  await openView(page, "语料学习", "从外部专访中学习提问逻辑");
+  await openView(page, "系统配置", "状态页展示能力健康");
+  await page.getByRole("button", { name: /引擎调校/ }).click();
+  await expect(page.getByText("从外部专访中学习提问逻辑")).toBeVisible();
 
   await page.getByLabel("样本标题").fill(sampleTitle);
   await page.getByLabel("专访文本或转写稿").fill([
@@ -33,7 +35,9 @@ test("analyzes imported audio interview transcripts with source metadata", async
   const sampleTitle = `优秀音频专访样本-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
   const sourceUrl = `https://example.com/interview-audio-${Date.now()}-${Math.random().toString(16).slice(2, 6)}.mp3`;
   await resetDemoState(page);
-  await openView(page, "语料学习", "从外部专访中学习提问逻辑");
+  await openView(page, "系统配置", "状态页展示能力健康");
+  await page.getByRole("button", { name: /引擎调校/ }).click();
+  await expect(page.getByText("从外部专访中学习提问逻辑")).toBeVisible();
 
   await page.getByLabel("样本类型").selectOption("audio");
   await page.getByLabel("样本标题").fill(sampleTitle);
@@ -59,7 +63,9 @@ test("transcribes an audio source before corpus analysis", async ({ page }) => {
   const sampleTitle = `自动转写音频样本-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
   const sourceUrl = `https://example.com/interview-auto-${Date.now()}-${Math.random().toString(16).slice(2, 6)}.mp3`;
   await resetDemoState(page);
-  await openView(page, "语料学习", "从外部专访中学习提问逻辑");
+  await openView(page, "系统配置", "状态页展示能力健康");
+  await page.getByRole("button", { name: /引擎调校/ }).click();
+  await expect(page.getByText("从外部专访中学习提问逻辑")).toBeVisible();
 
   await page.getByLabel("样本类型").selectOption("audio");
   await page.getByLabel("样本标题").fill(sampleTitle);
@@ -85,7 +91,8 @@ test("generates and deletes a podcast episode from the first note", async ({ pag
   const voice = "longanlingxin";
   await resetDemoState(page);
   // R2: 播客工作台已移出顶层导航，通过"我的资产"档案卡"生成播客"按钮进入。
-  await openView(page, "我的资产", "专访档案与认知资产库");
+  await openView(page, "本场记录", "这里就是以前的双轨笔记");
+  await page.getByTestId("session-record-tab-archive").click();
   await page.getByRole("button", { name: "生成播客" }).first().click();
   await expect(page.getByText("把一次专访生成可收听的语音节目")).toBeVisible();
 
@@ -119,7 +126,8 @@ test("saves the current podcast voice as the default product voice", async ({ pa
   // 工作台与配置页的播客声音都是能说名单下拉（聆心/谦）。
   await resetDemoState(page);
   // R2: 播客工作台已移出顶层导航，通过"我的资产"档案卡"生成播客"按钮进入。
-  await openView(page, "我的资产", "专访档案与认知资产库");
+  await openView(page, "本场记录", "这里就是以前的双轨笔记");
+  await page.getByTestId("session-record-tab-archive").click();
   await page.getByRole("button", { name: "生成播客" }).first().click();
   await expect(page.getByText("把一次专访生成可收听的语音节目")).toBeVisible();
 
@@ -135,7 +143,8 @@ test("saves the current podcast voice as the default product voice", async ({ pa
   );
 
   // Navigate back to podcast studio and set the voice
-  await page.getByRole("button", { name: "我的资产" }).click();
+  await page.getByRole("navigation", { name: "应用导航" }).getByRole("button", { name: "本场记录", exact: true }).click();
+  await page.getByTestId("session-record-tab-archive").click();
   await page.getByRole("button", { name: "生成播客" }).first().click();
   await expect(page.getByText("把一次专访生成可收听的语音节目")).toBeVisible();
 

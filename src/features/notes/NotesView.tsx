@@ -44,6 +44,8 @@ interface NotesViewProps {
     noteId: string,
     options: { exclusiveAssets: boolean; confirmedMemory: boolean }
   ) => Promise<void>;
+  /** 嵌在「本场记录」里时隐藏页头，避免和第二套容器标题叠在一起。 */
+  embedded?: boolean;
 }
 
 function isLightNote(note: DualTrackNote): boolean {
@@ -77,7 +79,8 @@ export function NotesView({
   onOpenTrack,
   onGeneratePodcast,
   onOpenArchive,
-  onForgetNote
+  onForgetNote,
+  embedded = false
 }: NotesViewProps) {
   const [openSessionId, setOpenSessionId] = useState<string | null>(null);
   const [expandedNoteIds, setExpandedNoteIds] = useState<Record<string, boolean>>({});
@@ -174,24 +177,38 @@ export function NotesView({
 
   return (
     <section className="view-stack">
-      <HeaderBlock
-        eyebrow="双轨笔记"
-        title="从访谈沉淀认知资产"
-        subtitle="这里用来阅读与回访：区分「我说了什么」和「我学到了什么」。状态确认与筛选请去「我的资产」。"
-        action={
-          <div className="form-actions">
-            <button className="primary-action" type="button" onClick={handleHeroPrimary}>
-              <Play size={18} />
-              {heroQuestion ? "用下个问题开场" : "再做一次复盘"}
+      {embedded ? (
+        <div className="form-actions">
+          <button className="primary-action" type="button" onClick={handleHeroPrimary}>
+            <Play size={18} />
+            {heroQuestion ? "用下个问题开场" : "再做一次复盘"}
+          </button>
+          {heroQuestion && (
+            <button className="secondary-action" type="button" onClick={() => onStart("daily")}>
+              新开日常复盘
             </button>
-            {heroQuestion && (
-              <button className="secondary-action" type="button" onClick={() => onStart("daily")}>
-                新开日常复盘
+          )}
+        </div>
+      ) : (
+        <HeaderBlock
+          eyebrow="双轨笔记"
+          title="从访谈沉淀认知资产"
+          subtitle="这里用来阅读与回访：区分「我说了什么」和「我学到了什么」。状态确认切到本场记录的档案或资产。"
+          action={
+            <div className="form-actions">
+              <button className="primary-action" type="button" onClick={handleHeroPrimary}>
+                <Play size={18} />
+                {heroQuestion ? "用下个问题开场" : "再做一次复盘"}
               </button>
-            )}
-          </div>
-        }
-      />
+              {heroQuestion && (
+                <button className="secondary-action" type="button" onClick={() => onStart("daily")}>
+                  新开日常复盘
+                </button>
+              )}
+            </div>
+          }
+        />
+      )}
 
       {state.notes.length > 0 && (
         <section className="panel notes-toolbar" aria-label="笔记筛选">

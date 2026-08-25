@@ -20,8 +20,9 @@ test("runs the interview workflow through the Product API", async ({ page }) => 
   });
 
   await resetDemoState(page);
-  await openView(page, "实时专访", "专访启动");
-  await page.getByRole("button", { name: "开始专访" }).click();
+  await openView(page, "实时专访", "还没有正在进行的专访");
+  await page.getByRole("button", { name: "回今日台开场" }).click();
+  await page.getByRole("button", { name: "一键开始" }).click();
   await expect(page.getByRole("button", { name: "提交表达" })).toBeVisible();
 
   // Click the mic toggle (aria-label "开始录音") to trigger the REAL POST

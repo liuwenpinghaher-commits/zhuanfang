@@ -27,7 +27,7 @@ test("full interview lifecycle: start, submit 3 turns, end, assert diary note", 
   await page.getByRole("button", { name: "一键开始" }).click();
 
   // After session creation the view shows "实时专访" header and the text form.
-  await expect(page.getByText("实时专访")).toBeVisible();
+  await expect(page.locator("#main-content").getByText("实时专访", { exact: true })).toBeVisible();
   await expect(page.getByLabel("你的回答")).toBeVisible();
 
   // ── Step 3: submit 3 coherent text turns ─────────────────────────────────
@@ -67,8 +67,8 @@ test("full interview lifecycle: start, submit 3 turns, end, assert diary note", 
   });
 
   // ── Step 6: notes still exist — open 双轨笔记 and assert a record row ─────
-  await page.getByRole("button", { name: "双轨笔记" }).click();
-  await expect(page.getByText("从访谈沉淀认知资产")).toBeVisible();
+  await page.getByRole("navigation", { name: "应用导航" }).getByRole("button", { name: "本场记录", exact: true }).click();
+  await expect(page.getByText("这里就是以前的双轨笔记")).toBeVisible();
   await expect(page.locator("article.record-row").first()).toBeVisible();
 
   // ── Step 7: cross-view consistency — notes count increased after interview ─

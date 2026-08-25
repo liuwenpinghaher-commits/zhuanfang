@@ -251,8 +251,7 @@ describe("empty-state render guards", () => {
     expect(html).toContain("还没有导入任何素材");
     expect(html).toContain("原料车间");
     expect(html).toContain("重建知识索引");
-    // 未接线 onAskMaterials 时不展示就资料提问面板
-    expect(html).not.toContain("就资料提问");
+    expect(html).not.toContain("material-ask-panel");
   });
 
   it("MaterialLibraryView shows ask-materials panel when onAskMaterials is wired", () => {
@@ -266,7 +265,7 @@ describe("empty-state render guards", () => {
         onAskMaterials={async () => ({ answer: "暂无", citations: [] })}
       />
     );
-    expect(html).toContain("就资料提问");
+    expect(html).toContain("只问这份资料");
     expect(html).toContain("仅检索已导入的参考文献块");
   });
 

@@ -25,6 +25,7 @@ interface ConfigViewProps {
   voicesLoading: boolean;
   onUploadVoice: (audioBase64: string, name: string) => Promise<void>;
   onDeleteVoice: (voiceId: string) => Promise<void>;
+  onOpenCorpus?: () => void;
 }
 
 export function ConfigView({
@@ -42,7 +43,8 @@ export function ConfigView({
   voices,
   voicesLoading,
   onUploadVoice,
-  onDeleteVoice
+  onDeleteVoice,
+  onOpenCorpus
 }: ConfigViewProps) {
   const [runtimeDraft, setRuntimeDraft] = useState<Record<string, string>>({});
   const [runtimeDirty, setRuntimeDirty] = useState<Record<string, boolean>>({});
@@ -268,6 +270,11 @@ export function ConfigView({
               <button className="secondary-action" type="button" onClick={onCleanupGeneratedArtifacts}>
                 <RefreshCcw size={16} />清理重复生成物
               </button>
+              {onOpenCorpus && (
+                <button className="secondary-action" type="button" onClick={onOpenCorpus}>
+                  <Upload size={16} />引擎调校 · 语料学习
+                </button>
+              )}
             </div>
           </section>
         </div>

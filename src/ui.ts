@@ -84,24 +84,37 @@ export const groupedNavigation: NavigationGroup[] = [
   {
     label: "认知资产",
     items: [
-      { id: "notes", label: "双轨笔记" },
-      { id: "material", label: "素材库" },
-      { id: "asset-chat", label: "资产对话" },
-      { id: "my-assets", label: "我的资产" },
-      { id: "search", label: "外部调研" },
+      { id: "notes", label: "本场记录" },
       { id: "memory", label: "记忆" },
-      { id: "podcast", label: "播客" }
+      { id: "asset-chat", label: "资料" },
+      { id: "search", label: "外部调研" }
     ]
   },
   {
     label: "系统",
     items: [
       { id: "config", label: "系统配置" },
-      { id: "corpus", label: "语料学习" },
       { id: "profile", label: "个人档案" }
     ]
   }
 ];
+
+/** 侧栏「本场记录」同时覆盖笔记与我的资产。 */
+export function isSessionRecordView(view: View): boolean {
+  return view === "notes" || view === "my-assets";
+}
+
+/** 侧栏「资料」同时覆盖资产对话与素材库。 */
+export function isLibraryView(view: View): boolean {
+  return view === "asset-chat" || view === "material";
+}
+
+export function navItemIsActive(itemId: View, view: View): boolean {
+  if (itemId === view) return true;
+  if (itemId === "notes" && view === "my-assets") return true;
+  if (itemId === "asset-chat" && view === "material") return true;
+  return false;
+}
 
 export const assetFilterOptions: AssetFilterOption[] = [
   { id: "all", label: "全部", description: "查看所有认知资产" },

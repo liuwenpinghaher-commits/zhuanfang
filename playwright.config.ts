@@ -83,6 +83,7 @@ const apiEnv: Record<string, string> = REAL
       ANYSEARCH_API_KEY: "e2e-fake-key",
       BAILIAN_BASE_URL: "http://127.0.0.1:13230",
       BAILIAN_AUDIO_BASE_URL: "http://127.0.0.1:13230",
+      BAILIAN_TTS_WS_URL: "ws://127.0.0.1:13230/api-ws/v1/inference",
       ANYSEARCH_BASE_URL: "http://127.0.0.1:13230",
       TAVILY_API_KEY: "",
       EXA_API_KEY: "",

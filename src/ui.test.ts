@@ -8,27 +8,27 @@ import {
   formatPodcastTimestamp,
   groupedNavigation,
   interviewControlGroups,
+  navItemIsActive,
   podcastProductionSections
 } from "./ui";
 
 describe("ui helpers", () => {
   it("groups top-level navigation into task-oriented sections", () => {
     expect(groupedNavigation.map((group) => group.label)).toEqual(["访谈工作台", "认知资产", "系统"]);
-    expect(groupedNavigation.flatMap((group) => group.items.map((item) => item.id))).toEqual([
-      "home",
-      "interview",
-      "themes",
-      "notes",
-      "material",
-      "asset-chat",
-      "my-assets",
-      "search",
-      "memory",
-      "podcast",
-      "config",
-      "corpus",
-      "profile"
+    expect(groupedNavigation.flatMap((group) => group.items.map((item) => [item.id, item.label]))).toEqual([
+      ["home", "今日访谈台"],
+      ["interview", "实时专访"],
+      ["themes", "主题线"],
+      ["notes", "本场记录"],
+      ["memory", "记忆"],
+      ["asset-chat", "资料"],
+      ["search", "外部调研"],
+      ["config", "系统配置"],
+      ["profile", "个人档案"]
     ]);
+    expect(navItemIsActive("notes", "my-assets")).toBe(true);
+    expect(navItemIsActive("asset-chat", "material")).toBe(true);
+    expect(navItemIsActive("notes", "search")).toBe(false);
   });
 
   it("builds notices with stable aria-live friendly content", () => {

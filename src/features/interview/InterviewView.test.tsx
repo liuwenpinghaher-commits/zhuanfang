@@ -27,6 +27,48 @@ describe("InterviewView", () => {
     expect(formatInterviewHeaderTitle(session)).toBe("决策专访 · 控制感");
   });
 
+  it("无场时引导回今日台而不是第二开场台", () => {
+    const state = createInitialProductState();
+    const card = createSessionDraft(state, "organization").card;
+    const onGoHome = vi.fn();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    act(() => {
+      root?.render(
+        <InterviewView
+          card={card}
+          session={null}
+          pendingMode="organization"
+          input=""
+          recording={false}
+          realtimeState={null}
+          audioLevel={0}
+          voiceStatus="idle"
+          liveUserTranscript=""
+          voiceTransport={null}
+          onInput={vi.fn()}
+          onStart={vi.fn()}
+          onGoHome={onGoHome}
+          onSubmit={vi.fn()}
+          onFinish={vi.fn()}
+          onControl={vi.fn()}
+          onToggleRecording={vi.fn()}
+          onInterrupt={vi.fn()}
+        />
+      );
+    });
+    expect(container.textContent).toContain("还没有正在进行的专访");
+    expect(container.textContent).toContain("回今日台开场");
+    expect(container.textContent).not.toContain("专访启动");
+    act(() => {
+      Array.from(container?.querySelectorAll("button") ?? [])
+        .find((item) => item.textContent?.includes("回今日台开场"))
+        ?.click();
+    });
+    expect(onGoHome).toHaveBeenCalledOnce();
+  });
+
   it("空场显示开场 hero 且控制默认折叠", () => {
     const session = createSessionDraft(createInitialProductState(), "organization");
     container = document.createElement("div");

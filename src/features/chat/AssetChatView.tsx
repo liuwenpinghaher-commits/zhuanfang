@@ -21,6 +21,8 @@ interface AssetChatViewProps {
   onStartInterview?: (topicHint: string) => void;
   /** 索引空时引导去素材库。 */
   onOpenMaterial?: () => void;
+  /** 嵌在「资料」容器里时隐藏页头。 */
+  embedded?: boolean;
 }
 
 function sortByUpdatedDesc(sessions: ChatSession[]): ChatSession[] {
@@ -79,7 +81,8 @@ export function AssetChatView({
   prefill = null,
   onPrefillConsumed,
   onStartInterview,
-  onOpenMaterial
+  onOpenMaterial,
+  embedded = false
 }: AssetChatViewProps) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -159,17 +162,26 @@ export function AssetChatView({
 
   return (
     <section className="view-stack">
-      <HeaderBlock
-        eyebrow="认知资产 · 资产对话"
-        title="与你的认知资产对话"
-        subtitle="基于已沉淀的笔记、记忆、主题与素材回答问题，并给出可点击跳源的引用。回答可继续开专访。"
-        action={
+      {embedded ? (
+        <div className="form-actions">
           <button className="secondary-action" type="button" onClick={handleNewChatClick}>
             <Plus size={16} className="icon-inline" />
             新对话
           </button>
-        }
-      />
+        </div>
+      ) : (
+        <HeaderBlock
+          eyebrow="认知资产 · 资产对话"
+          title="与你的认知资产对话"
+          subtitle="基于已沉淀的笔记、记忆、主题与素材回答问题，并给出可点击跳源的引用。回答可继续开专访。"
+          action={
+            <button className="secondary-action" type="button" onClick={handleNewChatClick}>
+              <Plus size={16} className="icon-inline" />
+              新对话
+            </button>
+          }
+        />
+      )}
 
       {indexHintEmpty && (
         <div className="hint-banner is-info chat-index-hint" role="status">
@@ -177,7 +189,7 @@ export function AssetChatView({
           {onOpenMaterial && (
             <button className="secondary-action compact-action" type="button" onClick={onOpenMaterial}>
               <Library size={14} aria-hidden />
-              去素材库
+              去导入资料
             </button>
           )}
         </div>
@@ -298,7 +310,7 @@ export function AssetChatView({
                             }}
                           >
                             <Mic size={14} aria-hidden />
-                            就这个开专访
+                            用这句当题开场
                           </button>
                         </div>
                       )}

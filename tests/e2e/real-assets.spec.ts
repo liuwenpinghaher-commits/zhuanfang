@@ -174,14 +174,13 @@ async function openMyAssets(page: Page): Promise<void> {
   await page.evaluate(() => window.localStorage.clear());
   await page.reload();
   await expect(page.getByRole("button", { name: "今日访谈台" })).toBeVisible({ timeout: 15_000 });
-  await page.getByRole("button", { name: "我的资产" }).click();
-  // 落地页头(subtitle 文案,唯一)确认视图已渲染。
-  await expect(page.getByText("专访档案与认知资产库")).toBeVisible();
+  await page.getByRole("button", { name: "本场记录" }).click();
+  await expect(page.getByText("这里就是以前的双轨笔记")).toBeVisible();
 }
 
 /** 切到「资产库」tab 并按类型筛选,等目标资产行出现。 */
 async function openAssetsTab(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "资产库" }).click();
+  await page.getByTestId("session-record-tab-assets").click();
   // Embedded AssetsView: search + filter landmark (no nested page H1).
   await expect(page.getByPlaceholder(/输入关键词/)).toBeVisible();
   await expect(page.getByRole("complementary", { name: "资产筛选" })).toBeVisible();
@@ -220,16 +219,14 @@ test.describe("真实业务·认知资产模块(UI→真后端 3210,不 mock)", 
     await openMyAssets(page);
 
     // 默认在「专访档案」tab:种子 note 产出一张档案卡。
-    await expect(page.getByRole("button", { name: /专访档案/ })).toBeVisible();
+    await page.getByTestId("session-record-tab-archive").click();
     await expect(page.locator("article.record-row").first()).toBeVisible();
 
-    // 切到「资产库」:出现资产库标题 + 搜索框 + 资产筛选区。
     await openAssetsTab(page);
     await expect(page.getByPlaceholder(/输入关键词/)).toBeVisible();
     await expect(page.getByRole("complementary", { name: "资产筛选" })).toBeVisible();
 
-    // 切回「专访档案」:档案卡仍在。
-    await page.getByRole("button", { name: /专访档案/ }).click();
+    await page.getByTestId("session-record-tab-archive").click();
     await expect(page.locator("article.record-row").first()).toBeVisible();
   });
 
@@ -490,7 +487,7 @@ test.describe("真实业务·认知资产模块(UI→真后端 3210,不 mock)", 
     expect(assetCount, "finalize 应抽取认知资产(point/question/decision/debt)").toBeGreaterThan(0);
 
     // 进资产库,确认抽取的资产在 UI 可见(标记重要走本地→去抖 PUT,断言后端 important 变化)。
-    await page.getByRole("button", { name: "我的资产" }).click();
+    await page.getByRole("button", { name: "本场记录" }).click();
     await openAssetsTab(page);
 
     // 若抽到了观点,验证「标记重要」真的把后端 important 翻转(本地 reducer → 去抖 PUT)。

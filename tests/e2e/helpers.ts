@@ -43,8 +43,8 @@ export async function resetServerState(page: Page, apiBase: string): Promise<unk
 }
 
 export async function openView(page: Page, navName: string, expectedText: string) {
-  await page.getByRole("button", { name: navName }).click();
-  await expect(page.getByText(expectedText)).toBeVisible();
+  await page.getByRole("navigation", { name: "应用导航" }).getByRole("button", { name: navName, exact: true }).click();
+  await expect(page.getByText(expectedText).first()).toBeVisible();
 }
 
 export async function expectNoHorizontalOverflow(page: Page) {

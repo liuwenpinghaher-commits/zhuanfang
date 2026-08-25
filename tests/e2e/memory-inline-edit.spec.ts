@@ -70,7 +70,7 @@ test("记忆治理：对候选记忆点[修正]→ 内联 textarea → 改文本
   await page.reload();
   await expect(page.getByRole("button", { name: "今日访谈台" })).toBeVisible();
 
-  await openView(page, "记忆", "导入资料，审核长期记忆");
+  await openView(page, "记忆", "点头之后，下场才认");
 
   // 候选卡片可见
   const candidateCard = page.locator("article.record-row").filter({ hasText: "用户倾向于逃避关键决策" });
@@ -106,7 +106,7 @@ test("记忆治理：点[取消]后 textarea 消失，文本不变", async ({ pa
   await page.reload();
   await expect(page.getByRole("button", { name: "今日访谈台" })).toBeVisible();
 
-  await openView(page, "记忆", "导入资料，审核长期记忆");
+  await openView(page, "记忆", "点头之后，下场才认");
 
   const candidateCard = page.locator("article.record-row").filter({ hasText: "用户倾向于逃避关键决策" });
   await expect(candidateCard).toBeVisible({ timeout: 8000 });
@@ -134,7 +134,7 @@ test("记忆治理：点[取消]后 textarea 消失，文本不变", async ({ pa
 test("记忆治理：无待审候选时显示空状态提示", async ({ page }) => {
   // 使用没有 memoryCandidates 的 state
   await resetDemoState(page);
-  await openView(page, "记忆", "导入资料，审核长期记忆");
+  await openView(page, "记忆", "点头之后，下场才认");
 
   // 全空时合并为一个引导空状态（不再重复渲染两个 0 分区标题）
   await expect(page.getByText("还没有记忆可治理")).toBeVisible();
@@ -164,7 +164,7 @@ test("记忆治理：confirmed≥2 时显示[整理记忆]按钮，点击触发�
   await page.reload();
   await expect(page.getByRole("button", { name: "今日访谈台" })).toBeVisible();
 
-  await openView(page, "记忆", "导入资料，审核长期记忆");
+  await openView(page, "记忆", "点头之后，下场才认");
 
   // 已确认长期记忆标题与两条记录可见
   await expect(page.getByText(/已确认的长期记忆（2）/)).toBeVisible({ timeout: 8000 });

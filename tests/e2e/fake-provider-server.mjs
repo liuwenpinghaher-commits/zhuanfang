@@ -9,6 +9,7 @@
 // canned 产物与 apps/api/src/test-helpers/fake-llm-clients.ts 保持同语义（该文件是
 // vitest 层的进程内替身，本文件是 E2E 层的网络替身）——改动任一侧请同步。
 import { createServer } from "node:http";
+import { WebSocketServer } from "ws";
 
 const PORT = Number(process.env.FAKE_PROVIDER_PORT ?? 13230);
 
@@ -248,6 +249,17 @@ const server = createServer(async (req, res) => {
     });
   }
 
+  // ── Qwen-Audio ASR（默认模型 qwen-audio-3.0-asr-flash）──
+  if (path === "/api/v1/services/aigc/multimodal-generation/generation" && req.method === "POST") {
+    return json(res, 200, {
+      request_id: "fake-asr-1",
+      output: {
+        text: "主持人：那天下午你在哪里？\n受访者：我在复盘一次失败的发布，那次我学会了先暴露问题再修复。"
+      },
+      usage: { duration: 12 }
+    });
+  }
+
   // ── CosyVoice TTS ──
   if (path === "/api/v1/services/audio/tts/SpeechSynthesizer" && req.method === "POST") {
     return json(res, 200, {
@@ -322,6 +334,42 @@ const server = createServer(async (req, res) => {
   }
 
   json(res, 404, { error: `fake-provider: no handler for ${req.method} ${path}` });
+});
+
+const ttsWss = new WebSocketServer({ noServer: true });
+server.on("upgrade", (req, socket, head) => {
+  const path = new URL(req.url ?? "/", `http://127.0.0.1:${PORT}`).pathname;
+  if (path !== "/api-ws/v1/inference") {
+    socket.destroy();
+    return;
+  }
+  ttsWss.handleUpgrade(req, socket, head, (ws) => {
+    ttsWss.emit("connection", ws, req);
+  });
+});
+
+ttsWss.on("connection", (ws) => {
+  let taskId = "fake-tts-task";
+  ws.on("message", (raw) => {
+    let msg;
+    try {
+      msg = JSON.parse(String(raw));
+    } catch {
+      return;
+    }
+    const action = msg?.header?.action;
+    if (typeof msg?.header?.task_id === "string" && msg.header.task_id) {
+      taskId = msg.header.task_id;
+    }
+    if (action === "run-task") {
+      ws.send(JSON.stringify({ header: { event: "task-started", task_id: taskId } }));
+      return;
+    }
+    if (action === "finish-task") {
+      ws.send(Buffer.alloc(128));
+      ws.send(JSON.stringify({ header: { event: "task-finished", task_id: taskId } }));
+    }
+  });
 });
 
 server.listen(PORT, "127.0.0.1", () => {

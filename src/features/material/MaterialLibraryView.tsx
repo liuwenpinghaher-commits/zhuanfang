@@ -39,6 +39,8 @@ interface MaterialLibraryViewProps {
   onOpenTrack?: (themeId: string) => void;
   /** 从资产对话 citation 跳入时展开对应素材。 */
   focusSourceId?: string | null;
+  /** 嵌在「资料」容器里时隐藏页头。 */
+  embedded?: boolean;
 }
 
 const SOURCE_TYPE_LABEL: Record<ImportSource["sourceType"], string> = {
@@ -73,7 +75,8 @@ export function MaterialLibraryView({
   onStartInterview,
   onOpenAssetChat,
   onOpenTrack,
-  focusSourceId = null
+  focusSourceId = null,
+  embedded = false
 }: MaterialLibraryViewProps) {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
@@ -216,10 +219,11 @@ export function MaterialLibraryView({
 
   return (
     <section className="view-stack">
+      {!embedded && (
       <HeaderBlock
         eyebrow="认知资产 · 素材库"
         title="导入资料与知识索引"
-        subtitle="原料车间：导入文本 → 切块索引 → 就资料提问 → 抽取待审记忆。审核在「记忆」，全局助手走资产对话。"
+        subtitle="原料车间：导入文本 → 切块索引 → 只问这份资料 → 抽取待审记忆。审核在「记忆」，全书问答走资料·问全书。"
         action={
           <div className="header-actions material-header-actions">
             <button
@@ -237,6 +241,23 @@ export function MaterialLibraryView({
           </div>
         }
       />
+      )}
+      {embedded && (
+        <div className="header-actions material-header-actions">
+          <button
+            className="secondary-action"
+            type="button"
+            onClick={handleRebuild}
+            disabled={rebuilding}
+            aria-busy={rebuilding}
+          >
+            <RefreshCw size={16} aria-hidden />
+            {rebuilding ? "重建中…" : "重建知识索引"}
+          </button>
+          {rebuildHint && <span className="field-status is-success">{rebuildHint}</span>}
+          {rebuildError && <span className="field-status is-danger">{rebuildError}</span>}
+        </div>
+      )}
 
       <section className="panel material-index-health" aria-label="索引健康">
         <div className="panel-title">
@@ -350,13 +371,13 @@ export function MaterialLibraryView({
       </section>
 
       {onAskMaterials && (
-        <section className="panel material-ask-panel" aria-label="就资料提问">
+        <section className="panel material-ask-panel" aria-label="只问这份资料">
           <div className="panel-title">
             <MessageSquare size={18} aria-hidden />
-            <h2>就资料提问</h2>
+            <h2>只问这份资料</h2>
           </div>
           <p className="field-help">
-            仅检索已导入的参考文献块（ragChunks），不混入记忆 / 笔记 / 主题。需要跨源综合请用「资产对话」。
+            仅检索已导入的参考文献块（ragChunks），不混入记忆 / 笔记 / 主题。需要跨源综合请切到「问全书」。
             {materialChunks.length === 0 ? " · 当前尚无访谈上下文块，可先导入资料。" : ""}
           </p>
           <div className="field-grid">
@@ -519,7 +540,7 @@ export function MaterialLibraryView({
                           onClick={() => onOpenAssetChat(source.title)}
                         >
                           <MessageSquare size={14} />
-                          去资产对话
+                          去问全书
                         </button>
                       )}
                       {onReviewMemory && (

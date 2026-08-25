@@ -32,7 +32,7 @@ test("外部调研：创建简报 → 标记持续追踪 → 重新调研 → �
   await expect(briefArticle.getByRole("heading")).toBeVisible();
 
   // 带入专访按钮可见
-  await expect(briefArticle.getByRole("button", { name: "带入专访" })).toBeVisible();
+  await expect(briefArticle.getByRole("button", { name: "用这份简报开场" })).toBeVisible();
   await expectNoHorizontalOverflow(page);
 
   // ---- 阶段 2: 标记持续追踪 ----
@@ -59,7 +59,7 @@ test("外部调研：创建简报 → 标记持续追踪 → 重新调研 → �
   await expect(briefArticle).toBeVisible();
 
   // 带入专访入口仍然可见
-  await expect(briefArticle.getByRole("button", { name: "带入专访" })).toBeVisible();
+  await expect(briefArticle.getByRole("button", { name: "用这份简报开场" })).toBeVisible();
 
   // 追踪状态在刷新后应被保留（持续追踪中）
   await expect(briefArticle.getByRole("button", { name: "持续追踪中", exact: true })).toBeVisible();
@@ -121,12 +121,10 @@ test("外部调研：带入专访后可在实时专访中看到外部参照", as
   await expect(briefArticle).toBeVisible({ timeout: 8000 });
 
   // 带入专访 — 触发 launchInterview，页面切换到 interview 视图
-  await briefArticle.getByRole("button", { name: "带入专访" }).click();
+  await briefArticle.getByRole("button", { name: "用这份简报开场" }).click();
 
-  // interview 视图出现：session 加载中时显示"专访启动"，加载完成后显示"实时专访"
-  // 用 .or() 组合断言，确保进入了 interview 区域
   await expect(
-    page.getByText("专访启动").or(page.getByText("实时专访"))
+    page.getByText("实时专访").or(page.getByLabel("你的回答"))
   ).toBeVisible({ timeout: 8000 });
   await expectNoHorizontalOverflow(page);
 });

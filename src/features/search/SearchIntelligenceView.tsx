@@ -135,7 +135,7 @@ export function SearchIntelligenceView({
       <HeaderBlock
         eyebrow="外部调研"
         title="主动搜集热点、素材和可讨论主题"
-        subtitle="先自动盯梢补情报，或手工生成一份简报；结果可带入专访、转成资产，并标记持续追踪。"
+        subtitle="先自动盯梢补情报，或手工生成一份简报；结果可用这份简报开场、转成资产，并标记持续追踪。"
         action={autoWatchButton}
       />
 
@@ -417,7 +417,7 @@ export function SearchIntelligenceView({
                   >
                     <button className="secondary-action" type="button" onClick={() => onUseBrief(brief.id)}>
                       <Mic size={16} />
-                      带入专访
+                      用这份简报开场
                     </button>
                     {onTrackBrief && (
                       <button

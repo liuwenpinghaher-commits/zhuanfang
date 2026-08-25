@@ -453,7 +453,7 @@ function AssetDetail({
             onClick={() => onBringIntoInterview(toAssetActionTarget(asset))}
           >
             <Flag size={16} />
-            带入专访
+            就这条开场
           </button>
         )}
         {onAskAsset && (

@@ -46,13 +46,14 @@ test("清空示例 clears demo data and leaves app usable", async ({ page }) => 
 
   // ── Step 4: 我的资产 → 档案 tab — no archive entries, no crash ────────────
   // R2: 双轨笔记/资产库 已并入"我的资产"(archive/assets tab)，无独立导航按钮。
-  await page.getByRole("button", { name: "我的资产" }).click();
-  await expect(page.getByText("专访档案与认知资产库")).toBeVisible();
+  await page.getByRole("navigation", { name: "应用导航" }).getByRole("button", { name: "本场记录", exact: true }).click();
+  await page.getByTestId("session-record-tab-archive").click();
+  await expect(page.getByText("这里就是以前的双轨笔记")).toBeVisible();
   // 档案 tab 为默认 tab；清空后无档案条目。
   await expect(page.locator("article.record-row")).toHaveCount(0);
 
   // ── Step 5: 我的资产 → 资产 tab — empty state, no crash ─────────────────
-  await page.getByRole("button", { name: "资产库" }).click();
+  await page.getByTestId("session-record-tab-assets").click();
   // Embedded AssetsView: no nested page H1; search + filter landmarks confirm the tab.
   await expect(page.getByPlaceholder(/输入关键词/)).toBeVisible();
   await expect(page.getByRole("complementary", { name: "资产筛选" })).toBeVisible();
@@ -66,6 +67,7 @@ test("清空示例 clears demo data and leaves app usable", async ({ page }) => 
 
   // P2-16: one-click start — from the empty state this creates a session and enters the live
   // interview directly (no "专访启动" screen). Proves a fresh interview is usable after clearing.
-  await expect(page.getByText("实时专访")).toBeVisible();
+  // 侧栏也有「实时专访」，必须限定主区，否则 strict mode 会命中导航按钮。
+  await expect(page.locator("#main-content").getByText("实时专访", { exact: true })).toBeVisible();
   await expect(page.getByLabel("你的回答")).toBeVisible();
 });

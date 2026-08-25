@@ -115,7 +115,7 @@ async function bootMemoryView(
 
   // 进入「记忆」视图（左侧导航按钮 → 视图标题）。
   await page.getByRole("button", { name: "记忆" }).click();
-  await expect(page.getByText("导入资料，审核长期记忆")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("点头之后，下场才认")).toBeVisible({ timeout: 10_000 });
 }
 
 /* ---------- 文本访谈助手（仅 finalize 慢路 test 用） ---------- */
@@ -161,7 +161,7 @@ test.describe("真实业务·记忆治理（UI→真后端 3210，无 mock）", 
     await expect(
       page.getByText("还没有确认的长期记忆。审批候选记忆后，它们会出现在这里。")
     ).toBeVisible();
-    await expect(page.getByRole("button", { name: "去导入资料" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "去资料库导入" }).first()).toBeVisible();
     await expect(page.getByText(/待审 0/)).toBeVisible();
 
     // 后端真实副作用：确实零候选零记忆。
@@ -356,7 +356,7 @@ test.describe("真实业务·记忆治理（UI→真后端 3210，无 mock）", 
     // 进记忆视图，approve 这条真实候选。
     // 主导航「记忆」与页面内其它含「记忆」的 button 可能并存 → 限定 sidebar nav-item。
     await page.locator("nav.nav-list button.nav-item", { hasText: /^记忆$/ }).click();
-    await expect(page.getByText("导入资料，审核长期记忆")).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText("点头之后，下场才认")).toBeVisible({ timeout: 10_000 });
 
     const card = page.locator("article.record-row").filter({ hasText: target.text });
     await expect(card).toBeVisible({ timeout: 10_000 });

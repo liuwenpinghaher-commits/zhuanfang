@@ -23,6 +23,8 @@ interface InterviewViewProps {
   voiceTransport: "webrtc" | "websocket" | "livekit" | null;
   onInput: (value: string) => void;
   onStart: (mode?: InterviewMode, searchBriefId?: string, topicHint?: string, relatedThemeIds?: string[]) => void;
+  /** 无场时回到今日台开场，避免第二开场台。 */
+  onGoHome?: () => void;
   launchSearchBriefId?: string;
   launchTopicHint?: string;
   launchRelatedThemeIds?: string[];
@@ -83,6 +85,7 @@ export function InterviewView({
   voiceTransport,
   onInput,
   onStart,
+  onGoHome,
   launchSearchBriefId,
   launchTopicHint,
   launchRelatedThemeIds,
@@ -133,27 +136,21 @@ export function InterviewView({
     return (
       <section className="interview-launch">
         <div className="launch-inner">
-          <span className="eyebrow">专访启动</span>
-          <h1>{card.title}</h1>
-          <p>{card.whyNow}</p>
+          <span className="eyebrow">实时专访</span>
+          <h1>还没有正在进行的专访</h1>
+          <p>这里只谈已经开起来的一场。选题、继续未完成、带简报，都在今日访谈台。</p>
           <div className="launch-prompt">
-            <span>开场问题</span>
-            <strong>{card.suggestedOpening}</strong>
+            <span>当前推荐</span>
+            <strong>{card.title}</strong>
           </div>
-          {card.sourceHighlights && card.sourceHighlights.length > 0 && (
-            <div className="launch-sources">
-              <span>素材摘要</span>
-              <p>{card.sourceHighlights[0].snippet}</p>
-            </div>
-          )}
           <button
             className="launch-action"
             type="button"
-            onClick={() => onStart(pendingMode, launchSearchBriefId, launchTopicHint, launchRelatedThemeIds)}
+            onClick={() => (onGoHome ? onGoHome() : onStart(pendingMode, launchSearchBriefId, launchTopicHint, launchRelatedThemeIds))}
             disabled={starting}
             aria-busy={starting}
           >
-            <Play size={18} />{starting ? "正在准备…" : "开始专访"}
+            <Play size={18} />回今日台开场
           </button>
         </div>
       </section>
