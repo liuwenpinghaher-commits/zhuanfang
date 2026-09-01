@@ -34,7 +34,8 @@ export function podcastVoiceSelectOptions(current: string): Array<{ voice: strin
   const base = QWEN_AUDIO_SPEAKING_VOICES.map((item) => ({ voice: item.voice, name: item.name }));
   const id = current.trim();
   if (id && !base.some((item) => item.voice === id)) {
-    return [{ voice: id, name: `${id}（现网可能改用聆心/谦出声）` }, ...base];
+    const name = /zhangxj/i.test(id) ? "张小珺" : `${id}（现网可能改用聆心/谦出声）`;
+    return [{ voice: id, name }, ...base];
   }
   return base;
 }

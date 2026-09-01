@@ -548,7 +548,17 @@ export function ConfigView({
                         }));
                       }}
 >
-                      {voices.map((v) => (
+                      {[
+                        ...voices,
+                        ...(productDraft.voice.defaultVoice &&
+                        !voices.some((v) => v.voice === productDraft.voice.defaultVoice)
+                          ? [{
+                              voice: productDraft.voice.defaultVoice,
+                              name: productDraft.voice.defaultVoice.includes("zhangxj") ? "张小珺" : productDraft.voice.defaultVoice,
+                              description: ""
+                            }]
+                          : [])
+                      ].map((v) => (
                         <option key={v.voice} value={v.voice}>{v.name} ({v.voice})</option>
                       ))}
                     </select>
@@ -834,8 +844,8 @@ function VoiceCloningPanel({
     <section className="panel voice-cloning-panel">
       <div className="panel-title"><Upload size={18} /><h2>声音复刻</h2></div>
       <p className="voice-cloning-hint">
-        上传 10-20 秒的清晰录音（WAV/MP3/M4A），无需训练即可复刻你的声音。
-        要求：单声道、无背景音、正常说话。
+        上传 10–20 秒清晰录音（WAV/MP3/M4A），复刻后会设成默认主持人。
+        绑定模型是 qwen-audio-3.0-tts-plus。创建走官方 DashScope，合成仍走 token-plan。
       </p>
 
       <div className="voice-cloning-upload">

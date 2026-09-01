@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, type Mock } from "vitest";
 import {
   BAILIAN_DEFAULT_BASE_URL,
+  BAILIAN_DEFAULT_ENROLLMENT_BASE_URL,
   BAILIAN_LATEST_PLUS_MODEL,
   BAILIAN_ROLE_PLAY_MODEL,
   createBailianAudioTranscriptionClient,
@@ -15,7 +16,11 @@ import {
   createBailianRealtimeVoiceClientFromEnv,
   createBailianSearchClient,
   createBailianSearchClientFromEnv,
+  createBailianVoiceEnrollmentClient,
   createBailianVoiceEnrollmentClientFromEnv,
+  resolveVoiceEnrollmentApiKey,
+  resolveVoiceEnrollmentBaseUrl,
+  sanitizeVoiceEnrollmentPrefix,
 } from "./bailian";
 import { resolveBailianApiKey } from "../runtime-secrets";
 import { createInitialProductState, createSessionDraft } from "../../../../src/domain/engine";
@@ -941,5 +946,75 @@ describe("createBailianAudioTranscriptionClientFromEnv — maxPollTotalMs from e
       DASHSCOPE_API_KEY: "test-key"
     });
     expect(client).toBeDefined();
+  });
+});
+
+describe("voice enrollment binds to qwen-audio-3.0-tts-plus", () => {
+  it("maps 张小珺 to a legal prefix", () => {
+    expect(sanitizeVoiceEnrollmentPrefix("张小珺")).toBe("zhangxj");
+    expect(sanitizeVoiceEnrollmentPrefix("host")).toBe("host");
+  });
+
+  it("creates a clone against voice-enrollment + tts-plus", async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          output: {
+            voice_id: "qwen-audio-3.0-tts-plus-zhangxj-abc",
+            gmt_create: "2026-08-25 00:00:00"
+          }
+        }),
+        { status: 200 }
+      )
+    );
+    const client = createBailianVoiceEnrollmentClient({ apiKey: "test-key", fetchImpl });
+    const voice = await client.createVoice({
+      audioUrl: "https://example.com/zhangxj.wav",
+      preferredName: "张小珺"
+    });
+    expect(voice.voice).toBe("qwen-audio-3.0-tts-plus-zhangxj-abc");
+    expect(voice.targetModel).toBe("qwen-audio-3.0-tts-plus");
+    const body = JSON.parse(getLastFetchCall(fetchImpl as FetchMock)[1]?.body as string);
+    expect(body).toMatchObject({
+      model: "voice-enrollment",
+      input: {
+        action: "create_voice",
+        target_model: "qwen-audio-3.0-tts-plus",
+        prefix: "zhangxj",
+        url: "https://example.com/zhangxj.wav",
+        max_prompt_audio_length: 20
+      }
+    });
+    expect(getLastFetchCall(fetchImpl as FetchMock)[0]).toBe(
+      `${BAILIAN_DEFAULT_ENROLLMENT_BASE_URL}/api/v1/services/audio/tts/customization`
+    );
+  });
+
+  it("defaults enrollment host to official DashScope, not token-plan", () => {
+    expect(resolveVoiceEnrollmentBaseUrl({})).toBe(BAILIAN_DEFAULT_ENROLLMENT_BASE_URL);
+    expect(resolveVoiceEnrollmentBaseUrl({
+      BAILIAN_AUDIO_BASE_URL: "https://token-plan.cn-beijing.maas.aliyuncs.com",
+    })).toBe(BAILIAN_DEFAULT_ENROLLMENT_BASE_URL);
+    expect(resolveVoiceEnrollmentBaseUrl({
+      BAILIAN_VOICE_ENROLLMENT_BASE_URL: "https://dashscope.aliyuncs.com/",
+    })).toBe("https://dashscope.aliyuncs.com");
+  });
+
+  it("prefers a dedicated enrollment key over the token-plan chat key", () => {
+    expect(resolveVoiceEnrollmentApiKey({
+      DASHSCOPE_API_KEY: "token-plan-key",
+      VOICE_ENROLLMENT_API_KEY: "  official-key  ",
+    })).toBe("official-key");
+    expect(resolveVoiceEnrollmentApiKey({
+      DASHSCOPE_API_KEY: "token-plan-key",
+      DASHSCOPE_VOICE_ENROLLMENT_API_KEY: "alias-key",
+    })).toBe("alias-key");
+    expect(resolveVoiceEnrollmentApiKey({
+      DASHSCOPE_API_KEY: "token-plan-key",
+    })).toBe("token-plan-key");
+    expect(createBailianVoiceEnrollmentClientFromEnv({
+      DASHSCOPE_API_KEY: "token-plan-key",
+      VOICE_ENROLLMENT_API_KEY: "official-key",
+    })).toBeDefined();
   });
 });

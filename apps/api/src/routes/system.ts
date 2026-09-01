@@ -111,6 +111,14 @@ const runtimeSettingDefinitions: RuntimeSettingDefinition[] = [
     secret: true
   },
   {
+    key: "VOICE_ENROLLMENT_API_KEY",
+    section: "secrets",
+    label: "声音复刻专用 Key",
+    description: "官方 DashScope 钥，只用于创建/列出复刻音色。不要填 token-plan 聊天钥。",
+    valueKind: "secret",
+    secret: true
+  },
+  {
     key: "BAILIAN_EMBEDDING_BASE_URL",
     section: "models",
     label: "Embeddings 接口地址",
@@ -208,6 +216,14 @@ const runtimeSettingDefinitions: RuntimeSettingDefinition[] = [
     description: "Qwen-Audio TTS 与异步转写任务的服务端地址。",
     valueKind: "string",
     defaultValue: "https://token-plan.cn-beijing.maas.aliyuncs.com"
+  },
+  {
+    key: "BAILIAN_VOICE_ENROLLMENT_BASE_URL",
+    section: "models",
+    label: "声音复刻 Base URL",
+    description: "voice-enrollment 走官方 DashScope。token-plan 工作空间通常没有这个模型。",
+    valueKind: "string",
+    defaultValue: "https://dashscope.aliyuncs.com"
   },
   {
     key: "ANYSEARCH_ALLOW_ANONYMOUS",

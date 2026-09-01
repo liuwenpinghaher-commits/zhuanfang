@@ -561,6 +561,8 @@ export interface VoiceInfo {
   description: string;
   targetModel?: string;
   createdAt?: string;
+  /** Present when create also wrote defaultVoice / podcastVoice. */
+  state?: ProductState;
 }
 
 export interface VoiceListResponse {
@@ -569,7 +571,8 @@ export interface VoiceListResponse {
 }
 
 export interface CreateVoiceRequest {
-  audioBase64: string;
+  audioBase64?: string;
+  audioUrl?: string;
   preferredName?: string;
 }
 

@@ -1203,7 +1203,11 @@ export default function App() {
   async function uploadVoice(audioBase64: string, preferredName: string) {
     const voice = await productApiClient.createVoice({ audioBase64, preferredName });
     setVoices((prev) => [...prev, voice]);
-    setNotice(buildNotice("success", "音色创建成功", `音色 "${voice.name}" 已创建，可在音色列表中选择。`));
+    if (voice.state) {
+      adoptServerState(voice.state);
+      setPodcastVoice(voice.state.systemConfig.voice.podcastVoice);
+    }
+    setNotice(buildNotice("success", "已设为默认主持人", `「${voice.name}」已复刻，实时专访和播客主持都会用这个声音。`));
   }
 
   async function deleteVoice(voiceId: string) {

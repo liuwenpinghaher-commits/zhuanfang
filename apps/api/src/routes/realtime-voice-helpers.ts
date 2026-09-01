@@ -272,6 +272,53 @@ export function normalizeOptionalString(value: unknown) {
 }
 
 /**
+ * Origin DashScope should GET. If the configured public base is only the SPA
+ * prefix (e.g. https://host/zhuanfang) while /api lives at the host root, strip it.
+ */
+export function resolvePublicApiOrigin(
+  explicit: string,
+  env: Record<string, string | undefined> = {}
+): string {
+  const trimmed = explicit.trim().replace(/\/+$/, "");
+  const prefix = (env.PRODUCT_PUBLIC_PATH ?? env.VITE_BASE ?? "").trim().replace(/\/+$/, "");
+  if (!trimmed || !prefix || prefix === "/") return trimmed;
+  try {
+    const url = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
+    if (url.pathname === prefix || url.pathname === `${prefix}/`) {
+      return `${url.protocol}//${url.host}`;
+    }
+  } catch {
+    /* keep trimmed */
+  }
+  return trimmed;
+}
+
+/** Public URL DashScope can GET without auth. Localhost is rejected. */
+export function resolveEnrollmentAudioPublicUrl(
+  request: { protocol?: string; headers?: Record<string, unknown> },
+  storedName: string,
+  env: Record<string, string | undefined> = {}
+): string | undefined {
+  const path = `/api/realtime-voice/enrollment-audio/${encodeURIComponent(storedName)}`;
+  const explicit = (env.CORPUS_AUDIO_PUBLIC_BASE_URL ?? env.VOICE_ENROLLMENT_PUBLIC_BASE_URL ?? "").trim().replace(/\/+$/, "");
+  if (explicit) {
+    const origin = resolvePublicApiOrigin(explicit, env);
+    if (/\/api\/realtime-voice\/enrollment-audio\/?$/.test(origin) || /\/api\/corpus\/audio-files\/?$/.test(origin)) {
+      return `${origin}/${encodeURIComponent(storedName)}`;
+    }
+    return `${origin}${path}`;
+  }
+  const headers = request.headers ?? {};
+  const forwardedProto = String(headers["x-forwarded-proto"] ?? "").split(",")[0]?.trim();
+  const forwardedHost = String(headers["x-forwarded-host"] ?? "").split(",")[0]?.trim();
+  const proto = forwardedProto || request.protocol || "https";
+  const host = forwardedHost || String(headers.host ?? "").trim();
+  if (!host || /^(localhost|127\.0\.0\.1)(:|$)/i.test(host)) return undefined;
+  // /api is on the public host root (zhuanfang.qing.blue). PRODUCT_PUBLIC_PATH is the SPA prefix.
+  return `${proto}://${host}${path}`;
+}
+
+/**
  * Map a requested TTS voice to one CosyVoice v3 will accept.
  * The product config stores semantic aliases (warm-interviewer / calm-host) that
  * are product labels, NOT CosyVoice voice IDs — forwarding them to cosyvoice-v3-plus

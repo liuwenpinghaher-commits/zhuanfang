@@ -24,10 +24,15 @@ describe("normalizeCosyVoiceId", () => {
     expect(normalizeCosyVoiceId("warm-interviewer")).toBe("longanlingxin");
   });
 
-  it("falls back on empty/unknown", () => {
+  it("falls back on empty, keeps clone ids", () => {
     expect(normalizeCosyVoiceId("")).toBe("longanlingxin");
-    expect(normalizeCosyVoiceId("not-a-real-voice")).toBe("longanlingxin");
     expect(normalizeCosyVoiceId(undefined, "longanyang")).toBe("longanyang");
+    expect(normalizeCosyVoiceId("qwen-audio-3.0-tts-plus-zhangxj-abc")).toBe(
+      "qwen-audio-3.0-tts-plus-zhangxj-abc"
+    );
+    expect(resolveQwenAudioTtsVoice("qwen-audio-3.0-tts-plus-zhangxj-abc")).toBe(
+      "qwen-audio-3.0-tts-plus-zhangxj-abc"
+    );
   });
 
   it("maps qwen-audio TTS voices that 411 on token-plan to speaking voices", () => {

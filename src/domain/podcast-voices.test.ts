@@ -32,6 +32,11 @@ describe("podcast speaking identity and pairing", () => {
     expect(options.some((item) => item.voice === "longanlingxin")).toBe(true);
     expect(options.some((item) => item.voice === "longanqian")).toBe(true);
   });
+
+  it("labels a 张小珺 clone id as 张小珺", () => {
+    const options = podcastVoiceSelectOptions("qwen-audio-3.0-tts-plus-zhangxj-abc");
+    expect(options[0]).toEqual({ voice: "qwen-audio-3.0-tts-plus-zhangxj-abc", name: "张小珺" });
+  });
 });
 
 describe("resolveEpisodeVoices", () => {

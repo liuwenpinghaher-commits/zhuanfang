@@ -279,7 +279,7 @@ const server = createServer(async (req, res) => {
   if (path === "/api/v1/services/audio/tts/customization" && req.method === "POST") {
     const body = JSON.parse((await readBody(req)) || "{}");
     const action = body?.input?.action;
-    if (action === "list") {
+    if (action === "list" || action === "list_voice") {
       return json(res, 200, {
         output: {
           voice_list: [
@@ -289,9 +289,13 @@ const server = createServer(async (req, res) => {
         }
       });
     }
-    if (action === "create") {
+    if (action === "create" || action === "create_voice") {
       return json(res, 200, {
-        output: { voice: "fake-cloned-voice", target_model: "qwen3.5-omni-plus-realtime" }
+        output: {
+          voice_id: "qwen-audio-3.0-tts-plus-fakeclone-1",
+          voice: "qwen-audio-3.0-tts-plus-fakeclone-1",
+          target_model: "qwen-audio-3.0-tts-plus"
+        }
       });
     }
     // delete / 其它 action：契约上返回空 output 即成功。

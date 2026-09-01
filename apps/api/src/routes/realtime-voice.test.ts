@@ -9,6 +9,7 @@ import {
   type ProductStateRepository
 } from "../product-state-repository";
 import { registerRealtimeVoiceRoutes } from "./realtime-voice";
+import { resolveEnrollmentAudioPublicUrl } from "./realtime-voice-helpers";
 import type { BailianStreamingTtsClient } from "../providers/bailian-streaming-tts";
 import type { InterviewEnginePolicy, InterviewSession } from "../../../../src/domain/types";
 
@@ -2049,6 +2050,126 @@ describe("realtime-voice GET /api/realtime-voice/voices — 配置态 preset / �
     expect(body.error).toContain("音色列表查询失败");
     expect(body.error).toContain("network error");
 
+    await testApp.close();
+  });
+
+  it("voice-enrollment 404 时回预置 + 产品策略里已写入的克隆 id", async () => {
+    const stateRepo = createInMemoryProductStateRepository({
+      ...createInitialProductState(),
+      systemConfig: {
+        ...createInitialProductState().systemConfig,
+        voice: {
+          ...createInitialProductState().systemConfig.voice,
+          defaultVoice: "qwen-audio-3.0-tts-plus-zhangxj-abc",
+          podcastVoice: "qwen-audio-3.0-tts-plus-zhangxj-abc"
+        }
+      }
+    });
+    const testApp = Fastify();
+    await registerRealtimeVoiceRoutes(testApp, {
+      stateRepo,
+      voiceEnrollmentClient: {
+        listVoices: async () => { throw new Error("Bailian voice list failed: 404 {\"message\":\"Model not exist.\"}"); },
+        createVoice: async () => { throw new Error("unused"); },
+        deleteVoice: async () => undefined
+      }
+    } as never);
+    await testApp.ready();
+
+    const res = await testApp.inject({ method: "GET", url: "/api/realtime-voice/voices" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { preset: Array<{ voice: string }>; custom: Array<{ voice: string; name: string }> };
+    expect(body.custom.map((item) => item.voice)).toEqual(["qwen-audio-3.0-tts-plus-zhangxj-abc"]);
+    expect(body.custom[0]?.name).toBe("张小珺");
+    expect(body.preset.map((item) => item.voice)).toEqual(expect.arrayContaining(["longanyang", "longanhuan"]));
+    await testApp.close();
+  });
+
+  it("official DashScope 401 时同样回预置 + 已写入的克隆 id", async () => {
+    const stateRepo = createInMemoryProductStateRepository({
+      ...createInitialProductState(),
+      systemConfig: {
+        ...createInitialProductState().systemConfig,
+        voice: {
+          ...createInitialProductState().systemConfig.voice,
+          defaultVoice: "qwen-audio-3.0-tts-plus-zhangxj-abc",
+          podcastVoice: "qwen-audio-3.0-tts-plus-zhangxj-abc"
+        }
+      }
+    });
+    const testApp = Fastify();
+    await registerRealtimeVoiceRoutes(testApp, {
+      stateRepo,
+      voiceEnrollmentClient: {
+        listVoices: async () => { throw new Error("Bailian voice list failed: 401"); },
+        createVoice: async () => { throw new Error("unused"); },
+        deleteVoice: async () => undefined
+      }
+    } as never);
+    await testApp.ready();
+    const res = await testApp.inject({ method: "GET", url: "/api/realtime-voice/voices" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().custom.map((item: { voice: string }) => item.voice)).toEqual([
+      "qwen-audio-3.0-tts-plus-zhangxj-abc"
+    ]);
+    await testApp.close();
+  });
+
+  it("rejects localhost enrollment URLs and accepts an explicit public base", () => {
+    expect(resolveEnrollmentAudioPublicUrl({ headers: { host: "127.0.0.1:3210" } }, "enroll-1.wav")).toBeUndefined();
+    expect(resolveEnrollmentAudioPublicUrl(
+      { headers: { host: "127.0.0.1:3210" } },
+      "enroll-1.wav",
+      { CORPUS_AUDIO_PUBLIC_BASE_URL: "https://zhuanfang.qing.blue" }
+    )).toBe("https://zhuanfang.qing.blue/api/realtime-voice/enrollment-audio/enroll-1.wav");
+    expect(resolveEnrollmentAudioPublicUrl(
+      { headers: { host: "127.0.0.1:3210" } },
+      "enroll-1.wav",
+      {
+        CORPUS_AUDIO_PUBLIC_BASE_URL: "https://zhuanfang.qing.blue/zhuanfang",
+        PRODUCT_PUBLIC_PATH: "/zhuanfang"
+      }
+    )).toBe("https://zhuanfang.qing.blue/api/realtime-voice/enrollment-audio/enroll-1.wav");
+  });
+
+  it("createVoice writes the clone as default host voice", async () => {
+    const stateRepo = createInMemoryProductStateRepository(createInitialProductState());
+    const createVoice = vi.fn(async (input: { audioUrl: string; preferredName?: string }) => ({
+      voice: "qwen-audio-3.0-tts-plus-zhangxj-abc",
+      name: input.preferredName ?? "张小珺",
+      description: "",
+      targetModel: "qwen-audio-3.0-tts-plus",
+      createdAt: "2026-08-25T00:00:00.000Z"
+    }));
+    const testApp = Fastify();
+    await registerRealtimeVoiceRoutes(testApp, {
+      stateRepo,
+      voiceEnrollmentClient: {
+        listVoices: async () => [],
+        createVoice,
+        deleteVoice: async () => undefined
+      }
+    } as never);
+    await testApp.ready();
+
+    const res = await testApp.inject({
+      method: "POST",
+      url: "/api/realtime-voice/voices",
+      payload: {
+        audioUrl: "https://zhuanfang.qing.blue/api/realtime-voice/enrollment-audio/enroll-1.wav",
+        preferredName: "张小珺"
+      }
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { voice: string; state?: { systemConfig: { voice: { defaultVoice: string; podcastVoice: string } } } };
+    expect(body.voice).toBe("qwen-audio-3.0-tts-plus-zhangxj-abc");
+    expect(body.state?.systemConfig.voice.defaultVoice).toBe("qwen-audio-3.0-tts-plus-zhangxj-abc");
+    expect(body.state?.systemConfig.voice.podcastVoice).toBe("qwen-audio-3.0-tts-plus-zhangxj-abc");
+    expect(stateRepo.getState().systemConfig.voice.defaultVoice).toBe("qwen-audio-3.0-tts-plus-zhangxj-abc");
+    expect(createVoice).toHaveBeenCalledWith(expect.objectContaining({
+      audioUrl: "https://zhuanfang.qing.blue/api/realtime-voice/enrollment-audio/enroll-1.wav",
+      prefix: "张小珺"
+    }));
     await testApp.close();
   });
 });

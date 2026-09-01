@@ -1,8 +1,11 @@
 import { recordVoiceLatency } from "../observability/runtime-metrics";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { IncomingMessage } from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { createReadStream, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { isAuthGuardActive, isAuthorized } from "../auth";
+import { resolveCorpusUploadDir } from "../local-object-artifacts";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   attachWebSocketHeartbeat,
@@ -41,7 +44,8 @@ import { mergeInterviewSessionRefresh } from "../../../../src/domain/session-mer
 import {
   appendRealtimeSignalTrace,
   buildInterviewEnginePolicy,
-  truncateAssistantTurn
+  truncateAssistantTurn,
+  withSystemConfigVersion
 } from "../../../../src/domain/engine";
 import { stripSpokenAsides } from "../../../../src/domain/speech-text";
 import type {
@@ -68,6 +72,7 @@ import {
   createRealtimeVoiceSession,
   normalizeInstructions,
   normalizeOptionalString,
+  resolveEnrollmentAudioPublicUrl,
   normalizeCosyVoice,
   normalizeProsody,
   getSessionId,
@@ -148,28 +153,123 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     done(null, body);
   });
 
-  const cosyvoiceFallbackPreset = COSYVOICE_PRESET_VOICES.map((v) => ({
+  type CatalogVoice = {
+    voice: string;
+    name: string;
+    description: string;
+    targetModel?: string;
+    createdAt?: string;
+  };
+  const cosyvoiceFallbackPreset: CatalogVoice[] = COSYVOICE_PRESET_VOICES.map((v) => ({
     voice: v.voice,
     name: v.name,
-    description: v.name,
-    targetModel: undefined as string | undefined,
-    createdAt: undefined as string | undefined
+    description: v.name
   }));
+
+  function persistEnrollmentAudio(request: FastifyRequest, audioBase64: string): {
+    ok: true;
+    publicUrl: string;
+    storedName: string;
+  } | { ok: false; code: number; error: string } {
+    const raw = audioBase64.trim();
+    if (!raw) return { ok: false, code: 422, error: "audioBase64 is empty." };
+    if (raw.length > 8 * 1024 * 1024) {
+      return { ok: false, code: 422, error: "复刻音频过大（base64 超过 8 MB）。请裁成 10–20 秒后再传。" };
+    }
+    let bytes: Buffer;
+    try {
+      bytes = Buffer.from(raw, "base64");
+    } catch {
+      return { ok: false, code: 422, error: "音频 base64 无法解码。" };
+    }
+    if (!bytes.length) return { ok: false, code: 422, error: "音频内容为空。" };
+    const digest = createHash("sha256").update(bytes).digest("hex").slice(0, 16);
+    const storedName = `enroll-${Date.now()}-${digest}.wav`;
+    const uploadDir = resolveCorpusUploadDir({ env: runtimeEnv, cwd: process.cwd() });
+    mkdirSync(uploadDir, { recursive: true });
+    writeFileSync(join(uploadDir, storedName), bytes);
+    const publicUrl = resolveEnrollmentAudioPublicUrl(request, storedName, runtimeEnv);
+    if (!publicUrl) {
+      return {
+        ok: false,
+        code: 422,
+        error: "无法生成公网音频 URL。请配置 CORPUS_AUDIO_PUBLIC_BASE_URL，或从公网域名访问后再创建音色。"
+      };
+    }
+    return { ok: true, publicUrl, storedName };
+  }
+
+  server.get("/api/realtime-voice/enrollment-audio/:fileName", async (request, reply) => {
+    const fileName = String((request.params as { fileName?: string }).fileName ?? "");
+    if (!/^enroll-\d+-[a-f0-9]{16}\.wav$/.test(fileName)) {
+      return reply.code(400).send({ error: "Invalid enrollment audio file name." });
+    }
+    const uploadDir = resolveCorpusUploadDir({ env: runtimeEnv, cwd: process.cwd() });
+    const filePath = join(uploadDir, fileName);
+    if (!existsSync(filePath)) {
+      return reply.code(404).send({ error: "Enrollment audio not found." });
+    }
+    const stat = statSync(filePath);
+    return reply
+      .header("Content-Type", "audio/wav")
+      .header("Content-Length", String(stat.size))
+      .header("Cache-Control", "public, max-age=3600")
+      .send(createReadStream(filePath));
+  });
+
+  function configuredCustomVoices() {
+    const state = options.stateRepo?.getState();
+    if (!state) return [] as typeof cosyvoiceFallbackPreset;
+    const ids = [state.systemConfig.voice.defaultVoice, state.systemConfig.voice.podcastVoice]
+      .map((value) => (typeof value === "string" ? value.trim() : ""))
+      .filter(Boolean);
+    const seen = new Set<string>();
+    const custom: CatalogVoice[] = [];
+    for (const id of ids) {
+      if (seen.has(id) || cosyvoiceFallbackPreset.some((preset) => preset.voice === id)) continue;
+      seen.add(id);
+      custom.push({
+        voice: id,
+        name: /zhangxj/i.test(id) ? "张小珺" : id,
+        description: "",
+        targetModel: "qwen-audio-3.0-tts-plus",
+        createdAt: "configured"
+      });
+    }
+    return custom;
+  }
+
+  function mergeVoiceCatalog(listed: CatalogVoice[]) {
+    const fromState = configuredCustomVoices();
+    const custom = [
+      ...listed.filter((item) => Boolean(item.createdAt) || Boolean(item.targetModel)),
+      ...fromState
+    ];
+    const customById = new Map(custom.map((item) => [item.voice, item]));
+    const customUnique = [...customById.values()];
+    const customIds = new Set(customUnique.map((item) => item.voice));
+    const preset = [
+      ...cosyvoiceFallbackPreset.filter((presetVoice) => !customIds.has(presetVoice.voice)),
+      ...listed.filter((item) => !customIds.has(item.voice))
+    ];
+    return { preset, custom: customUnique };
+  }
 
   server.get("/api/realtime-voice/voices", async (_request, reply) => {
     if (!options.voiceEnrollmentClient) {
-      // 配置边界:未配置声纹服务 → 只有系统预置音色可用(如实的能力边界,非失败)。
-      return { preset: cosyvoiceFallbackPreset, custom: [] };
+      // 配置边界:未配置声纹服务 → 预置 + 产品策略里已写入的克隆 id。
+      return mergeVoiceCatalog([]);
     }
     try {
       const voices = await options.voiceEnrollmentClient.listVoices();
-      const preset = voices.filter((v) => !v.targetModel || v.targetModel === "qwen-audio-3.0-realtime-plus");
-      const custom = voices.filter((v) => v.targetModel && v.targetModel !== "qwen-audio-3.0-realtime-plus");
-      return { preset, custom };
+      return mergeVoiceCatalog(voices);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.warn(JSON.stringify({ event: "voice_list_failed", error: message }));
-      // 上游失败如实 502——不再用预置列表冒充查询结果(那会隐藏用户的自定义克隆音色)。
+      // token-plan 工作空间没有 voice-enrollment 目录时是能力边界，不是查询失败。
+      if (/Model not exist|voice list failed:\s*(401|403|404)/i.test(message)) {
+        return mergeVoiceCatalog([]);
+      }
       return reply.code(502).send({ error: `音色列表查询失败：${message}` });
     }
   });
@@ -178,16 +278,50 @@ export async function registerRealtimeVoiceRoutes(server: FastifyInstance, optio
     if (!options.voiceEnrollmentClient) {
       return reply.code(503).send({ error: "Voice enrollment is not configured." });
     }
-    const body = request.body as { audioBase64?: string; preferredName?: string } | undefined;
-    if (!body?.audioBase64) {
-      return reply.code(422).send({ error: "audioBase64 is required." });
+    const body = request.body as { audioBase64?: string; preferredName?: string; audioUrl?: string } | undefined;
+    const preferredName = typeof body?.preferredName === "string" ? body.preferredName.trim() : "";
+    const providedUrl = typeof body?.audioUrl === "string" ? body.audioUrl.trim() : "";
+    let audioUrl = providedUrl;
+    if (!audioUrl) {
+      if (!body?.audioBase64) {
+        return reply.code(422).send({ error: "audioBase64 or audioUrl is required." });
+      }
+      const stored = persistEnrollmentAudio(request, body.audioBase64);
+      if (!stored.ok) {
+        return reply.code(stored.code).send({ error: stored.error });
+      }
+      audioUrl = stored.publicUrl;
     }
     try {
       const voice = await options.voiceEnrollmentClient.createVoice({
-        audioBase64: body.audioBase64,
-        preferredName: body.preferredName
+        audioUrl,
+        preferredName: preferredName || undefined,
+        prefix: preferredName || undefined
       });
-      return voice;
+      if (!options.stateRepo) return voice;
+      const nextState = await runStateCommand(
+        options.stateRepo,
+        (latest) => withSystemConfigVersion(
+          latest,
+          {
+            ...latest.systemConfig,
+            voice: {
+              ...latest.systemConfig.voice,
+              defaultVoice: voice.voice,
+              podcastVoice: voice.voice
+            }
+          },
+          {
+            changedBy: "user",
+            reason: preferredName
+              ? `默认主持人改为「${preferredName}」`
+              : "默认主持人改为复刻音色",
+            createdAt: new Date().toISOString()
+          }
+        ),
+        { writeGate: options.writeGate, label: `command:voice-enroll:${voice.voice}` }
+      );
+      return nextState ? { ...voice, state: nextState } : voice;
     } catch (err) {
       // 不把上游 provider 原始错误(可能含内部 endpoint/模型名/配额提示)回传客户端。
       console.warn(JSON.stringify({ event: "voice_create_failed", error: err instanceof Error ? err.message : String(err) }));

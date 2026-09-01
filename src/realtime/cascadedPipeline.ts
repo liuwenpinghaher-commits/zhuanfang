@@ -511,7 +511,13 @@ export function connectCascadedPipeline(
   function maybeTakeFloor(side: string) {
     if (!side) return;
     if (openingHold) return;
-    if (state !== "thinking" && state !== "speaking") return;
+    // Thinking is not audible yet. Leftover ASR from the turn we just committed
+    // must not abort the LLM before the host has a chance to speak.
+    if (state === "thinking") return;
+    if (state !== "speaking") return;
+    // Clone TTS first packet is multi-second. Killing speak() before PCM is
+    // scheduled is how the guest gets a written reply and silence.
+    if (tts.didSchedulePcm?.() === false) return;
     const hasUserEnergy = asr.hasRecentUserEnergyEvidence?.() ?? true;
     const similarToLiveTts = turnAssembler.isSimilarToLiveTts(side);
     const takingTheFloor = isGrabbingMatter(side);

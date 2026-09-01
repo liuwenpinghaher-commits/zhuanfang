@@ -916,11 +916,12 @@ export function createProductApiClient(
       return (await requestJson("/api/realtime-voice/voices", { method: "GET" })) as VoiceListResponse;
     },
     async createVoice(input) {
-      return (await requestJson("/api/realtime-voice/voices", {
+      const voice = (await requestJson("/api/realtime-voice/voices", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input)
       })) as VoiceInfo;
+      return voice.state ? { ...voice, state: normalizeProductState(voice.state) } : voice;
     },
     async deleteVoice(voiceId) {
       const response = await authedFetch(`${normalizedBaseUrl}/api/realtime-voice/voices/${encodeURIComponent(voiceId)}`, {

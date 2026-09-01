@@ -102,7 +102,9 @@ export const AUTH_EXEMPT_PREFIXES = [
   "/api/health",
   "/api/runtime-bootstrap",
   "/api/auth/login",
-  "/api/auth/logout"
+  "/api/auth/logout",
+  // DashScope voice-enrollment fetches this clip with no auth header.
+  "/api/realtime-voice/enrollment-audio"
 ];
 
 /**

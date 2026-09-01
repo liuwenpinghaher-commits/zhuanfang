@@ -37,8 +37,10 @@ const VOICE_ALIASES: Record<string, string> = {
 };
 
 /**
- * Normalize a podcast/TTS voice id to a verified preset.
- * Unknown or empty values fall back to `fallback` (default longanlingxin).
+ * Normalize a podcast/TTS voice id.
+ * Empty values fall back to `fallback`. Known aliases map to presets.
+ * Custom clone ids (and any other non-empty unknown id) pass through —
+ * do not fold them into longanlingxin or synthesis uses the wrong mouth.
  */
 export function normalizeCosyVoiceId(raw: string | undefined | null, fallback = "longanlingxin"): string {
   const v = (raw ?? "").trim();
@@ -46,7 +48,7 @@ export function normalizeCosyVoiceId(raw: string | undefined | null, fallback = 
   if (PRESET_IDS.has(v)) return v;
   const aliased = VOICE_ALIASES[v] ?? VOICE_ALIASES[v.toLowerCase()];
   if (aliased && PRESET_IDS.has(aliased)) return aliased;
-  return PRESET_IDS.has(fallback) ? fallback : "longanlingxin";
+  return v;
 }
 
 /** token-plan qwen-audio-3.0-tts-plus currently speaks these; others 411. */

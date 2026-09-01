@@ -41,6 +41,7 @@ rsync -a \
   --exclude 'zhuanfang-deploy.tgz.sha256' \
   --exclude '._*' \
   --exclude '.DS_Store' \
+  --exclude '张小珺专访资料' \
   ./ "$ARTIFACT_DIR/app/"
 
 # AppleDouble / Finder junk must never reach Surreal schema apply.
@@ -53,6 +54,11 @@ rm -f "$ARTIFACT_DIR/app/.env" \
 MEMORY_VIEW="$ARTIFACT_DIR/app/src/features/memory/MemoryGovernanceView.tsx"
 if [ ! -f "$MEMORY_VIEW" ]; then
   echo "pack failed: missing $MEMORY_VIEW (do not exclude src/features/memory)" >&2
+  exit 1
+fi
+
+if [ -e "$ARTIFACT_DIR/app/张小珺专访资料" ]; then
+  echo "pack failed: interviewee docs leaked into artifact" >&2
   exit 1
 fi
 

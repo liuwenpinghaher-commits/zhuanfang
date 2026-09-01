@@ -6,7 +6,7 @@ import { buildAppliedPlaybookRulesBlock, buildBoundariesBlock, buildCorrectionsB
 import { sanitizeExternalMaterialList } from "../../../../../src/domain/utils";
 import { resolveRequestTimeoutMs } from "../../request-timeout";
 import { normalizeCosyVoiceId, resolveQwenAudioTtsVoice } from "../../voice-presets";
-import { resolveBailianApiKey } from "../../runtime-secrets";
+import { normalizeConfiguredSecret, resolveBailianApiKey } from "../../runtime-secrets";
 import {
   synthesizeQwenAudioTts,
   type SynthesizeQwenAudioTtsOptions
@@ -16,6 +16,8 @@ import {
 export const BAILIAN_DEFAULT_BASE_URL = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1";
 /** Native DashScope-style host on the same MaaS workspace (TTS HTTP, task poll). */
 export const BAILIAN_DEFAULT_AUDIO_BASE_URL = "https://token-plan.cn-beijing.maas.aliyuncs.com";
+/** Voice clone lives on public DashScope; token-plan workspaces often lack voice-enrollment. */
+export const BAILIAN_DEFAULT_ENROLLMENT_BASE_URL = "https://dashscope.aliyuncs.com";
 /** WebRTC signaling on the same MaaS workspace. Override with BAILIAN_REALTIME_WEBRTC_ENDPOINT. */
 export const BAILIAN_DEFAULT_WEBRTC_ENDPOINT = "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1/webrtc/realtime";
 export const BAILIAN_DEFAULT_TTS_WS_URL = "wss://token-plan.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference";
@@ -1566,6 +1568,8 @@ function delay(ms: number) {
   });
 }
 
+export const QWEN_AUDIO_TTS_ENROLLMENT_TARGET = BAILIAN_PODCAST_TTS_MODEL;
+
 export interface BailianVoiceInfo {
   voice: string;
   name: string;
@@ -1576,18 +1580,32 @@ export interface BailianVoiceInfo {
 
 export interface BailianVoiceEnrollmentClient {
   listVoices(): Promise<BailianVoiceInfo[]>;
-  createVoice(input: { audioBase64: string; preferredName?: string }): Promise<BailianVoiceInfo>;
+  createVoice(input: { audioUrl: string; preferredName?: string; prefix?: string }): Promise<BailianVoiceInfo>;
   deleteVoice(voiceId: string): Promise<void>;
+}
+
+export function sanitizeVoiceEnrollmentPrefix(raw: string | undefined, fallback = "clone"): string {
+  const trimmed = (raw ?? "").trim();
+  const alnum = trimmed.replace(/[^a-zA-Z0-9]/g, "").slice(0, 10).toLowerCase();
+  if (alnum) return alnum;
+  if (/张小珺|小珺|zhangxj/i.test(trimmed)) return "zhangxj";
+  return fallback;
+}
+
+function enrollmentVoiceId(item: { voice?: string; voice_id?: string } | undefined): string {
+  return (item?.voice_id ?? item?.voice ?? "").trim();
 }
 
 export function createBailianVoiceEnrollmentClient(options: {
   apiKey: string;
   audioBaseUrl?: string;
   fetchImpl?: FetchLike;
+  targetModel?: string;
 }): BailianVoiceEnrollmentClient {
-  const audioBaseUrl = (options.audioBaseUrl ?? BAILIAN_DEFAULT_AUDIO_BASE_URL).replace(/\/$/, "");
+  const audioBaseUrl = (options.audioBaseUrl ?? BAILIAN_DEFAULT_ENROLLMENT_BASE_URL).replace(/\/$/, "");
   const fetchImpl = options.fetchImpl ?? fetch;
   const customizationUrl = `${audioBaseUrl}/api/v1/services/audio/tts/customization`;
+  const targetModel = (options.targetModel ?? QWEN_AUDIO_TTS_ENROLLMENT_TARGET).trim() || QWEN_AUDIO_TTS_ENROLLMENT_TARGET;
 
   return {
     async listVoices() {
@@ -1601,9 +1619,9 @@ export function createBailianVoiceEnrollmentClient(options: {
           "content-type": "application/json"
         },
         body: JSON.stringify({
-          model: "qwen-voice-enrollment",
+          model: "voice-enrollment",
           input: {
-            action: "list",
+            action: "list_voice",
             page_size: 100,
             page_index: 0
           }
@@ -1615,19 +1633,37 @@ export function createBailianVoiceEnrollmentClient(options: {
       }
 
       const payload = (await response.json()) as {
-        output?: { voice_list?: Array<{ voice: string; target_model?: string; gmt_create?: string; preferred_name?: string }> };
+        output?: {
+          voice_list?: Array<{
+            voice?: string;
+            voice_id?: string;
+            target_model?: string;
+            gmt_create?: string;
+            preferred_name?: string;
+            prefix?: string;
+          }>;
+        };
       };
 
-      return (payload.output?.voice_list ?? []).map((item) => ({
-        voice: item.voice,
-        name: item.preferred_name ?? item.voice,
-        description: "",
-        targetModel: item.target_model,
-        createdAt: item.gmt_create
-      }));
+      return (payload.output?.voice_list ?? []).flatMap((item) => {
+        const voice = enrollmentVoiceId(item);
+        if (!voice) return [];
+        return [{
+          voice,
+          name: item.preferred_name ?? item.prefix ?? voice,
+          description: "",
+          targetModel: item.target_model ?? targetModel,
+          createdAt: item.gmt_create
+        }];
+      });
     },
 
     async createVoice(input) {
+      const audioUrl = input.audioUrl.trim();
+      if (!audioUrl) {
+        throw new Error("Bailian voice create failed: audioUrl is required");
+      }
+      const prefix = sanitizeVoiceEnrollmentPrefix(input.prefix ?? input.preferredName);
       const response = await fetchImpl(customizationUrl, {
         method: "POST",
         // 审计修复(P2-21):enrollment 三外呼此前是本文件唯一无 abort 的 fetch——half-dead 连接
@@ -1638,12 +1674,14 @@ export function createBailianVoiceEnrollmentClient(options: {
           "content-type": "application/json"
         },
         body: JSON.stringify({
-          model: "qwen-voice-enrollment",
+          model: "voice-enrollment",
           input: {
-            action: "create",
-            audio: input.audioBase64,
-            target_model: "qwen-audio-3.0-realtime-plus",
-            ...(input.preferredName ? { preferred_name: input.preferredName } : {})
+            action: "create_voice",
+            target_model: targetModel,
+            prefix,
+            url: audioUrl,
+            language_hints: ["zh"],
+            max_prompt_audio_length: 20
           }
         })
       });
@@ -1654,14 +1692,19 @@ export function createBailianVoiceEnrollmentClient(options: {
       }
 
       const payload = (await response.json()) as {
-        output?: { voice?: string; gmt_create?: string };
+        output?: { voice?: string; voice_id?: string; gmt_create?: string; target_model?: string };
       };
+      const voice = enrollmentVoiceId(payload.output);
+      if (!voice) {
+        throw new Error("Bailian voice create failed: response did not include voice_id");
+      }
 
       return {
-        voice: payload.output?.voice ?? "",
-        name: input.preferredName ?? payload.output?.voice ?? "",
+        voice,
+        name: input.preferredName?.trim() || prefix || voice,
         description: "",
-        createdAt: payload.output?.gmt_create
+        targetModel: payload.output?.target_model ?? targetModel,
+        createdAt: payload.output?.gmt_create ?? new Date().toISOString()
       };
     },
 
@@ -1676,10 +1719,10 @@ export function createBailianVoiceEnrollmentClient(options: {
           "content-type": "application/json"
         },
         body: JSON.stringify({
-          model: "qwen-voice-enrollment",
+          model: "voice-enrollment",
           input: {
-            action: "delete",
-            voice: voiceId
+            action: "delete_voice",
+            voice_id: voiceId
           }
         })
       });
@@ -1691,15 +1734,31 @@ export function createBailianVoiceEnrollmentClient(options: {
   };
 }
 
+export function resolveVoiceEnrollmentApiKey(
+  env: Record<string, string | undefined> = process.env
+): string | undefined {
+  return normalizeConfiguredSecret(env.VOICE_ENROLLMENT_API_KEY)
+    ?? normalizeConfiguredSecret(env.DASHSCOPE_VOICE_ENROLLMENT_API_KEY)
+    ?? resolveBailianApiKey(env);
+}
+
+export function resolveVoiceEnrollmentBaseUrl(
+  env: Record<string, string | undefined> = process.env
+): string {
+  const explicit = (env.BAILIAN_VOICE_ENROLLMENT_BASE_URL ?? "").trim().replace(/\/$/, "");
+  if (explicit) return explicit;
+  return BAILIAN_DEFAULT_ENROLLMENT_BASE_URL;
+}
+
 export function createBailianVoiceEnrollmentClientFromEnv(
   env: Record<string, string | undefined> = process.env
 ): BailianVoiceEnrollmentClient | undefined {
-  const apiKey = resolveBailianApiKey(env);
+  const apiKey = resolveVoiceEnrollmentApiKey(env);
   if (!apiKey) return undefined;
 
   return createBailianVoiceEnrollmentClient({
     apiKey,
-    audioBaseUrl: env.BAILIAN_AUDIO_BASE_URL
+    audioBaseUrl: resolveVoiceEnrollmentBaseUrl(env)
   });
 }
 

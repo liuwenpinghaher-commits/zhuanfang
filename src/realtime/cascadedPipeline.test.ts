@@ -347,15 +347,49 @@ describe("connectCascadedPipeline", () => {
 
     asr.pushSpeechStarted();
     asr.pushDelta("等一下你听我说那次救火", true);
-    resolveLate({ assistantText: "这是被打断后才返回的陈旧回复。" }); // HTTP can't cancel → late resolve
     await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    expect(stateChanges).not.toContain("interrupted");
+    resolveLate({ assistantText: "这是被打断后才返回的陈旧回复。" });
+    await new Promise((r) => setTimeout(r, 0));
 
-    // The stale, superseded reply must NOT be spoken nor surfaced.
-    expect(tts.segments.flat().join("")).not.toContain("陈旧");
-    expect(assistantTexts.join("")).not.toContain("陈旧");
+    // Thinking leftover ASR no longer take-floors, so the late HTTP reply is spoken.
+    expect(tts.segments.flat().join("")).toContain("陈旧");
+    expect(stateChanges).not.toContain("interrupted");
 
+    pipeline.close();
+  });
+
+  it("thinking leftover ASR does not barge before host PCM is scheduled", async () => {
+    asr.setExpressionState("concluding");
+    asr.setEchoCancellationEnabled(true);
+    asr.setUserEnergyEvidence(true);
+    asr.setRecentEnergy(0.5);
+    let resolveSpeak!: () => void;
+    const heldSpeak = vi.fn((_segs: string[]) => new Promise<void>((res) => { resolveSpeak = res; }));
+    const heldStop = vi.fn();
+    const heldTts = {
+      speak: heldSpeak,
+      stop: heldStop,
+      close: vi.fn(),
+      didSchedulePcm: () => false,
+    } as unknown as TtsSink;
+    const pipeline = connectCascadedPipeline(makeOpts({
+      tts: heldTts,
+      echoCancellationEnabled: true,
+    }));
+    await pipeline.startListening();
+    asr.pushDelta("我把那次救火说完了。", true);
+    asr.pushSpeechStopped(1000);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(heldSpeak).toHaveBeenCalled();
+    asr.pushSpeechStarted();
+    asr.pushDelta("等一下你听我说那次救火", true);
+    await Promise.resolve();
+    expect(heldStop).not.toHaveBeenCalled();
+    expect(stateChanges).not.toContain("interrupted");
+    resolveSpeak();
     pipeline.close();
   });
 
@@ -652,10 +686,11 @@ describe("connectCascadedPipeline", () => {
   // -------------------------------------------------------------------------
   // 3. barge-in: speech_started while speaking → TTS stopped, LLM aborted
   // -------------------------------------------------------------------------
-  it("barge-in: 思考中抢话正事 stops TTS and aborts LLM", async () => {
+  it("barge-in: 思考中抢话正事 does not abort LLM before host PCM", async () => {
     asr.setExpressionState("concluding");
+    asr.setEchoCancellationEnabled(true);
+    asr.setUserEnergyEvidence(true);
 
-    // Use a slow sendUserTurn that never resolves on its own (we'll barge-in before)
     let abortSignalFired = false;
     const slowSend = vi.fn((_text: string, signal: AbortSignal) => {
       return new Promise<{ assistantText: string }>((_resolve, reject) => {
@@ -663,7 +698,6 @@ describe("connectCascadedPipeline", () => {
           abortSignalFired = true;
           reject(new DOMException("Aborted", "AbortError"));
         });
-        // intentionally never resolves
       });
     });
     const latencySamples: Array<{ interrupted?: boolean; bargeInSuccess?: boolean; takeFloor?: boolean }> = [];
@@ -671,6 +705,7 @@ describe("connectCascadedPipeline", () => {
     const pipeline = connectCascadedPipeline(
       makeOpts({
         sendUserTurn: slowSend,
+        echoCancellationEnabled: true,
         callbacks: {
           onStateChange: (s) => stateChanges.push(s),
           onUserTranscript: (text, isFinal) => userTranscripts.push({ text, isFinal }),
@@ -683,27 +718,69 @@ describe("connectCascadedPipeline", () => {
     await pipeline.startListening();
 
     asr.pushDelta("我决定了", true);
-    asr.pushSpeechStopped(1000); // triggers respond → thinking
-
-    // Wait until thinking state is entered (sendUserTurn called)
+    asr.pushSpeechStopped(1000);
     await vi.waitFor(() => slowSend.mock.calls.length > 0, { timeout: 500 });
 
     asr.setExpressionState("fluent");
     asr.pushSpeechStarted();
     asr.pushDelta("等一下你听我说那次救火", true);
-
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(abortSignalFired).toBe(true);
-    expect(tts.stopCalls).toBeGreaterThanOrEqual(1);
-    // state should be "interrupted" or "listening"
+    expect(abortSignalFired).toBe(false);
+    expect(tts.stopCalls).toBe(0);
+    expect(stateChanges).not.toContain("interrupted");
+    expect(
+      latencySamples.some((s) => s.interrupted === true && s.bargeInSuccess === true && s.takeFloor === true)
+    ).toBe(false);
+
+    pipeline.close();
+  });
+
+  it("barge-in: 出声后抢话正事 stops TTS and aborts leftover LLM", async () => {
+    asr.setExpressionState("concluding");
+    asr.setEchoCancellationEnabled(true);
+    asr.setUserEnergyEvidence(true);
+    asr.setRecentEnergy(0.5);
+    let resolveSpeak!: () => void;
+    const heldSpeak = vi.fn((_segs: string[]) => new Promise<void>((res) => { resolveSpeak = res; }));
+    const heldStop = vi.fn();
+    const heldTts = {
+      speak: heldSpeak,
+      stop: heldStop,
+      close: vi.fn(),
+      didSchedulePcm: () => true,
+    } as unknown as TtsSink;
+    const latencySamples: Array<{ interrupted?: boolean; bargeInSuccess?: boolean; takeFloor?: boolean }> = [];
+    const pipeline = connectCascadedPipeline(makeOpts({
+      tts: heldTts,
+      echoCancellationEnabled: true,
+      callbacks: {
+        onStateChange: (s) => stateChanges.push(s),
+        onUserTranscript: (text, isFinal) => userTranscripts.push({ text, isFinal }),
+        onAssistantText: (text) => assistantTexts.push(text),
+        onError: (e) => errors.push(e),
+        onLatency: (sample) => latencySamples.push(sample),
+      },
+    }));
+    await pipeline.startListening();
+    asr.pushDelta("我决定了", true);
+    asr.pushSpeechStopped(1000);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(heldSpeak).toHaveBeenCalled();
+    expect(stateChanges.at(-1)).toBe("speaking");
+
+    asr.pushSpeechStarted();
+    asr.pushDelta("等一下你听我说那次救火", true);
+    await Promise.resolve();
+    expect(heldStop).toHaveBeenCalled();
     expect(stateChanges).toContain("interrupted");
-    // Phase-0: natural barge-in reports success metrics
     expect(
       latencySamples.some((s) => s.interrupted === true && s.bargeInSuccess === true && s.takeFloor === true)
     ).toBe(true);
-
+    resolveSpeak();
     pipeline.close();
   });
 
