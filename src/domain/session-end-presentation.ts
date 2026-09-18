@@ -1,6 +1,7 @@
 /**
  * Pure end-of-interview presentation rules (journey honesty).
- * Used by the product finish path so doNotSave never claims "档案已生成".
+ * doNotSave never claims "档案已生成".
+ * Pending / HITL memory also must not claim "档案已生成".
  */
 
 export type InterviewEndDestination = "notes" | "memory" | "home";
@@ -9,7 +10,7 @@ export type InterviewEndPresentation = {
   noticeKind: "info" | "success";
   noticeTitle: string;
   noticeBody: string;
-  /** True only when long-term note/assets path actually ran (never for doNotSave). */
+  /** True only when we may tell the user the archive is complete (never for doNotSave or pending HITL). */
   claimsArchiveGenerated: boolean;
   destination: InterviewEndDestination;
   lastSummary: {
@@ -48,13 +49,13 @@ export function buildInterviewEndPresentation(input: {
 
   if (needsHitl) {
     return {
-      noticeKind: "success",
-      noticeTitle: "专访档案已生成",
+      noticeKind: "info",
+      noticeTitle: "本场已结束，记忆待你确认",
       noticeBody:
         pending > 0
-          ? `双轨笔记已更新。另有 ${pending} 条记忆待确认后才会进入跨会话召回——请在「记忆」审核。`
-          : "双轨笔记已更新。长期记忆需你确认后才会进入跨会话召回。",
-      claimsArchiveGenerated: true,
+          ? `双轨笔记已写下。另有 ${pending} 条记忆待确认后才会进入跨会话召回——请在「记忆」审核。现在还不能说档案已生成。`
+          : "双轨笔记已写下。长期记忆需你确认后才会进入跨会话召回。现在还不能说档案已生成。",
+      claimsArchiveGenerated: false,
       destination: "home",
       lastSummary: {
         noteTitle,

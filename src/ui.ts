@@ -169,9 +169,45 @@ export function formatRealtimePhase(phase: RealtimePhase): string {
     listening: "正在听",
     holding: "保持留白",
     thinking: "整理追问",
-    speaking: "准备开场"
+    speaking: "正在读下一问"
   };
   return labels[phase];
+}
+
+const WORK_STATUS_BY_STRATEGY: Record<string, string> = {
+  space_holding: "正在留白，让你把这件事说完",
+  debt_followup: "正在回访一笔未还的知识债",
+  premise_challenge: "正在挑战一个假设",
+  contradiction_review: "正在指出前后说法的张力",
+  decision_review: "正在回访一个到期决策",
+  perspective_shift: "正在换一个角度看同一件事",
+  synthesis: "正在做阶段总结",
+  mechanism_probe: "正在把这件事问到机制层",
+  concrete_example_probe: "正在要一个具体时刻",
+  blindspot_probe: "正在碰一个可能被跳过的点",
+  mechanism_reversal_probe: "正在从反面看这个机制"
+};
+
+/** 会中主状态：业务语言，不把工程策略名和毫秒阈值顶到标题。 */
+export function formatInterviewWorkStatus(input: {
+  turnCount: number;
+  recording: boolean;
+  strategyId?: string;
+  citingMemory?: boolean;
+}): string {
+  if (input.turnCount === 0) {
+    return "先回答下方开场问题（也可开语音）";
+  }
+  if (input.strategyId && WORK_STATUS_BY_STRATEGY[input.strategyId]) {
+    return WORK_STATUS_BY_STRATEGY[input.strategyId];
+  }
+  if (input.citingMemory) {
+    return "正在引用上次的一句话";
+  }
+  if (input.recording) {
+    return "正在听你说，说完再追问";
+  }
+  return "围绕锚点继续追问";
 }
 
 export function formatPodcastTimestamp(totalSeconds: number): string {

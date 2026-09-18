@@ -7,7 +7,7 @@ import { INTERVIEW_STRATEGY_LABELS, PLAYBOOK_DRIVEN_STRATEGIES } from "../../dom
 import type { InterviewControlAction, InterviewMode, InterviewSession } from "../../domain/types";
 import type { TranscriptReviewItem } from "../../realtime/cascadedPipeline";
 import type { VoiceUiStatus } from "../../realtime/voiceTransportLifecycle";
-import { formatRealtimePhase, interviewControlGroups } from "../../ui";
+import { formatInterviewWorkStatus, formatRealtimePhase, interviewControlGroups } from "../../ui";
 
 interface InterviewViewProps {
   card: ReturnType<typeof buildInterviewCard>;
@@ -186,13 +186,12 @@ export function InterviewView({
   const controlsDisabled = busy;
   const userTurnCount = session.turns.filter((t) => t.role === "user").length;
   const headerTitle = formatInterviewHeaderTitle(session);
-  const statusLine =
-    realtimeState?.nextAction ??
-    (session.turns.length === 0
-      ? "先回答下方开场问题（也可开语音）"
-      : recording
-        ? "语音对话进行中"
-        : "围绕锚点继续追问");
+  const statusLine = formatInterviewWorkStatus({
+    turnCount: session.turns.length,
+    recording,
+    strategyId: lastStrategy?.strategy,
+    citingMemory: liveRelevantMemories.length > 0
+  });
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
@@ -216,7 +215,7 @@ export function InterviewView({
         title={headerTitle}
         subtitle={
           voiceTransport
-            ? `${voiceTransport === "websocket" ? "WebSocket 实时语音" : voiceTransport === "livekit" ? "LiveKit 级联语音" : "实时语音"} · 与文本写入同一份记录`
+            ? "语音正在把你说的字送进这场专访，并把下一问读出来"
             : "默认文本追问；需要时再点「语音」。会话与已提交回合会保留。"
         }
       />
@@ -446,14 +445,14 @@ export function InterviewView({
                     window.confirm(
                       session.doNotSave
                         ? "确认结束本场？本场已标记不保存，不会写入长期资产。"
-                        : "确认结束并生成档案？结束后将归档双轨笔记与相关资产。"
+                        : "结束本场？会写下双轨笔记。若抽出记忆，要你确认后才进入档案，现在不会宣称档案已生成。"
                     );
                   if (ok) onFinish();
                 }}
                 disabled={userTurnCount === 0 || busy}
                 aria-busy={finishing}
               >
-                {finishing ? "正在生成档案…" : "结束并生成档案"}
+                {finishing ? "正在收束本场…" : "结束并生成档案"}
               </button>
               <button className="primary-action" type="submit" disabled={submitting || finishing || !input.trim()} aria-busy={submitting}>
                 <ChevronRight size={18} />

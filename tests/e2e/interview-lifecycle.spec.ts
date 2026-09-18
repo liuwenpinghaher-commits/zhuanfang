@@ -61,7 +61,7 @@ test("full interview lifecycle: start, submit 3 turns, end, assert diary note", 
   // ── Step 5: finish returns home with success notice + 上场摘要 ────────────
   // finishInterview calls the real API (POST /api/interview-sessions/:id/end) which
   // runs LLM-based session analysis — empirically ~16s. Allow 35s for headroom.
-  await expect(page.getByText("专访档案已生成")).toBeVisible({ timeout: 35000 });
+  await expect(page.getByText(/专访档案已生成|本场已结束，记忆待你确认/)).toBeVisible({ timeout: 35000 });
   await expect(page.getByText(/上场专访已结束|查看本场笔记|去记忆/).first()).toBeVisible({
     timeout: 10000
   });

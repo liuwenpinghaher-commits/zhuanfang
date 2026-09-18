@@ -5,6 +5,7 @@ import {
   configSectionOptions,
   formatCapabilityTaskStatus,
   formatRealtimePhase,
+  formatInterviewWorkStatus,
   formatPodcastTimestamp,
   groupedNavigation,
   interviewControlGroups,
@@ -69,7 +70,20 @@ describe("ui helpers", () => {
     expect(formatRealtimePhase("listening")).toBe("正在听");
     expect(formatRealtimePhase("holding")).toBe("保持留白");
     expect(formatRealtimePhase("thinking")).toBe("整理追问");
-    expect(formatRealtimePhase("speaking")).toBe("准备开场");
+    expect(formatRealtimePhase("speaking")).toBe("正在读下一问");
+  });
+
+  it("formats in-session work status in interview language", () => {
+    expect(formatInterviewWorkStatus({ turnCount: 0, recording: false })).toBe(
+      "先回答下方开场问题（也可开语音）"
+    );
+    expect(formatInterviewWorkStatus({ turnCount: 2, recording: false, strategyId: "premise_challenge" })).toBe(
+      "正在挑战一个假设"
+    );
+    expect(formatInterviewWorkStatus({ turnCount: 2, recording: false, citingMemory: true })).toBe(
+      "正在引用上次的一句话"
+    );
+    expect(formatInterviewWorkStatus({ turnCount: 2, recording: true })).toBe("正在听你说，说完再追问");
   });
 
   it("defines podcast production sections in workflow order", () => {

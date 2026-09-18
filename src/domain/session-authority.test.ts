@@ -53,18 +53,32 @@ describe("session honesty — doNotSave end presentation", () => {
     expect(p.lastSummary.pendingMemory).toBe(0);
   });
 
-  it("normal end with pending HITL claims archive but routes to memory review", () => {
+  it("normal end with pending HITL does not claim archive generated", () => {
     const p = buildInterviewEndPresentation({
       doNotSave: false,
       pendingMemoryCandidateCount: 2,
       noteTitle: "本场笔记"
     });
-    expect(p.claimsArchiveGenerated).toBe(true);
-    expect(p.noticeTitle).toMatch(/档案已生成/);
+    expect(p.claimsArchiveGenerated).toBe(false);
+    expect(p.noticeTitle).not.toMatch(/档案已生成/);
+    expect(p.noticeTitle).toMatch(/记忆待你确认/);
     expect(p.noticeBody).toContain("记忆");
+    expect(p.noticeBody).toContain("还不能说档案已生成");
     expect(p.noticeBody).not.toContain("记忆治理");
     expect(p.lastSummary.destination).toBe("memory");
     expect(p.lastSummary.pendingMemory).toBe(2);
+  });
+
+  it("normal end without pending memory may claim archive generated", () => {
+    const p = buildInterviewEndPresentation({
+      doNotSave: false,
+      pendingMemoryCandidateCount: 0,
+      noteTitle: "本场笔记"
+    });
+    expect(p.claimsArchiveGenerated).toBe(true);
+    expect(p.noticeTitle).toMatch(/档案已生成/);
+    expect(p.lastSummary.destination).toBe("notes");
+    expect(p.lastSummary.pendingMemory).toBe(0);
   });
 });
 

@@ -221,7 +221,7 @@ export default function App() {
   // 同步防重入:/end 要调真实 LLM 做档案抽取(数秒),用户等不及会重复点"结束"。没有这个 guard,
   // 第一次成功 completed 后,后续点击全部 409(已结束)→ "结束失败"提示覆盖成功 → 诱导继续点。
   const finishingRef = useRef(false);
-  const [finishingInterview, setFinishingInterview] = useState(false); // UI:结束按钮显示"正在生成档案…"
+  const [finishingInterview, setFinishingInterview] = useState(false); // UI:结束按钮显示收束中
   const [lastInterviewSummary, setLastInterviewSummary] = useState<null | {
     noteTitle: string;
     pendingMemory: number;

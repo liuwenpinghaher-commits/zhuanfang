@@ -55,7 +55,7 @@ test("runs the interview workflow through the Product API", async ({ page }) => 
     await dialog.accept();
   });
   await page.getByRole("button", { name: "结束并生成档案" }).click();
-  await expect(page.getByText("专访档案已生成")).toBeVisible({ timeout: 30000 });
+  await expect(page.getByText(/专访档案已生成|本场已结束，记忆待你确认/)).toBeVisible({ timeout: 30000 });
   // Finish returns to home with 上场摘要 (may point to notes or memory).
   await expect(page.getByText(/上场专访已结束|查看本场笔记|去记忆/).first()).toBeVisible({
     timeout: 10000

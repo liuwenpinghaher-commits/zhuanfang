@@ -220,10 +220,9 @@ export function HomeView({
           <p>
             {lastInterviewSummary.doNotSave
               ? "本场按「不保存」结束，未写入长期资产。"
-              : `笔记「${lastInterviewSummary.noteTitle}」已生成。`}
-            {lastInterviewSummary.pendingMemory > 0
-              ? ` 另有 ${lastInterviewSummary.pendingMemory} 条记忆待确认。`
-              : ""}
+              : lastInterviewSummary.pendingMemory > 0
+                ? `笔记「${lastInterviewSummary.noteTitle}」已写下。另有 ${lastInterviewSummary.pendingMemory} 条记忆待你确认后才会进入下次召回——现在还不能说档案已生成。`
+                : `笔记「${lastInterviewSummary.noteTitle}」已生成。`}
           </p>
           <div className="form-actions">
             {!lastInterviewSummary.doNotSave && (
@@ -265,20 +264,20 @@ export function HomeView({
         </section>
       )}
 
-      {/* Phase A/B: 认知待办（关上场摘要后仍可见 pending 记忆） */}
+      {/* 关上场摘要后仍可见 pending 记忆与回访线索 */}
       {(pendingMemoryCount > 0 || deskQueue.length > 0) && (
-        <section className="panel revisit-desk" aria-label="认知待办" data-testid="revisit-desk">
+        <section className="panel revisit-desk" aria-label="今天该回访的线索" data-testid="revisit-desk">
           <div className="panel-title row-between">
             <div className="row">
               <Target size={18} aria-hidden="true" />
-              <h2>认知待办</h2>
+              <h2>今天该回访的线索</h2>
             </div>
             {pendingMemoryCount > 0 && (
               <span className="status-pill is-emphasis">{pendingMemoryCount} 条记忆待确认</span>
             )}
           </div>
           <p className="field-help mb-2">
-            按优先级：待审记忆 → 到期决策 → 知识债 → 主题下一问。未确认记忆不会进入下次召回。
+            今天值得聊的不是待办清单。按这条排：待审记忆 → 到期决策 → 知识债 → 主题下一问。未确认记忆不会进入下次召回。
           </p>
           <ul className="revisit-desk-list">
             {deskQueue.map((item) => (

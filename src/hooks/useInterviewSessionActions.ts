@@ -269,7 +269,7 @@ export function useInterviewSessionActions(args: UseInterviewSessionActionsArgs)
     // don't count). Pre-checking avoids a 422 that the catch would misread as offline.
     const userTurnCount = session.turns.filter((turn) => turn.role === "user").length;
     if (userTurnCount === 0) {
-      setNotice(buildNotice("warning", "还不能结束", "先回答至少一轮，再结束并生成档案。"));
+      setNotice(buildNotice("warning", "还不能结束", "先回答至少一轮，再结束本场。"));
       return;
     }
 

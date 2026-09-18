@@ -66,7 +66,7 @@ export function buildRealtimeTurnState(session: InterviewSession, signal: Realti
     const shouldBackchannel = signal.silenceMs >= Math.min(700, Math.round(silenceHoldMs * 0.6));
     return {
       phase: "holding",
-      nextAction: `保持留白，等待用户自然补完。当前阈值 ${silenceHoldMs}ms。`,
+      nextAction: "保持留白，等你把这句话说完。留白不是卡死。",
       backchannel: shouldBackchannel ? "嗯，我在听。" : undefined,
       shouldInterrupt: false,
       confidence: 0.72

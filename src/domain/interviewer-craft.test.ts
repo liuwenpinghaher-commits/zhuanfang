@@ -11,6 +11,8 @@ describe("interviewer craft", () => {
     expect(t).toContain("矛盾");
     expect(t).toContain("很难说");
     expect(t).toMatch(/总结|小结/);
+    expect(t).toContain("先接住再追问");
+    expect(t).toContain("引用必须是对方说过的原话");
   });
   it("opening discipline forbids small-talk and scripts the suggestedOpening", () => {
     const card = { suggestedOpening: "如果你允许短期失控，最坏会发生什么？" } as InterviewCard;
