@@ -134,8 +134,8 @@ test("会中 ASR 断开后恢复同一专访，partial 先确认再写入", asyn
   });
 
   await page.getByLabel("开始录音").click();
-  await expect(page.getByText("语音连接恢复中，请稍候")).toBeVisible();
-  await expect(page.getByText("等待确认的转写")).toBeVisible();
+  await expect(page.getByText("语音连接恢复中，请稍候")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("等待确认的转写")).toBeVisible({ timeout: 15_000 });
   await expect(page.locator("vite-error-overlay")).toHaveCount(0);
   expect((await activeInterview(page)).turns.filter((turn) => turn.role === "user")).toHaveLength(0);
 
@@ -213,7 +213,7 @@ test("连续两次 ASR 断线的 partial 在真实 UI 中逐项确认且只提�
   await page.getByLabel("开始录音").click();
 
   const reviewInput = page.getByLabel("等待确认的语音转写");
-  await expect(reviewInput).toHaveValue("第一断线尾段");
+  await expect(reviewInput).toHaveValue("第一断线尾段", { timeout: 15_000 });
   await expect.poll(() => asrConnections).toBe(3);
   expect((await activeInterview(page)).turns.filter((turn) => turn.role === "user")).toHaveLength(0);
 

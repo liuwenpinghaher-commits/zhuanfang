@@ -41,6 +41,8 @@ interface MemoryGovernanceViewProps {
   getAudioMeta?: (sessionId: string, role?: "interviewee" | "interviewer") => Promise<SessionAudioMeta>;
   audioUrl?: (sessionId: string) => string;
   getAudioBlob?: (sessionId: string, role?: "interviewee" | "interviewer") => Promise<Blob | null>;
+  /** Two-step end: interview just finished with pending memory. */
+  postInterviewHitl?: { noteTitle: string; pendingCount: number } | null;
 }
 
 type ActionState = "idle" | "loading" | "done" | "error";
@@ -84,7 +86,8 @@ export function MemoryGovernanceView({
   getRawMaterial,
   getAudioMeta,
   audioUrl,
-  getAudioBlob
+  getAudioBlob,
+  postInterviewHitl = null
 }: MemoryGovernanceViewProps) {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
@@ -315,6 +318,16 @@ export function MemoryGovernanceView({
         }
       />
 
+      {postInterviewHitl && postInterviewHitl.pendingCount > 0 && (
+        <section className="notice info" role="status" data-testid="interview-end-hitl">
+          <strong>本场已结束，记忆待你确认</strong>
+          <p>
+            笔记「{postInterviewHitl.noteTitle}」已写下。还有 {postInterviewHitl.pendingCount}{" "}
+            条记忆要你确认或修正；全部处理完才会说档案已生成。
+          </p>
+        </section>
+      )}
+
       <div className="config-hint memory-stats" aria-label="记忆库存">
         <span className={pending.length > 0 ? "is-emphasis" : undefined}>待审 {pending.length}</span>
         <span>已确认 {confirmed.length}</span>
@@ -440,7 +453,7 @@ export function MemoryGovernanceView({
           <div className="empty-cta">
             <button type="button" className="primary-action" onClick={onOpenLibrary ?? focusImport}>
               <FileUp size={16} />
-              {onOpenLibrary ? "去资料库导入" : "去导入资料"}
+              去导入资料
             </button>
           </div>
           <p className="field-help">也可以先去做一场实时专访，结束后回来审核候选。</p>

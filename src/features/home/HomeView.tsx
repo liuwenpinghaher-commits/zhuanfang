@@ -63,6 +63,7 @@ interface HomeViewProps {
     destination: "notes" | "memory";
     doNotSave: boolean;
     finishedAt: string;
+    awaitingMemoryConfirm?: boolean;
   };
   /** Cognitive revisit queue (shared ranking with card/launch). */
   revisitQueue?: RevisitItem[];

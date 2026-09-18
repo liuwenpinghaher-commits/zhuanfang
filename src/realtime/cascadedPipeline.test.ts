@@ -1077,6 +1077,71 @@ describe("connectCascadedPipeline", () => {
   // -------------------------------------------------------------------------
   // 14. startListening(opening) 受控开场进 speaking
   // -------------------------------------------------------------------------
+  it("人确认 recovery 尾段时即使开场 TTS 仍在 speaking 也必须提交", async () => {
+    let releaseSpeak: () => void = () => {};
+    const hangingTts = {
+      speak() {
+        return new Promise<void>((resolve) => {
+          releaseSpeak = resolve;
+        });
+      },
+      stop() {
+        releaseSpeak();
+      },
+      close() {
+        releaseSpeak();
+      }
+    };
+    const pipeline = connectCascadedPipeline(makeOpts({ tts: hangingTts as never }));
+    const started = pipeline.startListening("开场还没说完，先确认断线尾段。");
+    await vi.waitFor(() => expect(stateChanges.at(-1)).toBe("speaking"));
+    pipeline.reviewRecoveryTranscript({ text: "断线尾段", reason: "连接中断", code: 1011 });
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+    pipeline.confirmQuarantinedTranscript("确认后的完整表达");
+    await vi.waitFor(() =>
+      expect(sendUserTurn.fn).toHaveBeenCalledWith("确认后的完整表达", expect.any(AbortSignal))
+    );
+    pipeline.close();
+    releaseSpeak();
+    await started.catch(() => undefined);
+  });
+
+  it("开场 TTS 结束后仍保留 recovery 待确认尾段，确认后才提交", async () => {
+    let releaseSpeak: () => void = () => {};
+    const hangingTts = {
+      speak() {
+        return new Promise<void>((resolve) => {
+          releaseSpeak = resolve;
+        });
+      },
+      stop() {
+        releaseSpeak();
+      },
+      close() {
+        releaseSpeak();
+      }
+    };
+    const onTranscriptQuarantined = vi.fn();
+    const base = makeOpts({ tts: hangingTts as never });
+    const pipeline = connectCascadedPipeline({
+      ...base,
+      callbacks: { ...base.callbacks, onTranscriptQuarantined }
+    });
+    const started = pipeline.startListening("开场还没说完。");
+    await vi.waitFor(() => expect(stateChanges.at(-1)).toBe("speaking"));
+    pipeline.reviewRecoveryTranscript({ text: "断线尾段", reason: "连接中断", code: 1011 });
+    expect(onTranscriptQuarantined).toHaveBeenCalled();
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+    releaseSpeak();
+    await started;
+    expect(sendUserTurn.fn).not.toHaveBeenCalled();
+    pipeline.confirmQuarantinedTranscript("确认后的完整表达");
+    await vi.waitFor(() =>
+      expect(sendUserTurn.fn).toHaveBeenCalledWith("确认后的完整表达", expect.any(AbortSignal))
+    );
+    pipeline.close();
+  });
+
   it("startListening(opening) 受控开场进 speaking", async () => {
     asr.setExpressionState("fluent");
     const pipeline = connectCascadedPipeline(makeOpts());

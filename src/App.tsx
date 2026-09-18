@@ -117,6 +117,7 @@ import { AssetChatView, ASSET_CHAT_DRAFT_ID } from "./features/chat/AssetChatVie
 import { LibraryView } from "./features/library/LibraryView";
 import { SessionRecordView } from "./features/session-record/SessionRecordView";
 import { deleteChatSession } from "./domain/knowledge";
+import { buildInterviewArchiveReadyPresentation } from "./domain/session-end-presentation";
 import { buildTrackWorkspace } from "./domain/timeline";
 import {
   buildNotice,
@@ -228,6 +229,7 @@ export default function App() {
     destination: "notes" | "memory";
     doNotSave: boolean;
     finishedAt: string;
+    awaitingMemoryConfirm: boolean;
   }>(null);
   const [correctionText, setCorrectionText] = useState("");
   const [assetQuery, setAssetQuery] = useState("");
@@ -747,6 +749,17 @@ export default function App() {
     () => countPendingMemoryCandidates(productState),
     [productState]
   );
+  useEffect(() => {
+    if (!lastInterviewSummary?.awaitingMemoryConfirm) return;
+    if (pendingMemoryCount > 0) return;
+    const ready = buildInterviewArchiveReadyPresentation(lastInterviewSummary.noteTitle);
+    setLastInterviewSummary({
+      ...ready.lastSummary,
+      finishedAt: lastInterviewSummary.finishedAt
+    });
+    setNotice(buildNotice(ready.noticeKind, ready.noticeTitle, ready.noticeBody));
+    setView("notes");
+  }, [pendingMemoryCount, lastInterviewSummary]);
   const suggestedTopicHint = useMemo(() => {
     if (activeSearchBriefId) {
       return resolveInterviewTopicHint(productState, { searchBriefId: activeSearchBriefId });
@@ -2257,12 +2270,39 @@ export default function App() {
             }}
             onConfirmVoiceReview={() => {
               const item = voiceReviewItemRef.current;
+              if (!item?.text.trim()) return;
               const pipeline = cascadePipelineRef.current;
-              if (!item?.text.trim() || !pipeline) return;
+              const interviewId = session?.id;
+              if (pipeline) {
+                runVoiceReviewAction({
+                  ref: voiceReviewItemRef,
+                  clearRendered: () => setVoiceReviewItem(null),
+                  action: (current) => pipeline.confirmQuarantinedTranscript(current.text.trim()),
+                });
+                return;
+              }
+              if (!interviewId) return;
               runVoiceReviewAction({
                 ref: voiceReviewItemRef,
                 clearRendered: () => setVoiceReviewItem(null),
-                action: (current) => pipeline.confirmQuarantinedTranscript(current.text.trim()),
+                action: (current) => {
+                  void productApiClient
+                    .sendInterviewTurn(interviewId, { content: current.text.trim() })
+                    .then((apiRun) => {
+                      setSession(apiRun.session);
+                      if (apiRun.state) adoptServerState(apiRun.state);
+                    })
+                    .catch((err) => {
+                      setInterviewInput(current.text.trim());
+                      setNotice(
+                        buildNotice(
+                          "danger",
+                          "确认的转写未写入",
+                          err instanceof Error ? err.message : "请检查后手动提交。"
+                        )
+                      );
+                    });
+                },
               });
             }}
             onDiscardVoiceReview={() => {
@@ -2626,6 +2666,14 @@ export default function App() {
             focusSourceId={memoryFocusSourceId}
             focusRecordId={memoryFocusRecordId}
             onOpenLibrary={() => setView("material")}
+            postInterviewHitl={
+              lastInterviewSummary?.awaitingMemoryConfirm
+                ? {
+                    noteTitle: lastInterviewSummary.noteTitle,
+                    pendingCount: pendingMemoryCount
+                  }
+                : null
+            }
             onApprove={approveCandidate}
             onResolveConflict={resolveConflictCandidate}
             onReject={rejectCandidate}

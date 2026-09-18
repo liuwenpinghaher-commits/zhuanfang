@@ -24,6 +24,7 @@ export type LastInterviewSummary = {
   destination: "notes" | "memory";
   doNotSave: boolean;
   finishedAt: string;
+  awaitingMemoryConfirm: boolean;
 };
 
 export interface UseInterviewSessionActionsArgs {
@@ -358,7 +359,7 @@ export function useInterviewSessionActions(args: UseInterviewSessionActionsArgs)
       setNotice(
         buildNotice(presentation.noticeKind, presentation.noticeTitle, presentation.noticeBody)
       );
-      setView("home");
+      setView(presentation.destination === "memory" ? "memory" : "home");
       return;
     } catch (err) {
       // 已结束(409)/会话不存在(404):这场专访其实已经收尾(常见于 /end 调 LLM 较慢时用户

@@ -452,7 +452,7 @@ export function InterviewView({
                 disabled={userTurnCount === 0 || busy}
                 aria-busy={finishing}
               >
-                {finishing ? "正在收束本场…" : "结束并生成档案"}
+                {finishing ? "正在收束本场…" : session.doNotSave ? "结束且不保存" : "结束本场"}
               </button>
               <button className="primary-action" type="submit" disabled={submitting || finishing || !input.trim()} aria-busy={submitting}>
                 <ChevronRight size={18} />

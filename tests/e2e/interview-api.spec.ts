@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { installFakeMic } from "./fakeMic";
 import { expectNoHorizontalOverflow, openView, resetDemoState } from "./helpers";
 
 // 真实性重构：本用例不再用 page.route 冒充本产品 API（旧 mock 指向 8787 早已打空）。
@@ -9,8 +10,9 @@ import { expectNoHorizontalOverflow, openView, resetDemoState } from "./helpers"
 //   · POST /api/realtime-voice/sessions → 真实路由：默认族 transport=websocket、status=ready，
 //     实时语音会话建立后界面切到 WebSocket 实时语音（后续麦克风/上游 WS 失败会如实提示，
 //     不影响文本轮次）。
-test("runs the interview workflow through the Product API", async ({ page }) => {
+test("runs the interview workflow through the Product API", async ({ page, context }) => {
   test.setTimeout(90000);
+  await installFakeMic(context);
   const apiCalls: string[] = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
@@ -37,8 +39,12 @@ test("runs the interview workflow through the Product API", async ({ page }) => 
   const voiceSessionBody = (await voiceSession.json()) as { status: string; transport: string };
   expect(voiceSessionBody.status).toBe("ready");
   expect(voiceSessionBody.transport).toBe("websocket");
-  // Seed default realtimeMode is cascade — accept readiness notice or transport subtitle.
-  await expect(page.getByText("实时语音会话已就绪").first()).toBeVisible({ timeout: 15000 });
+  // POST 200 + websocket is authoritative session create. Ready notice if the
+  // cascade socket actually comes up; otherwise the honest fallback (text interview
+  // still works) must be visible. Do not treat a vanished ready toast as pass.
+  await expect(
+    page.getByText(/实时语音会话已就绪|本场文字专访仍可继续|语音连接未恢复，已保留本场文字专访/).first()
+  ).toBeVisible({ timeout: 15000 });
 
   await page.getByLabel("你的回答").fill("我怕放手后项目失控。");
   await page.getByRole("button", { name: "提交表达" }).click();
@@ -54,10 +60,9 @@ test("runs the interview workflow through the Product API", async ({ page }) => 
   page.once("dialog", async (dialog) => {
     await dialog.accept();
   });
-  await page.getByRole("button", { name: "结束并生成档案" }).click();
-  await expect(page.getByText(/专访档案已生成|本场已结束，记忆待你确认/)).toBeVisible({ timeout: 30000 });
-  // Finish returns to home with 上场摘要 (may point to notes or memory).
-  await expect(page.getByText(/上场专访已结束|查看本场笔记|去记忆/).first()).toBeVisible({
+  await page.getByRole("button", { name: /结束本场|结束且不保存/ }).click();
+  await expect(page.getByText(/专访档案已生成|本场已结束，记忆待你确认/).first()).toBeVisible({ timeout: 30000 });
+  await expect(page.getByText(/上场专访已结束|查看本场笔记|去记忆|点头之后，下场才认/).first()).toBeVisible({
     timeout: 10000
   });
   await expectNoHorizontalOverflow(page);

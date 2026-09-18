@@ -341,7 +341,7 @@ test.describe("真实业务·记忆治理（UI→真后端 3210，无 mock）", 
     await submitTurn(page, "具体说，我担心市场太小，投入大量精力却没有足够付费用户，这个风险我评估不清。", 2);
 
     // 结束 → 真实 finalize（慢，真 LLM 抽资产+候选记忆）。
-    await page.getByRole("button", { name: /结束并生成档案/ }).click();
+    await page.getByRole("button", { name: /结束本场|结束且不保存|结束并生成档案/ }).click();
     await expect
       .poll(async () => (await pendingCandidates(page)).length, { timeout: 200_000, intervals: [3000] })
       .toBeGreaterThan(0);

@@ -2,6 +2,7 @@
  * Pure end-of-interview presentation rules (journey honesty).
  * doNotSave never claims "档案已生成".
  * Pending / HITL memory also must not claim "档案已生成".
+ * Two-step end: pending memory goes to memory review first; archive claim only after confirm.
  */
 
 export type InterviewEndDestination = "notes" | "memory" | "home";
@@ -13,11 +14,13 @@ export type InterviewEndPresentation = {
   /** True only when we may tell the user the archive is complete (never for doNotSave or pending HITL). */
   claimsArchiveGenerated: boolean;
   destination: InterviewEndDestination;
+  awaitingMemoryConfirm: boolean;
   lastSummary: {
     noteTitle: string;
     pendingMemory: number;
     destination: "notes" | "memory";
     doNotSave: boolean;
+    awaitingMemoryConfirm: boolean;
   };
 };
 
@@ -38,30 +41,35 @@ export function buildInterviewEndPresentation(input: {
       noticeBody: "按你的选择，本场未写入长期资产与录音；对话仅作当次体验。",
       claimsArchiveGenerated: false,
       destination: "home",
+      awaitingMemoryConfirm: false,
       lastSummary: {
         noteTitle: "本场不保存",
         pendingMemory: 0,
         destination: "notes",
-        doNotSave: true
+        doNotSave: true,
+        awaitingMemoryConfirm: false
       }
     };
   }
 
   if (needsHitl) {
+    const goMemory = pending > 0;
     return {
       noticeKind: "info",
       noticeTitle: "本场已结束，记忆待你确认",
       noticeBody:
         pending > 0
-          ? `双轨笔记已写下。另有 ${pending} 条记忆待确认后才会进入跨会话召回——请在「记忆」审核。现在还不能说档案已生成。`
+          ? `双轨笔记已写下。另有 ${pending} 条记忆待确认后才会进入跨会话召回——请先在「记忆」审核。现在还不能说档案已生成。`
           : "双轨笔记已写下。长期记忆需你确认后才会进入跨会话召回。现在还不能说档案已生成。",
       claimsArchiveGenerated: false,
-      destination: "home",
+      destination: goMemory ? "memory" : "home",
+      awaitingMemoryConfirm: goMemory,
       lastSummary: {
         noteTitle,
         pendingMemory: pending,
-        destination: "memory",
-        doNotSave: false
+        destination: goMemory ? "memory" : "notes",
+        doNotSave: false,
+        awaitingMemoryConfirm: goMemory
       }
     };
   }
@@ -72,11 +80,33 @@ export function buildInterviewEndPresentation(input: {
     noticeBody: `「${noteTitle}」已写入双轨笔记；可在下方「上场摘要」或笔记/资产中继续。`,
     claimsArchiveGenerated: true,
     destination: "home",
+    awaitingMemoryConfirm: false,
     lastSummary: {
       noteTitle,
       pendingMemory: 0,
       destination: "notes",
-      doNotSave: false
+      doNotSave: false,
+      awaitingMemoryConfirm: false
+    }
+  };
+}
+
+/** After pending memory is cleared, the second step may claim the archive. */
+export function buildInterviewArchiveReadyPresentation(noteTitle?: string): InterviewEndPresentation {
+  const title = (noteTitle ?? "").trim() || "本场笔记";
+  return {
+    noticeKind: "success",
+    noticeTitle: "专访档案已生成",
+    noticeBody: `「${title}」已写入双轨笔记；记忆已确认，可在笔记/资产中继续。`,
+    claimsArchiveGenerated: true,
+    destination: "notes",
+    awaitingMemoryConfirm: false,
+    lastSummary: {
+      noteTitle: title,
+      pendingMemory: 0,
+      destination: "notes",
+      doNotSave: false,
+      awaitingMemoryConfirm: false
     }
   };
 }

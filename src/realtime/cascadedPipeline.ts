@@ -483,6 +483,17 @@ export function connectCascadedPipeline(
     if (side) noteAuthoritativeTranscript(side);
   }
   function settleAfterHostSpeech() {
+    // Opening/host TTS ending must not wipe a recovery review, queued partials,
+    // or an in-flight human-confirmed commit. ASR-disconnect HITL (confirm
+    // before write) was being dropped when the scripted opening finished.
+    if (
+      activeReview ||
+      queuedRecoveryReviews.length > 0 ||
+      activeAbort ||
+      stableCommitTimer !== null
+    ) {
+      return;
+    }
     const side = currentSideTrack();
     const merge = Boolean(side)
       && isGrabbingMatter(side)
@@ -707,10 +718,18 @@ export function connectCascadedPipeline(
   }
 
   // ── Core respond flow ──────────────────────────────────────────────────────
-  async function doRespond(authoritativeTranscript?: string) {
+  async function doRespond(authoritativeTranscript?: string, opts?: { force?: boolean }) {
     if (closed) return;
-    if (openingHold) return;
-    if (state === "thinking" || state === "speaking") return;
+    if (opts?.force) {
+      if (openingHold || state === "speaking") {
+        interruptHost();
+        setState("listening");
+        micSuppressed = false;
+      }
+    } else {
+      if (openingHold) return;
+      if (state === "thinking" || state === "speaking") return;
+    }
 
     const fullTranscript = authoritativeTranscript?.trim() || (committedTranscript + partialTranscript).trim();
     if (!fullTranscript) {
@@ -1099,6 +1118,12 @@ export function connectCascadedPipeline(
     },
 
     confirmQuarantinedTranscript(text: string) {
+      if (closed) return;
+      if (openingHold || state === "speaking") {
+        interruptHost();
+        setState("listening");
+        micSuppressed = false;
+      }
       if (activeReview?.source === "recovery") {
         const confirmedTranscript = `${committedTranscript}${text.trim()}`;
         turnAssembler.confirmQuarantined(confirmedTranscript, Date.now());
@@ -1107,7 +1132,9 @@ export function connectCascadedPipeline(
         if (advanceRecoveryReview()) return;
         surfacedQuarantineKey = "";
         activeReview = null;
-        if (!releaseBufferedRecoveryTranscript()) requestStableCommit(true);
+        if (!releaseBufferedRecoveryTranscript()) {
+          void doRespond(confirmedTranscript, { force: true });
+        }
         return;
       }
       turnAssembler.confirmQuarantined(text, Date.now());
@@ -1115,7 +1142,7 @@ export function connectCascadedPipeline(
       activeReview = null;
       committedTranscript = text.trim();
       partialTranscript = "";
-      requestStableCommit(true);
+      void doRespond(committedTranscript, { force: true });
     },
 
     discardQuarantinedTranscript() {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createInitialProductState, createSessionDraft, finalizeSession, mergeFinalizedState } from "./engine";
 import type { FinalizeContent } from "./finalize";
-import { buildInterviewEndPresentation } from "./session-end-presentation";
+import { buildInterviewArchiveReadyPresentation, buildInterviewEndPresentation } from "./session-end-presentation";
 import { createTurnAssembler } from "../realtime/turnAssembler";
 import type { InterviewSession } from "./types";
 
@@ -51,6 +51,8 @@ describe("session honesty — doNotSave end presentation", () => {
     expect(p.noticeBody).toMatch(/未写入长期资产/);
     expect(p.lastSummary.doNotSave).toBe(true);
     expect(p.lastSummary.pendingMemory).toBe(0);
+    expect(p.awaitingMemoryConfirm).toBe(false);
+    expect(p.destination).toBe("home");
   });
 
   it("normal end with pending HITL does not claim archive generated", () => {
@@ -67,6 +69,17 @@ describe("session honesty — doNotSave end presentation", () => {
     expect(p.noticeBody).not.toContain("记忆治理");
     expect(p.lastSummary.destination).toBe("memory");
     expect(p.lastSummary.pendingMemory).toBe(2);
+    expect(p.destination).toBe("memory");
+    expect(p.awaitingMemoryConfirm).toBe(true);
+  });
+
+  it("after pending memory is confirmed, archive may be claimed", () => {
+    const p = buildInterviewArchiveReadyPresentation("本场笔记");
+    expect(p.claimsArchiveGenerated).toBe(true);
+    expect(p.noticeTitle).toMatch(/档案已生成/);
+    expect(p.destination).toBe("notes");
+    expect(p.awaitingMemoryConfirm).toBe(false);
+    expect(p.lastSummary.pendingMemory).toBe(0);
   });
 
   it("normal end without pending memory may claim archive generated", () => {
@@ -79,6 +92,8 @@ describe("session honesty — doNotSave end presentation", () => {
     expect(p.noticeTitle).toMatch(/档案已生成/);
     expect(p.lastSummary.destination).toBe("notes");
     expect(p.lastSummary.pendingMemory).toBe(0);
+    expect(p.awaitingMemoryConfirm).toBe(false);
+    expect(p.destination).toBe("home");
   });
 });
 

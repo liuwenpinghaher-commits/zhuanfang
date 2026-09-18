@@ -291,6 +291,14 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
                   if (asrWasReconnecting) {
                     setNotice(buildNotice("success", "语音连接已恢复", "可以继续口述，已确认的专访内容不受影响。"));
                     asrWasReconnecting = false;
+                  } else {
+                    setNotice(buildNotice(
+                      "success",
+                      "实时语音会话已就绪",
+                      vadCapability.supported
+                        ? "级联模式 (ASR→分析→TTS) 已连接"
+                        : "级联模式已连接；AudioWorklet 不可用，当前使用语音兼容模式。"
+                    ));
                   }
                 }
                 if (event.state === "exhausted") {
@@ -526,16 +534,15 @@ export function useRealtimeVoiceControls(args: UseRealtimeVoiceControlsArgs) {
             // opening played while the UI was still stuck on "connecting".
             // voiceStatus is driven by the pipeline's onStateChange (speaking → listening).
             setRecording(true);
-            setNotice(buildNotice(
-              "success",
-              "实时语音会话已就绪",
-              vadCapability.supported
-                ? "级联模式 (ASR→分析→TTS) 已连接"
-                : "级联模式已连接；AudioWorklet 不可用，当前使用语音兼容模式。"
-            ));
             void pipeline.startListening(card.suggestedOpening || undefined).catch((err) => {
               if (!voiceTransportStateGuardRef.current.isCurrent(voiceEpoch)) return;
-              setNotice(buildNotice("warning", "级联语音连接失败", err instanceof Error ? err.message : "请确认后端在线且 API key 已配置"));
+              setRecording(false);
+              setVoiceStatus("exhausted");
+              setNotice(buildNotice(
+                "warning",
+                "语音连接未恢复",
+                `${err instanceof Error ? err.message : "级联语音连接失败"}。本场文字专访仍可继续。`
+              ));
             });
             return;
           } catch (err) {
