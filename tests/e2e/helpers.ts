@@ -15,10 +15,19 @@ export async function resetDemoState(page: Page) {
   } catch {
     // API may be down (e.g. intercepted by page.route); localStorage path below still works for mock flows.
   }
-  await page.goto("/");
+  // 不要 goto 后再 page.reload()：全量套件里 Vite 还在拉首屏模块时 reload 会变成
+  // `net::ERR_ABORTED; maybe frame was detached?`（my-assets 播客跳转那条）。
+  // 也不要只拿默认 5s 等「今日访谈台」：窄屏 reload 后 Root 仍停在「加载中…」，
+  // 侧栏还没进树（navigation 移动端那条）。清 localStorage 后只再 goto 一次。
+  await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.evaluate(() => window.localStorage.clear());
-  await page.reload();
-  await expect(page.getByRole("button", { name: "今日访谈台" })).toBeVisible();
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+
+  const appNav = page.getByRole("navigation", { name: "应用导航" });
+  await expect(appNav).toBeVisible({ timeout: 15_000 });
+  await expect(appNav.getByRole("button", { name: "今日访谈台", exact: true })).toBeVisible({
+    timeout: 15_000
+  });
 }
 
 /**
