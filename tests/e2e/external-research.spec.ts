@@ -120,11 +120,12 @@ test("外部调研：用这份简报开场后可在实时专访中看到外部�
   const briefArticle = page.locator("article.record-row").first();
   await expect(briefArticle).toBeVisible({ timeout: 8000 });
 
-  // 用这份简报开场 — 触发 launchInterview，页面切换到 interview 视图
+  // 用这份简报开场 — 触发 launchInterview，页面切换到 interview 视图。
+  // 侧栏按钮也叫「实时专访」，全页 getByText 会和主区 eyebrow、回答框一起命中，strict 失败。
   await briefArticle.getByRole("button", { name: "用这份简报开场" }).click();
 
-  await expect(
-    page.getByText("实时专访").or(page.getByLabel("你的回答"))
-  ).toBeVisible({ timeout: 8000 });
+  const interviewMain = page.locator("#main-content");
+  await expect(interviewMain.getByText("实时专访", { exact: true })).toBeVisible({ timeout: 8000 });
+  await expect(page.getByRole("textbox", { name: /你的回答/ })).toBeVisible();
   await expectNoHorizontalOverflow(page);
 });
