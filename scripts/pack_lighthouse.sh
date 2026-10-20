@@ -41,7 +41,7 @@ rsync -a \
   --exclude 'zhuanfang-deploy.tgz.sha256' \
   --exclude '._*' \
   --exclude '.DS_Store' \
-  --exclude '张小珺专访资料' \
+  --exclude 'interview-materials-private' \
   ./ "$ARTIFACT_DIR/app/"
 
 # AppleDouble / Finder junk must never reach Surreal schema apply.
@@ -57,7 +57,7 @@ if [ ! -f "$MEMORY_VIEW" ]; then
   exit 1
 fi
 
-if [ -e "$ARTIFACT_DIR/app/张小珺专访资料" ]; then
+if [ -e "$ARTIFACT_DIR/app/interview-materials-private" ]; then
   echo "pack failed: interviewee docs leaked into artifact" >&2
   exit 1
 fi

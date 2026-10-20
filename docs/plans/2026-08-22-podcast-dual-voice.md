@@ -7,7 +7,7 @@
 | **日期** | 2026-08-22 |
 | **状态** | Draft |
 | **仓库** | `/home/admin/projects/zhuanfang` |
-| **验收环境** | 已部署 demo `https://zhuanfang.qing.blue` |
+| **验收环境** | 已部署 demo `https://zhuanfang.example.com` |
 | **实现对照** | `7dacb3b`（主持对谈自动配对聆心/谦；工作台仍只有一个「声音配置」） |
 | **本文上一提交** | `cfc95e8`（计划稿）；行号是索引，实现以符号为准 |
 | **本文性质** | 产品闭环审查 + 最优改造。上一拍是捷径（自动配对），本拍把「两个声音自己选」做成第一等能力，并走完整条播客业务。评测脚本绿了不算完；模拟评测不能替真人宣布「这期播客有价值」。 |
@@ -35,7 +35,7 @@
 5. 上面 ② 里改了声音但还没点合成：列表和播放器仍是书里那一版。刷新后，没点合成的改动会回到书里那一版。改完声音要再点一次合成才换声，没点之前听的还是上一版。
 6. 以前选过欢、洋的旧期：名字还在下拉里（可以点着不改），会标明现网可能改用聆心或谦出声；听的是系统能说的那两位，书上的名字不偷偷改掉。你一旦改成聆心或谦，欢、洋就不再出现在新选项里。若旧期主持人是洋、从没记过来宾：再合成听的仍是两个人（来宾是聆心），不会变成两栏都是谦。
 
-**怎样算做完：** 真人在 `https://zhuanfang.qing.blue` 走完——选主持对谈，两栏分别选聆心和谦，生成、只确认、刷新两栏还在、再合成能听出两个人；删光「来宾：」再合成会失败；② 改声不点合成就刷新，选择回到书里那一版。旧的一期如果从来没记过来宾声音，再合成仍按今天的自动配对（洋主持配来宾聆心），不把旧节目弄坏。
+**怎样算做完：** 真人在 `https://zhuanfang.example.com` 走完——选主持对谈，两栏分别选聆心和谦，生成、只确认、刷新两栏还在、再合成能听出两个人；删光「来宾：」再合成会失败；② 改声不点合成就刷新，选择回到书里那一版。旧的一期如果从来没记过来宾声音，再合成仍按今天的自动配对（洋主持配来宾聆心），不把旧节目弄坏。
 
 **这一轮明确不做：** 不把生成改成自动出声；不拿掉「确认这篇稿」；不把专访现场的声音名单改掉；不为验收再起一套库；不让评测脚本替你宣布这期播客有没有价值。
 
@@ -672,7 +672,7 @@ PR-2 热更 **前** 在 demo 抽几条已有 host-guest 节目看稿是否带「
 
 ### Demo 冒烟（已部署栈，禁止另起库）
 
-1. 登录 `https://zhuanfang.qing.blue`，我的资产 → 生成播客。
+1. 登录 `https://zhuanfang.example.com`，我的资产 → 生成播客。
 2. 形态保持单人，生成 → 确认 → 合成：一个声。
 3. 新开一期，形态=主持对谈：必须看到两栏，选项主体只有聆心、谦。选聆心 + 谦，生成。② 和列表都能看见两个名字。
 4. 只确认、不合成。刷新。再点这一期：两栏还在，状态仍已确认。
@@ -842,4 +842,4 @@ Playwright 的 canned 稿没有角色标签：**不要**在 e2e 里对主持对�
 
 ## 给机器用的一句
 
-`PodcastEpisode.guestVoice?: string` 进 rest 不迁表；空/非法来宾省略不得写成 longanhuan；`src/domain/podcast-voices.ts` 承载 `QWEN_AUDIO_SPEAKING_VOICES`+`podcastSpeakingIdentity`+`pairPodcastGuestVoice`（洋视同谦故 `pair("longanyang")==="longanlingxin"`，欢视同聆心配谦；禁止字面 `=== "longanqian"`）；API `pairQwenAudioTtsVoice` 委托该函数不得改成字面薄封装、不改 `COSYVOICE_PRESET_VOICES`；`resolveEpisodeVoices` 返回 `{host,guest,guestFromFallback}` 禁止字段名 `dual`，host 保持库存 id 不写回映射；`wantDual=format==="host-guest"` 且 `parsedDual` 才按句合成，否则 solo 整篇 host、host-guest 无两角则 409 TTS=0 不写声；`synthesize` options `{script?,voice?,guestVoice?}` 先校验确认/稿再合并声音再 TTS，PR-1 就要改 client+`podcast.ts`；`renderEpisodeAudio` 成功 patch 删除 `voice`/`guestVoice`；`resolveQwenAudioTtsVoice` 只送 TTS；① `podcastVoice`/`podcastGuestVoice` vs ② `episodeVoice`/`episodeGuestVoice`，`beginEditEpisode` 从库存灌入、缺来宾按身份预填配对不写库；合成只发被点那一期两栏且旗 true 不带 script；② 改声是草稿，点合成才覆盖 WAV；下拉=能说∪该控件当前值（旧欢/洋可选非 disabled，改走后不再提供）；`PODCAST_HOST_GUEST_UNLABELED_FALLBACK` 默认关；N 句串行一句失败则整次失败无整单 90s；PR-2+PR-3 同一 `deploy_demo.sh`；confirm 仍只 `{script}`；`PODCAST_AUTO_RENDER_ON_CREATE` 默认关；测试注入「主持人：/来宾：」断言 turn 数不是「两次」；验收 `https://zhuanfang.qing.blue`。
+`PodcastEpisode.guestVoice?: string` 进 rest 不迁表；空/非法来宾省略不得写成 longanhuan；`src/domain/podcast-voices.ts` 承载 `QWEN_AUDIO_SPEAKING_VOICES`+`podcastSpeakingIdentity`+`pairPodcastGuestVoice`（洋视同谦故 `pair("longanyang")==="longanlingxin"`，欢视同聆心配谦；禁止字面 `=== "longanqian"`）；API `pairQwenAudioTtsVoice` 委托该函数不得改成字面薄封装、不改 `COSYVOICE_PRESET_VOICES`；`resolveEpisodeVoices` 返回 `{host,guest,guestFromFallback}` 禁止字段名 `dual`，host 保持库存 id 不写回映射；`wantDual=format==="host-guest"` 且 `parsedDual` 才按句合成，否则 solo 整篇 host、host-guest 无两角则 409 TTS=0 不写声；`synthesize` options `{script?,voice?,guestVoice?}` 先校验确认/稿再合并声音再 TTS，PR-1 就要改 client+`podcast.ts`；`renderEpisodeAudio` 成功 patch 删除 `voice`/`guestVoice`；`resolveQwenAudioTtsVoice` 只送 TTS；① `podcastVoice`/`podcastGuestVoice` vs ② `episodeVoice`/`episodeGuestVoice`，`beginEditEpisode` 从库存灌入、缺来宾按身份预填配对不写库；合成只发被点那一期两栏且旗 true 不带 script；② 改声是草稿，点合成才覆盖 WAV；下拉=能说∪该控件当前值（旧欢/洋可选非 disabled，改走后不再提供）；`PODCAST_HOST_GUEST_UNLABELED_FALLBACK` 默认关；N 句串行一句失败则整次失败无整单 90s；PR-2+PR-3 同一 `deploy_demo.sh`；confirm 仍只 `{script}`；`PODCAST_AUTO_RENDER_ON_CREATE` 默认关；测试注入「主持人：/来宾：」断言 turn 数不是「两次」；验收 `https://zhuanfang.example.com`。

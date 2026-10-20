@@ -380,7 +380,7 @@ describe("product state storage", () => {
       expect(normalized.systemConfig.voice.defaultVoice).toBe("cosyvoice-clone-xyz789");
     });
 
-    it("normalizeProductState: podcastVoice calm-host (legacy invalid) is corrected to longanhuan", () => {
+    it("normalizeProductState: podcastVoice calm-host (legacy invalid) is corrected to longanlingxin", () => {
       const state = createInitialProductState();
       const normalized = normalizeProductState({
         ...state,
@@ -392,7 +392,7 @@ describe("product state storage", () => {
           }
         }
       });
-      expect(normalized.systemConfig.voice.podcastVoice).toBe("longanhuan");
+      expect(normalized.systemConfig.voice.podcastVoice).toBe("longanlingxin");
     });
 
     it("omits empty or invalid podcast guest voices instead of rewriting them to longanhuan", () => {

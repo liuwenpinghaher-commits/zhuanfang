@@ -401,7 +401,7 @@ export function createBrowserAsrSource(opts: CreateBrowserAsrSourceOptions): Asr
     }
 
     stream = await getStream();
-    const micTrack = stream.getAudioTracks()[0];
+    const micTrack = stream.getAudioTracks?.()?.[0] ?? stream.getTracks?.()?.[0];
     const settings = micTrack?.getSettings?.();
     // Fake/eval MediaStreamDestination tracks often claim echoCancellation without a device.
     echoCancellationEnabled = settings?.echoCancellation === true && Boolean(settings.deviceId);

@@ -1,4 +1,4 @@
-name: ci
+name: CI
 
 on:
   push:
@@ -7,20 +7,30 @@ on:
     branches: [main]
 
 jobs:
-  unit:
+  verify:
+    name: Typecheck, Build & Unit Tests
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
-      - name: Install
+
+      - name: Install dependencies
         run: npm ci
-      - name: Typecheck
+
+      - name: Typecheck (Frontend + Product API + DB)
         run: npm run typecheck
-      - name: Unit tests (no external provider smoke)
+
+      - name: Build production bundle
+        run: npm run build
+
+      - name: Run unit & integration test suite (offline mode)
         env:
           REAL_PROVIDER_SMOKE: "off"
           RATE_LIMIT_DISABLED: "true"

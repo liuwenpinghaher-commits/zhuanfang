@@ -969,7 +969,15 @@ export function createProductApiClient(
       if (!response.ok) {
         throw new ApiError(response.status, `/api/sessions/${sessionId}/audio`);
       }
-      return response.blob();
+      const blob = await response.blob();
+      if (typeof blob.arrayBuffer !== "function") {
+        const buf = await new Response(blob).arrayBuffer();
+        Object.defineProperty(blob, "arrayBuffer", {
+          value: async () => buf,
+          configurable: true
+        });
+      }
+      return blob;
     },
     sessionAudioUrl(sessionId, role) {
       // Native <audio src> cannot send Authorization. Prefer fetchSessionAudioBlob.

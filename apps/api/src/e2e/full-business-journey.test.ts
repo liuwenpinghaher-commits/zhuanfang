@@ -395,12 +395,12 @@ describe("Full cross-feature business journey: 团队授权与控制感", () => 
     expect(persistedEpisode!.noteId).toBe(noteId);
 
     // 9b. 先确认口播稿（零 TTS），再合成 — 无 TTS client → 如实 503，稿仍是已确认
-    const confirmRes = await server.inject({
+    const confirmScriptRes = await server.inject({
       method: "POST",
       url: `/api/podcast/episodes/${episodeId}/confirm`
     });
-    expect(confirmRes.statusCode).toBe(200);
-    expect(confirmRes.json().episode.scriptReviewStatus).toBe("用户确认");
+    expect(confirmScriptRes.statusCode).toBe(200);
+    expect(confirmScriptRes.json().episode.scriptReviewStatus).toBe("用户确认");
 
     const synthesizeRes = await server.inject({
       method: "POST",
@@ -454,7 +454,11 @@ describe("Full cross-feature business journey: 团队授权与控制感", () => 
   it("memory HITL: fake LLM produces candidates → approve moves to memoryRecords", async () => {
     // 真实性重构:抽取解析已收紧（非 {"candidates":[...]} 形状即 502 原子失败）。注入
     // createFakeChatClient（canned 记忆抽取固定 1 条候选）走真实抽取→审批全路径。
-    const server = buildApiServer({ env: {}, bailianChatClient: createFakeChatClient() });
+    const server = buildApiServer({
+      env: {},
+      bailianChatClient: createFakeChatClient(),
+      embeddingClient: createFakeEmbeddingClient()
+    });
 
     const importRes = await server.inject({
       method: "POST",
@@ -573,7 +577,11 @@ describe("Full cross-feature business journey: 团队授权与控制感", () => 
     // 注入空 env 对象，PATCH 写入它而非 process.env（隔离 + 可断言）。
     // 语料分析是 LLM 必选能力 → 注入假 chat client（canned 语料分析含 concrete-moment 规则）。
     const env: Record<string, string | undefined> = {};
-    const server = buildApiServer({ env, bailianChatClient: createFakeChatClient() });
+    const server = buildApiServer({
+      env,
+      bailianChatClient: createFakeChatClient(),
+      embeddingClient: createFakeEmbeddingClient()
+    });
 
     await server.inject({ method: "POST", url: "/api/state/reset", payload: { confirm: "RESET_ALL_DATA" } });
 

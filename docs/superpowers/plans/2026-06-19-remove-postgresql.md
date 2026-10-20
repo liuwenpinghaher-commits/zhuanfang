@@ -47,14 +47,14 @@
 
 - [ ] **Step 1: 记录删除前基线测试数**
 
-Run: `cd "/Users/miaoma/Downloads/专访 1.0" && npx vitest run 2>&1 | tail -5`
+Run: `cd "<repo-root>" && npx vitest run 2>&1 | tail -5`
 Expected: 全绿(无失败)。记下 `Tests` 行的通过总数(基线,预期 511)。
 
 - [ ] **Step 2: 复核 4 个文件无 in-scope 引用(删除前最后确认)**
 
 Run:
 ```bash
-cd "/Users/miaoma/Downloads/专访 1.0" && \
+cd "<repo-root>" && \
 grep -rn "pg-product-state-repository\|pg-schema\|postgresMigration\|createPgProductStateRepository" src/ apps/ packages/ --include="*.ts" --include="*.tsx" \
   | grep -v "src/domain/postgresMigration.ts:" \
   | grep -v "packages/db/src/pg-product-state-repository.ts:" \
@@ -68,7 +68,7 @@ Expected: 无输出(空)。证明被删文件之外、顶层 `src/`+`apps/`+`pac
 
 Run:
 ```bash
-cd "/Users/miaoma/Downloads/专访 1.0" && git rm \
+cd "<repo-root>" && git rm \
   packages/db/src/pg-product-state-repository.ts \
   packages/db/src/pg-schema.ts \
   src/domain/postgresMigration.ts \
@@ -78,24 +78,24 @@ Expected: `rm 'packages/db/src/pg-product-state-repository.ts'` 等 4 行,exit 0
 
 - [ ] **Step 4: 类型检查**
 
-Run: `cd "/Users/miaoma/Downloads/专访 1.0" && npm run typecheck`
+Run: `cd "<repo-root>" && npm run typecheck`
 Expected: PASS(exit 0)。无 "Cannot find module" 等错误。
 
 - [ ] **Step 5: 全量测试回归**
 
-Run: `cd "/Users/miaoma/Downloads/专访 1.0" && npx vitest run 2>&1 | tail -5`
+Run: `cd "<repo-root>" && npx vitest run 2>&1 | tail -5`
 Expected: 全绿,无失败。通过总数 = Step 1 基线 − `postgresMigration.test.ts` 的用例数(因该测试文件被删)。确认无 *新增* 失败、无 "无法导入" 报错。
 
 - [ ] **Step 6: 确认只动了这 4 个文件(防误吞无关改动)**
 
-Run: `cd "/Users/miaoma/Downloads/专访 1.0" && git status --short`
+Run: `cd "<repo-root>" && git status --short`
 Expected: staged 区(`D`)恰好是这 4 个被删文件。`zhuanfang`、`CLAUDE.md`、`memory`、`.claude/` 仍是未暂存(` M`/`??`),**不得**出现在 staged 区。
 
 - [ ] **Step 7: 提交(仅这 4 个删除)**
 
 Run:
 ```bash
-cd "/Users/miaoma/Downloads/专访 1.0" && git commit -q -m "refactor(db): remove unwired PostgreSQL path (P0-10, P1-17)
+cd "<repo-root>" && git commit -q -m "refactor(db): remove unwired PostgreSQL path (P0-10, P1-17)
 
 删除从未接线的 PG 持久化:pg-product-state-repository、pg-schema、
 postgresMigration 及其测试。顶层生产代码零引用(用 SQLite repo),

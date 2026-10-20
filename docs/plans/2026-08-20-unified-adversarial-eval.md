@@ -9,7 +9,7 @@
 | 状态 | Draft |
 | 仓库 | `/home/admin/projects/zhuanfang` |
 | HEAD | `e9db733` (`docs(sic+): record demo USER_SCOPED=1 dual-user isolation smoke`) |
-| 验收环境 | 已部署 demo：`https://zhuanfang.qing.blue`（宿主机 SSH 从部署配置读取，不写入仓库） |
+| 验收环境 | 已部署 demo：`https://zhuanfang.example.com`（宿主机 SSH 从部署配置读取，不写入仓库） |
 
 ---
 
@@ -80,7 +80,7 @@ flowchart LR
 | do-not-save | `/control` 翻转 `doNotSave`；`/end` 短路：不调 finalize LLM、session 从 `sessions[]` 删除、`longTermAssetsPersisted:false`、审计「未写入长期资产」；录音 422 | C 测过数据边界 |
 | 语音 ASR 断句 vs organizing-hold vs `silenceHoldMs` | Cascade 落轮：`server_vad` 1500ms + `speak()` 默认再等 1700ms；`organizing` 不 `sendUserTurn`（`cascadedPipeline`）。`silenceHoldMs` 默认 1200 只管 `buildRealtimeTurnState` 的 holding/backchannel 文案，**不是** cascade 是否提交 user turn。backchannel 主路径未接线 | A 只一轮；把 `silenceHoldMs` 当落轮阈值是错的 |
 | Fail-loud 假追问 | Brain：无 LLM → 503，失败不落轮 | 未作为评测断言；满配 demo 只能 `observed_configured` |
-| 用户分仓 | wrapping = `isSessionAuthEnabled` ∧ `isUserScopedStateEnabled`（`server.ts` L213–216）。机器 Bearer **永远进 legacy/admin**（`resolveStoreUserKey` L73–75）。`GET /api/health` / `capabilities` **不暴露**这两个 flag | 旧脚本无登录。**当前**对 `zhuanfang.qing.blue` 未登录 purge 是 **401**，不会清 legacy。P0 是：无鉴权本地默认 purge；以及 **任何 Bearer 打 demo = 主人仓** |
+| 用户分仓 | wrapping = `isSessionAuthEnabled` ∧ `isUserScopedStateEnabled`（`server.ts` L213–216）。机器 Bearer **永远进 legacy/admin**（`resolveStoreUserKey` L73–75）。`GET /api/health` / `capabilities` **不暴露**这两个 flag | 旧脚本无登录。**当前**对 `zhuanfang.example.com` 未登录 purge 是 **401**，不会清 legacy。P0 是：无鉴权本地默认 purge；以及 **任何 Bearer 打 demo = 主人仓** |
 
 ### 痛点（为何必须合成一套）
 
@@ -126,7 +126,7 @@ flowchart LR
 flowchart TB
   CLI["scripts/eval/run.mjs"]
   CLI --> BOOT["Refuse if PRODUCT_API_TOKEN set"]
-  BOOT --> SSH{"EVAL_API_BASE is qing.blue?"}
+  BOOT --> SSH{"EVAL_API_BASE is example.com?"}
   SSH -->|yes| ENV["SSH printenv PRODUCT_AUTH_ENABLED AND PRODUCT_USER_SCOPED_STATE both on"]
   ENV -->|either off| ABORT0["exit 2 · ZERO writes"]
   SSH -->|no| RO
@@ -191,7 +191,7 @@ docs/superpowers/eval/samples/
 
 | 旧命令 | 新行为 |
 |--------|--------|
-| `node scripts/run-interview.mjs` | 无成功的 eval session 登录 → **不得** purge；默认 API 不是 qing.blue；进程内出现 `PRODUCT_API_TOKEN` → exit 2 |
+| `node scripts/run-interview.mjs` | 无成功的 eval session 登录 → **不得** purge；默认 API 不是 example.com；进程内出现 `PRODUCT_API_TOKEN` → exit 2 |
 | `bash scripts/run-all-interviews.sh` | **删除/默认关闭** 开头裸 `curl .../purge`。要灌库必须 `EVAL_TIER=populate` + 已登录 eval + `EVAL_ALLOW_PURGE=1`。无 cookie 调 purge → 脚本 exit ≠ 0（回归） |
 | `npx playwright test voice-cascade` | **只**打本机 `E2E_REAL=1` 隔离 tmp 库。评测语音 **禁止** 复用该 spec |
 
@@ -200,14 +200,14 @@ docs/superpowers/eval/samples/
 | 角色 | 机器 | 做什么 |
 |------|------|--------|
 | 驱动器（文本） | Grok 机可以 | 轻量 HTTP。`EVAL_MODALITY=text` 时 **不得** import `playwright` / `fakeMic` |
-| 驱动器（语音） | **demo 宿主机**（SSH 从 `EVAL_SSH_HOST` 读取），**不是** `app-zhuanfang-1` 容器 | 对 `https://zhuanfang.qing.blue` 跑 fakeMic；浏览器已装在宿主机。禁止容器内 `npx playwright install`。**允许工作日白天**打公网 ASR；不要等夜里/周末。仍须 `EVAL_MODALITY=voice\|both`，Grok 机不得跑 Playwright |
+| 驱动器（语音） | **demo 宿主机**（SSH 从 `EVAL_SSH_HOST` 读取），**不是** `app-zhuanfang-1` 容器 | 对 `https://zhuanfang.example.com` 跑 fakeMic；浏览器已装在宿主机。禁止容器内 `npx playwright install`。**允许工作日白天**打公网 ASR；不要等夜里/周末。仍须 `EVAL_MODALITY=voice\|both`，Grok 机不得跑 Playwright |
 | 被测系统 | demo compose | 评测仓 `/app/.data/users/user_eval_sim/surreal` |
 | CI vitest | 现有 | craft-golden、echo-guard、**新增 `assertSimulatedGate`** |
 
 环境变量：
 
 ```bash
-EVAL_API_BASE=http://127.0.0.1:3210    # 默认本地。指向 qing.blue 必须显式且 login 已成功
+EVAL_API_BASE=http://127.0.0.1:3210    # 默认本地。指向 example.com 必须显式且 login 已成功
 EVAL_USERNAME=eval_sim                 # 禁止 admin / smoke_a / PRODUCT_LEGACY_OWNER
 EVAL_PASSWORD=                         # 未跟踪文件
 EVAL_WITNESS_USERNAME=eval_witness     # 第二 session 用户，只 GET 做隔离探针
@@ -226,10 +226,10 @@ JUDGE_MAX_CALLS_PER_RUN=8              # smoke 默认 8；full 30
 
 1. `process.env.PRODUCT_API_TOKEN` 非空 → exit 2（评测环境禁止该变量，包括「只读 admin」）。
 2. Cookie **只用** `zf_session`。禁止读/写 `product_api_token`。
-3. `EVAL_API_BASE` 含 `qing.blue` 且尚未 `GET /api/auth/me === EVAL_USERNAME` → 不得发任何写请求。
+3. `EVAL_API_BASE` 含 `example.com` 且尚未 `GET /api/auth/me === EVAL_USERNAME` → 不得发任何写请求。
 4. wrapping 探针失败（含只读阶段）→ **零写**：不得 marker PUT、不得 purge、不得 fixture PUT、不得建场。
 
-语音登录：走 **HTTPS** `https://zhuanfang.qing.blue`，`context.addCookies([{ name: "zf_session", url: "https://zhuanfang.qing.blue", httpOnly: true, secure: true }])`。禁止 `http://127.0.0.1` 反代（Secure cookie 会被 jar 丢掉，见 2026-08-10 规格）。
+语音登录：走 **HTTPS** `https://zhuanfang.example.com`，`context.addCookies([{ name: "zf_session", url: "https://zhuanfang.example.com", httpOnly: true, secure: true }])`。禁止 `http://127.0.0.1` 反代（Secure cookie 会被 jar 丢掉，见 2026-08-10 规格）。
 
 ### 4. 隔离机制
 
@@ -247,7 +247,7 @@ userScoped wrapping = isSessionAuthEnabled(env)   // PRODUCT_AUTH_ENABLED ∈ {1
 `PUT /api/state` 是整包写回（`normalizeProductState`）。wrapping 关时，eval_sim 的 GET 就是主人整份书；若先 PUT marker，失败发现发生在 **已经改写主人档案之后**。所以「exit 2，零 destructive」必须包含：**证明 wrapping 之前零写。**
 
 1. 拒绝 Bearer / `PRODUCT_API_TOKEN`。
-2. **公网 demo 硬门槛（不是旁证）：** `EVAL_API_BASE` 含 `qing.blue` 时，必须 SSH `docker exec app-zhuanfang-1 printenv PRODUCT_AUTH_ENABLED PRODUCT_USER_SCOPED_STATE`，**两个都为开**（`1`/`true`/`yes`/`on`）才继续。任一关 → **exit 2，零写**。结果写入 run 元数据。本地 `127.0.0.1` 无 SSH 则跳过本步，靠步骤 4–5。
+2. **公网 demo 硬门槛（不是旁证）：** `EVAL_API_BASE` 含 `example.com` 时，必须 SSH `docker exec app-zhuanfang-1 printenv PRODUCT_AUTH_ENABLED PRODUCT_USER_SCOPED_STATE`，**两个都为开**（`1`/`true`/`yes`/`on`）才继续。任一关 → **exit 2，零写**。结果写入 run 元数据。本地 `127.0.0.1` 无 SSH 则跳过本步，靠步骤 4–5。
 3. `POST /api/auth/login` `{username: eval_sim}` → `zf_session`。`GET /api/auth/me` 必须等于 `eval_sim`，且 ≠ legacy owner。
 4. **`eval_sim` 只 GET** `/api/state`。若 `looksLikeOwnerBook(state)` → **立刻 exit 2，零写**。  
    **什么叫主人仓（避免把处女仓 Mia 种子误判成主人）：**  
@@ -741,7 +741,7 @@ docker exec -i app-zhuanfang-1 node --input-type=module -e "
 
 密码来自 `/opt/zhuanfang/app/.env.eval.local`（gitignore / 不进 git）。**不要**改 admin 密码、不要复用 smoke_*。
 
-3. 启动探针 **只读阶段** 通过前，**禁止**对 `zhuanfang.qing.blue` 跑任何写（含 marker PUT）。SSH 双 flag 未确认前同样禁止。
+3. 启动探针 **只读阶段** 通过前，**禁止**对 `zhuanfang.example.com` 跑任何写（含 marker PUT）。SSH 双 flag 未确认前同样禁止。
 4. smoke 默认。full 文本与 **full+voice 允许工作日白天**在 demo 宿主机对公网 ASR 跑；仍须显式 `EVAL_TIER=full` 且 `EVAL_MODALITY=voice|both`。不要等夜里/周末。Grok 机保持 `EVAL_MODALITY=text`，不得加载 Playwright。
 5. 回滚 = 停驱动器。误伤评测仓：eval 用户 purge。误伤 admin：备份恢复。
 
@@ -769,7 +769,7 @@ docker exec -i app-zhuanfang-1 node --input-type=module -e "
 8. **20k×10 降为 populate。** 能力评测用冻结 smoke/full pack。
 9. **strategyTrace 对齐单独计分；SoT = 驱动器内存。** `/end` 后热态为空是设计，不是丢分。
 10. **embed 502 仅 client 存在且失败；verified_by=unit。**
-11. **PR-0 同时锁 `run-interview.mjs` 与 `run-all-interviews.sh` 裸 purge；默认 API 不是 qing.blue。**
+11. **PR-0 同时锁 `run-interview.mjs` 与 `run-all-interviews.sh` 裸 purge；默认 API 不是 example.com。**
 12. **时钟/具体时刻前置用 eval 用户 `PUT /api/state`：body = GET 整份 stored + overlay，禁止只发 overlay 片段（缺数组会静默灌 Mia 种子）。CLOCK-blindspot 的 maxFollowUpDepth≥8 写在 overlay 的 `systemConfig.interview` 上。**
 13. **评测账号新建 `eval_sim`/`eval_witness`，不复用 `smoke_a`。** `createUser` 无 HTTP。
 14. **价值三维：硬信号只召回；2 分必须指出那一轮戏。**
@@ -794,7 +794,7 @@ docker exec -i app-zhuanfang-1 node --input-type=module -e "
   - **删除或默认关闭** `run-all-interviews.sh` 开头裸 curl purge；populate 才允许且必须 cookie + `EVAL_ALLOW_PURGE=1`。  
   - 回归：无 cookie 调 purge → 脚本 exit ≠ 0。  
   - 进程存在 `PRODUCT_API_TOKEN` → exit 2。  
-  - 默认 `EVAL_API_BASE` 不是 qing.blue。  
+  - 默认 `EVAL_API_BASE` 不是 example.com。  
   - 废弃 `SKIP_PURGE`；只认 `EVAL_ALLOW_PURGE`。  
   **优先合。在隔离自检落地前，不对公网跑 destructive。**
 
@@ -876,4 +876,4 @@ docker exec -i app-zhuanfang-1 node --input-type=module -e "
 - `tests/e2e/helpers.ts` `resetServerState` / `resetDemoState`
 - `docs/COST-ENVELOPE.md`，`apps/api/src/llm-budget.ts` 默认 200
 - `docs/superpowers/specs/2026-08-10-sic-scoped-demo-smoke.md` Secure cookie / 分仓
-- Demo：`https://zhuanfang.qing.blue`，`e9db733`
+- Demo：`https://zhuanfang.example.com`，`e9db733`

@@ -24,7 +24,16 @@ agent/*.pyc
 # Nested historical copies / accidental second checkouts (product root is the source of truth)
 /zhuanfang/
 # 受访者隐私资料(本地真实数据,禁止入库)
-/张小珺专访资料/
+/interview-materials-private/
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.wav
+*.mp3
+*.m4a
+*.ogg
+*.pcm
 
 # macOS
 .DS_Store

@@ -102,7 +102,7 @@ export function runDebtFollowupNoDuplicateScenario(): CraftGoldenResult {
       nextQuestion: "谁的 KPI？"
     }
   ];
-  const first = decideInterviewStrategy(session, "还是老问题");
+  const first = decideInterviewStrategy(session, "跨部门协作还是老问题");
   session.strategyTrace = [
     {
       turnIndex: 2,
@@ -116,7 +116,7 @@ export function runDebtFollowupNoDuplicateScenario(): CraftGoldenResult {
     { id: "a1", role: "assistant", content: "债", intent: "追问", timestamp: new Date().toISOString() },
     { id: "u2", role: "user", content: "再说", intent: "用户表达", timestamp: new Date().toISOString() }
   );
-  const second = decideInterviewStrategy(session, "继续");
+  const second = decideInterviewStrategy(session, "这件事我们继续往下聊");
   const pass = first.strategy === "debt_followup" && second.strategy !== "debt_followup";
   return {
     id: "debt_followup_no_duplicate",

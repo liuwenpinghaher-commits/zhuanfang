@@ -1,7 +1,7 @@
 # SIC+ 分仓 demo 人工开启与双用户冒烟
 
 **日期**: 2026-08-10  
-**demo**: 公网入口 `https://zhuanfang.qing.blue` / 容器 `app-zhuanfang-1`（SSH 从部署配置读取）  
+**demo**: 公网入口 `https://zhuanfang.example.com` / 容器 `app-zhuanfang-1`（SSH 从部署配置读取）  
 **设计**: `docs/design-zhuanfang-sic-plus-7eba31c0.md`（OQ-S2：先实现后人工开）
 
 ## 变更

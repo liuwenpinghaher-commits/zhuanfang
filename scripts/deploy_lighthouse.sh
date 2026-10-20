@@ -7,7 +7,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-HOST="${DEPLOY_SSH_HOST:-scribe3-demo}"
+HOST="${DEPLOY_SSH_HOST:-deploy-host}"
 REMOTE_TMP="${DEPLOY_REMOTE_TMP:-/tmp}"
 REMOTE_APP="${DEPLOY_REMOTE_APP:-/opt/zhuanfang/app}"
 REMOTE_ROOT="$(dirname "$REMOTE_APP")"

@@ -1,6 +1,6 @@
 /**
  * Eval process safety: refuse machine tokens, refuse unauthenticated purge,
- * never default the API base at qing.blue.
+ * never default the API base at a public remote host.
  */
 export const DEFAULT_EVAL_API_BASE = "http://127.0.0.1:3210";
 export const FORBIDDEN_EVAL_USERNAMES = new Set(["admin", "smoke_a", "smoke_b"]);
@@ -11,7 +11,9 @@ export function defaultEvalApiBase(env = process.env) {
 }
 
 export function isQingBlueHost(apiBase) {
-  return /qing\.blue/i.test(String(apiBase ?? ""));
+  const s = String(apiBase ?? "").trim();
+  if (!s) return false;
+  return /^https:\/\//i.test(s) && !/^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/i.test(s);
 }
 
 export function tokenRefusalReason(env = process.env) {

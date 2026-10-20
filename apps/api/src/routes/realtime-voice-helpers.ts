@@ -314,7 +314,7 @@ export function resolveEnrollmentAudioPublicUrl(
   const proto = forwardedProto || request.protocol || "https";
   const host = forwardedHost || String(headers.host ?? "").trim();
   if (!host || /^(localhost|127\.0\.0\.1)(:|$)/i.test(host)) return undefined;
-  // /api is on the public host root (zhuanfang.qing.blue). PRODUCT_PUBLIC_PATH is the SPA prefix.
+  // /api is on the public host root (e.g. zhuanfang.example.com). PRODUCT_PUBLIC_PATH is the SPA prefix.
   return `${proto}://${host}${path}`;
 }
 

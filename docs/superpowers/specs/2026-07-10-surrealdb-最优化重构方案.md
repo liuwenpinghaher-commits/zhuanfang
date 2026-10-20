@@ -6,7 +6,7 @@
 > 1. 音频**入库 bytes** 为目标方案(§9-1 取"最优";R0-S2 实测仍作守门,严重不达标才退文件方案)。
 > 2. 新库直接 `surrealkv+versioned://`;**历史数据全部可清空(均为 demo),不做存量数据迁移**——R2 的迁移脚本降级为"清洁重建",H1 悬空清洗等迁移风险项作废。
 > 3. **sqlite 档整体删除**:PRODUCT_STORE 收敛为 `memory | surreal` 两档;dual/dual-surreal 档、dual-write-repository、dual-surreal-cutover 守卫、三个 sqlite 冷层实现随之移除(新增收官阶段 R7 承载删除;R1/R2 期间 sqlite 实现仅作为测试对照保留,运行时双跑 soak 取消,等价保障改为测试层新旧实现对照)。
-> 文档依据:`/Users/miaoma/Downloads/写作 3.0/docs/external/surrealdb-docs`(SurrealDB 3.x 官方文档本地副本);现状证据:本仓库 2026-07-10 主树(`packages/db/src/surreal/*`、`apps/api/src/*`)。
+> 文档依据:`<external-docs-root>/docs/external/surrealdb-docs`(SurrealDB 3.x 官方文档本地副本);现状证据:本仓库 2026-07-10 主树(`packages/db/src/surreal/*`、`apps/api/src/*`)。
 > 引擎现状:嵌入式 `@surrealdb/node@3.0.3`(SurrealDB 3.0.2)+ surrealkv,单进程独占。
 
 ---

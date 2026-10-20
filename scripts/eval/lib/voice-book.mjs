@@ -14,8 +14,8 @@ function isRepeatedSentence(text) {
   const t = String(text ?? "").replace(/\s+/g, "");
   if (t.length < 12) return false;
   const mid = Math.floor(t.length / 2);
-  const a = t.slice(0, mid).replace(/[，。,.]+$/g, "");
-  const b = t.slice(mid).replace(/^[，。,.]+/g, "");
+  const a = t.slice(0, mid).replace(/^[，。,.！？!?]+|[，。,.！？!?]+$/g, "");
+  const b = t.slice(mid).replace(/^[，。,.！？!?]+|[，。,.！？!?]+$/g, "");
   return a.length >= 8 && a === b;
 }
 

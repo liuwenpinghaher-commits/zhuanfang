@@ -32,7 +32,7 @@
 ## 2. 采集命令（demo 已部署栈）
 
 ```bash
-BASE="${BASE:-https://www.qing.blue}"
+BASE="${BASE:-https://www.example.com}"
 
 # 健康摘要（含 voice p50/p95 若有样本）
 curl -sS "$BASE/api/health" | jq '{ok,ready,voice:(.metrics.voice//{})}'

@@ -3,7 +3,7 @@
 **状态**: P0 已实现（A0–A5）；P1 分仓默认关闭（`PRODUCT_USER_SCOPED_STATE=1` 开启）  
 
 **对齐参考**: Scribe3 `docs/L1-AUTH-ISOLATION.md` + `scribe3/auth/*`  
-**公开入口假设**: `https://www.qing.blue/zhuanfang/`（外层 nginx 反代 → `app-zhuanfang-1:3210`）  
+**公开入口假设**: `https://www.example.com/zhuanfang/`（外层 nginx 反代 → `app-zhuanfang-1:3210`）  
 **栈**: React/Vite 前端 + Fastify Product API（`apps/api`）+ 嵌入式 Surreal（`PRODUCT_STORE=surreal`）
 
 ---
@@ -32,7 +32,7 @@
 1. **Cookie 里装的是长期共享密钥**，不是会话：泄漏即全站通吃，无法单独吊销某次登录。  
 2. **无用户身份**：无法做「人」的审计、限流、多用户数据隔离。  
 3. **登录 UX 缺失**：用户感知不到「账号密码」，只是 bootstrap 静默塞 cookie。  
-4. 与 Scribe 双产品同域（`qing.blue`）时，**两套 token 心智不一致**。
+4. 与 Scribe 双产品同域（`example.com`）时，**两套 token 心智不一致**。
 
 ### 1.3 数据模型差异（影响「隔离」深度）
 
@@ -241,7 +241,7 @@ App mount
 ### 6.1 现网拓扑
 
 ```text
-https://www.qing.blue
+https://www.example.com
   nginx-ssl
     /           → scribe frontend
     /zhuanfang/ → app-zhuanfang-1:3210   （需确认是否已配；当前 compose 暴露 3210）
@@ -256,7 +256,7 @@ PRODUCT_SESSION_SECRET=<32+ bytes hex>
 PRODUCT_BOOTSTRAP_USERS=admin:<强密码>
 PRODUCT_SESSION_SECURE=1
 PRODUCT_API_TOKEN=<仅机器用长随机>   # agent/CI 用，不进浏览器
-PRODUCT_WEB_ORIGINS=https://www.qing.blue,https://qing.blue
+PRODUCT_WEB_ORIGINS=https://www.example.com,https://example.com
 ```
 
 ### 6.3 Cookie 同域注意
@@ -315,7 +315,7 @@ P0：**独立用户库**，可用相同 bootstrap 用户名密码人工对齐体
 | **ZF-A2** | `/api/auth/*` 路由 + 守卫改造 + runtime-bootstrap 去密钥 | 后端门禁 | A1 |
 | **ZF-A3** | 登录页 + 启动分流 + productApi 401 处理 | 前端 UX | A2 |
 | **ZF-A4** | 文档 / compose / agent README：机器 token 语义 | 部署说明 | A2 |
-| **ZF-A5** | 生产启用 + 冒烟（qing.blue/zhuanfang） | 线上验证 | A3–A4 |
+| **ZF-A5** | 生产启用 + 冒烟（example.com/zhuanfang） | 线上验证 | A3–A4 |
 | **ZF-B1**（P1） | 每用户 state 分仓 + legacy 归属 | 多用户隔离 | A2 |
 | **ZF-B2**（P1） | 用户 A/B 状态不可见测试 | 验收 | B1 |
 
@@ -346,7 +346,7 @@ P0：**独立用户库**，可用相同 bootstrap 用户名密码人工对齐体
 4. 登出后再次业务 API → 401。  
 5. LiveKit agent 仅靠机器 Bearer 仍能拉 agent-context。  
 6. 自动化测试覆盖登录成功/失败、会话门禁、机器 Bearer。  
-7. 文档说明生产 env 与 `www.qing.blue/zhuanfang` 验收步骤。  
+7. 文档说明生产 env 与 `www.example.com/zhuanfang` 验收步骤。  
 
 ### P1（多用户，可选同迭代）
 

@@ -266,7 +266,7 @@ type RevisitItem = {
 4. approve 一条 memory  
 5. 再 GET state / 调 card 构建所需 API，断言 revisit 变化  
 
-**验证环境：** **已部署 demo**（`www.qing.blue` / compose 栈），禁止为本脚本再起临时 Surreal。
+**验证环境：** **已部署 demo**（`www.example.com` / compose 栈），禁止为本脚本再起临时 Surreal。
 
 #### E2. Rubric 半自动抽检模板
 

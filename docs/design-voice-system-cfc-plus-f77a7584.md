@@ -613,7 +613,7 @@ experimentalBailianAudio3?: boolean;
 - 每 PR **独立可合并**；Gantt 依赖为上界，允许并行。  
 - 人力假设（修订）：**1 名全栈**，spike 含 demo 部署缓冲；仍 blocked 的 PR（PR-6i、PR-8）不得当 ready 开工实现。  
 - 粗日历（非承诺）：P0b 优先 2–4d；P1/P7 并行 3–5d；P2.1 5–8d；P2.2+5 5d；PR-6s spike 穿插；半级联实现仅 spike go 后。总串行上界可压到 ~30–40 工作日量级。  
-- 验收：**demo 已部署**（`www.qing.blue` / 专访 compose）冒烟，步骤见各 PR。
+- 验收：**demo 已部署**（`www.example.com` / 专访 compose）冒烟，步骤见各 PR。
 
 ---
 

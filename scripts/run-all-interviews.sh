@@ -21,9 +21,9 @@ fi
 
 API="${EVAL_API_BASE:-${PRODUCT_API_BASE:-http://127.0.0.1:3210}}"
 case "$API" in
-  *qing.blue*)
+  https://*)
     if [ -z "${EVAL_USERNAME:-}" ] || [ -z "${EVAL_PASSWORD:-}" ]; then
-      echo '{"event":"eval_purge_blocked","reason":"qing_blue_requires_eval_login"}'
+      echo '{"event":"eval_purge_blocked","reason":"public_demo_requires_eval_login"}'
       exit 2
     fi
     ;;

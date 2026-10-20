@@ -9,11 +9,11 @@ import {
 } from "./purge-guard.mjs";
 
 describe("purge-guard (shipped)", () => {
-  it("default API base is local, not qing.blue", () => {
+  it("default API base is local, not a public remote host", () => {
     expect(DEFAULT_EVAL_API_BASE).toBe("http://127.0.0.1:3210");
     expect(isQingBlueHost(DEFAULT_EVAL_API_BASE)).toBe(false);
     expect(defaultEvalApiBase({})).toBe("http://127.0.0.1:3210");
-    expect(isQingBlueHost("https://zhuanfang.qing.blue")).toBe(true);
+    expect(isQingBlueHost("https://zhuanfang.example.com")).toBe(true);
   });
 
   it("token set → refuse", () => {

@@ -166,11 +166,38 @@ export function matchTurnIdForQuote(
 ): { sessionId: string; turnId: string } | undefined {
   const q = normalizeEvidenceText(quote);
   if (!q) return undefined;
+  const prefix = q.slice(0, Math.min(EVIDENCE_QUOTE_PREFIX_CHARS, q.length));
   for (const turn of turns) {
     if (!turn.id || !turn.content) continue;
     const hay = normalizeEvidenceText(turn.content);
-    if (hay.includes(q.slice(0, Math.min(EVIDENCE_QUOTE_PREFIX_CHARS, q.length)))) {
+    if (hay.includes(prefix)) {
       return { sessionId, turnId: turn.id };
+    }
+  }
+  if (prefix.length >= 4) {
+    const bigrams: string[] = [];
+    for (let i = 0; i <= prefix.length - 2; i += 2) {
+      bigrams.push(prefix.slice(i, i + 2));
+    }
+    if (prefix.length % 2 === 1) {
+      bigrams.push(prefix.slice(-2));
+    }
+    for (const turn of turns) {
+      if (!turn.id || !turn.content) continue;
+      const hay = normalizeEvidenceText(turn.content);
+      let cursor = 0;
+      let allMatched = true;
+      for (const bg of bigrams) {
+        const idx = hay.indexOf(bg, cursor);
+        if (idx === -1) {
+          allMatched = false;
+          break;
+        }
+        cursor = idx + bg.length;
+      }
+      if (allMatched) {
+        return { sessionId, turnId: turn.id };
+      }
     }
   }
   return undefined;

@@ -29,7 +29,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describeKeyStatus } from "./lib/redact.mjs";
+import { describeKeyStatus, redactUrl } from "./lib/redact.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -443,7 +443,7 @@ const ranAt = new Date().toISOString();
 console.log("\n=== spike-half-cascade: brain text → omni mouth ===\n");
 console.log(`Model: ${MODEL}`);
 console.log(`Key:   ${describeKeyStatus(KEY)}`);
-console.log(`WS:    ${WS_URL}`);
+console.log(`WS:    ${redactUrl(WS_URL)}`);
 console.log(`Text:  ${PROBE_TEXT}\n`);
 
 if (!KEY) {

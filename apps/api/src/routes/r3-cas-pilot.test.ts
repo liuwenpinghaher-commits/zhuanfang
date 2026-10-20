@@ -290,7 +290,7 @@ describe("R3 试点路由 CAS 换轨(全栈)", () => {
       expect(validRes.statusCode).toBe(200);
       const finalState = repo.getState();
       expect(finalState.sessions.find((s) => s.id === hangSession.id)?.status).toBe("completed");
-      expect(finalState.memoryCandidates[0]!.text).toBe("窗口期编辑");
+      expect(finalState.memoryCandidates.find((c) => c.id === "c1")?.text).toBe("窗口期编辑");
     } finally {
       await server.close();
     }

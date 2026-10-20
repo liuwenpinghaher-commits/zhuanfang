@@ -241,7 +241,7 @@ O4? / P3         → 可选与人工包
 **Demo 冒烟**：
 
 ```bash
-curl -sSI https://www.qing.blue/zhuanfang/api/runtime-bootstrap | tr -d '\r' | grep -i set-cookie || echo "no set-cookie ok"
+curl -sSI https://www.example.com/zhuanfang/api/runtime-bootstrap | tr -d '\r' | grep -i set-cookie || echo "no set-cookie ok"
 # 期望不含 product_api_token
 ```
 
@@ -770,7 +770,7 @@ flowchart TB
 - `docs/interview-rubric.md`、`docs/runbooks/ALERTS.md`  
 - `docs/MAINTENANCE-ROADMAP.md`（**D4.\* = a11y，≠ GATE-HUMAN-VALUE**）  
 - 代码：`auth.ts`、`auth-bootstrap.ts`、`server.ts`、`user-scoped-repository.ts`、`health.ts`、`rag.ts`、`chat.ts`、`strategy.ts`、`turn-builder.ts`、`types.ts`、`runtime-metrics.ts`、`shutdown.ts`、`knowledge.ts`、`main.tsx`  
-- Demo：`www.qing.blue` / 宿主机应用目录从部署配置读取（不写入仓库）
+- Demo：`www.example.com` / 宿主机应用目录从部署配置读取（不写入仓库）
 
 ---
 
@@ -908,7 +908,7 @@ flowchart TB
 ## 附录 A · Demo 冒烟清单（SIC+）
 
 ```bash
-export DEMO=https://www.qing.blue/zhuanfang
+export DEMO=https://www.example.com/zhuanfang
 
 curl -sS "$DEMO/api/health" | jq '{ok,ready,persist}'
 curl -sS -o /dev/null -w "%{http_code}\n" "$DEMO/api/state"   # 401

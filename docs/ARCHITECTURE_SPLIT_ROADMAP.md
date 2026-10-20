@@ -2,7 +2,7 @@
 
 > **目标：降低审查与并行冲突；不改变产品语义与对外 HTTP/WS 契约。**  
 > 参照 scribe3 拆分逻辑：领域分包、稳定 re-export、入口薄组装。  
-> 关联：`README.md` · 部署：`deploy/prod` · 冒烟：已部署 demo（`www.qing.blue/zhuanfang/`）
+> 关联：`README.md` · 部署：`deploy/prod` · 冒烟：已部署 demo（`www.example.com/zhuanfang/`）
 
 ## 1. 完成定义（Done）
 
@@ -60,7 +60,7 @@ cd apps/api && npx tsc -p tsconfig.json --noEmit   # 若有独立 tsconfig
 # 或 monorepo 根
 npm test -- --run apps/api/src/routes/health.test.ts   # 轻量子集
 # 已部署
-curl -sS https://www.qing.blue/zhuanfang/   # 或 compose health
+curl -sS https://www.example.com/zhuanfang/   # 或 compose health
 ```
 
 ## 6. 基线（本轮前）

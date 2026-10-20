@@ -60,8 +60,8 @@ describe("scripts/lib/redact.mjs(脚本侧等价实现)", () => {
     ]) {
       expect(mjs.redactUrl(sample)).toBe(redactUrl(sample));
     }
-    expect(mjs.describeKeyStatus("sk-verysecret123")).toBe("configured: true");
-    expect(mjs.describeKeyStatus("sk-verysecret123")).not.toContain("sk-");
+    expect(mjs.describeKeyStatus("sk-redacted")).toBe("configured: true");
+    expect(mjs.describeKeyStatus("sk-redacted")).not.toContain("sk-");
     expect(mjs.describeKeyStatus("")).toBe("configured: false");
     expect(mjs.describeKeyStatus(undefined)).toBe("configured: false");
   });

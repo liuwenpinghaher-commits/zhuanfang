@@ -28,7 +28,7 @@ BAILIAN_TTS_VOICE=$(docker exec app-zhuanfang-1 printenv BAILIAN_TTS_VOICE 2>/de
 BAILIAN_TTS_WS_URL=$(docker exec app-zhuanfang-1 printenv BAILIAN_TTS_WS_URL 2>/dev/null || true)
 echo "key_lens dashscope=${#DASHSCOPE_API_KEY} bailian=${#BAILIAN_API_KEY} tts=${BAILIAN_TTS_MODEL:-qwen-audio-3.0-tts-plus}"
 
-export EVAL_API_BASE="${EVAL_API_BASE:-https://zhuanfang.qing.blue}"
+export EVAL_API_BASE="${EVAL_API_BASE:-https://zhuanfang.example.com}"
 export EVAL_USERNAME="${EVAL_USERNAME:-eval_sim}"
 export EVAL_PASSWORD="${EVAL_SIM_PASSWORD:?missing EVAL_SIM_PASSWORD}"
 export EVAL_WITNESS_USERNAME="${EVAL_WITNESS_USERNAME:-eval_witness}"

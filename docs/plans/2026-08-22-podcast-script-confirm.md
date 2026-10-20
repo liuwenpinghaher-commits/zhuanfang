@@ -7,7 +7,7 @@
 | **日期** | 2026-08-22 |
 | **状态** | Draft |
 | **仓库** | `/home/admin/projects/zhuanfang` |
-| **验收环境** | 已部署 demo `https://zhuanfang.qing.blue` |
+| **验收环境** | 已部署 demo `https://zhuanfang.example.com` |
 | **本文性质** | 产品缺口修复 + 写路径对齐。评测脚本绿了不算完；模拟评测不能替真人宣布「这期播客有价值」。 |
 
 ---
@@ -26,7 +26,7 @@
 4. 已确认之后，「合成语音」才可点。节目库里点那一期的 **标题** 或 **「待确认脚本」那颗状态**，打开确认面板，**不会直接扣语音费**。
 5. 你改了字，再点一次确认，以编辑器里的字为准。改过字还没再确认，不能合成。改了字没点确认就刷新，改动会丢，以书里那版为准。**改字再确认，旧声音拿掉，要听就重新合成。**
 
-**怎样算做完：** 真人在 `https://zhuanfang.qing.blue` 走完这一圈——生成后能看见稿子和「确认这篇稿」；只确认、不合成，刷新后再点那一期的标题，稿子还在、状态仍是已确认；再合成能听到。
+**怎样算做完：** 真人在 `https://zhuanfang.example.com` 走完这一圈——生成后能看见稿子和「确认这篇稿」；只确认、不合成，刷新后再点那一期的标题，稿子还在、状态仍是已确认；再合成能听到。
 
 **写锁收尾（不是上面那条产品完成线）：** 生成或合成期间，另一个标签页 **追问、收工、整包保存** 不能排队。登录本来就不会排在播客后面，本轮不拿登录当新完成线。
 
@@ -754,7 +754,7 @@ flowchart TB
 
 ### Demo 冒烟（已部署栈，禁止另起库）
 
-1. 浏览器登录 `https://zhuanfang.qing.blue`，我的资产 → 生成播客。
+1. 浏览器登录 `https://zhuanfang.example.com`，我的资产 → 生成播客。
 2. 选一条笔记，生成脚本。必须立刻看到正文和 **「确认这篇稿」**。
 3. 只点确认，不点合成。节目状态为「已确认，待合成」。刷新，再点该期，稿还在、仍已确认。
 4. 再点合成，能听到（或 TTS 失败时稿仍已确认，提示可重试）。
@@ -918,4 +918,4 @@ flowchart TB
 
 ## 给机器用的一句
 
-新增 `POST /api/podcast/episodes/:id/confirm`（body `{script?:string}`）→ `confirmPodcastScript` 空/缺失 `return null` + handler `failure` 旗 + `replacePodcastEpisode` 原地 map；创建才 `prependPodcastEpisode`；`WRITE_GATE_EXEMPTIONS`：confirm `startsWith("/api/podcast/episodes/") && endsWith("/confirm")`；synthesize `startsWith("/api/podcast/episodes/") && endsWith("/synthesize")`；generate `p === "/api/podcast/episodes"`；delete `idUnder("/api/podcast/episodes/")`；豁免与 latest-CAS 同一提交；`registerPodcastRoutes(..., { writeGate, llmBudget, bailian* })`；`PODCAST_SYNTHESIZE_REQUIRES_CONFIRM` 默认 true（`false|0|no|off` = 完整旧合成：跳过未确认 409 且 body.script 写稿+用户确认）；旗 true 时 synthesize **禁止**再写 `scriptReviewStatus`，未确认 409 且不写稿、不调 TTS；稿变 confirm 清 `audioUrl` 为 `local-audio://…-stale` 且 preview 仅 `rendered` 才出 `<audio>`；CAS 内禁止 `generatePodcastEpisode*`；默认 **不要** 开 `PODCAST_AUTO_RENDER_ON_CREATE`；枚举仍是 `"待确认"|"用户确认"`；UI `onConfirmScript` + `onConfirmAndSynthesize`，主按钮「确认这篇稿」；confirm 成功 `setPodcastEditingScript(res.episode.script)`，synthesize 不清空编辑器；`formatEpisodeStatus` playable/failed 优先；单测钉死不碰 `decisions`/`memoryCandidates`；PR-3 必改 `server.test.ts` 与 `podcast.test.ts` 503-落稿；验收 `https://zhuanfang.qing.blue` + `./scripts/deploy_demo.sh`。
+新增 `POST /api/podcast/episodes/:id/confirm`（body `{script?:string}`）→ `confirmPodcastScript` 空/缺失 `return null` + handler `failure` 旗 + `replacePodcastEpisode` 原地 map；创建才 `prependPodcastEpisode`；`WRITE_GATE_EXEMPTIONS`：confirm `startsWith("/api/podcast/episodes/") && endsWith("/confirm")`；synthesize `startsWith("/api/podcast/episodes/") && endsWith("/synthesize")`；generate `p === "/api/podcast/episodes"`；delete `idUnder("/api/podcast/episodes/")`；豁免与 latest-CAS 同一提交；`registerPodcastRoutes(..., { writeGate, llmBudget, bailian* })`；`PODCAST_SYNTHESIZE_REQUIRES_CONFIRM` 默认 true（`false|0|no|off` = 完整旧合成：跳过未确认 409 且 body.script 写稿+用户确认）；旗 true 时 synthesize **禁止**再写 `scriptReviewStatus`，未确认 409 且不写稿、不调 TTS；稿变 confirm 清 `audioUrl` 为 `local-audio://…-stale` 且 preview 仅 `rendered` 才出 `<audio>`；CAS 内禁止 `generatePodcastEpisode*`；默认 **不要** 开 `PODCAST_AUTO_RENDER_ON_CREATE`；枚举仍是 `"待确认"|"用户确认"`；UI `onConfirmScript` + `onConfirmAndSynthesize`，主按钮「确认这篇稿」；confirm 成功 `setPodcastEditingScript(res.episode.script)`，synthesize 不清空编辑器；`formatEpisodeStatus` playable/failed 优先；单测钉死不碰 `decisions`/`memoryCandidates`；PR-3 必改 `server.test.ts` 与 `podcast.test.ts` 503-落稿；验收 `https://zhuanfang.example.com` + `./scripts/deploy_demo.sh`。

@@ -2120,16 +2120,16 @@ describe("realtime-voice GET /api/realtime-voice/voices — 配置态 preset / �
     expect(resolveEnrollmentAudioPublicUrl(
       { headers: { host: "127.0.0.1:3210" } },
       "enroll-1.wav",
-      { CORPUS_AUDIO_PUBLIC_BASE_URL: "https://zhuanfang.qing.blue" }
-    )).toBe("https://zhuanfang.qing.blue/api/realtime-voice/enrollment-audio/enroll-1.wav");
+      { CORPUS_AUDIO_PUBLIC_BASE_URL: "https://zhuanfang.example.com" }
+    )).toBe("https://zhuanfang.example.com/api/realtime-voice/enrollment-audio/enroll-1.wav");
     expect(resolveEnrollmentAudioPublicUrl(
       { headers: { host: "127.0.0.1:3210" } },
       "enroll-1.wav",
       {
-        CORPUS_AUDIO_PUBLIC_BASE_URL: "https://zhuanfang.qing.blue/zhuanfang",
+        CORPUS_AUDIO_PUBLIC_BASE_URL: "https://zhuanfang.example.com/zhuanfang",
         PRODUCT_PUBLIC_PATH: "/zhuanfang"
       }
-    )).toBe("https://zhuanfang.qing.blue/api/realtime-voice/enrollment-audio/enroll-1.wav");
+    )).toBe("https://zhuanfang.example.com/api/realtime-voice/enrollment-audio/enroll-1.wav");
   });
 
   it("createVoice writes the clone as default host voice", async () => {
@@ -2156,7 +2156,7 @@ describe("realtime-voice GET /api/realtime-voice/voices — 配置态 preset / �
       method: "POST",
       url: "/api/realtime-voice/voices",
       payload: {
-        audioUrl: "https://zhuanfang.qing.blue/api/realtime-voice/enrollment-audio/enroll-1.wav",
+        audioUrl: "https://zhuanfang.example.com/api/realtime-voice/enrollment-audio/enroll-1.wav",
         preferredName: "张小珺"
       }
     });
@@ -2167,7 +2167,7 @@ describe("realtime-voice GET /api/realtime-voice/voices — 配置态 preset / �
     expect(body.state?.systemConfig.voice.podcastVoice).toBe("qwen-audio-3.0-tts-plus-zhangxj-abc");
     expect(stateRepo.getState().systemConfig.voice.defaultVoice).toBe("qwen-audio-3.0-tts-plus-zhangxj-abc");
     expect(createVoice).toHaveBeenCalledWith(expect.objectContaining({
-      audioUrl: "https://zhuanfang.qing.blue/api/realtime-voice/enrollment-audio/enroll-1.wav",
+      audioUrl: "https://zhuanfang.example.com/api/realtime-voice/enrollment-audio/enroll-1.wav",
       prefix: "张小珺"
     }));
     await testApp.close();

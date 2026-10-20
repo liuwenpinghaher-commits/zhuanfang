@@ -7,7 +7,7 @@
 | **日期** | 2026-08-22 |
 | **状态** | Draft · Rev B（抢话不问 completeness；两处 AudioContext 在任何 await 之前 new+resume；TTS 心跳飞行中翻 inFlight 旗不拆定时器；日志扩 payload） |
 | **仓库** | `/home/admin/projects/zhuanfang` |
-| **验收环境** | 已部署 demo `https://zhuanfang.qing.blue`（SSH 约定机，应用 `/opt/zhuanfang/app`） |
+| **验收环境** | 已部署 demo `https://zhuanfang.example.com`（SSH 约定机，应用 `/opt/zhuanfang/app`） |
 | **对照提交** | `7fac967`（识别不再因 ping 被踢；TTS 连接/总超时 10s/60s → 30s/180s） |
 | **上一份相关计划** | `docs/plans/2026-08-21-zhuanfang-voice-lock-book.md`（其中「活路径没接流式」已过时，见下文） |
 | **本文性质** | 设计-only。不写代码、不盖 GATE-HUMAN-VALUE。评测脚本绿了不算完。 |
@@ -31,7 +31,7 @@
 3. 他正在说的这一句，默认说完。你真的要打断——听得出来是一句正事、不是他的回声——他才立刻停。已经出口的半句留在书里；他听你这一段，再回答这一段。短促的真抢话，点「打断」也会立刻停，按钮在他还在出声时一直在。
 4. 你说完正事之后，他会接着问，而且你听得到。
 
-**怎样算做完：** 你自己坐在 `https://zhuanfang.qing.blue` 的麦克风前，登录主人账号，连走三轮：
+**怎样算做完：** 你自己坐在 `https://zhuanfang.example.com` 的麦克风前，登录主人账号，连走三轮：
 
 1. 点语音，开场能听见主持人。
 2. 他说话时你说「你好」，他继续说完；底下可以闪你的字，但不当成一轮新问答。
@@ -142,7 +142,7 @@ halfDuplexMute = !(echoCancellationEnabledOpt ?? asr.getEchoCancellationEnabled?
 2. **追问也出声**：主人说完一件事，下一问听得见。
 3. **三轨同时**：主持人说话时识别仍热、字幕可走；当前口播默认说完；脑可以继续生成**这一轮**还没说完的字。
 4. **打断是抢话，不是招呼**：见 §Interrupt policy。
-5. **验收是主人坐在麦前走三轮**，对象是已部署的 `zhuanfang.qing.blue`。
+5. **验收是主人坐在麦前走三轮**，对象是已部署的 `zhuanfang.example.com`。
 
 ### Non-Goals
 
@@ -428,7 +428,7 @@ AEC 开着就不静音；VAD 一响或定时器一到就停 TTS，或立刻翻 l
 
 ## Rollout Plan
 
-1. 实现只在本仓库；交付用已有 `./scripts/deploy_demo.sh` 热更 `zhuanfang.qing.blue`。不为验收再起 Surreal。
+1. 实现只在本仓库；交付用已有 `./scripts/deploy_demo.sh` 热更 `zhuanfang.example.com`。不为验收再起 Surreal。
 2. **PR-1 单独上 demo**，主人只验开场出声。失败则回滚该 PR（git revert + 热更）。不要夹三轨。
 3. **PR-2 上 demo**，同一套栈走「你好不掐 / 真事才掐」。
 4. 无 feature flag 平台：以提交为单位回滚。不要加第三套 realtimeMode。

@@ -144,7 +144,7 @@ describe("C-P1-02/04 mid-session /turns + voice-instructions prefetch + guide pe
     await server.close();
   });
 
-  it("/turns: native prefetch 抛错 → 502 fail-closed,不落轮次", async () => {
+  it("/turns: native prefetch 抛错 → 降级 frozen_guide 继续 200,不阻塞追问", async () => {
     const repo = createInMemoryProductStateRepository();
     seedThemeState(repo);
     let createDone = false;
@@ -182,10 +182,9 @@ describe("C-P1-02/04 mid-session /turns + voice-instructions prefetch + guide pe
       url: `/api/interview-sessions/${created.session.id}/turns`,
       payload: { content: "第二轮" }
     });
-    expect(res.statusCode).toBe(502);
-    expect(res.json().error).toMatch(/记忆召回失败|hnsw boom/);
+    expect(res.statusCode).toBe(200);
     const afterTurns = controllable.getState().sessions.find((s) => s.id === created.session.id)?.turns.length ?? 0;
-    expect(afterTurns).toBe(beforeTurns);
+    expect(afterTurns).toBe(beforeTurns + 2);
     await server.close();
   });
 

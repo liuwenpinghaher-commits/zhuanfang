@@ -154,7 +154,9 @@ describe("UserStoresRegistry singleflight + pin + LRU", () => {
     let openWhileCloseActive = 0;
     let closeActive = 0;
 
-    const registry = createUserStoresRegistry({
+      let shouldHoldClose = true;
+
+      const registry = createUserStoresRegistry({
       baseDataDir: "/tmp/zf-double-open-close",
       legacyUserKey: "admin",
       maxOpen: 1,
@@ -172,7 +174,9 @@ describe("UserStoresRegistry singleflight + pin + LRU", () => {
           closeActive += 1;
           events.push(`close-start:${userKey}`);
           // Hold close open so concurrent acquire can race the window.
-          await wait;
+          if (shouldHoldClose) {
+            await wait;
+          }
           events.push(`close-end:${userKey}`);
           closeActive -= 1;
         });
@@ -236,6 +240,8 @@ describe("UserStoresRegistry singleflight + pin + LRU", () => {
     expect(opensBob[1]).toBeGreaterThan(closeEndIdx);
     expect(openWhileCloseActive).toBe(0);
 
+    shouldHoldClose = false;
+    for (const h of holds) h.release();
     await registry.closeAll();
   });
 });

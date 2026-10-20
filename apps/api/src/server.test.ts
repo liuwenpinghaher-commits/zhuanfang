@@ -28,8 +28,8 @@ describe("Product API", () => {
   it("detects direct CLI execution when the workspace path contains spaces or non-ASCII characters", () => {
     expect(
       isDirectCliExecution(
-        "file:///Users/miaoma/Downloads/%E4%B8%93%E8%AE%BF%201.0/apps/api/src/server.ts",
-        "/Users/miaoma/Downloads/专访 1.0/apps/api/src/server.ts"
+        "file:///workspace/projects/%E4%B8%93%E8%AE%BF%201.0/apps/api/src/server.ts",
+        "/workspace/projects/专访 1.0/apps/api/src/server.ts"
       )
     ).toBe(true);
   });
@@ -295,7 +295,7 @@ expect(response.json()).toMatchObject({ ok: true, ready: true, service: "intervi
     expect(capabilities.find((item) => item.id === "bailian-cosyvoice")?.status).toBe("ready");
     const realtimeConfig = (await server.inject({ method: "GET", url: "/api/realtime-voice/config" })).json();
     expect(realtimeConfig).toMatchObject({ configured: true, apiKeyConfigured: true });
-    expect(streamingTtsClientFactory).toHaveBeenCalledWith({ apiKey: "backup-test-key" });
+    expect(streamingTtsClientFactory).toHaveBeenCalledWith(expect.objectContaining({ apiKey: "backup-test-key" }));
     await server.close();
   });
 
